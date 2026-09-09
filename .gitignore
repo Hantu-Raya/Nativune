@@ -1,0 +1,16 @@
+/data/
+/.tools/
+/.cache/
+/logs/
+/artifacts/
+/dist/
+/research/config/
+.env
+.env.*
+!.env.example
+client_secret*.json
+credentials*.json
+token*.json
+*.pem
+*.pfx
+*.p12

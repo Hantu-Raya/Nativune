@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <MSBuildNodeReuse>false</MSBuildNodeReuse>
+  </PropertyGroup>
+</Project>
