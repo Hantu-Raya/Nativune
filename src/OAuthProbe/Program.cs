@@ -1025,6 +1025,7 @@ internal static class SelfCheck
         {
             var isolatedRoot = Path.Combine(directory, "root");
             Directory.CreateDirectory(Path.Combine(isolatedRoot, "data", "oauth"));
+            ShellChecks.Run(isolatedRoot);
             var store = new TokenStore(isolatedRoot);
             store.Save(new StoredTokens
             {
