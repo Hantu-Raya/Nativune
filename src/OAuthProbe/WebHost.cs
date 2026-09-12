@@ -73,6 +73,9 @@ internal sealed class WebHostForm : Form
     private readonly Label _status = new();
     private readonly WebView2 _webView = new();
     private CoreWebView2Environment? _environment;
+    private PlayerControls? _playerControls;
+    private TaskbarControls? _taskbarControls;
+    private bool _playerBusy, _playerSuspended;
     private bool _disposed;
     private ulong? _activeNavigation;
     private ulong? _blockedNavigation;
@@ -84,6 +87,17 @@ internal sealed class WebHostForm : Form
     private readonly ToolStripMenuItem _forward = new("&Forward");
     private readonly ToolStripMenuItem _home = new("&Home");
     private readonly ToolStripMenuItem _retry = new("&Retry");
+    private readonly ToolStripMenuItem _playerMenu = new("&Player");
+    private readonly ToolStripMenuItem _playPauseItem = new("Play/Pause");
+    private readonly ToolStripMenuItem _playItem = new("Play");
+    private readonly ToolStripMenuItem _pauseItem = new("Pause");
+    private readonly ToolStripMenuItem _previousItem = new("Previous");
+    private readonly ToolStripMenuItem _nextItem = new("Next");
+    private readonly ToolStripMenuItem _shortcutsItem =
+        new("Enable session shortcuts: Ctrl+Alt+Shift+P toggle, Ctrl+Alt+Shift+Left previous, Ctrl+Alt+Shift+Right next")
+        { CheckOnClick = true };
+    private readonly List<ToolStripMenuItem> _playerItems = new();
+    private readonly List<ToolStripMenuItem> _trayPlayerItems = new();
     private readonly ToolStripMenuItem _timerMenu = new("Quit &timer");
     private readonly ToolStripMenuItem _compactItem = new("&Compact window");
     private readonly ToolStripMenuItem _topmostItem = new("Always on &top") { CheckOnClick = true };
@@ -98,6 +112,7 @@ internal sealed class WebHostForm : Form
     private FormWindowState _fullState;
     private int _fullDpi;
     private static readonly int TaskbarCreated = RegisterWindowMessage("TaskbarCreated");
+    private static readonly int TaskbarButtonCreated = RegisterWindowMessage("TaskbarButtonCreated");
     private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 1000 };
     private readonly CancellationTokenSource _saveCancellation = new();
     private ShellSettings _settings;
@@ -105,12 +120,21 @@ internal sealed class WebHostForm : Form
     private Task _saveTask = Task.CompletedTask;
     private SleepDeadline? _sleep;
     private bool _browserFailed, _navigationFailed, _closing, _closeReady, _fullscreen;
+    private bool _shortcutsEnabled;
     private int _activationPending;
     private Rectangle _windowBounds;
     private FormWindowState _windowState;
     private FormWindowState _lastWindowState;
     private string? _settingsWarning;
     internal int ExitCode { get; private set; }
+
+    private const int HotkeyToggle = 0x6201;
+    private const int HotkeyPrevious = 0x6202;
+    private const int HotkeyNext = 0x6203;
+    private const uint ModAlt = 0x0001;
+    private const uint ModControl = 0x0002;
+    private const uint ModShift = 0x0004;
+    private const uint ModNoRepeat = 0x4000;
 
     public WebHostForm(string root, string initialUri)
     {
@@ -158,6 +182,32 @@ internal sealed class WebHostForm : Form
         DpiChanged += (_, _) => ScheduleSettings();
     }
 
+    private void CreateTaskbarControls()
+    {
+        if (_taskbarControls is not null || _playerControls is null || !IsHandleCreated)
+            return;
+        _taskbarControls = new TaskbarControls(Handle, message =>
+        {
+            if (!_closing && !_disposed)
+                SetStatus(message, isError: true);
+        });
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        CreateTaskbarControls();
+        UpdatePlayerControls();
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        UnregisterSessionShortcuts();
+        _taskbarControls?.Dispose();
+        _taskbarControls = null;
+        base.OnHandleDestroyed(e);
+    }
+
     private void BuildMenu()
     {
         _back.Click += (_, _) => { if (CanNavigate && _webView.CanGoBack) _webView.GoBack(); };
@@ -170,6 +220,16 @@ internal sealed class WebHostForm : Form
             UpdateNavigation();
             _webView.Reload();
         };
+        ConfigurePlayerItem(_playPauseItem, "toggle", "Play or pause website playback.");
+        ConfigurePlayerItem(_playItem, "play", "Start website playback.");
+        ConfigurePlayerItem(_pauseItem, "pause", "Pause website playback.");
+        ConfigurePlayerItem(_previousItem, "previous", "Play the previous item.");
+        ConfigurePlayerItem(_nextItem, "next", "Play the next item.");
+        _shortcutsItem.Click += (_, _) => SetShortcutsEnabled(_shortcutsItem.Checked);
+        _playerMenu.AccessibleName = "Player controls";
+        _playerMenu.DropDownItems.AddRange([_playPauseItem, _playItem, _pauseItem, _previousItem, _nextItem,
+            new ToolStripSeparator(), _shortcutsItem]);
+
         var view = new ToolStripMenuItem("&View");
         view.DropDownItems.Add("Zoom &in", null, (_, _) => SetZoom(_settings.Zoom + 0.1));
         view.DropDownItems.Add("Zoom &out", null, (_, _) => SetZoom(_settings.Zoom - 0.1));
@@ -200,10 +260,88 @@ internal sealed class WebHostForm : Form
             SetStatus("Quit timer cancelled.");
         });
         var quit = new ToolStripMenuItem("&Quit", null, (_, _) => Close());
-        _menu.Items.AddRange([_back, _forward, _home, _retry, view, _timerMenu, quit]);
+        _menu.Items.AddRange([_back, _forward, _home, _retry, _playerMenu, view, _timerMenu, quit]);
         MainMenuStrip = _menu;
         Controls.Add(_menu);
         UpdateNavigation();
+    }
+
+    private void ConfigurePlayerItem(ToolStripMenuItem item, string command, string accessibleName)
+    {
+        item.AccessibleName = accessibleName;
+        item.ToolTipText = accessibleName;
+        item.Click += async (_, _) => await ExecutePlayerCommandAsync(command);
+        _playerItems.Add(item);
+    }
+
+    private ToolStripMenuItem CreateTrayPlayerItem(string text, string command, string accessibleName)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.AccessibleName = accessibleName;
+        item.ToolTipText = accessibleName;
+        item.Click += async (_, _) => await ExecutePlayerCommandAsync(command);
+        _trayPlayerItems.Add(item);
+        _playerItems.Add(item);
+        return item;
+    }
+
+    private bool PlayerAvailable =>
+        !_playerSuspended && !_playerBusy && !_closing && !_disposed && _playerControls?.IsAvailable == true;
+
+    private void UpdatePlayerControls()
+    {
+        var enabled = PlayerAvailable;
+        _playerMenu.Enabled = !_closing && !_disposed;
+        foreach (var item in _playerItems)
+            if (!item.IsDisposed)
+                item.Enabled = enabled;
+        _shortcutsItem.Enabled = !_closing && !_disposed && IsHandleCreated;
+        _taskbarControls?.SetEnabled(enabled);
+    }
+
+    private async Task ExecutePlayerCommandAsync(string command)
+    {
+        if (_closing || _disposed)
+            return;
+        var controls = _playerControls;
+        if (controls is null || !controls.IsAvailable || _playerSuspended)
+        {
+            SetStatus("Playback controls unavailable.", isError: true);
+            UpdatePlayerControls();
+            return;
+        }
+        if (_playerBusy)
+        {
+            SetStatus("A playback command is already in progress.", isError: true);
+            return;
+        }
+
+        _playerBusy = true;
+        UpdatePlayerControls();
+        try
+        {
+            var status = await controls.ExecuteAsync(command);
+            if (!_closing && !_disposed)
+                SetStatus(string.IsNullOrWhiteSpace(status) ? "Playback command completed." : status);
+        }
+        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException)
+        {
+            SetStatus("Playback command cancelled because the page changed.", isError: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException or COMException)
+        {
+            SetStatus("Playback command unavailable; no retry was requested.", isError: true);
+        }
+        catch (Exception)
+        {
+            SetStatus("Playback command failed; playback outcome is unknown.", isError: true);
+        }
+        finally
+        {
+            _playerBusy = false;
+            UpdatePlayerControls();
+        }
     }
 
     private bool CanNavigate => !_disposed && !_closing && !_configuringPrivacy && !_browserFailed;
@@ -215,6 +353,7 @@ internal sealed class WebHostForm : Form
         _home.Enabled = CanNavigate;
         _hideItem.Enabled = CanNavigate && _tray is not null && GetShellWindow() != IntPtr.Zero;
         _retry.Enabled = CanNavigate && _navigationFailed;
+        UpdatePlayerControls();
     }
 
     private void ToggleCompact()
@@ -281,6 +420,13 @@ internal sealed class WebHostForm : Form
                 _trayMenu = new ContextMenuStrip();
                 _trayMenu.Items.Add("Show", null, (_, _) => ActivateWindow());
                 _trayMenu.Items.Add("Hide (keeps playing)", null, (_, _) => HideToTray());
+                _trayMenu.Items.Add(new ToolStripSeparator());
+                _trayMenu.Items.Add(CreateTrayPlayerItem("Play/Pause", "toggle", "Play or pause website playback."));
+                _trayMenu.Items.Add(CreateTrayPlayerItem("Play", "play", "Start website playback."));
+                _trayMenu.Items.Add(CreateTrayPlayerItem("Pause", "pause", "Pause website playback."));
+                _trayMenu.Items.Add(CreateTrayPlayerItem("Previous", "previous", "Play the previous item."));
+                _trayMenu.Items.Add(CreateTrayPlayerItem("Next", "next", "Play the next item."));
+                _trayMenu.Items.Add(new ToolStripSeparator());
                 _trayMenu.Items.Add("Disable tray icon", null, (_, _) => { SetTrayEnabled(false); CaptureSettings(); });
                 _trayMenu.Items.Add("Quit", null, (_, _) => Close());
                 _tray = new NotifyIcon { Icon = _trayIcon, Text = "Music Desktop", ContextMenuStrip = _trayMenu, Visible = true };
@@ -295,7 +441,7 @@ internal sealed class WebHostForm : Form
         }
         _trayItem.Checked = enabled;
         _settings = _settings with { TrayEnabled = enabled };
-        if (enabled) SetStatus("Tray enabled. Hide keeps playback running; Close and Quit exit. Launch again or use the tray to restore.");
+        if (enabled) SetStatus("Tray enabled. Hide keeps playback running. Close and Quit exit. Launch again or use the tray to restore.");
         UpdateNavigation();
     }
 
@@ -305,8 +451,11 @@ internal sealed class WebHostForm : Form
         _tray = null;
         _trayMenu?.Dispose();
         _trayMenu = null;
+        _playerItems.RemoveAll(item => _trayPlayerItems.Contains(item));
+        _trayPlayerItems.Clear();
         _trayIcon?.Dispose();
         _trayIcon = null;
+        UpdatePlayerControls();
     }
 
     private void HideToTray()
@@ -382,6 +531,12 @@ internal sealed class WebHostForm : Form
         base.OnFormClosing(e);
         if (_closing) return;
         _closing = true;
+        UnregisterSessionShortcuts();
+        _playerControls?.Invalidate();
+        _playerControls?.Dispose();
+        _playerControls = null;
+        _taskbarControls?.Dispose();
+        _taskbarControls = null;
         _saveTimer.Stop();
         _sleep?.Cancel();
         DisposeTray();
@@ -467,6 +622,71 @@ internal sealed class WebHostForm : Form
         BeginInvoke(action);
     }
 
+    private void SetShortcutsEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            UnregisterSessionShortcuts();
+            if (!_closing && !_disposed)
+                SetStatus("Session shortcuts disabled.");
+            return;
+        }
+        if (_shortcutsEnabled)
+            return;
+        if (!IsHandleCreated || _closing || _disposed)
+        {
+            _shortcutsItem.Checked = false;
+            return;
+        }
+
+        const uint modifiers = ModControl | ModAlt | ModShift | ModNoRepeat;
+        var registered = new List<int>(3);
+        if (!RegisterSessionHotkey(HotkeyToggle, Keys.P, modifiers, registered)
+            || !RegisterSessionHotkey(HotkeyPrevious, Keys.Left, modifiers, registered)
+            || !RegisterSessionHotkey(HotkeyNext, Keys.Right, modifiers, registered))
+        {
+            foreach (var id in registered)
+                UnregisterHotKey(Handle, id);
+            _shortcutsItem.Checked = false;
+            SetStatus("Session shortcuts could not be enabled; one or more combinations are already in use.", isError: true);
+            return;
+        }
+
+        _shortcutsEnabled = true;
+        SetStatus("Session shortcuts enabled: Ctrl+Alt+Shift+P toggles playback; Left and Right select previous/next. Session only.");
+    }
+
+    private bool RegisterSessionHotkey(int id, Keys key, uint modifiers, List<int> registered)
+    {
+        if (!RegisterHotKey(Handle, id, modifiers, (uint)key))
+            return false;
+        registered.Add(id);
+        return true;
+    }
+
+    private void UnregisterSessionShortcuts()
+    {
+        if (!_shortcutsEnabled && !_shortcutsItem.Checked)
+            return;
+        if (IsHandleCreated)
+        {
+            UnregisterHotKey(Handle, HotkeyToggle);
+            UnregisterHotKey(Handle, HotkeyPrevious);
+            UnregisterHotKey(Handle, HotkeyNext);
+        }
+        _shortcutsEnabled = false;
+        _shortcutsItem.Checked = false;
+    }
+
+    private static string? PlayerCommandForHotkey(IntPtr wParam)
+        => wParam.ToInt64() switch
+        {
+            HotkeyToggle => "toggle",
+            HotkeyPrevious => "previous",
+            HotkeyNext => "next",
+            _ => null
+        };
+
     private void SetQuitTimer()
     {
         if (_sleep is null || _closing) return;
@@ -493,11 +713,50 @@ internal sealed class WebHostForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        const int wmPowerBroadcast = 0x0218, wmDisplayChange = 0x007e;
-        if (m.Msg == wmPowerBroadcast && (m.WParam == 7 || m.WParam == 18))
-            _sleep?.CheckOnResume();
-        if (TaskbarCreated != 0 && m.Msg == TaskbarCreated && !_closing && !_disposed && !Visible)
-            ActivateWindow();
+        const int wmCommand = 0x0111, wmPowerBroadcast = 0x0218, wmHotKey = 0x0312, wmDisplayChange = 0x007e;
+        if (m.Msg == wmHotKey && _shortcutsEnabled)
+        {
+            var command = PlayerCommandForHotkey(m.WParam);
+            if (command is not null)
+            {
+                _ = ExecutePlayerCommandAsync(command);
+                return;
+            }
+        }
+        if (m.Msg == wmCommand && TaskbarControls.TryGetCommand(m.WParam, out var taskbarCommand))
+        {
+            if (!_closing && !_disposed)
+                _ = ExecutePlayerCommandAsync(taskbarCommand);
+            return;
+        }
+        if (m.Msg == wmPowerBroadcast)
+        {
+            var powerEvent = m.WParam.ToInt64();
+            if (powerEvent == 4)
+                _playerSuspended = true;
+            else if (powerEvent is 7 or 18)
+            {
+                _playerSuspended = false;
+                _sleep?.CheckOnResume();
+            }
+            if (powerEvent is 4 or 7 or 18)
+            {
+                _playerControls?.Invalidate();
+                UpdatePlayerControls();
+            }
+        }
+        if (TaskbarButtonCreated != 0 && m.Msg == TaskbarButtonCreated && !_closing && !_disposed)
+        {
+            _taskbarControls?.Recreate();
+            UpdatePlayerControls();
+        }
+        if (TaskbarCreated != 0 && m.Msg == TaskbarCreated && !_closing && !_disposed)
+        {
+            _taskbarControls?.Recreate();
+            UpdatePlayerControls();
+            if (!Visible)
+                ActivateWindow();
+        }
         if (m.Msg == wmDisplayChange && !_fullscreen && !_closing)
         {
             var area = Screen.FromRectangle(Bounds).WorkingArea;
@@ -513,6 +772,13 @@ internal sealed class WebHostForm : Form
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int RegisterWindowMessage(string message);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr window, int id);
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetShellWindow();
     [DllImport("user32.dll")]
@@ -523,6 +789,12 @@ internal sealed class WebHostForm : Form
         if (disposing)
         {
             _disposed = true;
+            UnregisterSessionShortcuts();
+            _playerControls?.Invalidate();
+            _playerControls?.Dispose();
+            _playerControls = null;
+            _taskbarControls?.Dispose();
+            _taskbarControls = null;
             _lifetime.Cancel();
             _sleep?.Dispose();
             DisposeTray();
@@ -577,6 +849,10 @@ internal sealed class WebHostForm : Form
                 return;
             _configuringPrivacy = false;
             core.NavigationCompleted += OnNavigationCompleted;
+            _playerControls = new PlayerControls(core, () => CanNavigate && !_navigationFailed, _lifetime.Token);
+            _playerControls.StateChanged += OnPlayerStateChanged;
+            CreateTaskbarControls();
+            UpdatePlayerControls();
             _webView.Visible = true;
             SetStatus("Loading official YouTube Music...");
             core.Navigate(_settings.StartupUri);
@@ -773,6 +1049,19 @@ internal sealed class WebHostForm : Form
         }
     }
 
+    private void OnPlayerStateChanged(object? sender, EventArgs e)
+    {
+        if (_disposed || _closing)
+            return;
+        if (IsHandleCreated && InvokeRequired)
+        {
+            try { BeginInvoke(UpdatePlayerControls); }
+            catch (InvalidOperationException) { }
+            return;
+        }
+        UpdatePlayerControls();
+    }
+
     private void OnNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs args)
     {
         if (_closing || _disposed || _browserFailed) { args.Cancel = true; return; }
@@ -853,6 +1142,7 @@ internal sealed class WebHostForm : Form
     private void OnProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs args)
     {
         if (_closing || _disposed) return;
+        _playerControls?.Invalidate();
         _browserFailed = true;
         ExitCode = 1;
         UpdateNavigation();
