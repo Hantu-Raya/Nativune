@@ -1,0 +1,39 @@
+Nativune third-party notices
+============================
+
+Nativune is licensed under the MIT License in LICENSE.
+
+Release packages include full license and notice texts under the `licenses`
+directory. Those terms apply to their respective components and are not
+replaced by Nativune's MIT License.
+
+Microsoft .NET runtime
+- Source: https://github.com/dotnet/runtime
+- Included terms: licenses/Microsoft-DotNet-LICENSE.txt
+- Included notices: licenses/Microsoft-DotNet-ThirdPartyNotices.txt
+
+Microsoft Windows App SDK 2.5.1 and its self-contained runtime components
+- Source: https://github.com/microsoft/WindowsAppSDK
+- Included terms: licenses/Microsoft-WindowsAppSDK.txt
+
+Microsoft Edge WebView2 SDK 1.0.4191.47
+- Source: https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4191.47
+- Included terms: licenses/Microsoft-WebView2-SDK-LICENSE.txt
+- Included notices: licenses/Microsoft-WebView2-SDK-NOTICE.txt
+
+Microsoft Edge WebView2 Fixed Version Runtime 152.0.4191.62 (x64)
+- Source: https://developer.microsoft.com/microsoft-edge/webview2/
+- Distribution documentation and terms:
+  https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
+- License files shipped by the runtime remain in its runtime directories.
+
+uBlock Origin Lite 2026.907.2003
+- Source release: https://github.com/uBlockOrigin/uBOL-home/releases/tag/2026.907.2003
+- License: GNU General Public License version 3, included with the complete
+  unpacked extension source at .tools/ubol/2026.907.2003/LICENSE.txt
+- Bundled only in the project's configured privacy-only mode.
+
+The original Nativune native icon set is part of the Nativune source. On
+20 September 2026, the project owner confirmed ownership or permission to
+publicly distribute the ten previously supplied additions and selected the
+MIT License for the public project release.

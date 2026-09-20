@@ -11,9 +11,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$application = Join-Path $root 'artifacts\winui3\publish\OAuthProbe.exe'
+$application = Join-Path $root 'artifacts\winui3\publish\Nativune.exe'
 if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
-    throw "WinUI application not found at $application. Publish src\OAuthProbe\OAuthProbe.csproj through scripts\dotnet.ps1 to artifacts\winui3\publish first."
+    throw "WinUI application not found at $application. Publish src\Nativune\Nativune.csproj through scripts\dotnet.ps1 to artifacts\winui3\publish first."
 }
 $temp = Join-Path $root '.cache\tmp'
 [IO.Directory]::CreateDirectory($temp) | Out-Null

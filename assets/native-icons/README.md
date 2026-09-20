@@ -1,6 +1,6 @@
-# Original Music Desktop functional icons
+# Original Nativune functional icons
 
-This repository contains original functional shell glyphs for the native Music Desktop surfaces. They are not copied YouTube/Google branding, Material Symbols, competitor artwork, or a font. The official service branding remains inside the unchanged website.
+This repository contains original functional shell glyphs for Nativune's native surfaces. They are not copied YouTube/Google branding, Material Symbols, competitor artwork, or a font. The official service branding remains inside the unchanged website.
 
 ## Files and active inventory
 
@@ -18,11 +18,11 @@ WinForms Image/Bitmap/Icon APIs do not decode SVG at runtime. The checked-in pip
 
 The renderer performs bounded XML parsing and static element/attribute checks, rejects DTDs, scripts and external values, verifies the pinned executable SHA-256 sidecar, emits all nine sizes, and writes a manifest with resource names, dimensions and output hashes. The renderer is a build-time tool only; ordinary builds embed PNGs and do not add a runtime SVG dependency. Regenerate with `pwsh -NoProfile -File scripts/render-native-icons.ps1`; run its focused safety checks with `python scripts/check-native-icons.py`.
 
-## Provenance and license limits
+## Provenance and license
 
-The ten active additions (`volume`, `volume-muted`, `like`, `dislike`, `repeat`, `repeat-one`, `shuffle`, `settings`, `minimize`, `close`) were copied from the supplied `quiet-player-review-package.zip` `quiet-player-review/icons/{masters,masks}/` entries after its offline structural review. That review reported the files as original supplied designs and recorded source hashes; it did not establish author identity or a third-party license. Project provenance is retained here and in the supplied review package. No Google trademark, brand, or third-party license is asserted by this adoption statement; do not reuse these files outside this project without obtaining the appropriate rights.
+The ten active additions (`volume`, `volume-muted`, `like`, `dislike`, `repeat`, `repeat-one`, `shuffle`, `settings`, `minimize`, `close`) were supplied in `quiet-player-review-package.zip` under `quiet-player-review/icons/{masters,masks}/`. The package's offline structural review reported them as original designs and recorded source hashes.
 
-The owner approved their incorporation in the Quiet Player first slice on 14 September 2026. The supplied review ZIP has SHA-256 `d8f967cd5882a3846f8ac519c20e2f0942f002626a31e96384c385907ac485fb`. The ten master/mask pairs retain the supplied geometry and colors unchanged.
+On 20 September 2026, the project owner confirmed ownership or permission to distribute these additions publicly and selected the repository's MIT License for Nativune. No Google trademark or third-party brand license is asserted by this provenance statement. The supplied review ZIP has SHA-256 `d8f967cd5882a3846f8ac519c20e2f0942f002626a31e96384c385907ac485fb`; the ten master/mask pairs retain the supplied geometry and colors unchanged.
 
 The two notification masters and historical variants remain as evidence/inventory only. They are deliberately excluded from the active renderer list, project resource glob, cache registry, and native checks. No notification canonical resources are generated or bundled.
 

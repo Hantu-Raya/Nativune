@@ -1,42 +1,37 @@
-# Project instructions
+# Project workflow
 
-## Start here
+## Find the relevant context
 
-Read `plan.md` before planning, setup, implementation, or changing scope. It owns the product requirements, evidence, proposed architecture, and acceptance gates.
+For planning, setup, implementation or scope changes, read [Current state](plan.md#current-state) first, then follow its task-specific links. `plan.md` owns product decisions and evidence; this file owns execution. A wording-only correction needs only its surrounding text. Historical approvals apply to their stated task, not every future run. If current instructions conflict with a recorded decision, resolve the affected boundary before acting.
 
-Current authorization covers research, documentation, completed Google Cloud OAuth setup, folder-local .NET tooling, the OAuth/read-only library experiment, Windows media-session feasibility, and the minimal embedded WebView2 compatibility experiment in `plan.md`. The owner handles Google sign-in and consent. The embedded experiment may use one native window, a folder-local Fixed Version runtime and an isolated profile; it does not establish Google support. Full UI, extensions, unofficial extraction, sign-in bypasses, global installs, billing activation and production deployment remain outside scope.
+Keep this filename lowercase. Runners that discover only `AGENTS.md` must load `agents.md` explicitly rather than create a duplicate.
 
-This file uses the lowercase name requested by the user. On case-sensitive systems, agents must load it explicitly if their runner only discovers `AGENTS.md`; do not maintain a duplicate instruction file.
+## Complete the requested work
 
-## Workspace boundary
+For substantive work, define the result, affected behavior and completion evidence before editing. Use the request and existing acceptance criteria; ask only for a missing decision that changes scope, risk or user experience. Trace the affected flow, then prefer existing code, standard libraries and native controls. Keep one application project; add architecture or dependencies only for a demonstrated need. Preserve accessibility, security and failure handling.
 
-- Keep project-owned source, downloaded tools, dependency caches, temporary files, runtime binaries, application data, logs, research, and build outputs under this repository root, currently `D:/youtube`.
-- Resolve paths from the project or executable location, not the caller's working directory. Use the directory purposes in `plan.md`; create directories only when needed.
-- Before running an installer or package manager, configure its download, cache, home, and temporary paths locally. Use process-local environment variables and PATH changes.
-- Do not install global tools, change machine settings, add services/startup tasks, or write project state to user-profile directories without explicit approval. If a prerequisite cannot meet this boundary, report the exact exception before proceeding.
-- Existing operating-system facilities and the agent harness are external prerequisites, not project-owned files. Do not promise that Windows, browser sign-in, or cloud configuration leaves no external state.
-- Keep credentials, browser profiles, caches, tool downloads, and build outputs out of version control. Do not delete user data as build cleanup.
+Within an authorized task, continue through implementation, focused verification and fixes without stopping for approval at each local step. Delegate only independent work with clear file ownership and shared interfaces; one integration owner checks the combined result. A failed feasibility gate stops dependent work, not unrelated authorized work. Report the missing decision rather than substitute a weaker feature.
 
-## Authentication and playback
+Choose evidence for the change. Documentation needs consistency/link checks, not an app launch. Code needs the affected checks; UI/runtime changes need the actual native app. Account or playback checks require the appropriate authorized session. Keep regression tests for plausible behavioral failures, not to prove activity. Owner-reported outcomes stand as reported evidence; distinguish them from independently observed results.
 
-- Treat sign-in, account/channel selection, library access, Premium entitlement, and playback as separate capabilities. Demonstrate each before calling it supported.
-- Use supported Google authorization flows. Never collect passwords, import browser cookies, spoof user agents to evade sign-in restrictions, or substitute another project's OAuth client identity.
-- A Google OAuth token does not create a YouTube Music web session or grant a documented native audio-stream API. Keep the feasibility gates in `plan.md` intact.
-- Preserve service restrictions and branding requirements. Do not add stream extraction, ad blocking, downloads, or unofficial private API dependencies to make a failed gate appear to pass.
-- Keep remote web content isolated from native file, process, and credential access. Validate origins and any native messages; expose only the capability actually needed.
-- Exclude passwords, tokens, cookies, authorization headers, and private library contents from logs and research artifacts. Use supported OS-backed protection for sensitive persisted state; disclose account/machine portability limits.
+Finish with changed files, checks actually run and remaining blockers. Remove temporary instrumentation, preserve user work and update the current-state index plus relevant decision record when an outcome changes. A partial run is not a passed gate.
 
-## Engineering
+## Keep project state local
 
-- Prefer existing code, standard libraries, and native controls before dependencies. Add the smallest working change after tracing the affected flow.
-- Keep the proof of concept in one application project. Introduce another module, database, backend, plugin system, or platform only for a demonstrated requirement.
-- Study competitor behavior and architecture as inspiration. Write original code and assets. Record source links and license obligations before using any third-party dependency.
-- Fix shared root causes rather than patching individual screens. Preserve accessibility, error handling, and security even when simplifying.
-- Separate research facts, author claims, proposed targets, and measured results. Never turn download size or one process's memory into a total-resource claim.
+Keep project-owned tools, downloads, dependencies, caches, temporary files, runtime/profile data, logs and outputs under this repository. Resolve paths from the project or executable, not the caller's directory. Use the existing local launchers and [Folder plan](plan.md#folder-plan) for setup/environment details. Configure package-manager paths before invocation; PATH and environment changes are process-local.
 
-## Verification and delivery
+Credentials, profiles and generated files stay out of version control. User data is not build cleanup. Windows facilities, the existing harness and browser/cloud state are external prerequisites, not proof of zero external writes. New global installs, machine settings, services/startup tasks or outside-root writes need explicit approval for the exact exception. Prior exceptions are not general permission. Commit, push, publishing, billing and deployment require the corresponding user request.
 
-- Check the actual changed behavior: launch the app for UI/runtime changes, exercise account transitions and playback for integration changes, and keep a focused regression check where a plausible bug warrants it.
-- Measure the entire app process tree, including WebView2 children, using the comparison procedure in `plan.md`.
-- Stop at a failed feasibility gate. Record evidence and the decision required; do not silently replace native playback, synced library features, or folder-local setup with a weaker substitute.
-- Update `plan.md` when decisions or gate outcomes change. Mark unrun checks explicitly. Report files changed, checks actually run, and remaining blockers briefly.
+## Protect accounts and playback
+
+The owner performs Google sign-in and consent. No password collection, sign-in evasion, substituted OAuth identity, downloads or ad blocking.
+
+Keep remote content isolated from native file, process and credential access. Preserve exact-origin validation and the disabled native bridge. Existing public-UI commands target the owned view, fail closed and do not automatically retry or switch players. Their compatibility is not a documented Google playback API.
+
+Use supported OS-backed protection for sensitive persisted state and disclose account/machine portability limits. Exclude credentials, cookies, authorization headers and private library/listening contents from logs and research. Verify sign-in, channel selection, library, Premium and playback separately; OAuth tokens establish neither a Music web session nor native streaming access.
+
+## Keep instructions small
+
+Use task prompts to state the outcome, constraints, evidence and stopping boundary, not a tool-by-tool itinerary. Add a skill only for reusable task-specific knowledge; give it a short, narrow trigger and disclose branch-specific guidance through links. Keep each rule in one place, and remove stale or conflicting guidance when decisions change. Repository instructions do not override system/tool rules or modify global skills.
+
+Record dependency sources and license obligations before adoption. Keep research claims, hypotheses and measured results distinct. For performance work, follow the linked workload protocol and count the complete process tree, including WebView2 children and separately identified launchers; host-only memory and download size are not total resource use.

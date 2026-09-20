@@ -1,0 +1,391 @@
+[CmdletBinding()]
+param(
+    [Parameter(Position = 0)]
+    [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')]
+    [string] $Version = '0.1.0',
+    [ValidateSet('Debug', 'Release')]
+    [string] $Configuration = 'Release'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$appProject = 'src/Nativune/Nativune.csproj'
+$installerProject = 'src/Nativune.Installer/Nativune.Installer.csproj'
+$webView2Version = '152.0.4191.62'
+$webView2Root = '.tools/webview2'
+$ubolRoot = '.tools/ubol/2026.907.2003'
+$releaseRoot = Join-Path $repository 'artifacts/release'
+$workRoot = Join-Path $releaseRoot ('.staging-' + [Guid]::NewGuid().ToString('N'))
+$stageRoot = Join-Path $workRoot 'payload'
+$appPublishRoot = Join-Path $workRoot 'app-publish'
+$setupPublishRoot = Join-Path $workRoot 'setup-publish'
+$zipPath = Join-Path $workRoot 'Nativune-Setup.zip'
+$setupPath = Join-Path $releaseRoot 'Nativune-Setup.exe'
+$releaseZipPath = Join-Path $releaseRoot 'Nativune-Setup.zip'
+$manifestPath = Join-Path $releaseRoot 'release-manifest.json'
+$checksumsPath = Join-Path $releaseRoot 'SHA256SUMS.txt'
+
+function Resolve-RepositoryPath([string] $Path) {
+    if ([IO.Path]::IsPathRooted($Path)) {
+        $candidate = [IO.Path]::GetFullPath($Path)
+    } else {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $repository $Path))
+    }
+    $rootWithSeparator = $repository.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not ($candidate.Equals($repository, [StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($rootWithSeparator, [StringComparison]::OrdinalIgnoreCase))) {
+        throw "Path is outside the repository: $Path"
+    }
+    $current = $candidate
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Repository input path contains a reparse point: $current"
+            }
+        }
+        if ($current.Equals($repository, [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $parent = [IO.Directory]::GetParent($current)
+        if ($null -eq $parent) {
+            throw "Repository input path could not be traced to the repository root: $Path"
+        }
+        $current = $parent.FullName
+    }
+    return $candidate
+}
+
+function Assert-RegularFile([string] $Path, [string] $Description) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description is missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Description is a reparse point: $Path"
+    }
+}
+
+function Remove-SafeOutputFile([string] $Path, [string] $Description) {
+    [void](Resolve-RepositoryPath $Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Description is not a regular replaceable file: $Path"
+    }
+    Remove-Item -LiteralPath $Path -Force
+}
+
+function Assert-PublicTree([string] $Root) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "The public payload source directory is missing: $Root"
+    }
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "The public payload source directory is a reparse point: $Root"
+    }
+    $forbidden = '(?i)(^|[\\/])(data|profiles?|caches?|credentials?|tokens?|cookies?|logs?|handoff|evidence)([\\/]|$)|(?i)(^|[\\/])(\.env(?:\.[^\\/]*)?|oauth\.(json|txt|bin)|client[-_]?secret[^\\/]*|api[-_]?key[^\\/]*|private\.key|id_rsa|history\.(json|db|sqlite)|cookies?\.(json|db|sqlite)|tokens?\.(bin|json|txt))$|(?i)(credential|\.pfx$|\.p12$|\.pem$|\.(pdb|dbg|dmp)$)'
+    $secretContent = '(?i)"(client_secret|refresh_token|access_token|private_key)"\s*:\s*"[^"]+"|AIza[0-9A-Za-z_-]{30,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+    foreach ($item in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The public payload source contains a reparse point: $($item.FullName)"
+        }
+        $relative = $item.FullName.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        if ($relative -match $forbidden) {
+            throw "The public payload contains a private or generated path: $relative"
+        }
+        if (-not $item.PSIsContainer -and $item.Length -le 16MB -and $item.Extension -in @('.json', '.txt', '.config', '.xml', '.ini', '.yaml', '.yml')) {
+            $content = Get-Content -LiteralPath $item.FullName -Raw
+            if ($content -match $secretContent) {
+                throw "The public payload contains credential-like content: $relative"
+            }
+        }
+    }
+}
+
+function Copy-TreeContent([string] $Source, [string] $Destination) {
+    Assert-PublicTree $Source
+    [IO.Directory]::CreateDirectory($Destination) | Out-Null
+    foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $Destination $item.Name) -Recurse -Force
+    }
+}
+
+function Relative-ForwardPath([string] $Root, [string] $Path) {
+    return $Path.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar).Replace([IO.Path]::DirectorySeparatorChar, '/')
+}
+
+function Get-TreeFingerprint([string] $Root, [switch] $AllowDevelopmentFiles) {
+    if ($AllowDevelopmentFiles) {
+        if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+            throw "The fingerprint source directory is missing: $Root"
+        }
+        foreach ($item in @((Get-Item -LiteralPath $Root -Force)) + @(Get-ChildItem -LiteralPath $Root -Recurse -Force)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "The fingerprint source contains a reparse point: $($item.FullName)"
+            }
+        }
+    } else {
+        Assert-PublicTree $Root
+    }
+    $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+    [int64] $count = 0
+    [int64] $totalBytes = 0
+    try {
+        foreach ($item in (Get-ChildItem -LiteralPath $Root -Recurse -File -Force | Sort-Object -CaseSensitive @{ Expression = { Relative-ForwardPath $Root $_.FullName }; Ascending = $true })) {
+            $relative = Relative-ForwardPath $Root $item.FullName
+            $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $record = $relative + [char]0 + $item.Length.ToString([Globalization.CultureInfo]::InvariantCulture) + [char]0 + $fileHash + "`n"
+            $hash.AppendData([Text.Encoding]::UTF8.GetBytes($record))
+            $count++
+            $totalBytes += $item.Length
+        }
+        return [pscustomobject]@{
+            sha256 = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+            fileCount = $count
+            totalBytes = $totalBytes
+        }
+    } finally {
+        $hash.Dispose()
+    }
+}
+
+function New-Manifest([string] $PayloadRoot) {
+    $files = @(
+        foreach ($item in (Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File -Force | Sort-Object @{ Expression = { Relative-ForwardPath $PayloadRoot $_.FullName }; Ascending = $true })) {
+            $relative = Relative-ForwardPath $PayloadRoot $item.FullName
+            if ($relative -eq 'release-manifest.json') { continue }
+            $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            [ordered]@{
+                path = $relative
+                length = [int64]$item.Length
+                sha256 = $hash
+            }
+        }
+    )
+    if ($files.Count -eq 0) { throw 'The public release payload is empty.' }
+    $manifest = [ordered]@{
+        schemaVersion = 1
+        product = 'Nativune'
+        version = $Version
+        executable = 'app/Nativune.exe'
+        files = $files
+    }
+    $json = $manifest | ConvertTo-Json -Depth 8 -Compress
+    [IO.File]::WriteAllText((Join-Path $PayloadRoot 'release-manifest.json'), $json, [Text.UTF8Encoding]::new($false))
+}
+
+function New-CanonicalZip([string] $PayloadRoot, [string] $ZipPath) {
+    $stream = [IO.File]::Open($ZipPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false, [Text.Encoding]::UTF8)
+    try {
+        foreach ($item in (Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File -Force | Sort-Object @{ Expression = { Relative-ForwardPath $PayloadRoot $_.FullName }; Ascending = $true })) {
+            $relative = Relative-ForwardPath $PayloadRoot $item.FullName
+            $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+            $entry.LastWriteTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+            $input = [IO.File]::OpenRead($item.FullName)
+            $output = $entry.Open()
+            try {
+                $input.CopyTo($output, 131072)
+            } finally {
+                $output.Dispose()
+                $input.Dispose()
+            }
+        }
+    } finally {
+        $archive.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function New-AppendedSetup([string] $StubPath, [string] $ZipPath, [string] $OutputPath) {
+    Assert-RegularFile $StubPath 'The unpayloaded setup stub'
+    Assert-RegularFile $ZipPath 'The release ZIP'
+    $stubLength = (Get-Item -LiteralPath $StubPath).Length
+    $zipLength = (Get-Item -LiteralPath $ZipPath).Length
+    if ($stubLength -le 0 -or $zipLength -le 0) { throw 'The setup stub or release ZIP is empty.' }
+    $output = [IO.File]::Open($OutputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stub = [IO.File]::OpenRead($StubPath)
+        $zip = [IO.File]::OpenRead($ZipPath)
+        try {
+            $stub.CopyTo($output, 131072)
+            $zip.CopyTo($output, 131072)
+        } finally {
+            $zip.Dispose()
+            $stub.Dispose()
+        }
+        $writer = [IO.BinaryWriter]::new($output, [Text.Encoding]::UTF8, $true)
+        try {
+            $writer.Write([Text.Encoding]::ASCII.GetBytes('NATIVN01'))
+            $writer.Write([uint32]1)
+            $writer.Write([int64]$stubLength)
+            $writer.Write([int64]$zipLength)
+            $writer.Write([uint32]0)
+        } finally {
+            $writer.Dispose()
+        }
+    } finally {
+        $output.Dispose()
+    }
+}
+
+try {
+    if (-not [Environment]::OSVersion.Platform.Equals([PlatformID]::Win32NT)) {
+        throw 'Release packaging is Windows-only.'
+    }
+    [void](Resolve-RepositoryPath 'artifacts')
+    [void](Resolve-RepositoryPath 'artifacts/release')
+    [IO.Directory]::CreateDirectory($releaseRoot) | Out-Null
+    [IO.Directory]::CreateDirectory($workRoot) | Out-Null
+    [IO.Directory]::CreateDirectory($stageRoot) | Out-Null
+    [void](Resolve-RepositoryPath 'artifacts/release')
+    [void](Resolve-RepositoryPath $workRoot)
+
+    $appProjectPath = Resolve-RepositoryPath $AppProject
+    $installerProjectPath = Resolve-RepositoryPath $InstallerProject
+    $webView2Source = Resolve-RepositoryPath (Join-Path $WebView2Root $WebView2Version)
+    $webView2Marker = Resolve-RepositoryPath (Join-Path $WebView2Root 'runtime-path.txt')
+    $ubolSource = Resolve-RepositoryPath $UbolRoot
+    $webView2Executable = Resolve-RepositoryPath (Join-Path $webView2Source 'msedgewebview2.exe')
+    $ubolManifest = Resolve-RepositoryPath (Join-Path $ubolSource 'manifest.json')
+    $dotnetExecutable = Resolve-RepositoryPath '.tools/dotnet/dotnet.exe'
+    $dotnetRoot = Resolve-RepositoryPath '.tools/dotnet'
+    $nativuneLicense = Resolve-RepositoryPath 'LICENSE'
+    $repositoryNotice = Resolve-RepositoryPath 'THIRD-PARTY-NOTICES.txt'
+    $appSdkLicense = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.windowsappsdk/2.5.1/license.txt'
+    $dotnetLicense = Resolve-RepositoryPath '.tools/dotnet/LICENSE.txt'
+    $dotnetNotice = Resolve-RepositoryPath '.tools/dotnet/ThirdPartyNotices.txt'
+    $webView2License = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/LICENSE.txt'
+    $webView2Notice = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/NOTICE.txt'
+    $releaseInputsPath = Resolve-RepositoryPath 'release-inputs.json'
+    $ubolArchive = Resolve-RepositoryPath '.cache/downloads/ubol-2026.907.2003.zip'
+
+    Assert-RegularFile $dotnetExecutable 'The repository-local .NET SDK'
+    Assert-RegularFile $nativuneLicense 'The Nativune MIT license'
+    Assert-RegularFile $repositoryNotice 'The repository third-party notices file'
+    Assert-RegularFile $appProjectPath 'The application project'
+    Assert-RegularFile $installerProjectPath 'The installer project'
+    Assert-RegularFile $webView2Marker 'The WebView2 runtime marker'
+    Assert-RegularFile $webView2Executable 'The pinned WebView2 runtime executable'
+    Assert-RegularFile $ubolManifest 'The pinned uBO Lite manifest'
+    Assert-RegularFile $releaseInputsPath 'The pinned release input manifest'
+    Assert-RegularFile $ubolArchive 'The pinned uBO Lite source archive'
+    if ((Get-Content -LiteralPath $webView2Marker -Raw).Trim() -ne $WebView2Version) {
+        throw "The WebView2 runtime marker does not select $WebView2Version."
+    }
+    if (-not (Test-Path -LiteralPath $webView2Source -PathType Container)) { throw "The pinned WebView2 runtime is missing: $webView2Source" }
+    if (-not (Test-Path -LiteralPath $ubolSource -PathType Container)) { throw "The pinned uBO Lite payload is missing: $ubolSource" }
+    if ([Diagnostics.FileVersionInfo]::GetVersionInfo($webView2Executable).FileVersion -ne $WebView2Version) {
+        throw "The WebView2 runtime executable is not version $WebView2Version."
+    }
+    $ubolIdentity = Get-Content -LiteralPath $ubolManifest -Raw | ConvertFrom-Json
+    if ($ubolIdentity.version -ne '2026.907.2003' -or $ubolIdentity.short_name -ne 'uBO Lite') {
+        throw 'The uBO Lite payload identity does not match version 2026.907.2003.'
+    }
+    $releaseInputs = Get-Content -LiteralPath $releaseInputsPath -Raw | ConvertFrom-Json
+    if ($releaseInputs.schemaVersion -ne 1 -or $releaseInputs.dotnetSdk.version -ne '10.0.401' -or $releaseInputs.webView2.version -ne $WebView2Version -or $releaseInputs.uBlockOriginLite.version -ne '2026.907.2003') {
+        throw 'The pinned release input manifest has unexpected identity fields.'
+    }
+    $dotnetSignature = Get-AuthenticodeSignature -LiteralPath $dotnetExecutable
+    if ($dotnetSignature.Status -ne 'Valid' -or $null -eq $dotnetSignature.SignerCertificate -or $dotnetSignature.SignerCertificate.Subject -notmatch 'Microsoft|\.NET') {
+        throw 'The repository-local .NET SDK host does not have a valid Microsoft signature.'
+    }
+    $dotnetVersion = (& $dotnetExecutable --version)
+    if ($LASTEXITCODE -ne 0 -or $dotnetVersion.Trim() -ne $releaseInputs.dotnetSdk.version) {
+        throw 'The repository-local .NET SDK version does not match release-inputs.json.'
+    }
+    $dotnetFingerprint = Get-TreeFingerprint $dotnetRoot -AllowDevelopmentFiles
+    if ($dotnetFingerprint.sha256 -ne $releaseInputs.dotnetSdk.treeSha256 -or $dotnetFingerprint.fileCount -ne $releaseInputs.dotnetSdk.fileCount -or $dotnetFingerprint.totalBytes -ne $releaseInputs.dotnetSdk.totalBytes) {
+        throw 'The repository-local .NET SDK tree does not match release-inputs.json.'
+    }
+    $webView2Signature = Get-AuthenticodeSignature -LiteralPath $webView2Executable
+    if ($webView2Signature.Status -ne 'Valid' -or $null -eq $webView2Signature.SignerCertificate -or $webView2Signature.SignerCertificate.Subject -notmatch 'Microsoft') {
+        throw 'The pinned WebView2 runtime executable does not have a valid Microsoft signature.'
+    }
+    $webView2Fingerprint = Get-TreeFingerprint $webView2Source
+    if ($webView2Fingerprint.sha256 -ne $releaseInputs.webView2.treeSha256 -or $webView2Fingerprint.fileCount -ne $releaseInputs.webView2.fileCount -or $webView2Fingerprint.totalBytes -ne $releaseInputs.webView2.totalBytes) {
+        throw 'The pinned WebView2 runtime tree does not match release-inputs.json.'
+    }
+    $ubolFingerprint = Get-TreeFingerprint $ubolSource
+    $ubolArchiveHash = (Get-FileHash -LiteralPath $ubolArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ubolFingerprint.sha256 -ne $releaseInputs.uBlockOriginLite.treeSha256 -or $ubolFingerprint.fileCount -ne $releaseInputs.uBlockOriginLite.fileCount -or $ubolFingerprint.totalBytes -ne $releaseInputs.uBlockOriginLite.totalBytes -or $ubolArchiveHash -ne $releaseInputs.uBlockOriginLite.sourceArchiveSha256) {
+        throw 'The pinned uBO Lite archive or tree does not match release-inputs.json.'
+    }
+    Assert-RegularFile $appSdkLicense 'The Windows App SDK license'
+    Assert-RegularFile $dotnetLicense '.NET license'
+    Assert-RegularFile $dotnetNotice '.NET third-party notices'
+    Assert-RegularFile $webView2License 'The WebView2 license'
+    Assert-RegularFile $webView2Notice 'The WebView2 notice'
+
+    Push-Location $repository
+    try {
+        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -o $appPublishRoot
+        if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
+        & $dotnetExecutable publish $installerProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -p:InstallerTestHooks=false -o $setupPublishRoot
+        if ($LASTEXITCODE -ne 0) { throw 'The installer stub publish failed.' }
+    } finally {
+        Pop-Location
+    }
+
+    $appDestination = Join-Path $stageRoot 'app'
+    Copy-TreeContent $appPublishRoot $appDestination
+    $appExecutable = Join-Path $appDestination 'Nativune.exe'
+    Assert-RegularFile $appExecutable 'The published Nativune executable'
+    $stubPath = Join-Path $setupPublishRoot 'Nativune.Setup.exe'
+    Assert-RegularFile $stubPath 'The published setup stub'
+
+    $webView2Destination = Join-Path $stageRoot '.tools/webview2'
+    Copy-TreeContent $webView2Source (Join-Path $webView2Destination $WebView2Version)
+    [IO.Directory]::CreateDirectory($webView2Destination) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $webView2Destination 'runtime-path.txt'), "$WebView2Version`n", [Text.UTF8Encoding]::new($false))
+
+    $ubolDestination = Join-Path $stageRoot '.tools/ubol/2026.907.2003'
+    Copy-TreeContent $ubolSource $ubolDestination
+
+    $installerDestination = Join-Path $stageRoot 'installer'
+    [IO.Directory]::CreateDirectory($installerDestination) | Out-Null
+    Copy-Item -LiteralPath $stubPath -Destination (Join-Path $installerDestination 'Nativune.Setup.exe') -Force
+
+    $licensesDestination = Join-Path $stageRoot 'licenses'
+    [IO.Directory]::CreateDirectory($licensesDestination) | Out-Null
+    Copy-Item -LiteralPath $appSdkLicense -Destination (Join-Path $licensesDestination 'Microsoft-WindowsAppSDK.txt') -Force
+    Copy-Item -LiteralPath $dotnetLicense -Destination (Join-Path $licensesDestination 'Microsoft-DotNet-LICENSE.txt') -Force
+    Copy-Item -LiteralPath $dotnetNotice -Destination (Join-Path $licensesDestination 'Microsoft-DotNet-ThirdPartyNotices.txt') -Force
+    Copy-Item -LiteralPath $webView2License -Destination (Join-Path $licensesDestination 'Microsoft-WebView2-SDK-LICENSE.txt') -Force
+    Copy-Item -LiteralPath $webView2Notice -Destination (Join-Path $licensesDestination 'Microsoft-WebView2-SDK-NOTICE.txt') -Force
+    Copy-Item -LiteralPath $nativuneLicense -Destination (Join-Path $licensesDestination 'Nativune-LICENSE.txt') -Force
+    Copy-Item -LiteralPath $repositoryNotice -Destination (Join-Path $licensesDestination 'THIRD-PARTY-NOTICES.txt') -Force
+
+    Assert-PublicTree $stageRoot
+    New-Manifest $stageRoot
+    Assert-RegularFile (Join-Path $stageRoot 'release-manifest.json') 'The generated release manifest'
+    New-CanonicalZip $stageRoot $zipPath
+    Remove-SafeOutputFile $releaseZipPath 'The release ZIP output'
+    Remove-SafeOutputFile $setupPath 'The setup executable output'
+    Remove-SafeOutputFile $manifestPath 'The release manifest output'
+    Remove-SafeOutputFile $checksumsPath 'The checksum output'
+    Copy-Item -LiteralPath $zipPath -Destination $releaseZipPath
+    New-AppendedSetup $stubPath $zipPath $setupPath
+    Copy-Item -LiteralPath (Join-Path $stageRoot 'release-manifest.json') -Destination $manifestPath
+
+    $checksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'release-manifest.json')
+    $checksumLines = foreach ($name in ($checksumNames | Sort-Object)) {
+        $path = Join-Path $releaseRoot $name
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash  $name"
+    }
+    [IO.File]::WriteAllLines($checksumsPath, $checksumLines, [Text.UTF8Encoding]::new($false))
+    Write-Host "Created $setupPath"
+    Write-Host "Created $releaseZipPath"
+    Write-Host "Created $manifestPath"
+    Write-Host "Created $checksumsPath"
+} finally {
+    if (Test-Path -LiteralPath $workRoot) {
+        [void](Resolve-RepositoryPath $workRoot)
+        Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}

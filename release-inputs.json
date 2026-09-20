@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "dotnetSdk": {
+    "version": "10.0.401",
+    "architecture": "x64",
+    "treeSha256": "d55da6830393cef0f76ede0807df6d40544c609861ad48aefd074d21b6ad1877",
+    "fileCount": 5578,
+    "totalBytes": 807336583
+  },
+  "webView2": {
+    "version": "152.0.4191.62",
+    "architecture": "x64",
+    "sourceArchiveSha256": "2dc7d817ddce4d036f33684425c218f1ca2d073911136e5d3f8ce9b2340569b5",
+    "treeSha256": "06a255f780e19bc6907d53042de06a7c900843e1ab48e1529926184e9a61a685",
+    "fileCount": 548,
+    "totalBytes": 837201247
+  },
+  "uBlockOriginLite": {
+    "version": "2026.907.2003",
+    "sourceArchiveSha256": "56ba6fb728cc272bca1931792b1a4a15963eede4557ea829e5367e85d6057dd9",
+    "treeSha256": "993656da13041bacb93c0958dd6e5d1b77a80ecab19657b99b6f16a3447ec1c5",
+    "fileCount": 980,
+    "totalBytes": 49265578
+  }
+}
