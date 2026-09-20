@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title" color="#FFFFFF">
+  <title id="title">Settings</title>
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 3H14L14.5 5.5L17 7L19.5 6.5L21.5 10L19.5 12L21.5 14L19.5 17.5L17 17L14.5 18.5L14 21H10L9.5 18.5L7 17L4.5 17.5L2.5 14L4.5 12L2.5 10L4.5 6.5L7 7L9.5 5.5Z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </g>
+</svg>

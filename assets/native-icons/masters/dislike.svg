@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title" color="#F1F1F1">
+  <title id="title">Dislike</title>
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="3" width="5" height="11" rx="1"/>
+    <path d="M7 13L11 21H12C13 21 14 20 14 19V15H19C21 15 22 14 21.5 12L20 5C19.7 3.7 19 3 17.5 3H7"/>
+  </g>
+</svg>

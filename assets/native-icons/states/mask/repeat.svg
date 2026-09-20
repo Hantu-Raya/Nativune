@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title" color="#FFFFFF">
+  <title id="title">Repeat</title>
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 10V9C4 7 5 6 7 6H20M17 3L20 6L17 9M20 14V15C20 17 19 18 17 18H4M7 15L4 18L7 21"/>
+  </g>
+</svg>

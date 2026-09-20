@@ -1,0 +1,115 @@
+<Window
+    x:Class="OAuthProbe.WebHostWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:local="using:OAuthProbe"
+    Title="Music Desktop">
+  <Grid x:Name="RootGrid"
+        Background="{ThemeResource CanvasBrush}"
+        TabFocusNavigation="Local">
+    <Grid.RowDefinitions>
+      <RowDefinition x:Name="ToolbarRow" Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition x:Name="StatusRow" Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <Border x:Name="ToolbarHost"
+            Grid.Row="0"
+            Background="{ThemeResource SurfaceBrush}"
+            BorderBrush="{ThemeResource RaisedBrush}"
+            BorderThickness="0,0,0,1">
+      <StackPanel x:Name="Toolbar"
+                  Orientation="Horizontal"
+                  Spacing="4"
+                  Padding="12,4"
+                  HorizontalAlignment="Stretch">
+        <Button x:Name="BackButton"
+                AutomationProperties.Name="Back"
+                ToolTipService.ToolTip="Back (Alt+Left)"
+                Content="Back" />
+        <Button x:Name="ForwardButton"
+                AutomationProperties.Name="Forward"
+                ToolTipService.ToolTip="Forward (Alt+Right)"
+                Content="Forward" />
+        <Button x:Name="HomeButton"
+                AutomationProperties.Name="Open Music Home"
+                ToolTipService.ToolTip="Open Music Home"
+                Content="Home" />
+        <Rectangle Width="12" Fill="Transparent" />
+        <Button x:Name="PreviousButton"
+                AutomationProperties.Name="Previous item"
+                ToolTipService.ToolTip="Previous item"
+                Content="Previous" />
+        <Button x:Name="PlayPauseButton"
+                AutomationProperties.Name="Play or pause"
+                ToolTipService.ToolTip="Play or pause website playback"
+                Content="Play or pause" />
+        <Button x:Name="NextButton"
+                AutomationProperties.Name="Next item"
+                ToolTipService.ToolTip="Next item"
+                Content="Next" />
+        <Rectangle Width="12" Fill="Transparent" />
+        <Button x:Name="MoreButton"
+                AutomationProperties.Name="More commands and settings"
+                ToolTipService.ToolTip="More commands and settings (F10 or Alt+M)"
+                Content="More" />
+        <Button x:Name="TimerButton"
+                AutomationProperties.Name="Set pause timer"
+                ToolTipService.ToolTip="Set pause timer. The app stays open."
+                Content="Timer" />
+        <Button x:Name="CompactButton"
+                AutomationProperties.Name="Compact window"
+                ToolTipService.ToolTip="Compact window"
+                Content="Compact" />
+      </StackPanel>
+    </Border>
+
+    <Grid x:Name="ContentGrid" Grid.Row="1" Background="{ThemeResource CanvasBrush}">
+      <Border x:Name="WebViewSlot"
+              Background="{ThemeResource CanvasBrush}"
+              IsHitTestVisible="False"
+              IsTabStop="True"
+              TabIndex="100"
+              AutomationProperties.Name="Embedded Music browser"
+              HorizontalAlignment="Stretch"
+              VerticalAlignment="Stretch" />
+      <local:CompactPlayerView x:Name="CompactView"
+                               Visibility="Collapsed"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch" />
+    </Grid>
+
+    <Border x:Name="StatusHost"
+            Grid.Row="2"
+            Background="{ThemeResource SurfaceBrush}"
+            BorderBrush="{ThemeResource RaisedBrush}"
+            BorderThickness="0,1,0,0"
+            Padding="8,4"
+            Visibility="Collapsed">
+      <Grid ColumnSpacing="8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBlock x:Name="StatusText"
+                   Grid.Column="0"
+                   TextWrapping="Wrap"
+                   VerticalAlignment="Center"
+                   Foreground="{ThemeResource PrimaryTextBrush}"
+                   AutomationProperties.Name="Current application status" />
+        <Button x:Name="StatusRetryButton"
+                Grid.Column="1"
+                Content="Retry"
+                AutomationProperties.Name="Retry failed navigation"
+                Visibility="Collapsed" />
+        <Button x:Name="StatusDetailsButton"
+                Grid.Column="2"
+                Content="Details"
+                AutomationProperties.Name="Read application status"
+                Visibility="Collapsed" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

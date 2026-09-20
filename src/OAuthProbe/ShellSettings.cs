@@ -8,6 +8,13 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public bool TrayEnabled { get; init; }
     public bool RestoreSection { get; init; }
     public string LastSection { get; init; } = "home";
+    public bool ReduceMotion { get; init; }
+    public ShortcutBindings Shortcuts { get; init; } = ShortcutBindings.Default;
+    public int CompactX { get; init; } = 100;
+    public int CompactY { get; init; } = 100;
+    public int CompactWidth { get; init; } = 800;
+    public int CompactHeight { get; init; } = 180;
+    public int CompactDpi { get; init; } = 96;
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -20,13 +27,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 2;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
     private const int MinDpi = 48;
     private const int MaxDpi = 768;
     private const int MinWidth = 320;
     private const int MinHeight = 240;
+    private const int MinCompactWidth = 320;
+    private const int MinCompactHeight = 120;
     private const int MaxDimension = 16_384;
     private const double MinZoom = 0.75;
     private const double MaxZoom = 1.5;
@@ -39,6 +48,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         AllowTrailingCommas = false,
         ReadCommentHandling = JsonCommentHandling.Disallow
     };
+
+    internal static ShellSettings Default => Defaults;
 
     public static ShellSettings Load(string root, out string? warning)
     {
@@ -57,12 +68,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version != CurrentVersion || !IsValid(persisted))
+            if (persisted is null || persisted.Version is not (1 or CurrentVersion) || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;
             }
 
+            // Version 1 intentionally migrates without enabling any new behavior.
+            // New fields are nullable/defaulted so a partially written v2 file still
+            // retains the existing window and preference values.
             return Normalize(persisted.ToSettings());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -75,30 +89,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
 
     public static Rectangle RestoreBounds(ShellSettings settings, Rectangle workArea, int dpi)
     {
-        if (workArea.Width <= 0 || workArea.Height <= 0)
-            workArea = new Rectangle(0, 0, Defaults.Width, Defaults.Height);
-
         var safe = Normalize(settings);
-        var sourceDpi = IsDpi(safe.Dpi) ? safe.Dpi : DefaultDpi;
-        var targetDpi = IsDpi(dpi) ? dpi : DefaultDpi;
-        var scale = (double)targetDpi / sourceDpi;
+        return RestoreBounds(safe.X, safe.Y, safe.Width, safe.Height, safe.Dpi, workArea, dpi);
+    }
 
-        var width = ScaleDimension(safe.Width, scale);
-        var height = ScaleDimension(safe.Height, scale);
-        width = Math.Min(width, workArea.Width);
-        height = Math.Min(height, workArea.Height);
-        width = Math.Max(width, 1);
-        height = Math.Max(height, 1);
-
-        var x = ScaleCoordinate(safe.X, scale);
-        var y = ScaleCoordinate(safe.Y, scale);
-        var areaRight = (long)workArea.X + workArea.Width;
-        var areaBottom = (long)workArea.Y + workArea.Height;
-        var maxX = areaRight - width;
-        var maxY = areaBottom - height;
-        x = (int)Math.Clamp((long)x, (long)workArea.X, Math.Max((long)workArea.X, maxX));
-        y = (int)Math.Clamp((long)y, (long)workArea.Y, Math.Max((long)workArea.Y, maxY));
-        return new Rectangle(x, y, width, height);
+    public static Rectangle RestoreCompactBounds(ShellSettings settings, Rectangle workArea, int dpi)
+    {
+        var safe = Normalize(settings);
+        return RestoreBounds(safe.CompactX, safe.CompactY, safe.CompactWidth, safe.CompactHeight,
+            safe.CompactDpi, workArea, dpi);
     }
 
     public static async Task SaveAsync(string root, ShellSettings settings, CancellationToken token)
@@ -157,7 +156,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     private static string SettingsPath(string root)
         => Path.Combine(Path.GetFullPath(root), "data", "settings.json");
 
-    private static bool IsValid(PersistedSettings settings)
+    private static bool IsCoreValid(PersistedSettings settings)
         => IsDpi(settings.Dpi)
             && settings.Width is >= MinWidth and <= MaxDimension
             && settings.Height is >= MinHeight and <= MaxDimension
@@ -165,7 +164,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             && settings.Zoom is >= MinZoom and <= MaxZoom;
 
     private static ShellSettings Normalize(ShellSettings settings)
-        => new(
+    {
+        var shortcuts = settings.Shortcuts is not null && settings.Shortcuts.Validate(out _)
+            ? settings.Shortcuts : ShortcutBindings.Default;
+        return new(
             settings.X,
             settings.Y,
             settings.Width is >= MinWidth and <= MaxDimension ? settings.Width : Defaults.Width,
@@ -176,10 +178,47 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         {
             TrayEnabled = settings.TrayEnabled,
             RestoreSection = settings.RestoreSection,
-            LastSection = settings.RestoreSection && settings.LastSection == "library" ? "library" : "home"
+            LastSection = settings.RestoreSection && settings.LastSection == "library" ? "library" : "home",
+            ReduceMotion = settings.ReduceMotion,
+            Shortcuts = shortcuts,
+            CompactX = settings.CompactX,
+            CompactY = settings.CompactY,
+            CompactWidth = settings.CompactWidth is >= MinCompactWidth and <= MaxDimension
+                ? settings.CompactWidth : Defaults.CompactWidth,
+            CompactHeight = settings.CompactHeight is >= MinCompactHeight and <= MaxDimension
+                ? settings.CompactHeight : Defaults.CompactHeight,
+            CompactDpi = IsDpi(settings.CompactDpi) ? settings.CompactDpi : DefaultDpi
         };
+    }
 
     private static bool IsDpi(int dpi) => dpi is >= MinDpi and <= MaxDpi;
+
+    private static Rectangle RestoreBounds(int x, int y, int width, int height, int sourceDpi,
+        Rectangle workArea, int targetDpi)
+    {
+        if (workArea.Width <= 0 || workArea.Height <= 0)
+            workArea = new Rectangle(0, 0, Defaults.Width, Defaults.Height);
+
+        var safeSourceDpi = IsDpi(sourceDpi) ? sourceDpi : DefaultDpi;
+        var safeTargetDpi = IsDpi(targetDpi) ? targetDpi : DefaultDpi;
+        var scale = (double)safeTargetDpi / safeSourceDpi;
+        var scaledWidth = ScaleDimension(width, scale);
+        var scaledHeight = ScaleDimension(height, scale);
+        scaledWidth = Math.Min(scaledWidth, workArea.Width);
+        scaledHeight = Math.Min(scaledHeight, workArea.Height);
+        scaledWidth = Math.Max(scaledWidth, 1);
+        scaledHeight = Math.Max(scaledHeight, 1);
+
+        var scaledX = ScaleCoordinate(x, scale);
+        var scaledY = ScaleCoordinate(y, scale);
+        var areaRight = (long)workArea.X + workArea.Width;
+        var areaBottom = (long)workArea.Y + workArea.Height;
+        var maxX = areaRight - scaledWidth;
+        var maxY = areaBottom - scaledHeight;
+        var restoredX = (int)Math.Clamp((long)scaledX, (long)workArea.X, Math.Max((long)workArea.X, maxX));
+        var restoredY = (int)Math.Clamp((long)scaledY, (long)workArea.Y, Math.Max((long)workArea.Y, maxY));
+        return new Rectangle(restoredX, restoredY, scaledWidth, scaledHeight);
+    }
 
     private static int ScaleDimension(int value, double scale)
     {
@@ -201,14 +240,29 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         return (int)Math.Round(scaled, MidpointRounding.AwayFromZero);
     }
 
-    private sealed record PersistedSettings(int Version, int X, int Y, int Width, int Height, int Dpi, bool Maximized, double Zoom,
-        bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home")
+    private sealed record PersistedSettings(int Version, int X, int Y, int Width, int Height, int Dpi, bool Maximized,
+        double Zoom, bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home",
+        bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
+        int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
-            { TrayEnabled = TrayEnabled, RestoreSection = RestoreSection, LastSection = LastSection };
+        {
+            TrayEnabled = TrayEnabled,
+            RestoreSection = RestoreSection,
+            LastSection = LastSection,
+            ReduceMotion = ReduceMotion,
+            Shortcuts = Shortcuts ?? ShortcutBindings.Default,
+            CompactX = CompactX,
+            CompactY = CompactY,
+            CompactWidth = CompactWidth,
+            CompactHeight = CompactHeight,
+            CompactDpi = CompactDpi
+        };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
             => new(CurrentVersion, settings.X, settings.Y, settings.Width, settings.Height,
-                settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection, settings.LastSection);
+                settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection,
+                settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
+                settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi);
     }
 }

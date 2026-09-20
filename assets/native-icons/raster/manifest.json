@@ -1,0 +1,2458 @@
+{
+  "schema": 1,
+  "source": "assets/native-icons/states/mask",
+  "renderer": {
+    "name": "resvg",
+    "version": "0.47.0",
+    "target": "x86_64-pc-windows-msvc",
+    "executableSha256": "433a7c744cff561ed64fcf73c7c04e239d7a07ae5f0aadbf1ba8471d63707402",
+    "license": "MIT (or Apache-2.0), from the tagged resvg 0.47.0 release"
+  },
+  "sizes": [
+    16,
+    20,
+    24,
+    25,
+    30,
+    32,
+    40,
+    48,
+    64
+  ],
+  "names": [
+    "app-mark",
+    "back",
+    "cancel-timer",
+    "close",
+    "compact",
+    "dislike",
+    "error",
+    "exit-fullscreen",
+    "forward",
+    "fullscreen",
+    "hide",
+    "home",
+    "like",
+    "minimize",
+    "next",
+    "overflow",
+    "pause",
+    "pin",
+    "play-pause",
+    "play",
+    "previous",
+    "quit-timer",
+    "quit",
+    "repeat-one",
+    "repeat",
+    "restore-section",
+    "restore-window",
+    "retry",
+    "settings",
+    "show",
+    "shuffle",
+    "status",
+    "tray",
+    "volume-muted",
+    "volume",
+    "zoom-in",
+    "zoom-out",
+    "zoom-reset"
+  ],
+  "assets": [
+    {
+      "path": "16/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.app-mark.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "0e008b20c9c6684677a44ca4ad548c9187a30fcd36e14161299933f052865a7d"
+    },
+    {
+      "path": "16/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.back.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ade505cec445ab4893156029c1486ee0180d59db21a8a11e25fcfcea7be06f36"
+    },
+    {
+      "path": "16/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.cancel-timer.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "5399e367cf15fd9fb161160b60fee04b9b2eaada940620d9816123248d63147c"
+    },
+    {
+      "path": "16/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.close.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "7379de51bbdca1498a37b2a5aceffc28ac565aaa9fa401d24b1c21fcd9c6daed"
+    },
+    {
+      "path": "16/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.compact.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "9710239b11eba413a3dfd3b2cf5158ecf75458ead667a4fd2038a16303fdc1e7"
+    },
+    {
+      "path": "16/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.dislike.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d8a73d4e11de9d264b0b56400b44a79461de6f07c26eb52d7371612b2270ff23"
+    },
+    {
+      "path": "16/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.error.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "3bad79d64c6a4f650e7a3109e1b8a62abc578379deb04520250cf9c5491146c3"
+    },
+    {
+      "path": "16/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.exit-fullscreen.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "0e74c75c7906b932435e71446aa23112c116a98f8cf9176b32b463564c85f46f"
+    },
+    {
+      "path": "16/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.forward.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "157fabc4c00fb534671c1db2d24a507979e0934755d4988d8c992061e64a016a"
+    },
+    {
+      "path": "16/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.fullscreen.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2c986c43a5cc3b5b27b4cc4f6edfda2bf97f79f2217500d0a2ab7f67b47874f3"
+    },
+    {
+      "path": "16/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.hide.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ff93dd99a7083f1edc3ffd10f17baa1c1168beda7a9c26573a85c0c8a0b41fc9"
+    },
+    {
+      "path": "16/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.home.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "47ab9957a89389772fbe09758590b4f5c72964fb9f7b9f2813f68d535a63d1a1"
+    },
+    {
+      "path": "16/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.like.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "8330178b7efd0310fe999624dbe46252afc8298299dca093dc3cb1bf48e61cf3"
+    },
+    {
+      "path": "16/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.minimize.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "b4b74576f549c8c8dadba27aab8a3c09ee599725c4c2edd3b36cbe18f978f12b"
+    },
+    {
+      "path": "16/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.next.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "e35bb38d51d6b834952c549e709e6811a51c3396778b56d3e1ee616d14a583fa"
+    },
+    {
+      "path": "16/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.overflow.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ba9db3c7127e9cc398df848b931403e799977289fedbd50e7ead5f0c6d11fd95"
+    },
+    {
+      "path": "16/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.pause.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "6b796e7ed9220d88d30fd9b9762bc4c72fece95fe101241ece90b89f3e10ce65"
+    },
+    {
+      "path": "16/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.pin.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "33ba7e558c2106a655e81c30c17dc6cbc66e910d6de3494c1e1a018e4b804948"
+    },
+    {
+      "path": "16/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.play-pause.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "03d922b59ddf261c50e63e2eca5cf81682eccae3b18bfb1ec3d5410fd5700cad"
+    },
+    {
+      "path": "16/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.play.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "8eacd18e4fe20150ea8077e9352d239019aa998a2be0ed00321ee8cd121169cb"
+    },
+    {
+      "path": "16/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.previous.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2d67488d4a92120208fa66ea2b8b7567ae78c3e3325e537d6798a4f9f972a114"
+    },
+    {
+      "path": "16/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.quit-timer.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "7539513b7abc4ed3778356d775e287145f5b1ecd96fd33f034715c3b08b35351"
+    },
+    {
+      "path": "16/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.quit.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ff7884312d3462c30c0ac575a3beb75da1bb2563d2456405bc032d3fd4158913"
+    },
+    {
+      "path": "16/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.repeat-one.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "01d84f2949858d4e911a5f0db39f46bd4ef2015ae7fbe0b54e84209b0d388e24"
+    },
+    {
+      "path": "16/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.repeat.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "3cafc5b307e781051154c73c0e2b4a84f63bda48865c37cdfeebc9c6c62a17a7"
+    },
+    {
+      "path": "16/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.restore-section.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "7f698a38d84bb6a738be8119be35409edf1bfd17781d78256cf57f45ed9f8fd9"
+    },
+    {
+      "path": "16/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.restore-window.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ca96c7f1f38d5ca1a82075af909bd3551647f450fe147660d5d7eb57e818f7bb"
+    },
+    {
+      "path": "16/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.retry.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "59030dd312774a494eb2d63b59e28b301b34cf83fc264a0c8f8a6d2a9a438a59"
+    },
+    {
+      "path": "16/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.settings.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "0384df6e277370885c62755c63515587a433a5f31a344fa2e34bf24c9d232507"
+    },
+    {
+      "path": "16/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.show.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2481830f3377893e2889f8606c35c164bebaca018b32a783ac464bec84bbeba3"
+    },
+    {
+      "path": "16/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.shuffle.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "a162251cf5fcaba7badf65b66efb4163024a94752ba2299ced39e77f4919aa7e"
+    },
+    {
+      "path": "16/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.status.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "ce337da750aee47b743b391515ddf3015a08c25b6f27e2183a72a74d86130db7"
+    },
+    {
+      "path": "16/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.tray.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "18a5ddbee575201d95ca5136a69c2ec8ed287700864d05e4c21e282f95960c35"
+    },
+    {
+      "path": "16/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.volume-muted.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "5140b39ebe531899f91da737c5f2f48c74c118841f9d9430c7dce5b4a6a9f546"
+    },
+    {
+      "path": "16/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.volume.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "34aade9b24432bb212abd249bfd287eba8d6f579753030eafbe5552df0141254"
+    },
+    {
+      "path": "16/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.zoom-in.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "3feec447be96692302fcb1aad56f98e719d112ebb1001a8e4abdc49cbab6900f"
+    },
+    {
+      "path": "16/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.zoom-out.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "b6fdfa3773186397b02dd9c11f44e5197127a3b6c6d479ec54ab5817d92ff498"
+    },
+    {
+      "path": "16/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.16.zoom-reset.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2862882d57d3d078cf63c24c6a9228264444b633d92ce5e170198d86bccb2f65"
+    },
+    {
+      "path": "20/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.app-mark.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "1fa99626483400594cf71203bdacfd34816c89ebc70d7eece2c0b3ea605c2af4"
+    },
+    {
+      "path": "20/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.back.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "51c935f32207caf2c79dc3b033695ab0b39c45be3117644c3eb36fc90bc403b7"
+    },
+    {
+      "path": "20/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.cancel-timer.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "7e8ec60ba15951bc6406aa29cdb2e8d3c7291db0231c6ce5d60c61c1b619bb10"
+    },
+    {
+      "path": "20/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.close.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "9583388c5c855dd74bddd37081acedfb9603410f2f89c27dff2070ef0fa3eda0"
+    },
+    {
+      "path": "20/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.compact.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "0e0583cd90bf24c920bca8c7fde4020cc0b0d9a0aaca55ce4b7884e6242042e1"
+    },
+    {
+      "path": "20/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.dislike.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "d3a8646fa557a2490599527df7934c380d8c5b6bcaf1d83fbf04ce903eb62b31"
+    },
+    {
+      "path": "20/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.error.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "6f4ceba0c0b34d97d2e7196092111beb24705bf559a691e8f389e55e3c2c2b8a"
+    },
+    {
+      "path": "20/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.exit-fullscreen.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "0fc56498cdbbce436a297c3ccfa844f1c1f4078861b599e15d7a1d1ad5bb0d00"
+    },
+    {
+      "path": "20/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.forward.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "ab14c24ac6cd03a9c7deb85eb065c9dff99883683ca1ecaba0893acd87abde59"
+    },
+    {
+      "path": "20/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.fullscreen.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "2db75ca27e721fa7b956e94c0665dd0496c362370888c2f5bc7a73a1a9e21589"
+    },
+    {
+      "path": "20/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.hide.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "b41376320948290842e99e11a1b153d8e1f460dd25a2839d6e9c7425f8ddda6b"
+    },
+    {
+      "path": "20/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.home.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "cd6d9f9f0d8fdf7695b0102f58513db57fe9608bebb819215855b04ebf7e33e5"
+    },
+    {
+      "path": "20/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.like.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "8ac8e6309b174c4bd1fddafef0c53f4a73aa56a6738d0a7b950bfedfff0ea8f1"
+    },
+    {
+      "path": "20/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.minimize.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "7f7dfacee94d100afbf512c124ce113e08bd922c24a2392b2ce4a41d37f5cb97"
+    },
+    {
+      "path": "20/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.next.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "a7bcaf9f0260c7cc34945a3d682c0395caf26005591fd7a35850e8049aa8966a"
+    },
+    {
+      "path": "20/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.overflow.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "9c36249c583fc758098f696eb99c10ae960d68c875276081352ebdf4c9082243"
+    },
+    {
+      "path": "20/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.pause.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "cc8358d5302cb51a6107887e0be352d33ddfa5d8ef53e729447932fa71f80186"
+    },
+    {
+      "path": "20/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.pin.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "c54acd00407ea861af600cc9acde4c8e3b37bd03578a1e1e6ad931e4c2854bba"
+    },
+    {
+      "path": "20/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.play-pause.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "2f72bf37d7cb8242b68f5f1872afa643273c27e682d0fa543632af13b1359f7f"
+    },
+    {
+      "path": "20/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.play.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "179e68b75316228d81c65a714fae3f5def34ed7f16140ff725cebac4777884bb"
+    },
+    {
+      "path": "20/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.previous.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "ff065d1b1c708734e1a0c193618285540fa98aca3bc14eb5e6e502e66c2d5c1a"
+    },
+    {
+      "path": "20/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.quit-timer.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "beff5b06c8000f60fd074c8fb67926ed188a41aa6851952b900693f609bca8ec"
+    },
+    {
+      "path": "20/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.quit.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "502f43016523d48cc30d1ada71af294e70b6f8cd81afc359b25a7d40ec43ec2c"
+    },
+    {
+      "path": "20/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.repeat-one.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "dabf942826f4d2342d7131a73231062200970db21ab8535c84a40c03454d959c"
+    },
+    {
+      "path": "20/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.repeat.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "fcf289eebfe0c8b6e02ed50c5b6dcbca4387866550d925bbf98bcfadc7fdc31b"
+    },
+    {
+      "path": "20/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.restore-section.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "20f58c0f2322de5ee864c531780affc4f5dc969f94ff25bd96a10d95712c7123"
+    },
+    {
+      "path": "20/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.restore-window.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "73a3497deb7580b6a49f22ba6dadc78876d066f6a08dd3b68c572159abb4b62d"
+    },
+    {
+      "path": "20/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.retry.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "22328b0b9d5bfc62aa1d3c5beab0283d84339917b25dc266cda3868ea1468c06"
+    },
+    {
+      "path": "20/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.settings.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "7e6f2519c4662098bbb6ef995d6a54d05abf63e78d62997a7c6027bd7e65a8a4"
+    },
+    {
+      "path": "20/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.show.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "e95886a9d9cdb40cf0cc1f60f256d76dabc8965945419e0c2ee77d782a8cd11a"
+    },
+    {
+      "path": "20/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.shuffle.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "923b5123e532245d82c25fbe140f4325171e8e9c07c2346c83aee9165b96095e"
+    },
+    {
+      "path": "20/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.status.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "6cd4e0161645098d14aa220e18b4d3092c596252ed155021d8286f331b8adf98"
+    },
+    {
+      "path": "20/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.tray.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "d55f1f86860d635cdf0ed725281878913fb2668ff91225aedef8c106edd44513"
+    },
+    {
+      "path": "20/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.volume-muted.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "2823208e8e151ef1aaa0046bdb2bc7e107c1b3a579ed3f9637e299375df10b8b"
+    },
+    {
+      "path": "20/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.volume.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "bd2f84878813181691e24f27655dc02449ea541fb611232dd1c412acfe4d85e0"
+    },
+    {
+      "path": "20/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.zoom-in.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "b9a3e8e7f162c4c73a12c3b8a13dd634840275a915ca0f1c5da4df444c007217"
+    },
+    {
+      "path": "20/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.zoom-out.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "59240cb3f49c3427d0063c5de4d995cc31fb4d5223dd02f5760776d3bfc999e2"
+    },
+    {
+      "path": "20/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.20.zoom-reset.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "e96cb710916d156a33c1adff7a846f860c1bfa016d2f4eeee218d4730300c4a1"
+    },
+    {
+      "path": "24/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.app-mark.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "9734f6a4fea8e0384f00364635a5daec2b231031a93f4d4341656762df8ff5f5"
+    },
+    {
+      "path": "24/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.back.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "c15aa35fd5e727a3e59c94421b678102c773ffe6794359ad2b77d7a1ed017110"
+    },
+    {
+      "path": "24/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.cancel-timer.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "cf2ab80d133ad19fef3e96dd134baab667562d5d9e586d39bfa23ec3789aa27f"
+    },
+    {
+      "path": "24/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.close.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "8ddf16a0fa77dc1ea69b60bf6ae1d795166a51e2b342da920209d85bdfea8c6d"
+    },
+    {
+      "path": "24/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.compact.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "d5f7453c309fec4301950d6e2bcbb66040358775caade9384c5f1015b681a131"
+    },
+    {
+      "path": "24/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.dislike.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "6874c0ce6de217b338eaed021b82ba7bb038714800fdca39700a32505bbf79aa"
+    },
+    {
+      "path": "24/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.error.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "454400b19a2229e01b500881bca9d12b1dc1812b9b200165466d69a639aec8f3"
+    },
+    {
+      "path": "24/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.exit-fullscreen.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "62bd09fedce091c3e2d9e0c428d19dcb86735badacfa1c6913c8bab4deffa6ee"
+    },
+    {
+      "path": "24/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.forward.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "91ce3485f2b524067b9f467b70f28a541016453482b7df2ec65badc1e79364a6"
+    },
+    {
+      "path": "24/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.fullscreen.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "04537f974bd52fcbbf87f8865a693f44862e2a30a550148c9c3877997b8e7c7b"
+    },
+    {
+      "path": "24/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.hide.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "78b4df78510a4471b2e0efd1b5648c1b7530e5a6d6e5b19520530578bfd51e3d"
+    },
+    {
+      "path": "24/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.home.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "4b60a39e54f1fc02ef36a470026ac4c2d866efe5cf5b6c9c5767a03709f2d9d2"
+    },
+    {
+      "path": "24/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.like.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "d9121da0520b9614e397b2d5426d96aafed119e7269ed35d06a260c31e6fa678"
+    },
+    {
+      "path": "24/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.minimize.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "6d8aae47e834e71a95525b00a0a985317656fd25f66aaaf413e97895f815bf41"
+    },
+    {
+      "path": "24/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.next.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "a1ab7c54de9eb2d8a2ae10a5fa5f9093249fe5195b0519ce35b1709544345572"
+    },
+    {
+      "path": "24/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.overflow.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "c28d2d4ac9177331855c018ac55776a98262f7ce1ddee93460ddbe818939bd04"
+    },
+    {
+      "path": "24/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.pause.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "b12648047aa7da3db71d07f31d3d942f9857a86c27178b225eac101d1fd27f45"
+    },
+    {
+      "path": "24/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.pin.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "cd5ec2fb19cedb67b7b3e2b30b54551108019c04a712c00084064c8948d007d4"
+    },
+    {
+      "path": "24/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.play-pause.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "70572cbab2142677fb3768c041557e91d32c48bb3f3250293fd5230dac8ed852"
+    },
+    {
+      "path": "24/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.play.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "7d03eb4fe728eacf8a3e0edcddb84ff1f959c08ff3cee567363bc72955cb397d"
+    },
+    {
+      "path": "24/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.previous.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "d0563581d208d3332859eb7762898e8a556420bf013c61e054351abc3ae67e05"
+    },
+    {
+      "path": "24/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.quit-timer.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "fd5be90c0588a34b7f95c80bc6990010761f618bf21d2bda595cb7f692ee8ce4"
+    },
+    {
+      "path": "24/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.quit.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "893401916bfac6c199d6359b01549132ebf51f25cbe7bdf8a757c46bb442c6e7"
+    },
+    {
+      "path": "24/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.repeat-one.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "b322ae2368d22d371e16fdbbfa3fdd7697ee06f1496d6600d730e99d05914d04"
+    },
+    {
+      "path": "24/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.repeat.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "69eb0a3aface3c643278e604d57a15258bd4e717a3f1150ddfcea6f0448e1594"
+    },
+    {
+      "path": "24/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.restore-section.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "0756b77d83563a9eb75930b8b659b5ff5842fb9f25ddb8610f7cab9d57029b1f"
+    },
+    {
+      "path": "24/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.restore-window.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "a24b7786bd68feb01083310d55e268a3ff82e267fa7c29d8813887279eb8c213"
+    },
+    {
+      "path": "24/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.retry.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "670a6817f458de1bf55221f6ddd491ee6eb97fa4edd31f6f1a468cea0f0bbd93"
+    },
+    {
+      "path": "24/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.settings.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "657c21132d4c65c47db0764476cacf9383e0462df038664ab44865c4e34d45a7"
+    },
+    {
+      "path": "24/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.show.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "f98052a0a890e31d7d96172d950ce09b79f832e9949c634e8ab4effef6af5f83"
+    },
+    {
+      "path": "24/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.shuffle.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "637e63999661cb6a8a87c28b621521b21561a43bb3c5d3d5a54a03b4994ad313"
+    },
+    {
+      "path": "24/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.status.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "a48df80a9cd7fd73569ba8546d0ae3a03158c5ce01934a5c997f788ba167e67f"
+    },
+    {
+      "path": "24/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.tray.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "ca2050c7f2b303bb8c07d2671fa0c5a9988303cb21fd29f86a783028484ca89e"
+    },
+    {
+      "path": "24/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.volume-muted.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "0bf61abbb09ba6421a1954b38b4b77512d16ed0d0437bce0ca7a737b2661470c"
+    },
+    {
+      "path": "24/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.volume.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "9c059176477162a79c7ac5b6ff85a97db89cb798715eacf806d71d9d366b8903"
+    },
+    {
+      "path": "24/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.zoom-in.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "7d676f533c13975fdd9eb4250d9c44e0095d2da59bd8e3586ca7488c936ed7c5"
+    },
+    {
+      "path": "24/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.zoom-out.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "ea94166cea3724d80550330d64a43063ea59be2e76e7b55ef99e272cd093684b"
+    },
+    {
+      "path": "24/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.24.zoom-reset.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "f838b99e87ac676d6b81ecd1cff4539d1bd78b4623c287c91c360037c4ca8284"
+    },
+    {
+      "path": "25/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.app-mark.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "900ce0ef22f823b840e0c850241df4bf85be51d8ff2fec92faae9a2f1387291e"
+    },
+    {
+      "path": "25/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.back.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "c93b2f3c5dcca04953be666875a5bff71defb4a74e5397e6a22efa7a5db44587"
+    },
+    {
+      "path": "25/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.cancel-timer.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "cb179f3798d097bf54467bf10b863a4e9b72ced8a05da5e5039448277510bfe4"
+    },
+    {
+      "path": "25/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.close.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "588487305bcadc10e3baab5a4fbe6f7d722c4dde13677190c383503ffe065bfb"
+    },
+    {
+      "path": "25/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.compact.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "33a28e653ff9dcbc27e36c49b967bb5bb33a9430150dfcf08e94c8a3e80c8e95"
+    },
+    {
+      "path": "25/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.dislike.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "d413d279a0c655414f7e8fd423665f07c2becc838d91bd237abaf89976433364"
+    },
+    {
+      "path": "25/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.error.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "f5f16758459d8c6b40abee703b5daf307de6f2d132eb769d8d9e297beac78609"
+    },
+    {
+      "path": "25/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.exit-fullscreen.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "b8176a816ff655de63c06b8ff1c590da6fa4931150413fc3089af48e44d69f10"
+    },
+    {
+      "path": "25/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.forward.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "cabd9cdd903dacd016d5822723f13a03e0bde68fd5339415408dc1358749dda7"
+    },
+    {
+      "path": "25/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.fullscreen.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "d05784ba2849f69ecebbc78ef30920acd319357f6b9f7496c1b91c46158da0cc"
+    },
+    {
+      "path": "25/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.hide.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "dfac53ec6eece8cbb1f30fa7a2012a876bd895d60fb9acd01a638692d5e51402"
+    },
+    {
+      "path": "25/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.home.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "8ef5a7c4358dbdf3bcd6c67b59afb597cf494f1dc15d2a96c0bf7d682e96413b"
+    },
+    {
+      "path": "25/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.like.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "6ffa574ca32fd28dc79ee7d277974cc725953b1742cbb2ce46034502f63a97c9"
+    },
+    {
+      "path": "25/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.minimize.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "30ef7c49af7ac8a7799bc7a21ba730ad243cd469908e0e9644726eaced0b6956"
+    },
+    {
+      "path": "25/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.next.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "16b73a6b55c293f345cdbb42a161ee51b4185eb5dd3bcbcf08fe2fa57193a0f8"
+    },
+    {
+      "path": "25/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.overflow.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "807934443b7ef85fdd63748e945faa7fe75441b6cd19af8296f1c03d3e4f738c"
+    },
+    {
+      "path": "25/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.pause.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "c3a822b3c3c5a62bcd430aeaf1f771410bc67b6f7f7fc35743120d0ea3d5035a"
+    },
+    {
+      "path": "25/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.pin.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "f8174482edf005c893e03d0dd0ff3443b450a0c0987e8186b20ca381ad112683"
+    },
+    {
+      "path": "25/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.play-pause.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "20db47e53d3f90245e899174e9dbc02395e760ef4b0d9ad9c0edbbdf3dd8cfd3"
+    },
+    {
+      "path": "25/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.play.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "076c9a72eadca8fa20ffc2f7b2fd3aae1536f97fb41cab10ec9de47e836fe04f"
+    },
+    {
+      "path": "25/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.previous.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "d61606be6881e26b775ca60a17aa083c5ad4f8eba5ece4597075276d7d78e0ba"
+    },
+    {
+      "path": "25/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.quit-timer.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "898f6dd26b9e8fe9ee281ace2dfd319299a0bdf9f057ae56382fb0e659b94443"
+    },
+    {
+      "path": "25/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.quit.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "8d5ab6a381ad26982dcbc6e03038e19cdae71a8188e9bc61d19899ee30bb4ccd"
+    },
+    {
+      "path": "25/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.repeat-one.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "a4e2a4421ed8efd77ffb365db341c571387ab779b85beac52a09bc3c0fb4c20e"
+    },
+    {
+      "path": "25/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.repeat.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "0fa534fc6e1f1267bbf9fb25758d208beb5bc5997b3e22268123ffc4eacc5250"
+    },
+    {
+      "path": "25/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.restore-section.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "b51a0ce3ab9a6f5ffa28b0bba65c4ba24f92ebd34ecab3c75cba20d78aebd2de"
+    },
+    {
+      "path": "25/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.restore-window.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "9b999cc4289ecc41a66f7fec89cf2a3ebc646f4daf7981452ff26380eeb0c51d"
+    },
+    {
+      "path": "25/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.retry.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "35e850237ffe36f8c25384cf72fdf87a6f1a9b80fe867dd62ddc50cbea10d231"
+    },
+    {
+      "path": "25/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.settings.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "8ef150aa327901d81eed21a192f77fb8b6b500aec0ebf29b645c94172238e98b"
+    },
+    {
+      "path": "25/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.show.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "46a6df7231dbd14444cd2d94d29a80ac0221d7d20d8821a8ef815ede23d635c4"
+    },
+    {
+      "path": "25/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.shuffle.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "360d4aeb6482c76cffefa1513f452e3c60ef4905f742418c6be3410ba678be58"
+    },
+    {
+      "path": "25/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.status.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "3b8da71712e30e3ff35a903c62ce123334e7e6a1cd7d86b561e502b25c71157e"
+    },
+    {
+      "path": "25/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.tray.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "5963df10b62aa0cd8de1945ff42cd337295def4b1093f824daffd98cf7981872"
+    },
+    {
+      "path": "25/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.volume-muted.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "758b05019bf8254ec8112f31d1f47e66ac522eaf6091678c4414ddbe87717f97"
+    },
+    {
+      "path": "25/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.volume.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "36b6d330050205cab6e03a91eba876c6eea27710a1e954749f9e2e55c87b01cf"
+    },
+    {
+      "path": "25/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.zoom-in.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "49610b4e2fdc4baa8449db10cc833d33253f726db2487be51ac03e210a5b61da"
+    },
+    {
+      "path": "25/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.zoom-out.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "b5be2e674a8f368d6fe8a39734ede8f8392c6b70902945326a41d64122d29a6d"
+    },
+    {
+      "path": "25/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.25.zoom-reset.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "47d1d48ce4c215186e6cc7a47e2d6974584cb7920b1bb8feba8faad4103c3428"
+    },
+    {
+      "path": "30/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.app-mark.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "87aac46a5127e4f1ff11da5a74cc478ac7793e07546e38ca5990510af81d1e79"
+    },
+    {
+      "path": "30/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.back.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "24a890c816b87ce8d580aa93c62d57b93c928dabdb77a419ee5dddcefd7497e8"
+    },
+    {
+      "path": "30/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.cancel-timer.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "82866b82010015957f0eeda286ce522a7ce46227cdc67cdc0f3f214e2d4a977e"
+    },
+    {
+      "path": "30/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.close.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "60347a1920958faa38faa793d5f092d95fed3aba9de17088821148b51d682864"
+    },
+    {
+      "path": "30/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.compact.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "0c1245d6ce960524fbe67f13f887466d6b8ed4b31e77884f0338a3b1240a38b7"
+    },
+    {
+      "path": "30/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.dislike.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "81ecbba8754a5d0595b2b9f75e4e3bbe9cb6c496e2096f218dd0c9e5748a7f11"
+    },
+    {
+      "path": "30/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.error.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "6320bf089afcc47bbedeeaaf285b3268012e66522d2f25365eb8106d7e7135d7"
+    },
+    {
+      "path": "30/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.exit-fullscreen.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "26cbaa99a11fe3a6ea9412679e9eafccca78f5af130108263847c929f9113a57"
+    },
+    {
+      "path": "30/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.forward.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "aea5c015c84ad8c670da70305e2c67d374032bcd1a0ec75b9e100e4c6db087c2"
+    },
+    {
+      "path": "30/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.fullscreen.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "68b3e3479a188d2eda9ccdedd49e3f040c4849834b564fda4d0632a1ebaa8b29"
+    },
+    {
+      "path": "30/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.hide.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "9a80f6642bf5e835c9ec4df46a4566f6f7624ca950846c7ba430d0bb8a4e1508"
+    },
+    {
+      "path": "30/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.home.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "e21673da79aa993b6130e14f265b3321468d49abdfc01132503c4529844151d5"
+    },
+    {
+      "path": "30/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.like.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "7d739dab58ba35088f390bfbc8eb518907fa726692ebcaf2ffb8ca57880bdddb"
+    },
+    {
+      "path": "30/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.minimize.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "f1b57c1b60475034f95b0605f4c7a2228a365cc5da4bda48fb662331e999221c"
+    },
+    {
+      "path": "30/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.next.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "1627edecea5abcd955c3eee494b933623db08aaefaf95383dd9a4f0645773063"
+    },
+    {
+      "path": "30/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.overflow.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "e68e6526680b66a0f8d788b16fbaebad76302eb7121e0d3f66f5fb1901c657f1"
+    },
+    {
+      "path": "30/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.pause.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "7cf222ef25311e36043a99ab3a9ab3f272e197b03dc681fb77c0497fae998227"
+    },
+    {
+      "path": "30/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.pin.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "ef8f06d289bc4f6eb1fb96bd755eaad96de15dc09d184cc1ab25950a897d7462"
+    },
+    {
+      "path": "30/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.play-pause.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "06d3b2e38433c933f8466f12dfd9d97366c4b5ee067feaa3040b75d0ccc03f5d"
+    },
+    {
+      "path": "30/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.play.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "de42af7853f54835bf1b92679788a0d15fcf65ab312a0422f30d59700bb42cc4"
+    },
+    {
+      "path": "30/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.previous.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "a4121145d377217ac189f1682131b40120a55157e8ae791938f062bf78ae269f"
+    },
+    {
+      "path": "30/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.quit-timer.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "a44e268fea9b7f0d9427c496c3a42937825320a6fd7f9fcc82cd1c914f04c66e"
+    },
+    {
+      "path": "30/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.quit.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "e18c410eec6caaf946ef81c7f502ed9a9b3119c79479eb054d905767286acb84"
+    },
+    {
+      "path": "30/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.repeat-one.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "f220e02923129d536e0687dfe7ad60ad921a6aa1a354104bbc917bdb27a679d1"
+    },
+    {
+      "path": "30/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.repeat.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "6d96fb9aee58fa36dea0ad8f423bb9a0b61852db176aafe28fbf7d526a41ccfd"
+    },
+    {
+      "path": "30/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.restore-section.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "9cd3212a05c4fa1bbfdeb2ff6bebfd028640a4663e47ec7fee80f749379cd62e"
+    },
+    {
+      "path": "30/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.restore-window.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "7d2a291aafc14be96977f8ea9317f9bbac942f05df5b06ab1976b5047773c4d6"
+    },
+    {
+      "path": "30/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.retry.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "3fc4cba9baef5e77297e8bed32e1fd52ebb6cea52cedbe1c7ba41820d3f6eace"
+    },
+    {
+      "path": "30/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.settings.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "afe1625621a7fb1895b2b16ac968626fd6bf9929e49e2198ffa85fc1e1bc9b37"
+    },
+    {
+      "path": "30/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.show.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "833d1c6967b7ae5a93a4bc72947200982915369e3a76e47703f3554fe7153b6d"
+    },
+    {
+      "path": "30/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.shuffle.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "108779646625c1ba9fc0bb7192f69cf237a87e4014bfcef132518efdf10984bb"
+    },
+    {
+      "path": "30/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.status.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "0a280ef4a996fa01128e04cc6ca5c18d9d7504fd2f2b15f2800c7829f7695b32"
+    },
+    {
+      "path": "30/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.tray.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "c1d7188f8905d3b1d8129d8a864f5e90e54aa2fc286233d326599a69b0fa2027"
+    },
+    {
+      "path": "30/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.volume-muted.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "cd244bdac7da59ef7b60a5b8381663e4d04f414381a59c42e570b362ac1ad115"
+    },
+    {
+      "path": "30/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.volume.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "5add3d2223339060779927dde9f404b2fded2cd66b1099236be2f458fa20b6f4"
+    },
+    {
+      "path": "30/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.zoom-in.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "1ae95fe726ac26232cde27d82da5110810835931080dcdc11a82871da0925524"
+    },
+    {
+      "path": "30/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.zoom-out.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "3ad7596d3565be0f92371b4fb1acdf5b4b79cacebd0072a103b866217095e09b"
+    },
+    {
+      "path": "30/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.30.zoom-reset.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "caa3927d124a8850655caa2f56caf4536dffd95fe8a6ac7a972b5e95c182c7c8"
+    },
+    {
+      "path": "32/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.app-mark.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "0a5ac654c0950809a271c47153cd03662b50c9bed0e7ff24d9a6b72cbff566bf"
+    },
+    {
+      "path": "32/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.back.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "5831b060a1f7f0de2878b10126ae4441da1f268573128403f600e142468913ef"
+    },
+    {
+      "path": "32/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.cancel-timer.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "32739c78900e5c37dc2b08660ead8848b27e98be7baef4835ac600f72a34d02f"
+    },
+    {
+      "path": "32/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.close.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "701bf39349859d8ff0b65a352de3845db350c90bd343d1fda6cb9e268ecd6ec8"
+    },
+    {
+      "path": "32/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.compact.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "72c2a46b4b4178e15ac6651a05dd28acc57bb6352f553569becfcc6b5511bd9c"
+    },
+    {
+      "path": "32/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.dislike.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "e75e75bd2b86d63fbc50a66edb262806b6b6f9999a45a3c2bc0bc1094ed1b9f0"
+    },
+    {
+      "path": "32/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.error.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "030028a23f302486c5c61a1143ce84b2cb4ddc023d8698a8824c8550ce0f38a5"
+    },
+    {
+      "path": "32/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.exit-fullscreen.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "3103532f32dc20a51a616fcc86d9c925d1d4af0c0e11c3594ca4de12f85dad35"
+    },
+    {
+      "path": "32/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.forward.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "33eb8582620cf629fe01891245a9fd399291dcb5cfc8b514e51d52458fc9b5d7"
+    },
+    {
+      "path": "32/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.fullscreen.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "11e4a4d36c50a650cbd4ead76f35a61b28de42eb31fc9fc94e21a0e08e632c06"
+    },
+    {
+      "path": "32/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.hide.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "c7e984416d36b8ff62ca1bb679d1c98174cfac63c6f35b1927476794c9c64564"
+    },
+    {
+      "path": "32/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.home.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "ea804e16bf6cfd1b62f69ad6245f8f996fb631a104621ddd401cc67b233728ef"
+    },
+    {
+      "path": "32/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.like.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "f71661241072ae99d9383a76487569dff15e74e58aba10719fc80835669d143a"
+    },
+    {
+      "path": "32/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.minimize.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "22da2510dcf3c5ab3af09117d561e1296ca9150c214bfa7c66b513cdca631b76"
+    },
+    {
+      "path": "32/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.next.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "a93faeb0116fac0543026181a7c6ee55fa62d2637e4069630b48fbd057970bcd"
+    },
+    {
+      "path": "32/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.overflow.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "e6a906e733419f56838a70f4ad35bb46690604b0756e2edf808ae5ded2787975"
+    },
+    {
+      "path": "32/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.pause.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "6d92cdf634d6831b2a027d43474ac8d1ccba05f84843624cd665c3118a1d262c"
+    },
+    {
+      "path": "32/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.pin.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "45ce20004599894b3eaacf36ceadca0c8d9fec2c79c4096b07eba076388ccd9d"
+    },
+    {
+      "path": "32/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.play-pause.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "e47cbb99b327c0c48aac5246acb81b362aedaf964c02f75807089a8786e28244"
+    },
+    {
+      "path": "32/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.play.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "38208d0a895775f235868a4ce8fb8e57a548a0975654a44ab60dd8aefea79cd7"
+    },
+    {
+      "path": "32/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.previous.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "c11defaf64627933a37777e90b0abcc16db91a0b6da1eabfb5507e0fe915622c"
+    },
+    {
+      "path": "32/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.quit-timer.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "8dbb8b6b9c1ec20d0f0bb8a55cfec74c6905890fbfe1a247a1c3470b26c797f8"
+    },
+    {
+      "path": "32/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.quit.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "3f30ee4a36bbd91c52e6d164f1e1bf7bc8854e51b74716a152841b01c753e35c"
+    },
+    {
+      "path": "32/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.repeat-one.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "72ca3f676d740ff35addbbd7c0502869f207b3bf578b5c74a34c122001a93675"
+    },
+    {
+      "path": "32/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.repeat.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "aff30cbec107f2aa4fcb50a4b41eea881e19ced6200b7cc1dcd4f541ddc8795e"
+    },
+    {
+      "path": "32/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.restore-section.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "ee1ebcca4087b637b2f74a806a37775ef0cbefa7b9e18554e8999877dd31b605"
+    },
+    {
+      "path": "32/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.restore-window.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "ea8861ceea3bb82fbf26a0e55a6bdbb8bc55228944af93e62e6cfb752d8f7037"
+    },
+    {
+      "path": "32/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.retry.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "3c0a313248b3700eab442a5876a72648c09b8538a714471d66c1e919780e1836"
+    },
+    {
+      "path": "32/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.settings.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "19fc403bdeaa153f1af9c5d764ac5c0cc0819df34e9be57f13126183ec3a2528"
+    },
+    {
+      "path": "32/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.show.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "e7f66516240f328c4906ce8f0b0dd5d8499122d6f2f66315eca930682e9f2956"
+    },
+    {
+      "path": "32/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.shuffle.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "98885e55823ebaf5a2694013593824e001e4c0c04290e5ba353e7ffcbbf2ea64"
+    },
+    {
+      "path": "32/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.status.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "6fdbad1e3521879f7cb991f1babce92a9abd6f50e56a14a958ed6528505d7755"
+    },
+    {
+      "path": "32/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.tray.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "6cb4690ee37cad8a90d06182b775571756480bb9a5844969a513125b26196e05"
+    },
+    {
+      "path": "32/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.volume-muted.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "a7b239adada8c631d1ed23e994f1349e325ab052407541bcb8c4b2be95000153"
+    },
+    {
+      "path": "32/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.volume.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "2a6305af3037d4c807d19b712cb03453bd0183872a0640120fee6410056d2c6c"
+    },
+    {
+      "path": "32/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.zoom-in.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "7a7b149d26b6b8c361318776c9a28c6a471b6c47c1582287521e6502fc6e51af"
+    },
+    {
+      "path": "32/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.zoom-out.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "916097c8359f661e81fe133c411f893eab6d9387dfbb979a9c7c45df7511835f"
+    },
+    {
+      "path": "32/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.32.zoom-reset.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "41c026557e4dbee84019bce3c4dbfeaed05d525db207fb0c8e4881d1ef8ffc08"
+    },
+    {
+      "path": "40/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.app-mark.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "a4af1d13e82f03259328bb8b927b484994c1cb0e1fa3973c79b0e6b402d31556"
+    },
+    {
+      "path": "40/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.back.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "35d122b06115e2c340d7686ecbf5c77cba6123cf1d5b552d079a9e6412df92b7"
+    },
+    {
+      "path": "40/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.cancel-timer.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "81ba099fc837b78e31164954d6426ae8c3a0a4109622537ae67cefeb9b381577"
+    },
+    {
+      "path": "40/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.close.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "5adcdaf2f11ecaafa1f0e7b93ffb5e0d51f21bd9127f6ffd9e6ad2d287efa445"
+    },
+    {
+      "path": "40/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.compact.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "90ff090ee3a0b9da1aef7bffade12d4b28e985b9210736f194d1cef34ceb4514"
+    },
+    {
+      "path": "40/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.dislike.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "d37e8821d8f6a6eb8f4dcc02848e14b235e64f21c46767e7a4b995b153a82002"
+    },
+    {
+      "path": "40/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.error.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "c084337b95771bbb3fbb29c9e1dcaee86682f856ab6a21db6df724903407591e"
+    },
+    {
+      "path": "40/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.exit-fullscreen.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "bd8d4316f532bc25036d67bb674dacbebae91b30ccb73bd1ae59ce3054904741"
+    },
+    {
+      "path": "40/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.forward.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "3f607b0ba8ba4a81db1597f8e5f98213d11f43103812506e56f4b29038f421e5"
+    },
+    {
+      "path": "40/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.fullscreen.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "97946367f1c400282c6d252eaf3c8525260209148331846952e7edc75090149b"
+    },
+    {
+      "path": "40/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.hide.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "b0f4eb0cbbbb5b9b631ae67a8696cae56aa1b886ebb372874e2ba7b0c835fd5d"
+    },
+    {
+      "path": "40/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.home.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "c162666e0f8009ab146697242edba6ced4030fe6d6457aa357b0d0187b4541c9"
+    },
+    {
+      "path": "40/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.like.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "29170dc75b1d9207245492f6c6216c93582ea1938adcb5bc2c0651b6c1ea6c28"
+    },
+    {
+      "path": "40/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.minimize.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "09bac98ec9dd1897aa8bc9154cebe13f7b8c09bc09832ecfe8643ac6d281e712"
+    },
+    {
+      "path": "40/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.next.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "117bc977bbcef2987705d424d30e9ba2333ac2067bc6297613ef9da53e105dea"
+    },
+    {
+      "path": "40/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.overflow.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "f27a8ebc1fdd5ed76ae17864536b6f7752fc6dcd88f0c5609a3ed94432b318fd"
+    },
+    {
+      "path": "40/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.pause.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "3a60ea391a596dd61f267fef28ae5dce6d1b3bb3f3b87f3670a5aa24305134b7"
+    },
+    {
+      "path": "40/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.pin.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "18a99b70db004f1b7002c897fe293e5ce649efb1229ebdfbcb86d703802bc149"
+    },
+    {
+      "path": "40/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.play-pause.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "2aee9ed27f72c55865f50f9ba0f36ee735dd7439552b5935ac91132ba8905c2c"
+    },
+    {
+      "path": "40/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.play.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "48f22c6094c77c1514d3ccd41b4d2b8d6f7f3c5d4e012b842a52b3e107b15947"
+    },
+    {
+      "path": "40/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.previous.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "cd9ad31106056069eb5186b4155e7990c9c4dbc4381bed6371f56febf623d570"
+    },
+    {
+      "path": "40/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.quit-timer.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "57970d0aca8b1b5728dc750ea0e37563ef6a5988452951c5f2146abc1ab018a1"
+    },
+    {
+      "path": "40/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.quit.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "9a9534b27f4dae259f057aab16c91de5816ef5b2ee29b5ccb60cbdb3fbfa14cf"
+    },
+    {
+      "path": "40/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.repeat-one.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "177f5497ba1b714184c836f980b57ce85513c8e53644db331715149c813ae289"
+    },
+    {
+      "path": "40/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.repeat.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "38cbbbfb171dba9b2a507f9fefc6bf3c87ab02d8bc1d3fd620f408dd381b8fe3"
+    },
+    {
+      "path": "40/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.restore-section.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "c6e4c363eaccc04dacf0523249b6884af01aaf333798b97e19639132bca80163"
+    },
+    {
+      "path": "40/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.restore-window.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "cdf82644afe7ca7d75221a9bc64b2376f44ba5fafa29f0b48d4d8df66046df19"
+    },
+    {
+      "path": "40/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.retry.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "2e6fb11d012d8a548d7e84e0e6beae2448909b02404114be7366fa40bfd1ad05"
+    },
+    {
+      "path": "40/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.settings.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "24c91308f3028c603bd302a475ea25c3b999dcaf78faaa18dd00f1c9855a4915"
+    },
+    {
+      "path": "40/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.show.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "5a09ecb5c27e5e97e3fb1408199abbdea899d320c365a433ad5b7b75e18ebe71"
+    },
+    {
+      "path": "40/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.shuffle.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "57ebb11f3b93ff292722ebedb86f36627b8c5c428fb32f27200669e9043a46ed"
+    },
+    {
+      "path": "40/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.status.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "3a208bac41d1bfb6a2522d823535d2d02f561f4ea1f47f531a53d0ef6dc1265f"
+    },
+    {
+      "path": "40/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.tray.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "592c7c9356418fb75f56d248f7136fc319bd2e83f57af5aa434eb224a8dada26"
+    },
+    {
+      "path": "40/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.volume-muted.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "380cdc30720db768deef940b174f15462282bc031121950728dd1fcad6174bcf"
+    },
+    {
+      "path": "40/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.volume.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "d212cdf0624577d9ccf7bac60fa9deedef220612e0340a938e62328ffdd0102d"
+    },
+    {
+      "path": "40/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.zoom-in.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "23d50e69372d4e0de57927bf8426e7112e33cf8b68cff6a3fe684c37cf508981"
+    },
+    {
+      "path": "40/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.zoom-out.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "803d0b091c0c33bedbc9e17aa6cdf23b98e54161b77bc4fbc00371b7eff6d610"
+    },
+    {
+      "path": "40/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.40.zoom-reset.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "29b329692e88f3d3a4ab9ec2f345537911d7dc02c8279cb55bc504c2829b17ad"
+    },
+    {
+      "path": "48/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.app-mark.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "9cd1d63008cda35bdf57e7864778dc3937e43a95592c091aa50d19c50a0dfe4a"
+    },
+    {
+      "path": "48/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.back.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1b44dc1f0ce2f3c022612f11f45eea6ad8c1e14b3f6b140c06d39d4093823067"
+    },
+    {
+      "path": "48/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.cancel-timer.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "36ddbb29158d41786294f8a3bb6eea8c7ce52cf5dd02e5fa5b83414fd17465c9"
+    },
+    {
+      "path": "48/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.close.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "132c42fb761b4d75f16b5fe8479be3c9dcc79aafbe59b89e3c22d2be64c8f5ac"
+    },
+    {
+      "path": "48/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.compact.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "3da0eb21d77773d211fbba7b8ffa6c7e538704f021d579a153fec47e1802e26d"
+    },
+    {
+      "path": "48/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.dislike.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "f8b34f94420537f7cd6179e682f7d6f84e6d3bc79d53d75e6e5cac0493366763"
+    },
+    {
+      "path": "48/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.error.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "12642e5909eb7aa571ed35f521b30d693b03189f96112540701d0135270de8ed"
+    },
+    {
+      "path": "48/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.exit-fullscreen.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "558806e274b02af4efeb6d4d1c0fcbc75bfccc9f4ff264e16d3d3d9276061920"
+    },
+    {
+      "path": "48/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.forward.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "0a719790b5257004b363bbe683fc12c37a78c0b913b3256f61e37af3e6d51035"
+    },
+    {
+      "path": "48/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.fullscreen.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6c344943d7dfdc07056b251e0d19fc52c91f79b9fc44dd6537c88c6b2e3049df"
+    },
+    {
+      "path": "48/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.hide.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "ade05b6dfe5709b7aa0870110bd92e3053cd60d6edfba84532743bc2e3cfecb0"
+    },
+    {
+      "path": "48/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.home.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "de50a171eef72c753ce72f7e03ad808f762d5384a50a13d00bedc33a5467e29d"
+    },
+    {
+      "path": "48/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.like.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "471d27a60ef064a5146cdc0b25b65db66bfa6b1669615991dd96a0679390d879"
+    },
+    {
+      "path": "48/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.minimize.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "3f3e3a6b0070aa1832bc33864ee1a3fe74434a40885417fb9715725eefb8b60e"
+    },
+    {
+      "path": "48/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.next.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "41c00892910a6bb917652469728e8f8c1ccc1751c1c8b5aa658250c91ab23a10"
+    },
+    {
+      "path": "48/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.overflow.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "5c80cb6f45865953040bf6ab002104ef0b3e2c52abe40e1fb68cff4d481bd56b"
+    },
+    {
+      "path": "48/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.pause.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "2b6971716cb9b334116458c6bb3185779cc6457780a4bac20929c86a99289a5a"
+    },
+    {
+      "path": "48/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.pin.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "aa1e4e148eebe62186d91cb9020e212be3d8a3f5ceb3103709a724acc49e3a9a"
+    },
+    {
+      "path": "48/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.play-pause.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "63fcb1dfa01ed37ba3538a48aad5ac15342d1a9737285950664485800fc20be4"
+    },
+    {
+      "path": "48/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.play.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "18214264d4857e93a7ec06f56c9fcb7b5110c0e236e854755b437e12ced87d4d"
+    },
+    {
+      "path": "48/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.previous.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "42d14f92767a6e4c2ba9a9ab09cb81231c721e257be55b4952219fe98b20b23b"
+    },
+    {
+      "path": "48/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.quit-timer.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "2ad182bde7e81f5792ea7e4fad0b4a909dae71d5625dfd797401b586ecbe94f4"
+    },
+    {
+      "path": "48/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.quit.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "18e68ec3fbbb105b704b160334170a82f484157741a42dc16940bf4a1c54c518"
+    },
+    {
+      "path": "48/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.repeat-one.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "433d4ac62a60e13d575a6aa09250d022ec55c895ef7be9322b5c245bc054fc6b"
+    },
+    {
+      "path": "48/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.repeat.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "198d661464ec0e8fe2705afbb557d3a0f66aee1a6585f2afe3708e36ccc259ae"
+    },
+    {
+      "path": "48/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.restore-section.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "b8c3d35bf4ed7e95249c6d710a93f874e18ed33c19caf9bcec27fd5f86ad8a4f"
+    },
+    {
+      "path": "48/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.restore-window.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "9a3ad3d39b61f329062df19506d35f659b6cabcf1843ba482afc8f6e648744cf"
+    },
+    {
+      "path": "48/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.retry.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "e6fae83e06351edf598af42a9936adfdbdaead15d262e60af6fe5c63db4980a4"
+    },
+    {
+      "path": "48/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.settings.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "42ee537566f79721c16791ffeb879440839aa7b45cafdd4cd6863e18bc3fc079"
+    },
+    {
+      "path": "48/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.show.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "fd36be1656f2dada5d4fc7b94f9bc5862ac517b07a8be5f6abbddbc7982be6fe"
+    },
+    {
+      "path": "48/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.shuffle.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "4d0babdc8ec946b5041e4a9569ede1028f607703c01297991a0902a5db114391"
+    },
+    {
+      "path": "48/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.status.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "d296e8ba1c0dd629da449aad0c7c97c68af887f58fe853c251f0bf5fc03ead18"
+    },
+    {
+      "path": "48/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.tray.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "43ba0e7a387f7842d3d89a92169567d5a4a447111dd5fcb0c965f371bdfc0630"
+    },
+    {
+      "path": "48/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.volume-muted.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "8549be2ef124381cd03e08535c872ef2a236a7f909e671a782c17ac0ae6cdfc4"
+    },
+    {
+      "path": "48/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.volume.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "bb71ba598adcab9d2f0b277fa64fa1d8ba9f738cec9b5759179d6ff7218487fa"
+    },
+    {
+      "path": "48/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.zoom-in.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "173a16d9e9d07a8b1105ebad6f424acb1a874758d307d2d4566281966103f5ff"
+    },
+    {
+      "path": "48/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.zoom-out.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "72f43b79b8a4af4c594b9bfd3f9993b5fdfd35c1090b83deea4fd90073550d9d"
+    },
+    {
+      "path": "48/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.48.zoom-reset.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "6613cd8b28d724d0988b4a4f20877b648a076c0fdc2049babc820258cab8fe21"
+    },
+    {
+      "path": "64/app-mark.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.app-mark.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "e42aa2642aedada039f5ded02489f84e7bb9a3d8a831ab15f35f35f3c4fbe4f3"
+    },
+    {
+      "path": "64/back.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.back.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "309cb5a93fafd26a84a2e7869a7f102783baee501dd125cc07223a42e8bd46d1"
+    },
+    {
+      "path": "64/cancel-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.cancel-timer.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "e94ead50274d16c4affa52a29083f2057233d3394433632a2625fecf889a790b"
+    },
+    {
+      "path": "64/close.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.close.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "ca00014e1a96bd8011eaee6a95bddd25a11506655b95aa707bcf2376c266263f"
+    },
+    {
+      "path": "64/compact.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.compact.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "7b7251d38bdf02b32ed66df05c0b1cff35fee80975e4afd7396123ccd4e932d8"
+    },
+    {
+      "path": "64/dislike.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.dislike.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "36c8abaf443c871547df349da891de43f610e3dbee69e4bf2a6ba62c68f16e4a"
+    },
+    {
+      "path": "64/error.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.error.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1957ea30336beb3f2f192b48df742ed29dc48fc4949cbb8545e3a56c558b9976"
+    },
+    {
+      "path": "64/exit-fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.exit-fullscreen.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "3a5b84efd603e689318e1e779ad0414a4647f7fb9bfada6dd4e3a69fc00c73eb"
+    },
+    {
+      "path": "64/forward.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.forward.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "5b197d3bab9cd8f8f8704a06266a988de6138d051fefa18569fbfeef05026939"
+    },
+    {
+      "path": "64/fullscreen.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.fullscreen.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "2f7099a69532203ad09b751cabe58ee01e8d95dfd48b34d15b4a7bfc363dacc5"
+    },
+    {
+      "path": "64/hide.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.hide.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "5a70d20332842b2846c1b3b158bc72545a38ab06014cde902e002eb044d0fbd0"
+    },
+    {
+      "path": "64/home.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.home.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "01a7a7eab613465e63c05114576bbebcd5b667605e34d5d5c81b815551d9e3d0"
+    },
+    {
+      "path": "64/like.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.like.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "5e48925789fb5015992ee1b9b969aa6e11c398fc96f9afa3a4dd201d311ed276"
+    },
+    {
+      "path": "64/minimize.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.minimize.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "0cc3c24c2eeeaf7aa9695bad0e59ead6b92071169409ef7cec516ec1ff31e96a"
+    },
+    {
+      "path": "64/next.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.next.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "4077cc655fbbd1ac9edba3d946b7f7bc3238a198115ec3dcd1ab43ef5adce436"
+    },
+    {
+      "path": "64/overflow.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.overflow.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1b2358a2775de5a0a452a5c5bbba4cd2ae60958f184c7768e2d76d52b648627a"
+    },
+    {
+      "path": "64/pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.pause.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "864bb5bb2b62cf08f1c3ea9c06ef1ad6441a34e97b98aefd1a1921f22a2dd40c"
+    },
+    {
+      "path": "64/pin.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.pin.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "ce51514f5cbc00cf25311e8448311f621e9afd4b141657090d633b310459f98f"
+    },
+    {
+      "path": "64/play-pause.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.play-pause.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "c6a298d6191cab6401577c59a9ac7e34fdc43dd67acb111b6f2480d3c61b9f6b"
+    },
+    {
+      "path": "64/play.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.play.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "4528f587cc9a83fc7d286b4ba42d5f04e2ceebfcb46f8e277bf61521f0b477b4"
+    },
+    {
+      "path": "64/previous.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.previous.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1ac0b0808a433fc6f57a5c5779c1cb5969907a364b6ffaf2206d2fb5fbd80327"
+    },
+    {
+      "path": "64/quit-timer.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.quit-timer.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "c393ebed73dd66c5d856192ab3649bf0c66b29398e091263460a31346f005cfc"
+    },
+    {
+      "path": "64/quit.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.quit.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "3fe29dfc2b2d8635dd70dbc19d33bad4290a38dbb65a4e51277c1326cf38b328"
+    },
+    {
+      "path": "64/repeat-one.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.repeat-one.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "922bedba8912cf94b19e739d565d3be1ef321a49921baa361d78e08614e139bc"
+    },
+    {
+      "path": "64/repeat.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.repeat.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "2256fca1a4bf1a70ebb8ef6a834782a6244028a77ff8d1dbfa643c29eae3393e"
+    },
+    {
+      "path": "64/restore-section.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.restore-section.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "7de0df0753a4e81bacd72bdaf34cca64c2c01857439e4167c1a7cd6e891acbbc"
+    },
+    {
+      "path": "64/restore-window.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.restore-window.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "4e28e575c98e3b11b27e9b09cd452d06be48575dff34434ae5bddc791dd9e619"
+    },
+    {
+      "path": "64/retry.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.retry.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "d0dc366e9ac42254b63f505613ca34f89d8cb92ff070bcd3878443666563f7eb"
+    },
+    {
+      "path": "64/settings.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.settings.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "387615972e658c99937985f9bea7cb10d213ceca433fdcc24b2fd266d2541bcb"
+    },
+    {
+      "path": "64/show.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.show.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "4dde5bd3b987faa4c9db6ace9101810e4696f2de55e20d348bd986865bccb140"
+    },
+    {
+      "path": "64/shuffle.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.shuffle.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "9c46165ff8f570acfb312852aec63166164da38690053d82dc083157d1a34650"
+    },
+    {
+      "path": "64/status.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.status.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "fa0328a22365a373b61a6e1ee8b42b6126aca776e1641acfb8f5e8ab51e07680"
+    },
+    {
+      "path": "64/tray.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.tray.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "9dc92b5021d1c41dc30775cce84427ba7b30f103852f2728858561e3af1f85c8"
+    },
+    {
+      "path": "64/volume-muted.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.volume-muted.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "ecbe6c6f0897ebf71c5f904a5e70bf3a5790af14107c2aae86922cbf9a84c6d1"
+    },
+    {
+      "path": "64/volume.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.volume.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "2697043e08fc15627a16caaf4506cd499d069b9454d02d92344715e0b63f344e"
+    },
+    {
+      "path": "64/zoom-in.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.zoom-in.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "2e44b3e1ade65395214afc9012c8295104a63fccb0c92d86d59e528e4825a6ea"
+    },
+    {
+      "path": "64/zoom-out.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.zoom-out.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "55c113f463cf0402822388f7e8a194fc6e7fff57d5e6eebcfb938c75d025636f"
+    },
+    {
+      "path": "64/zoom-reset.png",
+      "logicalName": "OAuthProbe.NativeIcons.64.zoom-reset.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "078d1a546a5a14c0dd09bf5c096f7024741a2da44febe9257a7981cb2f8894fe"
+    }
+  ]
+}

@@ -1,5 +1,12 @@
 <Project>
-  <PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'OAuthProbe'">
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\winui3-candidate\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\winui3-candidate\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <UseSharedCompilation>false</UseSharedCompilation>
+    <MSBuildNodeReuse>false</MSBuildNodeReuse>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'OAuthProbe'">
     <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\bin\$(MSBuildProjectName)\</BaseOutputPath>
     <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
     <UseSharedCompilation>false</UseSharedCompilation>

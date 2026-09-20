@@ -40,6 +40,8 @@ const played = run();
 assert.equal(played.clicks, 1); assert.equal(played.paused, false); assert.equal(played.outcome.code, 'requested');
 const noOp = run({ command: 'pause' });
 assert.equal(noOp.clicks, 0); assert.equal(noOp.outcome.noOp, true);
+const alreadyPlaying = run({ command: 'play', paused: false });
+assert.equal(alreadyPlaying.clicks, 0); assert.equal(alreadyPlaying.outcome.noOp, true);
 const hidden = run({ command: 'toggle', hidden: true });
 assert.equal(hidden.clicks, 1); assert.equal(hidden.paused, false);
 for (const [options, expected] of [

@@ -4,7 +4,7 @@ namespace OAuthProbe;
 
 internal sealed class SleepDeadline : IDisposable
 {
-    private static readonly TimeSpan MinimumDuration = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan MinimumDuration = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumDuration = TimeSpan.FromMinutes(240);
     private static readonly TimeSpan Infinite = Timeout.InfiniteTimeSpan;
 
@@ -36,10 +36,19 @@ internal sealed class SleepDeadline : IDisposable
         get { lock (_gate) return _displayDeadline; }
     }
 
+    public TimeSpan? TimeRemaining
+    {
+        get
+        {
+            lock (_gate)
+                return _armed ? TimeSpan.FromMilliseconds(Remaining(GetTickCount64(), _deadlineTick)) : null;
+        }
+    }
+
     public void Arm(TimeSpan duration)
     {
         if (duration < MinimumDuration || duration > MaximumDuration)
-            throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be between one and 240 minutes.");
+            throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be between one second and four hours.");
 
         var milliseconds = (ulong)Math.Ceiling(duration.TotalMilliseconds);
         var now = GetTickCount64();

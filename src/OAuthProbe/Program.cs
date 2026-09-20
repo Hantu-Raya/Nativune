@@ -24,9 +24,10 @@ internal static class Program
                 PrintHelp();
                 return 0;
             }
-            if (options.Command is not ("login" or "library" or "logout" or "self-check" or "media" or "media-control" or "web"))
+            if (options.Command is not ("login" or "library" or "logout" or "self-check" or "media" or "media-control" or "web" or "native-fixture" or "native-interactions"))
                 throw new UsageException("Unknown command. Use help for usage.");
-            var root = RootLocator.Resolve(options.Root, options.Command != "web");
+            var requiresCredentials = options.Command is not ("web" or "native-fixture" or "native-interactions");
+            var root = RootLocator.Resolve(options.Root, requiresCredentials);
             using var cancellation = new CancellationController();
             return options.Command switch
             {
@@ -37,6 +38,8 @@ internal static class Program
                 "media" => await MediaProbe.RunAsync(false, cancellation.Token),
                 "media-control" => await MediaProbe.RunAsync(true, cancellation.Token),
                 "web" => WebHost.Run(root),
+                "native-fixture" => NativeFixture.Run(root, measureInteractions: false),
+                "native-interactions" => NativeFixture.Run(root, measureInteractions: true),
                 _ => throw new UsageException("Unknown command. Use help for usage.")
             };
         }
@@ -210,6 +213,8 @@ internal static class Program
         Console.WriteLine("  media      List Windows media sessions and supported controls (read-only)");
         Console.WriteLine("  media-control Select a session and interactively inspect/control it");
         Console.WriteLine("  web        Open official YouTube Music in an isolated WebView2 profile");
+        Console.WriteLine("  native-fixture Show the account-free native Compact/Settings fixture for 60 seconds");
+        Console.WriteLine("  native-interactions Measure the account-free native Compact/Settings interactions");
         Console.WriteLine();
         Console.WriteLine("The login flow requests only youtube.readonly, uses a loopback callback, and never uses an embedded webview or browser cookies.");
         Console.WriteLine("The web command stores its separate WebView2 profile only under data/webview2.");
@@ -217,6 +222,7 @@ internal static class Program
         Console.WriteLine("Run logout before login to switch accounts. Requests are bounded and Ctrl+C cancels them.");
         Console.WriteLine("Media commands do not access Google credentials or browser cookies, and never close the browser.");
         Console.WriteLine("Media output omits track titles/artists; exit 7 means no/removed session, 8 means Windows access failed.");
+        Console.WriteLine("Native commands require only an existing --root directory and never access OAuth credentials, profiles, WebView2 or playback.");
     }
 }
 

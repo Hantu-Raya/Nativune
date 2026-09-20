@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Windows.Foundation;
 
 namespace OAuthProbe;
 
@@ -25,6 +26,9 @@ internal sealed class PlayerControls : IDisposable
     private bool _busy;
     private bool _poisoned;
     private bool _disposed;
+    private CompactPlaybackState? _lastCompactState;
+    private string? _lastCompactHref;
+    private long _lastCompactReadAt = -1000, _lastCompactStateAt;
 
     public PlayerControls(CoreWebView2 core, Func<bool> hostReady, CancellationToken lifetime)
     {
@@ -75,7 +79,7 @@ internal sealed class PlayerControls : IDisposable
             Task<string> pending;
             try
             {
-                pending = _core.ExecuteScriptAsync(script);
+                pending = _core.ExecuteScriptAsync(script).AsTask();
             }
             catch (Exception ex) when (ex is InvalidOperationException or COMException)
             {
@@ -112,14 +116,103 @@ internal sealed class PlayerControls : IDisposable
         }
         finally
         {
+            CompleteRequest(request);
+        }
+    }
+
+    internal async Task<CompactPlaybackState?> ReadCompactStateAsync()
+    {
+        if (!IsAvailable || !TryGetSource(out var source)) return null;
+        lock (_gate)
+            if (Environment.TickCount64 - _lastCompactReadAt < 1000)
+                return _lastCompactHref == source ? _lastCompactState : null;
+        if (!TryStart("compact-state", out var request, out _)) return null;
+        try
+        {
             lock (_gate)
             {
-                if (ReferenceEquals(_operation, request.Cancellation)) _operation = null;
-                _busy = false;
+                _lastCompactReadAt = Environment.TickCount64;
+                _lastCompactState = null;
+                _lastCompactHref = null;
             }
-            request.Cancellation.Dispose();
-            RaiseStateChanged();
+            var script = CompactPlayback.BuildScript("state", null, request.Href,
+                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
+            var json = await RunCompactScriptAsync(request, script);
+            if (json is null || !Owns(request) || !CompactPlayback.TryParseState(json, out var state))
+                return null;
+            lock (_gate)
+            {
+                if (_generation != request.Generation) return null;
+                _lastCompactState = state;
+                _lastCompactHref = request.Href;
+                _lastCompactStateAt = Environment.TickCount64;
+            }
+            return state;
         }
+        finally { CompleteRequest(request); }
+    }
+
+    internal async Task<string> ExecuteCompactAsync(string command, double? value = null)
+    {
+        if (command is not ("like" or "dislike" or "repeat" or "shuffle" or "mute" or "seek" or "volume"))
+            return "Unsupported compact command.";
+        if (command is "seek" or "volume"
+            && (value is null || !double.IsFinite(value.Value) || value < 0 || command == "volume" && value > 1))
+            return "Invalid control value; no action was sent.";
+        if (!TryStart(command, out var request, out var failure)) return failure;
+        try
+        {
+            string? signature = null;
+            lock (_gate)
+            {
+                if (_lastCompactState is { } state && _lastCompactHref == request.Href
+                    && Environment.TickCount64 - _lastCompactStateAt <= 2500)
+                    signature = CompactPlayback.ComputeSignature(state);
+            }
+            if (command is "seek" or "like" or "dislike" && signature is null)
+                return "Playback state is stale; no action was sent.";
+            var script = CompactPlayback.BuildScript("action", command, request.Href,
+                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds(), value, signature);
+            var json = await RunCompactScriptAsync(request, script);
+            if (json is null || !Owns(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
+                return "Player action outcome unknown; no retry. If controls remain unavailable, restart the app.";
+            return outcome.Code switch
+            {
+                "requested" when outcome.Dispatched => "Player action requested; awaiting confirmed website state.",
+                "stale-state" => "Playback changed; no action was sent.",
+                "script-error" when outcome.Dispatched => "Player action outcome unknown; no retry.",
+                _ => "Player control unavailable or ambiguous; no action was sent."
+            };
+        }
+        finally { CompleteRequest(request); }
+    }
+
+    private async Task<string?> RunCompactScriptAsync(Request request, string script)
+    {
+        if (!Owns(request)) return null;
+        try
+        {
+            var pending = _core.ExecuteScriptAsync(script).AsTask();
+            SetPendingScript(pending);
+            return await pending.WaitAsync(ScriptTimeout, request.Cancellation.Token);
+        }
+        catch (TimeoutException) when (!request.Cancellation.IsCancellationRequested)
+        {
+            Poison();
+            return null;
+        }
+        catch (Exception) { return null; }
+    }
+
+    private void CompleteRequest(Request request)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_operation, request.Cancellation)) _operation = null;
+            _busy = false;
+        }
+        request.Cancellation.Dispose();
+        RaiseStateChanged();
     }
 
     public void Invalidate()
@@ -129,6 +222,8 @@ internal sealed class PlayerControls : IDisposable
         {
             if (_disposed) return;
             _generation++;
+            _lastCompactState = null;
+            _lastCompactHref = null;
             operation = _operation;
         }
         operation?.Cancel();
@@ -143,6 +238,8 @@ internal sealed class PlayerControls : IDisposable
             if (_disposed) return;
             _disposed = true;
             _generation++;
+            _lastCompactState = null;
+            _lastCompactHref = null;
             operation = _operation;
             _operation = null;
         }
@@ -304,7 +401,7 @@ internal sealed class PlayerControls : IDisposable
         RaiseStateChanged();
     }
 
-    private void NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
+    private void NavigationStarting(CoreWebView2 sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (e.Cancel) return;
         lock (_gate)
@@ -317,7 +414,7 @@ internal sealed class PlayerControls : IDisposable
         Invalidate();
     }
 
-    private void NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+    private void NavigationCompleted(CoreWebView2 sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         lock (_gate)
         {
@@ -329,7 +426,7 @@ internal sealed class PlayerControls : IDisposable
         else Invalidate();
     }
 
-    private void SourceChanged(object? sender, CoreWebView2SourceChangedEventArgs e)
+    private void SourceChanged(CoreWebView2 sender, CoreWebView2SourceChangedEventArgs e)
     {
         if (e.IsNewDocument)
         {
@@ -354,7 +451,7 @@ internal sealed class PlayerControls : IDisposable
         }
     }
 
-    private void ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    private void ProcessFailed(CoreWebView2 sender, CoreWebView2ProcessFailedEventArgs e)
     {
         lock (_gate)
         {

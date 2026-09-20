@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'login', 'library', 'logout', 'self-check', 'media', 'media-control', 'web')]
+    [ValidateSet('help', 'login', 'library', 'logout', 'self-check', 'media', 'media-control', 'web', 'native-fixture', 'native-interactions')]
     [string] $Command = 'help',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Arguments
@@ -11,11 +11,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$application = Join-Path $root 'artifacts\bin\OAuthProbe\Release\net10.0-windows10.0.19041.0\OAuthProbe.dll'
+$application = Join-Path $root 'artifacts\winui3\publish\OAuthProbe.exe'
 if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
-    throw "Release application not found at $application. Build Release through scripts\dotnet.ps1 first."
+    throw "WinUI application not found at $application. Publish src\OAuthProbe\OAuthProbe.csproj through scripts\dotnet.ps1 to artifacts\winui3\publish first."
 }
-$dotnet = Join-Path $PSScriptRoot 'dotnet.ps1'
+$temp = Join-Path $root '.cache\tmp'
+[IO.Directory]::CreateDirectory($temp) | Out-Null
+$env:TEMP = $temp
+$env:TMP = $temp
 
-& $dotnet $application $Command --root $root @Arguments
+# A pipeline makes PowerShell wait for the WinExe host and retain its exit code.
+& $application $Command --root $root @Arguments | Out-Host
 exit $LASTEXITCODE
