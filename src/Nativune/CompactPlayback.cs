@@ -413,19 +413,10 @@ try {
     }
     const range = rangeFor(finalTarget.element), target = request.value;
     if (!range || !finite(target) || target < 0 || target > 1) return result('invalid-value');
-    const track = trackFor(finalTarget.element);
-    if (!track) return result('unavailable');
-    const publicTarget = range.min + (range.max - range.min) * target;
-    const ratio = (publicTarget - range.min) / (range.max - range.min);
-    const options = {bubbles:true, composed:true, button:0,
-      clientX:track.rect.left + track.rect.width * ratio,
-      clientY:track.rect.top + track.rect.height / 2};
     dispatched = true;
-    try {
-      track.element.dispatchEvent(new MouseEvent('mousedown', {...options, buttons:1}));
-      track.element.dispatchEvent(new MouseEvent('mouseup', {...options, buttons:0}));
-    } catch { return result('script-error'); }
-    return result('requested');
+    try { final.element.volume = target; }
+    catch { return result('script-error'); }
+    return Math.abs(final.element.volume - target) <= 0.001 ? result('requested') : result('unavailable');
   }
   const finalButton = finalTarget.element;
   if (!enabled(finalButton)) return result('disabled-control');

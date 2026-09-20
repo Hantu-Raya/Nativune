@@ -79,6 +79,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly MenuFlyoutItem _settingsItem;
     private readonly MenuFlyoutItem _statusItem;
     private readonly ToggleMenuFlyoutItem _topmostItem;
+    private readonly MenuFlyoutItem _versionItem;
     private readonly Flyout _volumePopup;
     private readonly CompactVolumeSlider _volumeSlider;
     private readonly Button _muteButton;
@@ -144,6 +145,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _settingsItem = SettingsItem;
         _statusItem = StatusItem;
         _topmostItem = TopmostItem;
+        _versionItem = VersionItem;
+        _versionItem.Text = AppVersion.DisplayName;
+        AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
         _volumePopup = VolumePopup;
         _volumeSlider = VolumeSlider;
         _muteButton = MuteButton;

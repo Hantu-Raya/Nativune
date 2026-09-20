@@ -243,6 +243,9 @@
                         <MenuFlyoutItem x:Name="StatusItem" Text="Application status" />
                         <MenuFlyoutSeparator />
                         <ToggleMenuFlyoutItem x:Name="TopmostItem" Text="Keep window on top" />
+                        <MenuFlyoutSeparator />
+                        <MenuFlyoutItem x:Name="VersionItem"
+                                           IsEnabled="False" />
                     </MenuFlyout>
                 </Button.ContextFlyout>
             </Button>

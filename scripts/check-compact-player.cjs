@@ -140,11 +140,12 @@ assert.equal(action(seekPage, 'seek', 30), 'requested');
 assert.deepEqual(seekPage.seekSlider.children[0].events.map(event => event.type), ['mousedown', 'mouseup']);
 const volumePage = makePage({ sliderHeight: 0, trackHeight: 8 });
 assert.equal(action(volumePage, 'volume', 0.75), 'requested');
-assert.deepEqual(volumePage.volumeSlider.children[0].events.map(event => event.type), ['mousedown', 'mouseup']);
+assert.equal(volumePage.media.volume, 0.75);
+assert.deepEqual(volumePage.volumeSlider.children[0].events, []);
 const likePage = makePage();
 assert.equal(action(likePage, 'like'), 'requested');
 assert.equal(likePage.document.clicks, 1);
 assert.equal(action(likePage, 'like'), 'requested');
 assert.equal(likePage.document.clicks, 2);
 
-console.log('PASS: compact state bounds/unknown duration, guarded DOM actions, metadata signatures, seekability, pointer dispatch, and single button clicks');
+console.log('PASS: compact state bounds/unknown duration, guarded DOM actions, metadata signatures, seekability, seek pointer dispatch, media volume assignment, and single button clicks');

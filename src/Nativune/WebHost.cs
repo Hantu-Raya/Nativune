@@ -108,6 +108,15 @@ public sealed partial class WebHostWindow : Window
         "--disk-cache-size=67108864 " +
         "--skia-resource-cache-limit-mb=64 " +
         "--enable-features=CalculateNativeWinOcclusion,TurnOffStreamingMediaCachingOnBattery";
+    private const string KeepRunningInBackgroundArguments =
+        "--disable-background-timer-throttling " +
+        "--disable-renderer-backgrounding " +
+        "--disable-backgrounding-occluded-windows";
+
+    internal static string BrowserArguments(bool sleepInBackground)
+        => sleepInBackground
+            ? MemoryBrowserArguments
+            : MemoryBrowserArguments + " " + KeepRunningInBackgroundArguments;
 
     private readonly string _root;
     private readonly string _initialUri;
@@ -199,6 +208,7 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyoutItem _statusDetailsItem = null!;
     private MenuFlyoutItem _settingsItem = null!;
     private MenuFlyoutItem _quitItem = null!;
+    private MenuFlyoutItem _versionItem = null!;
 
     public int ExitCode { get; private set; }
     public nint NativeHandle { get; private set; }
@@ -482,13 +492,19 @@ public sealed partial class WebHostWindow : Window
         _statusDetailsItem = CreateMenuItem("Read application status", "status", ShowStatusDetails);
         _settingsItem = CreateMenuItem("Settings", "settings", ShowSettings);
         _quitItem = CreateMenuItem("Quit Nativune", "quit", () => _ = ShutdownAsync());
+        _versionItem = new MenuFlyoutItem
+        {
+            Text = AppVersion.DisplayName,
+            IsEnabled = false
+        };
+        AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
 
         AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(), _playPauseItem, _playItem, _pauseItem,
             _previousItem, _nextItem, new MenuFlyoutSeparator(), _shortcutsItem, new MenuFlyoutSeparator(),
             _zoomInItem, _zoomOutItem, _zoomResetItem, _fullscreenItem, _compactItem, _topmostItem,
             new MenuFlyoutSeparator(), _trayItem, _hideItem, _restoreItem, new MenuFlyoutSeparator(),
             _setTimerItem, _cancelTimerItem, _settingsItem, _statusDetailsItem,
-            new MenuFlyoutSeparator(), _quitItem);
+            new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
         TimerButton.Flyout = _timerFlyout;
@@ -721,7 +737,7 @@ public sealed partial class WebHostWindow : Window
             var options = new CoreWebView2EnvironmentOptions
             {
                 AreBrowserExtensionsEnabled = true,
-                AdditionalBrowserArguments = MemoryBrowserArguments
+                AdditionalBrowserArguments = BrowserArguments(_settings.SleepInBackground)
             };
             var environmentCreation = CoreWebView2Environment.CreateWithOptionsAsync(
                     runtimeDirectory, profileDirectory, options)
@@ -1197,13 +1213,21 @@ public sealed partial class WebHostWindow : Window
         {
             if (await dialog.ShowAsync(this))
             {
-                _settings = _settings with { Shortcuts = dialog.Result.Shortcuts, ReduceMotion = dialog.Result.ReduceMotion };
+                var sleepSettingChanged = _settings.SleepInBackground != dialog.Result.SleepInBackground;
+                _settings = _settings with
+                {
+                    Shortcuts = dialog.Result.Shortcuts,
+                    ReduceMotion = dialog.Result.ReduceMotion,
+                    SleepInBackground = dialog.Result.SleepInBackground
+                };
                 RefreshShortcutDescriptions();
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
                 CaptureSettings();
-                SetStatus(_shortcutsEnabled
-                    ? "Settings saved. Updated global shortcuts are active for this session."
-                    : "Settings saved. Global shortcuts remain off until enabled for this session.");
+                SetStatus(sleepSettingChanged
+                    ? "Settings saved. Restart Nativune to apply the background sleeping change."
+                    : _shortcutsEnabled
+                        ? "Settings saved. Updated global shortcuts are active for this session."
+                        : "Settings saved. Global shortcuts remain off until enabled for this session.");
             }
         }
         catch (Exception) when (!_closing && !_disposed)

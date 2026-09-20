@@ -21,7 +21,8 @@ internal static class ShellChecks
         {
             TrayEnabled = true,
             RestoreSection = true,
-            LastSection = "library"
+            LastSection = "library",
+            SleepInBackground = false,
         };
         ShellSettings.SaveAsync(root, settings, CancellationToken.None).GetAwaiter().GetResult();
         var loaded = ShellSettings.Load(root, out var warning);
@@ -52,8 +53,20 @@ internal static class ShellChecks
             "{\"Version\":1,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
         var previous = ShellSettings.Load(root, out warning);
         Require(warning is null && previous.Width == 1234 && !previous.TrayEnabled
-            && !previous.RestoreSection && previous.Zoom == 1,
-            "Existing P1 settings enabled optional features during upgrade.");
+            && !previous.RestoreSection && previous.Zoom == 1 && previous.SleepInBackground,
+            "Existing P1 settings changed optional behavior during upgrade.");
+        File.WriteAllText(file,
+            "{\"Version\":2,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
+        var previousV2 = ShellSettings.Load(root, out warning);
+        Require(warning is null && previousV2.SleepInBackground,
+            "Existing P2 settings did not retain background sleeping during upgrade.");
+        var sleepingArguments = WebHostWindow.BrowserArguments(sleepInBackground: true);
+        var activeArguments = WebHostWindow.BrowserArguments(sleepInBackground: false);
+        Require(!sleepingArguments.Contains("--disable-background-timer-throttling", StringComparison.Ordinal)
+            && activeArguments.Contains("--disable-background-timer-throttling", StringComparison.Ordinal)
+            && activeArguments.Contains("--disable-renderer-backgrounding", StringComparison.Ordinal)
+            && activeArguments.Contains("--disable-backgrounding-occluded-windows", StringComparison.Ordinal),
+            "Background sleeping did not map to Chromium throttling arguments.");
         File.WriteAllText(file, "{broken");
         _ = ShellSettings.Load(root, out warning);
         Require(warning is not null, "Corrupt settings were silently accepted.");
@@ -336,6 +349,11 @@ internal static class ShellChecks
 
             phase = "full-state";
             const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+            var versionItem = typeof(WebHostWindow).GetField("_versionItem", privateInstance)
+                ?.GetValue(host) as MenuFlyoutItem;
+            Require(versionItem is not null && !versionItem.IsEnabled
+                && versionItem.Text == AppVersion.DisplayName,
+                "Full More commands menu did not expose the noninteractive application version.");
             var setStatus = typeof(WebHostWindow).GetMethod("SetStatus", privateInstance);
             Require(setStatus is not null, "WinUI host status method was not retained.");
             setStatus!.Invoke(host, [new string('x', 8192), true, false]);

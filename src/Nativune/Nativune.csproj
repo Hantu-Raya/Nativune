@@ -22,7 +22,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Nativune</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.1.2</Version>
     <Product>Nativune</Product>
     <Description>A native Windows shell for the official YouTube Music website.</Description>
     <Authors>Hantu-Raya</Authors>

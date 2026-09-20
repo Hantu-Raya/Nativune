@@ -294,6 +294,10 @@ internal static class CompactViewChecks
         var moreMenu = ReadField(view, "_moreMenu") as FlyoutBase;
         Require(moreMenu is not null, "Native More menu was not created.");
         await AwaitFlyoutOpenedAsync(moreMenu!, view.ShowMoreMenu, "More");
+        var versionItem = ReadField(view, "_versionItem") as MenuFlyoutItem;
+        Require(versionItem is not null && !versionItem.IsEnabled
+            && versionItem.Text == AppVersion.DisplayName,
+            "Compact More menu did not expose the noninteractive application version.");
         view.SetTimer(null);
         view.SetStatus("Synthetic error", isError: true);
         view.SetPreferences(reduceMotion: true, topmost: false);

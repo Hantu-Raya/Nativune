@@ -68,7 +68,7 @@ Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the
 The repository keeps its toolchain and caches local. On Windows, build a release package with:
 
 ```powershell
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.1 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.2 -Configuration Release
 ```
 
 The script verifies pinned SDK/runtime/extension inputs, publishes the app and installer, scans the public payload, and writes these files under `artifacts/release`:

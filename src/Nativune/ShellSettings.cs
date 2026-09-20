@@ -10,6 +10,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public string LastSection { get; init; } = "home";
     public bool ReduceMotion { get; init; }
     public ShortcutBindings Shortcuts { get; init; } = ShortcutBindings.Default;
+    public bool SleepInBackground { get; init; } = true;
     public int CompactX { get; init; } = 100;
     public int CompactY { get; init; } = 100;
     public int CompactWidth { get; init; } = 800;
@@ -27,7 +28,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 2;
+    private const int CurrentVersion = 3;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
     private const int MinDpi = 48;
@@ -68,15 +69,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version is not (1 or CurrentVersion) || !IsCoreValid(persisted))
+            if (persisted is null || persisted.Version is not (1 or 2 or CurrentVersion) || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;
             }
 
-            // Version 1 intentionally migrates without enabling any new behavior.
-            // New fields are nullable/defaulted so a partially written v2 file still
-            // retains the existing window and preference values.
+            // Earlier versions migrate with background sleeping enabled because that matches
+            // Chromium's existing default behavior. Nullable/defaulted fields retain the
+            // existing window and preference values after partial writes.
             return Normalize(persisted.ToSettings());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -181,6 +182,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             LastSection = settings.RestoreSection && settings.LastSection == "library" ? "library" : "home",
             ReduceMotion = settings.ReduceMotion,
             Shortcuts = shortcuts,
+            SleepInBackground = settings.SleepInBackground,
             CompactX = settings.CompactX,
             CompactY = settings.CompactY,
             CompactWidth = settings.CompactWidth is >= MinCompactWidth and <= MaxDimension
@@ -243,7 +245,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     private sealed record PersistedSettings(int Version, int X, int Y, int Width, int Height, int Dpi, bool Maximized,
         double Zoom, bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home",
         bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
-        int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi)
+        int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi,
+        bool SleepInBackground = true)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -252,6 +255,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             LastSection = LastSection,
             ReduceMotion = ReduceMotion,
             Shortcuts = Shortcuts ?? ShortcutBindings.Default,
+            SleepInBackground = SleepInBackground,
             CompactX = CompactX,
             CompactY = CompactY,
             CompactWidth = CompactWidth,
@@ -263,6 +267,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             => new(CurrentVersion, settings.X, settings.Y, settings.Width, settings.Height,
                 settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection,
                 settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
-                settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi);
+                settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
+                settings.SleepInBackground);
     }
 }

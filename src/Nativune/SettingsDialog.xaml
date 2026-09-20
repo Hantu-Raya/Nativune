@@ -25,6 +25,8 @@
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0"
@@ -207,8 +209,40 @@
                   AutomationProperties.Name="Reduce motion"
                   AutomationProperties.HelpText="App-only preference; it does not follow Windows animation settings." />
 
+        <CheckBox x:Name="SleepInBackgroundCheckBox"
+                  Grid.Row="4"
+                  Content="Sleep in background"
+                  MinHeight="36"
+                  Foreground="{ThemeResource PrimaryTextBrush}"
+                  AutomationProperties.Name="Sleep in background"
+                  AutomationProperties.HelpText="Allow Chromium to throttle timers and rendering while Nativune is minimized, hidden, or occluded. Restart required." />
+
+        <Border Grid.Row="5"
+                Padding="14,10"
+                IsHitTestVisible="False"
+                Background="{ThemeResource SurfaceBrush}"
+                BorderBrush="{ThemeResource RaisedBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                AutomationProperties.Name="About Nativune">
+          <Grid ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0"
+                       Text="About"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}" />
+            <TextBlock x:Name="VersionText"
+                       Grid.Column="1"
+                       HorizontalAlignment="Right"
+                       Foreground="{ThemeResource SecondaryTextBrush}" />
+          </Grid>
+        </Border>
+
         <Border x:Name="ErrorHost"
-                Grid.Row="4"
+                Grid.Row="6"
                 MinHeight="38"
                 Padding="8,6"
                 Visibility="Collapsed"
