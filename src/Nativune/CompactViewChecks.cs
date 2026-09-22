@@ -245,9 +245,15 @@ internal static class CompactViewChecks
 
         phase = "automation-activation";
         FocusElement(parts["PlayPause"], "Compact Play/Pause");
+        InvokeControl(parts["Previous"], "previous");
         InvokeControl(parts["PlayPause"], "play/pause");
-        Require(commands.Any(command => command.Command is "toggle" or "play" or "pause"),
-            "Native Play/Pause activation did not reach the Compact command boundary.");
+        InvokeControl(parts["Next"], "next");
+        Require(commands.Any(command => command.Command == "previous")
+            && commands.Any(command => command.Command is "toggle" or "play" or "pause")
+            && commands.Any(command => command.Command == "next"),
+            "Native transport activation did not reach every Compact command boundary.");
+        Require(ReadProperty(parts["InlineStatus"], "Text") as string == "Playback controls unavailable.",
+            "Unavailable Compact transport activation was silently ignored by the host.");
         commands.Clear();
         phase = "seek-motion-and-cancel";
         var seek = parts["Seek"];
@@ -312,6 +318,13 @@ internal static class CompactViewChecks
                 StringComparison.OrdinalIgnoreCase) == true,
             "Unavailable Compact state left stale playback affordances enabled.");
         view.SetPlayback(state);
+
+        phase = "return-to-full";
+        var compactHandle = host.NativeHandle;
+        InvokeControl(parts["ReturnToFull"], "return to full");
+        await Task.Yield();
+        Require(!host.IsCompact && host.NativeHandle == compactHandle,
+            "Compact Return to full activation did not restore the same native presenter.");
         view.Dispose();
         view.Dispose();
         }

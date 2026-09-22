@@ -394,6 +394,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeSlider.Committed += VolumeSliderCommitted;
 
         _previous.Click += (_, _) => RaiseCommand("previous");
+        _next.Click += (_, _) => RaiseCommand("next");
         _playPause.Click += (_, _) => RaiseCommand("toggle");
         _playPause.PointerEntered += (_, _) =>
         {

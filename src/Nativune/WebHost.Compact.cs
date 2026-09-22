@@ -165,12 +165,13 @@ public sealed partial class WebHostWindow
 
     private async Task ExecuteCompactCommandAsync(string command, double? value)
     {
-        if (!CompactActive || _compactState is null || _playerBusy || _closing || _disposed) return;
+        if (!CompactActive) return;
         if (command is "toggle" or "previous" or "next")
         {
             await ExecutePlayerCommandAsync(command);
             return;
         }
+        if (_compactState is null || _playerBusy) return;
         var controls = _playerControls;
         if (controls?.IsAvailable != true)
         {
