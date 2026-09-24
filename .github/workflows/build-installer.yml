@@ -1,0 +1,349 @@
+name: Build installer
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-installer:
+    name: Build unpublished Windows x64 installer
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Check out triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Confirm checkout SHA
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) {
+            throw "Checkout SHA '$head' does not match triggering SHA '$env:GITHUB_SHA'."
+          }
+
+      - name: Read and verify project version
+        id: release-version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          function Get-ProjectVersion([string] $Path) {
+            [xml] $project = Get-Content -LiteralPath $Path -Raw
+            $nodes = $project.SelectNodes('/Project/PropertyGroup/Version')
+            if ($nodes.Count -ne 1) {
+              throw "Expected exactly one project Version element in $Path."
+            }
+            return $nodes[0].InnerText.Trim()
+          }
+          $appVersion = Get-ProjectVersion 'src/Nativune/Nativune.csproj'
+          $installerVersion = Get-ProjectVersion 'src/Nativune.Installer/Nativune.Installer.csproj'
+          if ($appVersion -cne $installerVersion) {
+            throw "Application version '$appVersion' does not match installer version '$installerVersion'."
+          }
+          if ($appVersion -cnotmatch $versionPattern) {
+            throw "Project version '$appVersion' is not a valid release version."
+          }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$appVersion`n", [Text.UTF8Encoding]::new($false))
+          Write-Host "Verified application and installer version $appVersion."
+
+      - name: Bootstrap pinned local .NET SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned local .NET SDK setup failed.' }
+
+      - name: Bootstrap pinned WebView2 runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup-webview2.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned WebView2 runtime setup failed.' }
+
+      - name: Bootstrap pinned uBlock Origin Lite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extensionPath = Join-Path $env:GITHUB_WORKSPACE '.tools/ubol/2026.907.2003'
+          if (Test-Path -LiteralPath $extensionPath) {
+            throw "Expected a clean extension target on the hosted runner; refusing to overwrite $extensionPath."
+          }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ubol.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned uBlock Origin Lite setup failed.' }
+
+      - name: Restore application with repository-local NuGet configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64 --disable-parallel
+          if ($LASTEXITCODE -ne 0) { throw 'Application restore failed.' }
+
+      - name: Restore installer with repository-local NuGet configuration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64 --disable-parallel
+          if ($LASTEXITCODE -ne 0) { throw 'Installer restore failed.' }
+
+      - name: Set up Node.js for account-free regressions
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run account-free player regression checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node scripts/check-player-controls.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Player controls regression check failed.' }
+          node scripts/check-compact-player.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Compact player regression check failed.' }
+
+      - name: Build release package after tests
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Version $env:RELEASE_VERSION -Configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Release package build failed.' }
+
+      - name: Verify release outputs and appended payload
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts/release'
+          $setupPath = Join-Path $releaseRoot 'Nativune-Setup.exe'
+          $zipPath = Join-Path $releaseRoot 'Nativune-Setup.zip'
+          $manifestPath = Join-Path $releaseRoot 'release-manifest.json'
+          $checksumsPath = Join-Path $releaseRoot 'SHA256SUMS.txt'
+          foreach ($path in @($setupPath, $zipPath, $manifestPath, $checksumsPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required release output is missing: $path"
+            }
+            $item = Get-Item -LiteralPath $path -Force
+            if ($item.Length -le 0 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw "Release output is empty or is a reparse point: $path"
+            }
+          }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.schemaVersion -ne 1 -or $manifest.product -cne 'Nativune' -or $manifest.version -cne $env:RELEASE_VERSION -or $manifest.executable -cne 'app/Nativune.exe') {
+            throw 'Release manifest identity or version does not match the verified projects.'
+          }
+          $manifestFiles = @($manifest.files)
+          if ($manifestFiles.Count -eq 0) { throw 'Release manifest contains no payload files.' }
+          $manifestPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+          foreach ($file in $manifestFiles) {
+            $relative = [string]$file.path
+            if ([string]::IsNullOrWhiteSpace($relative) -or $relative.StartsWith('/') -or $relative.Contains('\') -or $relative -match '(^|/)\.\.(?:/|$)') {
+              throw "Release manifest contains an unsafe payload path: $relative"
+            }
+            if (-not $manifestPaths.Add($relative)) { throw "Release manifest contains a duplicate path: $relative" }
+            if ([int64]$file.length -lt 0 -or [string]$file.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+              throw "Release manifest contains invalid length/hash metadata for $relative"
+            }
+          }
+
+          $standaloneManifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $zipPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+            foreach ($entry in $zip.Entries) {
+              if (-not $zipPaths.Add($entry.FullName)) { throw "Release ZIP contains duplicate entry $($entry.FullName)." }
+            }
+            if ($zip.Entries.Count -ne ($manifestFiles.Count + 1)) {
+              throw 'Release ZIP entry count does not match the release manifest plus its manifest file.'
+            }
+            foreach ($file in $manifestFiles) {
+              $entry = $zip.GetEntry([string]$file.path)
+              if ($null -eq $entry -or $entry.Length -ne [int64]$file.length) {
+                throw "Release ZIP payload does not match manifest inventory: $($file.path)"
+              }
+              $entryStream = $entry.Open()
+              $sha256 = [Security.Cryptography.SHA256]::Create()
+              try {
+                $entryHash = [BitConverter]::ToString($sha256.ComputeHash($entryStream)).Replace('-', '').ToLowerInvariant()
+              } finally {
+                $sha256.Dispose()
+                $entryStream.Dispose()
+              }
+              if ($entryHash -cne [string]$file.sha256) {
+                throw "Release ZIP payload hash does not match manifest: $($file.path)"
+              }
+            }
+            foreach ($required in @(
+              'app/Nativune.exe',
+              '.tools/webview2/152.0.4191.62/msedgewebview2.exe',
+              '.tools/webview2/runtime-path.txt',
+              '.tools/ubol/2026.907.2003/manifest.json',
+              'installer/Nativune.Setup.exe',
+              'licenses/Nativune-LICENSE.txt',
+              'licenses/THIRD-PARTY-NOTICES.txt',
+              'release-manifest.json'
+            )) {
+              if (-not $zipPaths.Contains($required)) { throw "Release ZIP is missing required payload entry: $required" }
+            }
+            foreach ($zipPathName in $zipPaths) {
+              if ($zipPathName -cne 'release-manifest.json' -and -not $manifestPaths.Contains($zipPathName)) {
+                throw "Release ZIP contains an unexpected entry: $zipPathName"
+              }
+            }
+            $embeddedEntry = $zip.GetEntry('release-manifest.json')
+            if ($embeddedEntry.Length -ne (Get-Item -LiteralPath $manifestPath).Length) {
+              throw 'Embedded release manifest bytes do not match standalone release-manifest.json.'
+            }
+            $embeddedStream = $embeddedEntry.Open()
+            $standaloneStream = [IO.File]::OpenRead($manifestPath)
+            try {
+              $embeddedBuffer = [byte[]]::new(81920)
+              $standaloneBuffer = [byte[]]::new(81920)
+              $remaining = [long]$embeddedEntry.Length
+              while ($remaining -gt 0) {
+                $count = [int][Math]::Min($remaining, [long]$embeddedBuffer.Length)
+                $embeddedOffset = 0
+                while ($embeddedOffset -lt $count) {
+                  $read = $embeddedStream.Read($embeddedBuffer, $embeddedOffset, $count - $embeddedOffset)
+                  if ($read -eq 0) { throw 'Embedded release manifest ended before its declared length.' }
+                  $embeddedOffset += $read
+                }
+                $standaloneOffset = 0
+                while ($standaloneOffset -lt $count) {
+                  $read = $standaloneStream.Read($standaloneBuffer, $standaloneOffset, $count - $standaloneOffset)
+                  if ($read -eq 0) { throw 'Standalone release manifest ended before its declared length.' }
+                  $standaloneOffset += $read
+                }
+                for ($byteIndex = 0; $byteIndex -lt $count; $byteIndex++) {
+                  if ($embeddedBuffer[$byteIndex] -ne $standaloneBuffer[$byteIndex]) {
+                    throw 'Embedded release manifest bytes do not match standalone release-manifest.json.'
+                  }
+                }
+                $remaining -= $count
+              }
+              if ($standaloneStream.ReadByte() -ne -1) {
+                throw 'Embedded release manifest bytes do not match standalone release-manifest.json.'
+              }
+            } finally {
+              $embeddedStream.Dispose()
+              $standaloneStream.Dispose()
+            }
+            $embeddedStream = $embeddedEntry.Open()
+            $sha256 = [Security.Cryptography.SHA256]::Create()
+            try {
+              $embeddedHash = [BitConverter]::ToString($sha256.ComputeHash($embeddedStream)).Replace('-', '').ToLowerInvariant()
+            } finally {
+              $sha256.Dispose()
+              $embeddedStream.Dispose()
+            }
+            if ($embeddedHash -cne $standaloneManifestHash) {
+              throw 'Embedded release manifest hash does not match standalone release-manifest.json.'
+            }
+            $embeddedReaderStream = $embeddedEntry.Open()
+            $embeddedReader = [IO.StreamReader]::new($embeddedReaderStream)
+            try {
+              $embeddedManifest = $embeddedReader.ReadToEnd() | ConvertFrom-Json
+            } finally {
+              $embeddedReader.Dispose()
+              $embeddedReaderStream.Dispose()
+            }
+            $embeddedFiles = @($embeddedManifest.files)
+            if ($embeddedManifest.product -cne 'Nativune' -or $embeddedManifest.executable -cne 'app/Nativune.exe' -or $embeddedManifest.version -cne $env:RELEASE_VERSION -or $embeddedFiles.Count -ne $manifestFiles.Count) {
+              throw 'Embedded release manifest does not match the verified product, version, and file inventory.'
+            }
+            $embeddedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+            foreach ($embeddedFile in $embeddedFiles) {
+              if (-not $embeddedPaths.Add([string]$embeddedFile.path) -or -not $manifestPaths.Contains([string]$embeddedFile.path)) {
+                throw "Embedded release manifest contains an unexpected or duplicate path: $($embeddedFile.path)"
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
+          $setupLength = (Get-Item -LiteralPath $setupPath).Length
+          $footerStream = [IO.File]::OpenRead($setupPath)
+          $footerReader = [IO.BinaryReader]::new($footerStream)
+          try {
+            if ($footerStream.Length -lt 32) { throw 'Setup executable is shorter than its payload footer.' }
+            $footerStream.Position = $footerStream.Length - 32
+            $footerMagic = [Text.Encoding]::ASCII.GetString($footerReader.ReadBytes(8))
+            $footerVersion = $footerReader.ReadUInt32()
+            $stubLength = $footerReader.ReadInt64()
+            $embeddedZipLength = $footerReader.ReadInt64()
+            $reserved = $footerReader.ReadUInt32()
+          } finally {
+            $footerReader.Dispose()
+          }
+          $standaloneZipLength = (Get-Item -LiteralPath $zipPath).Length
+          if ($footerMagic -cne 'NATIVN01' -or $footerVersion -ne 1 -or $reserved -ne 0 -or $stubLength -le 0 -or $embeddedZipLength -ne $standaloneZipLength -or ($stubLength + $embeddedZipLength + 32) -ne $setupLength) {
+            throw 'Setup executable footer lengths or payload marker are invalid.'
+          }
+          $setupStream = [IO.File]::OpenRead($setupPath)
+          $zipHasher = [Security.Cryptography.SHA256]::Create()
+          try {
+            $setupStream.Position = $stubLength
+            $buffer = [byte[]]::new(1048576)
+            $remaining = [int64]$embeddedZipLength
+            while ($remaining -gt 0) {
+              $read = $setupStream.Read($buffer, 0, [int][Math]::Min([int64]$buffer.Length, $remaining))
+              if ($read -le 0) { throw 'Setup executable ended before the appended ZIP payload was fully read.' }
+              [void]$zipHasher.TransformBlock($buffer, 0, $read, $buffer, 0)
+              $remaining -= $read
+            }
+            [void]$zipHasher.TransformFinalBlock([byte[]]::new(0), 0, 0)
+            $embeddedZipHash = [Convert]::ToHexString($zipHasher.Hash).ToLowerInvariant()
+          } finally {
+            $zipHasher.Dispose()
+            $setupStream.Dispose()
+          }
+          $standaloneZipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($embeddedZipHash -cne $standaloneZipHash) { throw 'Appended setup payload differs from the standalone release ZIP.' }
+
+          $expectedChecksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'release-manifest.json')
+          $checksumMap = @{}
+          foreach ($line in @(Get-Content -LiteralPath $checksumsPath | Where-Object { $_.Length -gt 0 })) {
+            if ($line -cnotmatch '^([0-9a-f]{64})  (Nativune-Setup\.exe|Nativune-Setup\.zip|release-manifest\.json)$') {
+              throw "Malformed checksum line: $line"
+            }
+            $name = $Matches[2]
+            if ($checksumMap.ContainsKey($name)) { throw "Duplicate checksum entry: $name" }
+            $checksumMap[$name] = $Matches[1]
+          }
+          if ($checksumMap.Count -ne $expectedChecksumNames.Count) { throw 'Checksum file does not list exactly the three release outputs.' }
+          foreach ($name in $expectedChecksumNames) {
+            if (-not $checksumMap.ContainsKey($name)) { throw "Checksum file is missing $name." }
+            $actualHash = (Get-FileHash -LiteralPath (Join-Path $releaseRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -cne $checksumMap[$name]) { throw "Checksum verification failed for $name." }
+          }
+          Write-Host "Verified $env:RELEASE_VERSION release manifest, ZIP inventory, appended setup payload, and output checksums."
+
+      - name: Upload unpublished run artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nativune-${{ steps.release-version.outputs.version }}-${{ github.sha }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/release/Nativune-Setup.exe
+            artifacts/release/Nativune-Setup.zip
+            artifacts/release/release-manifest.json
+            artifacts/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

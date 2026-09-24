@@ -24,10 +24,10 @@ Website-backed controls depend on the public YouTube Music interface and can bec
 ## Requirements
 
 - 64-bit Windows 10 version 2004 (build 19041) or later
-- Enough disk space for the bundled app and browser runtime, plus installation and update staging space
+- Enough disk space for the large bundled app and browser runtime plus installation and update staging. The local 0.1.2 setup artifact was 634.44 MB; that is not an installed-size measurement. See the [footprint plan](plan.md#installer-footprint-baseline-and-debloat-plan).
 - A network connection for YouTube Music and release update checks
 
-The release is self-contained; it does not require a global .NET, Windows App SDK, or WebView2 installation.
+The verified local 0.1.2 package is self-contained and does not require a global .NET, Windows App SDK, or WebView2 installation. The 0.1.3 source has not been packaged; the proposed footprint work has not changed this prerequisite.
 
 ## Install
 
@@ -65,18 +65,27 @@ Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the
 
 ## Build from source
 
-The repository keeps its toolchain and caches local. On Windows, build a release package with:
+The repository keeps its toolchain and caches under the repository. Current source and the release-script default are **0.1.3**; local 0.1.2 artifacts predate this source, and the version number does not mean a 0.1.3 package has been built or accepted. On a fresh Windows checkout, prepare the pinned local inputs and restore both projects:
 
 ```powershell
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.2 -Configuration Release
+pwsh -NoProfile -File scripts/setup.ps1
+pwsh -NoProfile -File scripts/setup-webview2.ps1
+pwsh -NoProfile -File scripts/setup-ubol.ps1
+pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
+pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.3 -Configuration Release
 ```
 
-The script verifies pinned SDK/runtime/extension inputs, publishes the app and installer, scans the public payload, and writes these files under `artifacts/release`:
+These setup and restore scripts keep downloaded toolchain, browser, extension and NuGet inputs in repository-local `.tools` and `.cache` directories; they do not install a global SDK or WebView2 runtime. `build-release.ps1` verifies the pinned SDK/runtime/extension inputs, publishes the app and installer, scans the public payload, and writes these files under `artifacts/release`:
 
 - `Nativune-Setup.exe`
 - `Nativune-Setup.zip`
 - `release-manifest.json`
 - `SHA256SUMS.txt`
+
+### Private CI artifact
+
+The planned private [installer workflow](.github/workflows/build-installer.yml) will build on every push to `main` and also supports a manual workflow dispatch, once the workflow is committed there. It will use the committed app/installer version, the repository-local setup/restore scripts, the existing source regression checks, and the integrity-checked release script. Its private run artifact contains only the four files above and expires after 14 days. It does not push, create a tag or GitHub Release, or test signed-in playback; no GitHub run has yet been verified. A future manual tag/release remains separate and only follows package and compatibility acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
 
 For development commands and project constraints, see [agents.md](agents.md) and the current-state index in [plan.md](plan.md#current-state).
 
