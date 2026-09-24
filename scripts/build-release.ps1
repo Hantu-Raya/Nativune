@@ -15,9 +15,10 @@ $appProject = 'src/Nativune/Nativune.csproj'
 $installerProject = 'src/Nativune.Installer/Nativune.Installer.csproj'
 $webView2Version = '152.0.4191.62'
 $webView2Root = '.tools/webview2'
-$ubolRoot = '.tools/ubol/2026.907.2003'
+$ubolVersion = '2026.907.2003'
 $releaseRoot = Join-Path $repository 'artifacts/release'
 $workRoot = Join-Path $releaseRoot ('.staging-' + [Guid]::NewGuid().ToString('N'))
+$ubolExtractRoot = Join-Path $workRoot 'ubol-upstream'
 $stageRoot = Join-Path $workRoot 'payload'
 $appPublishRoot = Join-Path $workRoot 'app-publish'
 $setupPublishRoot = Join-Path $workRoot 'setup-publish'
@@ -112,6 +113,71 @@ function Copy-TreeContent([string] $Source, [string] $Destination) {
     foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
         Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $Destination $item.Name) -Recurse -Force
     }
+}
+
+function Expand-VerifiedArchive([string] $ArchivePath, [string] $ExpectedSha256, [string] $Destination) {
+    if (Test-Path -LiteralPath $Destination) {
+        throw "The uBO Lite extraction directory is not fresh: $Destination"
+    }
+    [void](Resolve-RepositoryPath $Destination)
+    $stream = [IO.File]::Open($ArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $archive = $null
+    try {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $archiveHash = [Convert]::ToHexString($sha256.ComputeHash($stream)).ToLowerInvariant()
+        } finally {
+            $sha256.Dispose()
+        }
+        if ($archiveHash -ne $ExpectedSha256) {
+            throw 'The pinned uBO Lite source archive does not match release-inputs.json.'
+        }
+        $stream.Position = 0
+        $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true, [Text.Encoding]::UTF8)
+        [IO.Directory]::CreateDirectory($Destination) | Out-Null
+        $destinationRoot = [IO.Path]::GetFullPath($Destination).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $invalidFileNameChars = [IO.Path]::GetInvalidFileNameChars()
+        foreach ($entry in $archive.Entries) {
+            $entryName = $entry.FullName
+            if ([string]::IsNullOrEmpty($entryName) -or $entryName.StartsWith('/') -or $entryName.Contains('\') -or $entryName -match '^[A-Za-z]:') {
+                throw "The uBO Lite archive contains an unsafe path: $entryName"
+            }
+            $isDirectory = $entryName.EndsWith('/')
+            $relative = if ($isDirectory) { $entryName.Substring(0, $entryName.Length - 1) } else { $entryName }
+            $segments = $relative.Split('/')
+            foreach ($segment in $segments) {
+                if ([string]::IsNullOrEmpty($segment) -or $segment -in @('.', '..') -or $segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.IndexOfAny($invalidFileNameChars) -ge 0) {
+                    throw "The uBO Lite archive contains an unsafe path: $entryName"
+                }
+            }
+            $unixFileType = ($entry.ExternalAttributes -shr 16) -band 0xF000
+            if (($entry.ExternalAttributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0 -or $unixFileType -eq 0xA000) {
+                throw "The uBO Lite archive contains reparse or symbolic-link content: $entryName"
+            }
+            $destinationPath = [IO.Path]::GetFullPath((Join-Path $Destination $relative.Replace('/', [IO.Path]::DirectorySeparatorChar)))
+            if (-not $destinationPath.StartsWith($destinationRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "The uBO Lite archive path escapes its extraction directory: $entryName"
+            }
+            if ($isDirectory) {
+                [IO.Directory]::CreateDirectory($destinationPath) | Out-Null
+                continue
+            }
+            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destinationPath)) | Out-Null
+            $entryStream = $entry.Open()
+            $outputStream = $null
+            try {
+                $outputStream = [IO.File]::Open($destinationPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                $entryStream.CopyTo($outputStream)
+            } finally {
+                if ($null -ne $outputStream) { $outputStream.Dispose() }
+                $entryStream.Dispose()
+            }
+        }
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        $stream.Dispose()
+    }
+    Assert-PublicTree $Destination
 }
 
 function Relative-ForwardPath([string] $Root, [string] $Path) {
@@ -249,9 +315,9 @@ try {
     $installerProjectPath = Resolve-RepositoryPath $InstallerProject
     $webView2Source = Resolve-RepositoryPath (Join-Path $WebView2Root $WebView2Version)
     $webView2Marker = Resolve-RepositoryPath (Join-Path $WebView2Root 'runtime-path.txt')
-    $ubolSource = Resolve-RepositoryPath $UbolRoot
+    $ubolExtractRoot = Resolve-RepositoryPath $ubolExtractRoot
     $webView2Executable = Resolve-RepositoryPath (Join-Path $webView2Source 'msedgewebview2.exe')
-    $ubolManifest = Resolve-RepositoryPath (Join-Path $ubolSource 'manifest.json')
+    $ubolArchive = Resolve-RepositoryPath '.cache/downloads/ubol-2026.907.2003.zip'
     $dotnetExecutable = Resolve-RepositoryPath '.tools/dotnet/dotnet.exe'
     $dotnetRoot = Resolve-RepositoryPath '.tools/dotnet'
     $nativuneLicense = Resolve-RepositoryPath 'LICENSE'
@@ -262,7 +328,6 @@ try {
     $webView2License = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/LICENSE.txt'
     $webView2Notice = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/NOTICE.txt'
     $releaseInputsPath = Resolve-RepositoryPath 'release-inputs.json'
-    $ubolArchive = Resolve-RepositoryPath '.cache/downloads/ubol-2026.907.2003.zip'
 
     Assert-RegularFile $dotnetExecutable 'The repository-local .NET SDK'
     Assert-RegularFile $nativuneLicense 'The Nativune MIT license'
@@ -271,23 +336,17 @@ try {
     Assert-RegularFile $installerProjectPath 'The installer project'
     Assert-RegularFile $webView2Marker 'The WebView2 runtime marker'
     Assert-RegularFile $webView2Executable 'The pinned WebView2 runtime executable'
-    Assert-RegularFile $ubolManifest 'The pinned uBO Lite manifest'
     Assert-RegularFile $releaseInputsPath 'The pinned release input manifest'
     Assert-RegularFile $ubolArchive 'The pinned uBO Lite source archive'
     if ((Get-Content -LiteralPath $webView2Marker -Raw).Trim() -ne $WebView2Version) {
         throw "The WebView2 runtime marker does not select $WebView2Version."
     }
     if (-not (Test-Path -LiteralPath $webView2Source -PathType Container)) { throw "The pinned WebView2 runtime is missing: $webView2Source" }
-    if (-not (Test-Path -LiteralPath $ubolSource -PathType Container)) { throw "The pinned uBO Lite payload is missing: $ubolSource" }
     if ([Diagnostics.FileVersionInfo]::GetVersionInfo($webView2Executable).FileVersion -ne $WebView2Version) {
         throw "The WebView2 runtime executable is not version $WebView2Version."
     }
-    $ubolIdentity = Get-Content -LiteralPath $ubolManifest -Raw | ConvertFrom-Json
-    if ($ubolIdentity.version -ne '2026.907.2003' -or $ubolIdentity.short_name -ne 'uBO Lite') {
-        throw 'The uBO Lite payload identity does not match version 2026.907.2003.'
-    }
     $releaseInputs = Get-Content -LiteralPath $releaseInputsPath -Raw | ConvertFrom-Json
-    if ($releaseInputs.schemaVersion -ne 1 -or $releaseInputs.dotnetSdk.version -ne '10.0.401' -or $releaseInputs.webView2.version -ne $WebView2Version -or $releaseInputs.uBlockOriginLite.version -ne '2026.907.2003') {
+    if ($releaseInputs.schemaVersion -ne 1 -or $releaseInputs.dotnetSdk.version -ne '10.0.401' -or $releaseInputs.webView2.version -ne $WebView2Version -or $releaseInputs.uBlockOriginLite.version -ne $ubolVersion) {
         throw 'The pinned release input manifest has unexpected identity fields.'
     }
     $dotnetSignature = Get-AuthenticodeSignature -LiteralPath $dotnetExecutable
@@ -310,10 +369,17 @@ try {
     if ($webView2Fingerprint.sha256 -ne $releaseInputs.webView2.treeSha256 -or $webView2Fingerprint.fileCount -ne $releaseInputs.webView2.fileCount -or $webView2Fingerprint.totalBytes -ne $releaseInputs.webView2.totalBytes) {
         throw 'The pinned WebView2 runtime tree does not match release-inputs.json.'
     }
+    Expand-VerifiedArchive $ubolArchive $releaseInputs.uBlockOriginLite.sourceArchiveSha256 $ubolExtractRoot
+    $ubolSource = $ubolExtractRoot
+    $ubolManifest = Resolve-RepositoryPath (Join-Path $ubolSource 'manifest.json')
+    Assert-RegularFile $ubolManifest 'The pinned uBO Lite manifest'
+    $ubolIdentity = Get-Content -LiteralPath $ubolManifest -Raw | ConvertFrom-Json
+    if ($ubolIdentity.version -ne $ubolVersion -or $ubolIdentity.short_name -ne 'uBO Lite') {
+        throw "The uBO Lite payload identity does not match version $ubolVersion."
+    }
     $ubolFingerprint = Get-TreeFingerprint $ubolSource
-    $ubolArchiveHash = (Get-FileHash -LiteralPath $ubolArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($ubolFingerprint.sha256 -ne $releaseInputs.uBlockOriginLite.treeSha256 -or $ubolFingerprint.fileCount -ne $releaseInputs.uBlockOriginLite.fileCount -or $ubolFingerprint.totalBytes -ne $releaseInputs.uBlockOriginLite.totalBytes -or $ubolArchiveHash -ne $releaseInputs.uBlockOriginLite.sourceArchiveSha256) {
-        throw 'The pinned uBO Lite archive or tree does not match release-inputs.json.'
+    if ($ubolFingerprint.sha256 -ne $releaseInputs.uBlockOriginLite.treeSha256 -or $ubolFingerprint.fileCount -ne $releaseInputs.uBlockOriginLite.fileCount -or $ubolFingerprint.totalBytes -ne $releaseInputs.uBlockOriginLite.totalBytes) {
+        throw 'The pristine uBO Lite source tree does not match release-inputs.json.'
     }
     Assert-RegularFile $appSdkLicense 'The Windows App SDK license'
     Assert-RegularFile $dotnetLicense '.NET license'
@@ -343,7 +409,7 @@ try {
     [IO.Directory]::CreateDirectory($webView2Destination) | Out-Null
     [IO.File]::WriteAllText((Join-Path $webView2Destination 'runtime-path.txt'), "$WebView2Version`n", [Text.UTF8Encoding]::new($false))
 
-    $ubolDestination = Join-Path $stageRoot '.tools/ubol/2026.907.2003'
+    $ubolDestination = Join-Path $stageRoot ".tools/ubol/$ubolVersion"
     Copy-TreeContent $ubolSource $ubolDestination
 
     $installerDestination = Join-Path $stageRoot 'installer'

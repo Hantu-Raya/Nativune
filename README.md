@@ -85,7 +85,7 @@ These setup and restore scripts keep downloaded toolchain, browser, extension an
 
 ### Private CI artifact
 
-The planned private [installer workflow](.github/workflows/build-installer.yml) will build on every push to `main` and also supports a manual workflow dispatch, once the workflow is committed there. It will use the committed app/installer version, the repository-local setup/restore scripts, the existing source regression checks, and the integrity-checked release script. Its private run artifact contains only the four files above and expires after 14 days. It does not push, create a tag or GitHub Release, or test signed-in playback; no GitHub run has yet been verified. A future manual tag/release remains separate and only follows package and compatibility acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
+The private installer workflow's first run (35951546259) failed on the old uBO source fingerprint. The corrective build script now extracts and validates the pristine verified upstream archive, but no successful 0.1.3 CI artifact build has yet been achieved; the updated source pin has not demonstrated package savings. The workflow does not push, create a tag or GitHub Release, or test signed-in playback. A future manual tag/release remains separate and only follows package and compatibility acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
 
 For development commands and project constraints, see [agents.md](agents.md) and the current-state index in [plan.md](plan.md#current-state).
 

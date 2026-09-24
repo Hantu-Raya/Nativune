@@ -18,8 +18,8 @@
   "uBlockOriginLite": {
     "version": "2026.907.2003",
     "sourceArchiveSha256": "56ba6fb728cc272bca1931792b1a4a15963eede4557ea829e5367e85d6057dd9",
-    "treeSha256": "993656da13041bacb93c0958dd6e5d1b77a80ecab19657b99b6f16a3447ec1c5",
-    "fileCount": 980,
-    "totalBytes": 49265578
+    "treeSha256": "2e92dfb95313b6ab56f864e1a8167329bab60e1a5be71874eb012498e93b6206",
+    "fileCount": 924,
+    "totalBytes": 35286246
   }
 }
