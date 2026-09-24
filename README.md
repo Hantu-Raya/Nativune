@@ -31,7 +31,7 @@ The verified local 0.1.2 package and private CI-built 0.1.3 package are self-con
 
 ## Install
 
-1. Repository collaborators can download `Nativune-Setup.exe` and `SHA256SUMS.txt` from the same [private v0.1.4 GitHub prerelease](https://github.com/Hantu-Raya/youtube/releases/tag/v0.1.4). This is not a public download.
+1. Repository collaborators can download `Nativune-Setup.exe` and `SHA256SUMS.txt` from the same [private v0.1.9 GitHub prerelease](https://github.com/Hantu-Raya/youtube/releases/tag/v0.1.9). This is not a public download. An installed 0.1.4 or unpublished local 0.1.5–0.1.8 build upgrades in place with `data/` kept.
 2. Verify the installer hash in PowerShell:
 
    ```powershell
@@ -83,7 +83,7 @@ Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the
 
 ## Build from source
 
-The repository keeps its toolchain and caches under the repository. Current source and the release-script default are **0.1.9**. The latest private prerelease remains 0.1.4; a private, unsigned v0.1.9 prerelease is being prepared from CI, pending CI and publication. Local 0.1.2 artifacts and the private CI-built 0.1.3 package predate the latest prerelease and have not been accepted as public releases. On a fresh Windows checkout, prepare the pinned local inputs and restore both projects:
+The repository keeps its toolchain and caches under the repository. Current source and the release-script default are **0.1.9**. The latest private prerelease is 0.1.9: the [private, unsigned v0.1.9 prerelease](https://github.com/Hantu-Raya/youtube/releases/tag/v0.1.9) was published from [CI run 36072281560](https://github.com/Hantu-Raya/youtube/actions/runs/36072281560) on commit `f7b1f89`. Its four assets were independently reverified after download (checksums, 0.1.9 manifest, all 1,322 ZIP entry hashes, appended ZIP) and match the release downloads byte-for-byte; installer SHA-256 `30ec328e8e75c842ef28c4e9d3432e1c767a50923916db192414d202aa481288`. It is unsigned, manual-only (the updater cannot see this private repository), and not a public or clean-Windows-accepted release. Local 0.1.2 artifacts and the private CI-built 0.1.3 package predate the latest prerelease and have not been accepted as public releases. On a fresh Windows checkout, prepare the pinned local inputs and restore both projects:
 
 ```powershell
 pwsh -NoProfile -File scripts/setup.ps1
