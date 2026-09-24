@@ -17,26 +17,27 @@ internal static class Program
         Nativune Setup
 
         Usage:
-          {SetupFileName} [--install-dir <absolute-path>] [--silent] [--no-launch]
+          {SetupFileName} [--install-dir <absolute-path>] [--silent] [--no-launch]  (install or upgrade)
           {SetupFileName} --update --wait-pid <positive-pid> [--install-dir <absolute-path>] [--silent] [--no-launch]
           {SetupFileName} --uninstall [--install-dir <absolute-path>] [--silent]
           {SetupFileName} --help
 
         Options:
           --install-dir <path>  Absolute root under %LOCALAPPDATA%. Default: %LOCALAPPDATA%\{DefaultInstallDirectoryName}.
-          --silent              Suppress confirmation and error dialogs. Invocation accepts included third-party terms.
+          --silent              Suppress dialogs; accepts third-party terms but never installs missing prerequisites.
           --no-launch           Do not launch the installed application.
-          --update              Replace the existing managed application after --wait-pid exits.
+          --update              Updater handoff; replace the managed installation after --wait-pid exits.
           --wait-pid <pid>      Positive process id; wait up to 60 seconds before replacement/removal.
           --uninstall           Remove manifest-owned files and shell registration, preserving data/.
 
         Exit codes:
           0 success; 2 usage; 3 cancelled; 10 invalid payload; 11 unsafe install root;
           12 target conflict; 13 wait timeout; 14 shell/ACL failure; 15 I/O failure;
-          16 rollback failure; 17 launch failure; 18 unsupported platform.
+          16 rollback failure; 17 launch failure; 18 unsupported platform; 19 prerequisite failure.
 
         Continuing an interactive install or update accepts the included third-party license terms.
-        A --silent invocation signifies the same acceptance. Nativune does not add an application EULA.
+        Missing prerequisites are downloaded and installed only after explicit interactive consent.
+        --silent fails closed with official links when a required prerequisite is missing. Nativune adds no application EULA.
         """;
 
     [STAThread]
@@ -91,6 +92,7 @@ internal enum ExitCode
     RollbackFailure = 16,
     LaunchFailure = 17,
     UnsupportedPlatform = 18,
+    PrerequisiteFailure = 19,
 }
 
 internal sealed class SetupException : Exception
@@ -109,7 +111,8 @@ internal sealed record SetupOptions(
     bool Uninstall,
     string? InstallDirectory,
     string? ExpectedVersion,
-    int? WaitPid)
+    int? WaitPid,
+    PrerequisiteTestScenario TestPrerequisiteScenario)
 {
     internal static SetupOptions Parse(string[] args)
     {
@@ -120,8 +123,9 @@ internal sealed record SetupOptions(
         var update = false;
         var uninstall = false;
         string? installDirectory = null;
-        string? expectedVersion = null;
         int? waitPid = null;
+        var testPrerequisiteScenario = PrerequisiteTestScenario.None;
+        string? expectedVersion = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -141,6 +145,20 @@ internal sealed record SetupOptions(
 #if INSTALLER_TEST_HOOKS
                 case "--test-no-shell":
                     testNoShell = true;
+                    break;
+                case "--test-prerequisites":
+                    if (++index >= args.Length || testPrerequisiteScenario != PrerequisiteTestScenario.None)
+                    {
+                        throw new SetupException(ExitCode.Usage, "--test-prerequisites requires one scenario and may be specified only once.");
+                    }
+                    testPrerequisiteScenario = args[index] switch
+                    {
+                        "present" => PrerequisiteTestScenario.Present,
+                        "missing" => PrerequisiteTestScenario.Missing,
+                        "declined" => PrerequisiteTestScenario.Declined,
+                        "offline" => PrerequisiteTestScenario.Offline,
+                        _ => throw new SetupException(ExitCode.Usage, "--test-prerequisites requires present, missing, declined, or offline."),
+                    };
                     break;
 #endif
                 case "--update":
@@ -187,7 +205,7 @@ internal sealed record SetupOptions(
             }
         }
 
-        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || waitPid is not null || noLaunch || testNoShell))
+        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || waitPid is not null || noLaunch || testNoShell || testPrerequisiteScenario != PrerequisiteTestScenario.None))
         {
             throw new SetupException(ExitCode.Usage, "--help cannot be combined with an operation.");
         }
@@ -216,8 +234,12 @@ internal sealed record SetupOptions(
         {
             throw new SetupException(ExitCode.Usage, "--test-no-shell requires --silent.");
         }
+        if (testPrerequisiteScenario != PrerequisiteTestScenario.None && (!silent || !testNoShell))
+        {
+            throw new SetupException(ExitCode.Usage, "--test-prerequisites requires --silent and --test-no-shell.");
+        }
 #endif
-        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, waitPid);
+        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, waitPid, testPrerequisiteScenario);
     }
 }
 
@@ -285,23 +307,21 @@ internal sealed class InstallerEngine
         {
             throw new SetupException(ExitCode.TargetConflict, "--update requires an existing Nativune installation manifest.");
         }
-        if (!_options.Update && installedManifest is not null)
-        {
-            throw new SetupException(ExitCode.TargetConflict, "Nativune is already installed; use --update to replace it.");
-        }
-        if (!_options.Update)
+        if (installedManifest is null)
         {
             InstallRoot.ValidateFreshTarget(_root);
         }
         else
         {
-            InstallRoot.ValidateManagedTarget(_root, installedManifest!);
+            InstallRoot.ValidateManagedTarget(_root, installedManifest);
         }
 
         if (!_options.Silent)
         {
-            var action = _options.Update ? "update" : "install";
-            if (!UserInterface.Confirm($"Continue to {action} Nativune in:\n\n{_root}\n\nContinuing accepts the included third-party license terms."))
+            var action = installedManifest is null
+                ? "install Nativune"
+                : $"upgrade Nativune {installedManifest.Version} to the newer packaged version";
+            if (!UserInterface.Confirm($"Continue to {action} in:\n\n{_root}\n\nContinuing accepts the included third-party license terms."))
             {
                 return ExitCode.Cancelled;
             }
@@ -310,6 +330,10 @@ internal sealed class InstallerEngine
         if (_options.WaitPid is int waitPid)
         {
             ProcessWaiter.WaitForExit(waitPid, WaitTimeout);
+        }
+        if (installedManifest is not null)
+        {
+            ProcessWaiter.EnsureApplicationStopped(_root);
         }
 
         var stage = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-stage");
@@ -332,9 +356,11 @@ internal sealed class InstallerEngine
             {
                 throw new SetupException(ExitCode.InvalidPayload, "The release payload version does not match the version selected by the updater.");
             }
+            using var prerequisitePlan = PrerequisiteInstaller.Prepare(_options, _root);
 
             var backupBytes = InstallTransaction.EstimateBackupBytes(_root, installedManifest, incomingManifest);
             PayloadReader.EnsureFreeSpace(_root, backupBytes);
+            PrerequisiteInstaller.InstallAndVerify(prerequisitePlan);
 
             if (!_options.TestNoShell)
             {
@@ -646,7 +672,7 @@ internal static class ProcessWaiter
                     {
                         throw new SetupException(
                             ExitCode.TargetConflict,
-                            $"Close {Program.ProductName} before uninstalling it from {root}.");
+                            $"Close {Program.ProductName} before modifying its installation at {root}.");
                     }
                 }
                 catch (InvalidOperationException)

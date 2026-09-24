@@ -26,6 +26,8 @@ internal static class Program
             }
             if (options.Command is not ("login" or "library" or "logout" or "self-check" or "media" or "media-control" or "web" or "native-fixture" or "native-interactions" or "output-audio-fixture"))
                 throw new UsageException("Unknown command. Use help for usage.");
+            if ((options.Command is "native-fixture" or "native-interactions") && options.Root is null)
+                throw new UsageException($"{options.Command} requires an existing --root <repository-root>.");
             var requiresCredentials = options.Command is not ("web" or "native-fixture" or "native-interactions" or "output-audio-fixture");
             var root = options.Command == "output-audio-fixture"
                 ? ResolveOutputAudioFixtureRoot(options.Root)
@@ -203,17 +205,17 @@ internal static class Program
 
     private static string ResolveOutputAudioFixtureRoot(string? explicitRoot)
     {
-        if (explicitRoot is not null && !Directory.Exists(Path.GetFullPath(explicitRoot)))
-            throw new UsageException("output-audio-fixture requires an existing repository root.");
+        if (explicitRoot is not null)
+        {
+            var root = Path.GetFullPath(explicitRoot);
+            if (!Directory.Exists(root))
+                throw new UsageException("output-audio-fixture requires an existing repository root.");
+            return root;
+        }
 
-        try
-        {
-            return RootLocator.Resolve(explicitRoot, requireCredentials: false);
-        }
-        catch (CredentialException)
-        {
-            throw new UsageException("output-audio-fixture prerequisite missing: run it from this repository with its project-local .tools/webview2/runtime-path.txt.");
-        }
+        return RootLocator.FindRepositoryFixtureRoot()
+            ?? throw new UsageException(
+                "output-audio-fixture needs a repository fixture with its project-local .tools/webview2/runtime-path.txt; pass --root <repository-root>.");
     }
 
     private static void PrintHelp()
@@ -308,18 +310,36 @@ internal static class RootLocator
             return root;
         }
 
-        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        var installedRoot = FindInstalledRoot();
+        if (installedRoot is null)
+            throw new UsageException(
+                "Could not locate a verified per-user Nativune installation beside this executable. Specify --root <installation-or-project-root>.");
+        if (requireCredentials && !File.Exists(CredentialPath(installedRoot)))
+            throw new CredentialException("The installed Nativune root has no installed OAuth credentials.");
+        return installedRoot;
+    }
+
+    public static string? FindInstalledRoot()
+    {
+        var appDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+        var root = Directory.GetParent(appDirectory);
+        return root is not null && ReleaseUpdater.IsInstalledBuild(root.FullName)
+            ? root.FullName
+            : null;
+    }
+
+    public static string? FindRepositoryFixtureRoot()
+    {
+        var current = new DirectoryInfo(Path.GetFullPath(AppContext.BaseDirectory));
         while (current is not null)
         {
-            var marker = requireCredentials ? CredentialPath(current.FullName) : WebViewRuntimeManifestPath(current.FullName);
-            if (File.Exists(marker))
-                return current.FullName;
+            var root = current.FullName;
+            if (File.Exists(Path.Combine(root, "src", "Nativune", "Nativune.csproj"))
+                && File.Exists(WebViewRuntimeManifestPath(root)))
+                return root;
             current = current.Parent;
         }
-
-        throw new CredentialException(requireCredentials
-            ? "Could not locate a project root containing data/oauth/desktop-client.json."
-            : "Could not locate a project root containing .tools/webview2/runtime-path.txt.");
+        return null;
     }
 
     public static string CredentialPath(string root) => Path.Combine(root, "data", "oauth", "desktop-client.json");

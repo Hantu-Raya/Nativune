@@ -50,6 +50,38 @@ internal sealed class WebViewAudioVolume : IDisposable
         _expectedBrowserExecutablePath = Path.GetFullPath(expectedBrowserExecutablePath);
     }
 
+    internal static bool TryGetWebViewProcessExecutablePath(int processId, out string executablePath)
+    {
+        executablePath = string.Empty;
+        if (processId <= 0)
+            return false;
+
+        try
+        {
+            using var processHandle = OpenProcess(
+                ProcessQueryLimitedInformation | Synchronize,
+                inheritHandle: false,
+                (uint)processId);
+            if (processHandle is null || processHandle.IsInvalid
+                || !TryGetProcessImagePath(processHandle, out var imagePath)
+                || !IsProcessAlive(processHandle)
+                || !Path.IsPathFullyQualified(imagePath))
+                return false;
+
+            var fullPath = Path.GetFullPath(imagePath);
+            if (!string.Equals(Path.GetFileName(fullPath), "msedgewebview2.exe", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(fullPath))
+                return false;
+
+            executablePath = fullPath;
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     public double Volume => _volume;
     public bool Muted => _muted;
     public bool Available => _available && !_disposed;

@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.Web.WebView2.Core;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using System.ComponentModel;
 using System.Drawing;
@@ -87,6 +88,9 @@ internal static class WebHostPolicy
 
 public sealed partial class WebHostWindow : Window
 {
+    private const string MinimumWebView2RuntimeVersionText = "152.0.4191.62";
+    private const string WebView2RuntimeDownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
+    private static readonly Version MinimumWebView2RuntimeVersion = new(152, 0, 4191, 62);
     private const uint WmClose = 0x0010;
     private const uint WmCommand = 0x0111;
     private const uint WmPowerBroadcast = 0x0218;
@@ -333,7 +337,7 @@ public sealed partial class WebHostWindow : Window
             var version = update.Version ?? "the latest version";
             var message = new TextBlock
             {
-                Text = $"Nativune {version} is available. Update now will download and verify the installer, then restart the app after installation.",
+                Text = $"Nativune {version} is available. Update now will download and verify Setup, then close Nativune. Setup will ask you to confirm the upgrade and any missing Microsoft prerequisites before installing; if you cancel, your current version remains installed.",
                 TextWrapping = TextWrapping.Wrap,
             };
             AutomationProperties.SetName(message, "Nativune update information");
@@ -747,19 +751,24 @@ public sealed partial class WebHostWindow : Window
         try
         {
             var runtimeDirectory = ResolveRuntimeDirectory(_root);
-            var profileDirectory = RootLocator.WebViewProfilePath(_root);
-            RootLocator.EnsureNoReparsePath(_root, profileDirectory);
-            Directory.CreateDirectory(profileDirectory);
-            RootLocator.EnsureNoReparsePath(_root, profileDirectory);
-            SetStatus("Starting pinned WebView2 runtime...", persistent: true);
             var options = new CoreWebView2EnvironmentOptions
             {
                 AreBrowserExtensionsEnabled = true,
                 AdditionalBrowserArguments = BrowserArguments(_settings.SleepInBackground)
             };
-            var environmentCreation = CoreWebView2Environment.CreateWithOptionsAsync(
-                    runtimeDirectory, profileDirectory, options)
-                .AsTask();
+            if (runtimeDirectory is null)
+                options.ReleaseChannels = CoreWebView2ReleaseChannels.Stable;
+            EnsureSupportedWebViewRuntime(runtimeDirectory, options);
+            var profileDirectory = RootLocator.WebViewProfilePath(_root);
+            RootLocator.EnsureNoReparsePath(_root, profileDirectory);
+            Directory.CreateDirectory(profileDirectory);
+            RootLocator.EnsureNoReparsePath(_root, profileDirectory);
+            SetStatus(runtimeDirectory is null
+                ? "Starting shared WebView2 Evergreen runtime..."
+                : "Starting repository-local fixed WebView2 runtime...", persistent: true);
+            var environmentCreation = runtimeDirectory is null
+                ? CoreWebView2Environment.CreateWithOptionsAsync(null, profileDirectory, options).AsTask()
+                : CoreWebView2Environment.CreateWithOptionsAsync(runtimeDirectory, profileDirectory, options).AsTask();
             var environment = await AwaitBoundedAsync(
                 environmentCreation, TimeSpan.FromSeconds(30), lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
@@ -791,7 +800,7 @@ public sealed partial class WebHostWindow : Window
             core.Settings.IsWebMessageEnabled = false;
             host.ZoomFactor = _settings.Zoom;
             environment.ProcessInfosChanged += (_, _) => OnProcessInfosChanged();
-            StartOutputAudio(runtimeDirectory);
+            StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
             core.SourceChanged += (_, _) => ObserveSection();
@@ -852,6 +861,16 @@ public sealed partial class WebHostWindow : Window
             UpdateNavigation();
         }
         catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested || _closing || _disposed) { }
+        catch (WebView2RuntimeRequirementException ex)
+        {
+            if (!CanContinueInitialization(lifetimeToken))
+                return;
+            ExitCode = 1;
+            _browserFailed = true;
+            SetStatus(ex.Message, isError: true, persistent: true);
+            Console.Error.WriteLine(ex.Message);
+            UpdateNavigation();
+        }
         catch (Exception)
         {
             if (!CanContinueInitialization(lifetimeToken))
@@ -1989,9 +2008,22 @@ public sealed partial class WebHostWindow : Window
     private static Color ToDrawingColor(Windows.UI.Color color)
         => Color.FromArgb(color.A, color.R, color.G, color.B);
 
-    private static string ResolveRuntimeDirectory(string root)
+    private static string? ResolveRuntimeDirectory(string root)
     {
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var installedRoot = RootLocator.FindInstalledRoot();
+        if (installedRoot is not null
+            && fullRoot.Equals(Path.TrimEndingDirectorySeparator(installedRoot), StringComparison.OrdinalIgnoreCase))
+            return null;
         var manifestPath = RootLocator.WebViewRuntimeManifestPath(root);
+        var runtimeRoot = Path.GetFullPath(Path.Combine(root, ".tools", "webview2"));
+        if (!File.Exists(manifestPath))
+        {
+            if (Directory.Exists(runtimeRoot))
+                throw new InvalidOperationException("The repository-local WebView2 runtime directory has no runtime-path.txt marker.");
+            return null;
+        }
+
         RootLocator.EnsureRegularFile(root, manifestPath);
         string relativeDirectory;
         try { relativeDirectory = File.ReadAllText(manifestPath).Trim(); }
@@ -2001,7 +2033,6 @@ public sealed partial class WebHostWindow : Window
             || relativeDirectory != Path.GetFileName(relativeDirectory)
             || relativeDirectory.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             throw new InvalidOperationException("The WebView2 runtime-path.txt file must contain one relative version directory name.");
-        var runtimeRoot = Path.GetFullPath(Path.Combine(root, ".tools", "webview2"));
         var runtimeDirectory = Path.GetFullPath(Path.Combine(runtimeRoot, relativeDirectory));
         var runtimePrefix = runtimeRoot + Path.DirectorySeparatorChar;
         if (!runtimeDirectory.StartsWith(runtimePrefix, StringComparison.OrdinalIgnoreCase))
@@ -2009,6 +2040,79 @@ public sealed partial class WebHostWindow : Window
         RootLocator.EnsureNoReparseTree(root, runtimeDirectory);
         RootLocator.EnsureRegularFile(root, Path.Combine(runtimeDirectory, "msedgewebview2.exe"));
         return runtimeDirectory;
+    }
+
+    private static void EnsureSupportedWebViewRuntime(string? runtimeDirectory, CoreWebView2EnvironmentOptions options)
+    {
+        if (runtimeDirectory is null)
+        {
+            var registeredVersion = GetRegisteredEvergreenRuntimeVersion();
+            if (registeredVersion is null || registeredVersion < MinimumWebView2RuntimeVersion)
+            {
+                var detected = registeredVersion is null
+                    ? "The Microsoft WebView2 Evergreen Runtime was not registered or its version could not be verified."
+                    : $"Microsoft WebView2 Evergreen Runtime {registeredVersion} is too old.";
+                throw new WebView2RuntimeRequirementException(
+                    $"{detected} Nativune requires {MinimumWebView2RuntimeVersionText} or later; Edge Beta/Dev/Canary does not satisfy this prerequisite. Install or update the Evergreen Runtime from {WebView2RuntimeDownloadUrl}");
+            }
+        }
+
+        string versionText;
+        try
+        {
+            versionText = CoreWebView2Environment.GetAvailableBrowserVersionString(runtimeDirectory, options);
+        }
+        catch (Exception ex)
+        {
+            throw new WebView2RuntimeRequirementException(
+                $"Microsoft WebView2 Evergreen Runtime {MinimumWebView2RuntimeVersionText} or later is required. Install it from {WebView2RuntimeDownloadUrl}",
+                ex);
+        }
+
+        if (!Version.TryParse(versionText, out var version))
+            throw new WebView2RuntimeRequirementException(
+                $"The available WebView2 runtime version could not be verified or resolved to a preview channel. Nativune requires the stable {MinimumWebView2RuntimeVersionText} or later from {WebView2RuntimeDownloadUrl}");
+        if (version < MinimumWebView2RuntimeVersion)
+            throw new WebView2RuntimeRequirementException(
+                $"WebView2 Runtime {version} is too old. Nativune requires {MinimumWebView2RuntimeVersionText} or later; install or update it from {WebView2RuntimeDownloadUrl}");
+    }
+
+    private static Version? GetRegisteredEvergreenRuntimeVersion()
+    {
+        var locations = new (RegistryHive Hive, string SubKey)[]
+        {
+            (RegistryHive.LocalMachine,
+                @"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (RegistryHive.LocalMachine,
+                @"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (RegistryHive.CurrentUser,
+                @"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+        };
+        Version? highestVersion = null;
+        foreach (var (hive, subKey) in locations)
+        {
+            try
+            {
+                using var registry = RegistryKey.OpenBaseKey(hive, RegistryView.Default);
+                using var client = registry.OpenSubKey(subKey, writable: false);
+                if (client?.GetValue("pv", null, RegistryValueOptions.DoNotExpandEnvironmentNames) is not string value
+                    || !Version.TryParse(value, out var version))
+                    continue;
+                if (highestVersion is null || version > highestVersion)
+                    highestVersion = version;
+            }
+            catch (Exception)
+            {
+                // Check the other per-user or machine registration and fail closed if none verify.
+            }
+        }
+        return highestVersion;
+    }
+
+    private sealed class WebView2RuntimeRequirementException : InvalidOperationException
+    {
+        public WebView2RuntimeRequirementException(string message, Exception? innerException = null)
+            : base(message, innerException) { }
     }
 
     private void OnProcessInfosChanged()

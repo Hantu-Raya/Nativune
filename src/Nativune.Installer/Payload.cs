@@ -16,7 +16,6 @@ internal sealed class Manifest
     internal const long MaxFileBytes = 1L * 1024 * 1024 * 1024;
     internal const long MaxTotalBytes = 2L * 1024 * 1024 * 1024;
     internal const long MaxArchiveBytes = 1L * 1024 * 1024 * 1024;
-    internal const string ExpectedWebView2Version = "152.0.4191.62";
     private static readonly Regex Semver = new(
         "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
@@ -207,7 +206,6 @@ internal sealed class Manifest
 
             RequirePath(paths, Program.AppExecutable);
             RequirePath(paths, "installer/Nativune.Setup.exe");
-            RequirePath(paths, ".tools/webview2/runtime-path.txt");
             RequirePath(paths, ".tools/ubol/2026.907.2003/LICENSE.txt");
             RequirePath(paths, ".tools/ubol/2026.907.2003/manifest.json");
             RequirePath(paths, "licenses/Microsoft-WindowsAppSDK.txt");
@@ -244,53 +242,8 @@ internal sealed class Manifest
         }
     }
 
-    internal static void ValidateExtractedTools(string stage, Manifest manifest)
+    internal static void ValidateExtractedTools(string stage)
     {
-        var markerPath = Path.Combine(stage, ".tools", "webview2", "runtime-path.txt");
-        PathSafety.EnsureRegularFile(markerPath);
-        if (new FileInfo(markerPath).Length > 128)
-        {
-            throw new SetupException(ExitCode.InvalidPayload, "The WebView2 runtime marker is too large.");
-        }
-        var marker = File.ReadAllText(markerPath).Trim();
-        if (!Regex.IsMatch(marker, "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
-        {
-            throw new SetupException(ExitCode.InvalidPayload, "The WebView2 runtime marker is invalid.");
-        }
-        if (!string.Equals(marker, ExpectedWebView2Version, StringComparison.Ordinal))
-        {
-            throw new SetupException(ExitCode.InvalidPayload, "The WebView2 runtime version is not approved for this Nativune release.");
-        }
-        var runtimePrefix = $".tools/webview2/{marker}/";
-        var runtimeRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in manifest.Files)
-        {
-            if (!file.Path.StartsWith(".tools/webview2/", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(file.Path, ".tools/webview2/runtime-path.txt", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            var remainder = file.Path[".tools/webview2/".Length..];
-            var separator = remainder.IndexOf('/');
-            if (separator <= 0)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The WebView2 payload has an invalid runtime root.");
-            }
-            runtimeRoots.Add(remainder[..separator]);
-            if (!file.Path.StartsWith(runtimePrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The payload contains an unpinned WebView2 runtime directory.");
-            }
-        }
-        if (runtimeRoots.Count != 1 || !runtimeRoots.Contains(marker))
-        {
-            throw new SetupException(ExitCode.InvalidPayload, "The payload must contain exactly the pinned WebView2 runtime.");
-        }
-        var runtimeDirectory = Path.Combine(stage, ".tools", "webview2", marker);
-        PathSafety.EnsureDirectory(runtimeDirectory);
-        var runtimeExecutable = Path.Combine(runtimeDirectory, "msedgewebview2.exe");
-        PathSafety.EnsureRegularFile(runtimeExecutable);
-        PathSafety.EnsureNoReparseTree(runtimeDirectory);
         var ubolRoot = Path.Combine(stage, ".tools", "ubol", "2026.907.2003");
         PathSafety.EnsureRegularFile(Path.Combine(ubolRoot, "LICENSE.txt"));
         PathSafety.EnsureRegularFile(Path.Combine(ubolRoot, "manifest.json"));
@@ -452,6 +405,10 @@ internal static class PayloadReader
             }
             var manifestBytes = ReadEntry(manifestEntry, Manifest.MaxManifestBytes);
             var manifest = Manifest.Parse(manifestBytes);
+            if (manifest.Files.Any(file => file.Path.StartsWith(".tools/webview2/", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The release payload must use the shared WebView2 runtime and cannot bundle a fixed runtime.");
+            }
             if (entries.Count != manifest.Files.Count + 1)
             {
                 throw new SetupException(ExitCode.InvalidPayload, "The release archive contains unexpected entries.");
@@ -484,7 +441,7 @@ internal static class PayloadReader
                 PathSafety.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
                 ExtractAndHash(entry, destination, payloadFile);
             }
-            Manifest.ValidateExtractedTools(stage, manifest);
+            Manifest.ValidateExtractedTools(stage);
             return manifest;
         }
         catch (SetupException)

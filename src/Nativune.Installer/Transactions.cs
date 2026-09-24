@@ -119,13 +119,13 @@ internal static class InstallTransaction
                 shellApplied = true;
                 ShellManager.Apply(root, incoming.Version);
             }
-            AclManager.ApplyIfRequired(root, noShell);
             foreach (var path in obsoletePaths)
             {
                 EnsureManagedTargetAbsent(root, path);
             }
             MoveStagedToTarget(root, stage, Program.ManifestFileName, backedUpPaths);
             manifestInstalled = true;
+            UninstallTransaction.RemoveEmptyManagedDirectories(root, obsoletePaths);
         }
         catch (Exception error)
         {
@@ -137,6 +137,8 @@ internal static class InstallTransaction
                     ShellManager.Restore(shellState);
                 }
                 Rollback(root, backup, backedUpPaths, changedPaths, manifestInstalled);
+                UninstallTransaction.RemoveEmptyManagedDirectories(
+                    root, newPaths.Except(oldPaths, StringComparer.OrdinalIgnoreCase));
             }
             catch (Exception rollback)
             {
@@ -326,7 +328,7 @@ internal static class UninstallTransaction
                 shellMutated = true;
                 ShellManager.Remove(root);
             }
-            RemoveEmptyManagedDirectories(root, manifest);
+            RemoveEmptyManagedDirectories(root, manifest.Files.Select(file => file.Path));
         }
         catch (Exception error)
         {
@@ -371,15 +373,15 @@ internal static class UninstallTransaction
         }
     }
 
-    private static void RemoveEmptyManagedDirectories(string root, Manifest manifest)
+    internal static void RemoveEmptyManagedDirectories(string root, IEnumerable<string> paths)
     {
         var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in manifest.Files)
+        foreach (var path in paths)
         {
-            var separator = file.Path.LastIndexOf('/');
+            var separator = path.LastIndexOf('/');
             while (separator > 0)
             {
-                var directory = file.Path[..separator];
+                var directory = path[..separator];
                 directories.Add(directory);
                 separator = directory.LastIndexOf('/');
             }
@@ -617,47 +619,5 @@ internal static class ShellManager
         if (string.IsNullOrWhiteSpace(path)) return string.Empty;
         try { return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
         catch { return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
-    }
-}
-
-internal static class AclManager
-{
-    internal static void ApplyIfRequired(string root, bool noShell)
-    {
-        if (noShell || !OperatingSystem.IsWindows() || Environment.OSVersion.Version.Major != 10 || Environment.OSVersion.Version.Build >= 22000)
-        {
-            return;
-        }
-        var marker = File.ReadAllText(Path.Combine(root, ".tools", "webview2", "runtime-path.txt")).Trim();
-        var runtime = Path.Combine(root, ".tools", "webview2", marker);
-        PathSafety.EnsureDirectory(runtime);
-        PathSafety.EnsureNoReparseTree(runtime);
-        var icacls = Path.Combine(Environment.SystemDirectory, "icacls.exe");
-        PathSafety.EnsureRegularFile(icacls);
-        using var process = Process.Start(new ProcessStartInfo
-        {
-            FileName = icacls,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = root,
-            ArgumentList =
-            {
-                runtime,
-                "/grant",
-                "*S-1-15-2-2:(OI)(CI)(RX)",
-                "*S-1-15-2-1:(OI)(CI)(RX)",
-                "/T",
-                "/C",
-            },
-        }) ?? throw new SetupException(ExitCode.ShellFailure, "Could not start icacls for WebView2 runtime permissions.");
-        if (!process.WaitForExit((int)TimeSpan.FromMinutes(2).TotalMilliseconds))
-        {
-            try { process.Kill(entireProcessTree: true); } catch { }
-            throw new SetupException(ExitCode.ShellFailure, "WebView2 runtime permission setup timed out.");
-        }
-        if (process.ExitCode != 0)
-        {
-            throw new SetupException(ExitCode.ShellFailure, "WebView2 runtime permissions could not be granted.");
-        }
     }
 }

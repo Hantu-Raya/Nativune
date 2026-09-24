@@ -2,9 +2,11 @@
 param(
     [Parameter(Position = 0)]
     [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')]
-    [string] $Version = '0.1.3',
+    [string] $Version = '0.1.4',
     [ValidateSet('Debug', 'Release')]
-    [string] $Configuration = 'Release'
+    [string] $Configuration = 'Release',
+    [ValidatePattern('^artifacts[/\\][A-Za-z0-9._-]+$')]
+    [string] $OutputDirectory = 'artifacts/release'
 )
 
 Set-StrictMode -Version Latest
@@ -13,10 +15,8 @@ $ErrorActionPreference = 'Stop'
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $appProject = 'src/Nativune/Nativune.csproj'
 $installerProject = 'src/Nativune.Installer/Nativune.Installer.csproj'
-$webView2Version = '152.0.4191.62'
-$webView2Root = '.tools/webview2'
 $ubolVersion = '2026.907.2003'
-$releaseRoot = Join-Path $repository 'artifacts/release'
+$releaseRoot = Join-Path $repository $OutputDirectory
 $workRoot = Join-Path $releaseRoot ('.staging-' + [Guid]::NewGuid().ToString('N'))
 $ubolExtractRoot = Join-Path $workRoot 'ubol-upstream'
 $stageRoot = Join-Path $workRoot 'payload'
@@ -27,7 +27,6 @@ $setupPath = Join-Path $releaseRoot 'Nativune-Setup.exe'
 $releaseZipPath = Join-Path $releaseRoot 'Nativune-Setup.zip'
 $manifestPath = Join-Path $releaseRoot 'release-manifest.json'
 $checksumsPath = Join-Path $releaseRoot 'SHA256SUMS.txt'
-
 function Resolve-RepositoryPath([string] $Path) {
     if ([IO.Path]::IsPathRooted($Path)) {
         $candidate = [IO.Path]::GetFullPath($Path)
@@ -65,6 +64,21 @@ function Assert-RegularFile([string] $Path, [string] $Description) {
     $item = Get-Item -LiteralPath $Path -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "$Description is a reparse point: $Path"
+    }
+}
+
+function Assert-NoBundledAppRuntime([string] $Root, [string] $Description) {
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "$Description directory is missing: $Root"
+    }
+    $forbiddenNames = '(?i)^(?:(?:coreclr|clrjit|hostfxr|hostpolicy|msedgewebview2|msedge|msedge_proxy|icudtl)\.(?:dll|exe|dat)|Microsoft\.WindowsAppRuntime[^\\/]*\.(?:dll|exe|msix|msixbundle|appx|appxbundle)|(?:v8_context_snapshot|snapshot_blob)\.bin)$'
+    foreach ($item in Get-ChildItem -LiteralPath $Root -Recurse -Force) {
+        if ($item.Name -match $forbiddenNames -and $item.Name -notin @(
+            'Microsoft.WindowsAppRuntime.Bootstrap.dll',
+            'Microsoft.WindowsAppRuntime.Bootstrap.Net.dll'
+        )) {
+            throw "$Description contains a bundled .NET, Windows App SDK, or fixed WebView2 runtime file: $($item.FullName)"
+        }
     }
 }
 
@@ -304,19 +318,16 @@ try {
         throw 'Release packaging is Windows-only.'
     }
     [void](Resolve-RepositoryPath 'artifacts')
-    [void](Resolve-RepositoryPath 'artifacts/release')
+    [void](Resolve-RepositoryPath $releaseRoot)
     [IO.Directory]::CreateDirectory($releaseRoot) | Out-Null
     [IO.Directory]::CreateDirectory($workRoot) | Out-Null
     [IO.Directory]::CreateDirectory($stageRoot) | Out-Null
-    [void](Resolve-RepositoryPath 'artifacts/release')
+    [void](Resolve-RepositoryPath $releaseRoot)
     [void](Resolve-RepositoryPath $workRoot)
 
     $appProjectPath = Resolve-RepositoryPath $AppProject
     $installerProjectPath = Resolve-RepositoryPath $InstallerProject
-    $webView2Source = Resolve-RepositoryPath (Join-Path $WebView2Root $WebView2Version)
-    $webView2Marker = Resolve-RepositoryPath (Join-Path $WebView2Root 'runtime-path.txt')
     $ubolExtractRoot = Resolve-RepositoryPath $ubolExtractRoot
-    $webView2Executable = Resolve-RepositoryPath (Join-Path $webView2Source 'msedgewebview2.exe')
     $ubolArchive = Resolve-RepositoryPath '.cache/downloads/ubol-2026.907.2003.zip'
     $dotnetExecutable = Resolve-RepositoryPath '.tools/dotnet/dotnet.exe'
     $dotnetRoot = Resolve-RepositoryPath '.tools/dotnet'
@@ -334,19 +345,10 @@ try {
     Assert-RegularFile $repositoryNotice 'The repository third-party notices file'
     Assert-RegularFile $appProjectPath 'The application project'
     Assert-RegularFile $installerProjectPath 'The installer project'
-    Assert-RegularFile $webView2Marker 'The WebView2 runtime marker'
-    Assert-RegularFile $webView2Executable 'The pinned WebView2 runtime executable'
     Assert-RegularFile $releaseInputsPath 'The pinned release input manifest'
     Assert-RegularFile $ubolArchive 'The pinned uBO Lite source archive'
-    if ((Get-Content -LiteralPath $webView2Marker -Raw).Trim() -ne $WebView2Version) {
-        throw "The WebView2 runtime marker does not select $WebView2Version."
-    }
-    if (-not (Test-Path -LiteralPath $webView2Source -PathType Container)) { throw "The pinned WebView2 runtime is missing: $webView2Source" }
-    if ([Diagnostics.FileVersionInfo]::GetVersionInfo($webView2Executable).FileVersion -ne $WebView2Version) {
-        throw "The WebView2 runtime executable is not version $WebView2Version."
-    }
     $releaseInputs = Get-Content -LiteralPath $releaseInputsPath -Raw | ConvertFrom-Json
-    if ($releaseInputs.schemaVersion -ne 1 -or $releaseInputs.dotnetSdk.version -ne '10.0.401' -or $releaseInputs.webView2.version -ne $WebView2Version -or $releaseInputs.uBlockOriginLite.version -ne $ubolVersion) {
+    if ($releaseInputs.schemaVersion -ne 1 -or $releaseInputs.dotnetSdk.version -ne '10.0.401' -or $releaseInputs.uBlockOriginLite.version -ne $ubolVersion) {
         throw 'The pinned release input manifest has unexpected identity fields.'
     }
     $dotnetSignature = Get-AuthenticodeSignature -LiteralPath $dotnetExecutable
@@ -360,14 +362,6 @@ try {
     $dotnetFingerprint = Get-TreeFingerprint $dotnetRoot -AllowDevelopmentFiles
     if ($dotnetFingerprint.sha256 -ne $releaseInputs.dotnetSdk.treeSha256 -or $dotnetFingerprint.fileCount -ne $releaseInputs.dotnetSdk.fileCount -or $dotnetFingerprint.totalBytes -ne $releaseInputs.dotnetSdk.totalBytes) {
         throw 'The repository-local .NET SDK tree does not match release-inputs.json.'
-    }
-    $webView2Signature = Get-AuthenticodeSignature -LiteralPath $webView2Executable
-    if ($webView2Signature.Status -ne 'Valid' -or $null -eq $webView2Signature.SignerCertificate -or $webView2Signature.SignerCertificate.Subject -notmatch 'Microsoft') {
-        throw 'The pinned WebView2 runtime executable does not have a valid Microsoft signature.'
-    }
-    $webView2Fingerprint = Get-TreeFingerprint $webView2Source
-    if ($webView2Fingerprint.sha256 -ne $releaseInputs.webView2.treeSha256 -or $webView2Fingerprint.fileCount -ne $releaseInputs.webView2.fileCount -or $webView2Fingerprint.totalBytes -ne $releaseInputs.webView2.totalBytes) {
-        throw 'The pinned WebView2 runtime tree does not match release-inputs.json.'
     }
     Expand-VerifiedArchive $ubolArchive $releaseInputs.uBlockOriginLite.sourceArchiveSha256 $ubolExtractRoot
     $ubolSource = $ubolExtractRoot
@@ -386,11 +380,11 @@ try {
     Assert-RegularFile $dotnetNotice '.NET third-party notices'
     Assert-RegularFile $webView2License 'The WebView2 license'
     Assert-RegularFile $webView2Notice 'The WebView2 notice'
-
     Push-Location $repository
     try {
-        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -o $appPublishRoot
+        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -o $appPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
+        Assert-NoBundledAppRuntime $appPublishRoot 'The published Nativune app'
         & $dotnetExecutable publish $installerProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -p:InstallerTestHooks=false -o $setupPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The installer stub publish failed.' }
     } finally {
@@ -400,14 +394,10 @@ try {
     $appDestination = Join-Path $stageRoot 'app'
     Copy-TreeContent $appPublishRoot $appDestination
     $appExecutable = Join-Path $appDestination 'Nativune.exe'
+    Assert-NoBundledAppRuntime $appDestination 'The staged Nativune app'
     Assert-RegularFile $appExecutable 'The published Nativune executable'
     $stubPath = Join-Path $setupPublishRoot 'Nativune.Setup.exe'
     Assert-RegularFile $stubPath 'The published setup stub'
-
-    $webView2Destination = Join-Path $stageRoot '.tools/webview2'
-    Copy-TreeContent $webView2Source (Join-Path $webView2Destination $WebView2Version)
-    [IO.Directory]::CreateDirectory($webView2Destination) | Out-Null
-    [IO.File]::WriteAllText((Join-Path $webView2Destination 'runtime-path.txt'), "$WebView2Version`n", [Text.UTF8Encoding]::new($false))
 
     $ubolDestination = Join-Path $stageRoot ".tools/ubol/$ubolVersion"
     Copy-TreeContent $ubolSource $ubolDestination
@@ -426,6 +416,12 @@ try {
     Copy-Item -LiteralPath $nativuneLicense -Destination (Join-Path $licensesDestination 'Nativune-LICENSE.txt') -Force
     Copy-Item -LiteralPath $repositoryNotice -Destination (Join-Path $licensesDestination 'THIRD-PARTY-NOTICES.txt') -Force
 
+    $fixedWebViewPath = Join-Path $stageRoot '.tools/webview2'
+    $runtimeMarkers = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force | Where-Object { $_.Name -eq 'runtime-path.txt' })
+    if ((Test-Path -LiteralPath $fixedWebViewPath) -or $runtimeMarkers.Count -gt 0) {
+        throw 'The public release payload unexpectedly contains a fixed WebView2 runtime or runtime marker.'
+    }
+    Assert-NoBundledAppRuntime (Join-Path $stageRoot 'app') 'The public Nativune app payload'
     Assert-PublicTree $stageRoot
     New-Manifest $stageRoot
     Assert-RegularFile (Join-Path $stageRoot 'release-manifest.json') 'The generated release manifest'

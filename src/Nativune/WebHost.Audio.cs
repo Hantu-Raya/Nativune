@@ -19,6 +19,7 @@ public sealed partial class WebHostWindow
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _outputFlyoutCloseTimer;
     private string? _outputAudioExecutablePath;
     private HashSet<int> _outputAudioProcessIds = [];
+    private bool _outputAudioPathVerified;
     private PendingOutputVolume? _pendingOutputVolume;
     private PendingOutputMute? _pendingOutputMute;
     private OutputAudioState _outputAudioState = OutputAudioState.Unavailable;
@@ -186,16 +187,15 @@ public sealed partial class WebHostWindow
         if (OutputVolumeFlyout.IsOpen) OutputVolumeFlyout.Hide();
     }
 
-    private void StartOutputAudio(string runtimeDirectory)
+    private void StartOutputAudio()
     {
         if (!_dispatcherQueue.HasThreadAccess)
         {
-            _dispatcherQueue.TryEnqueue(() => StartOutputAudio(runtimeDirectory));
+            _dispatcherQueue.TryEnqueue(StartOutputAudio);
             return;
         }
 
         if (_closing || _disposed) return;
-        _outputAudioExecutablePath = Path.Combine(runtimeDirectory, "msedgewebview2.exe");
         UpdateOutputAudioControls();
         _outputAudioTimer?.Start();
         RefreshOutputAudio();
@@ -216,16 +216,52 @@ public sealed partial class WebHostWindow
 
     private HashSet<int> CaptureOutputAudioProcesses()
     {
+        HashSet<int> FailClosed()
+        {
+            _outputAudioPathVerified = false;
+            UpdateOutputAudioControls();
+            return [];
+        }
+
+        if (_closing || _disposed || _outputAudioClosed || _environment is null)
+            return FailClosed();
+
         try
         {
-            var processes = _environment?.GetProcessInfos();
-            return processes is null
-                ? []
-                : processes.Select(info => info.ProcessId).Where(id => id > 0).ToHashSet();
+            var processes = _environment.GetProcessInfos();
+            if (processes is null || processes.Count == 0)
+                return FailClosed();
+
+            var processIds = new HashSet<int>();
+            string? verifiedExecutablePath = null;
+            foreach (var process in processes)
+            {
+                var processId = process.ProcessId;
+                if (processId <= 0)
+                    return FailClosed();
+                if (!processIds.Add(processId))
+                    continue;
+                if (!WebViewAudioVolume.TryGetWebViewProcessExecutablePath(processId, out var executablePath))
+                    return FailClosed();
+                if (verifiedExecutablePath is null)
+                    verifiedExecutablePath = executablePath;
+                else if (!verifiedExecutablePath.Equals(executablePath, StringComparison.OrdinalIgnoreCase))
+                    return FailClosed();
+            }
+
+            if (verifiedExecutablePath is null
+                || (_outputAudioExecutablePath is not null
+                    && !_outputAudioExecutablePath.Equals(verifiedExecutablePath, StringComparison.OrdinalIgnoreCase)))
+                return FailClosed();
+
+            _outputAudioExecutablePath ??= verifiedExecutablePath;
+            _outputAudioPathVerified = true;
+            UpdateOutputAudioControls();
+            return processIds;
         }
         catch (Exception)
         {
-            return [];
+            return FailClosed();
         }
     }
 
@@ -242,7 +278,8 @@ public sealed partial class WebHostWindow
             _dispatcherQueue.TryEnqueue(() => SetOutputVolume(value));
             return;
         }
-        if (_closing || _disposed || _outputAudioClosed || _outputAudioExecutablePath is null
+        if (_closing || _disposed || _outputAudioClosed || !_outputAudioPathVerified
+            || _outputAudioExecutablePath is null
             || !double.IsFinite(value) || value < 0 || value > 1)
             return;
         _pendingOutputDisplayVolume = value;
@@ -258,7 +295,8 @@ public sealed partial class WebHostWindow
             _dispatcherQueue.TryEnqueue(ToggleOutputMute);
             return;
         }
-        if (_closing || _disposed || _outputAudioClosed || _outputAudioExecutablePath is null) return;
+        if (_closing || _disposed || _outputAudioClosed || !_outputAudioPathVerified
+            || _outputAudioExecutablePath is null) return;
 
         var currentMute = _outputAudioState.Available
             && DateTime.UtcNow >= _pendingOutputMuteDisplayUntil
@@ -586,8 +624,12 @@ public sealed partial class WebHostWindow
     {
         var audio = _outputAudioState;
         var sessionActive = audio.Available;
-        var ready = _outputAudioExecutablePath is not null && !_closing && !_disposed && !_outputAudioClosed;
+        var ready = _outputAudioExecutablePath is not null && _outputAudioPathVerified
+            && !_closing && !_disposed && !_outputAudioClosed;
         var value = sessionActive ? audio.Volume : _desiredOutputVolume;
+        var unavailableHelp = _outputAudioExecutablePath is null
+            ? "WebView audio is not initialized."
+            : "WebView audio process identity could not be verified.";
         if (!sessionActive || _pendingOutputDisplayVolume is { } pending
             && (Math.Abs(value - pending) <= 0.0005 || DateTime.UtcNow >= _pendingOutputDisplayUntil))
             _pendingOutputDisplayVolume = null;
@@ -612,14 +654,14 @@ public sealed partial class WebHostWindow
             AutomationProperties.SetName(OutputMuteButton,
                 muted ? "Unmute WebView audio" : "Mute WebView audio");
             AutomationProperties.SetHelpText(OutputMuteButton,
-                !ready ? "WebView output is not initialized."
+                !ready ? unavailableHelp
                     : sessionActive
                         ? $"Click to {(muted ? "unmute" : "mute")} app output. Hover, right-click, or press Down for the volume slider. App output {value:P1}; independent of YouTube Music volume."
                         : audio.HasOwnedSessions
                             ? "Verified WebView audio sessions are present but report inconsistent output states. Explicit volume and mute requests are applied transactionally across those owned sessions."
                             : $"Click to {(muted ? "unmute" : "mute")} WebView output; hover, right-click, or press Down for its slider. {value:P1} is a pending preference until an owned audio session starts.");
             AutomationProperties.SetHelpText(OutputVolumeSlider,
-                !ready ? "WebView output is not initialized."
+                !ready ? unavailableHelp
                     : sessionActive
                         ? $"WebView audio output {value:P1}; independent of YouTube Music volume. Arrow keys change by 0.1 percent, Page keys by 1 percent."
                         : audio.HasOwnedSessions

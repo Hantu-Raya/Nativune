@@ -191,8 +191,6 @@ jobs:
             }
             foreach ($required in @(
               'app/Nativune.exe',
-              '.tools/webview2/152.0.4191.62/msedgewebview2.exe',
-              '.tools/webview2/runtime-path.txt',
               '.tools/ubol/2026.907.2003/manifest.json',
               'installer/Nativune.Setup.exe',
               'licenses/Nativune-LICENSE.txt',
@@ -200,6 +198,12 @@ jobs:
               'release-manifest.json'
             )) {
               if (-not $zipPaths.Contains($required)) { throw "Release ZIP is missing required payload entry: $required" }
+            }
+            foreach ($entryPath in $zipPaths) {
+              if ($entryPath.StartsWith('.tools/webview2/', [StringComparison]::OrdinalIgnoreCase) -or
+                  $entryPath -in @('app/coreclr.dll', 'app/hostfxr.dll', 'app/Microsoft.UI.Xaml.dll')) {
+                throw "Release ZIP bundles a shared runtime instead of using the installed prerequisite: $entryPath"
+              }
             }
             foreach ($zipPathName in $zipPaths) {
               if ($zipPathName -cne 'release-manifest.json' -and -not $manifestPaths.Contains($zipPathName)) {

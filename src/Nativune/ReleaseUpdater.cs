@@ -405,7 +405,6 @@ internal static class ReleaseUpdater
             rootPath,
             "--expected-version",
             version.ToManifestString(),
-            "--silent",
         ];
     }
 
@@ -1063,7 +1062,7 @@ internal static class ReleaseUpdaterChecks
         var expectedArguments = new[]
         {
             "--update", "--wait-pid", "1234", "--install-dir", Path.GetFullPath(Path.Combine(root, "installed root")),
-            "--expected-version", "0.1.1", "--silent",
+            "--expected-version", "0.1.1",
         };
         if (!arguments.SequenceEqual(expectedArguments, StringComparer.Ordinal))
             throw new SelfCheckException("Update command arguments failed.");
