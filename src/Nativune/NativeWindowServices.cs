@@ -30,14 +30,20 @@ internal sealed class NativeWindowServices : IDisposable
     private const int SmCxPaddedBorder = 92;
     private const uint WmSize = 0x0005;
     private const uint WmDpiChanged = 0x02E0;
+    private const int CompactCaptionWidthDip = 800;
+    private const int CompactCaptionRightControlsDip = 160;
+    private const int CompactCaptionHeaderRightDip = 640;
+    private const int CompactCaptionLeftWidthDip = 152;
+    private const int CompactCaptionHeaderHeightDip = 64;
 
     private static long _nextSubclassId;
-    private static readonly NonClientRegionKind[] CaptionlessResizeRegions =
+    private static readonly NonClientRegionKind[] CaptionlessFrameRegions =
     [
         NonClientRegionKind.TopBorder,
         NonClientRegionKind.LeftBorder,
         NonClientRegionKind.BottomBorder,
-        NonClientRegionKind.RightBorder
+        NonClientRegionKind.RightBorder,
+        NonClientRegionKind.Caption
     ];
 
     private readonly nint _window;
@@ -109,6 +115,7 @@ internal sealed class NativeWindowServices : IDisposable
         }
     }
 
+
     private void ApplyCaptionlessResizeRegions(InputNonClientPointerSource source)
     {
         var client = default(NativeRect);
@@ -145,7 +152,44 @@ internal sealed class NativeWindowServices : IDisposable
             [new RectInt32(0, height - verticalBorder, width, verticalBorder)]);
         source.SetRegionRects(NonClientRegionKind.RightBorder,
             [new RectInt32(width - horizontalBorder, 0, horizontalBorder, height)]);
+
+        var clientRight = Math.Max(horizontalBorder, width - horizontalBorder);
+        var clientBottom = Math.Max(verticalBorder, height - verticalBorder);
+        var headerRight = width > DipToPixels(CompactCaptionWidthDip, dpi)
+            ? width - DipToPixels(CompactCaptionRightControlsDip, dpi)
+            : DipToPixels(CompactCaptionHeaderRightDip, dpi);
+        headerRight = Math.Clamp(headerRight, horizontalBorder, clientRight);
+        var headerBottom = Math.Clamp(
+            DipToPixels(CompactCaptionHeaderHeightDip, dpi),
+            verticalBorder,
+            clientBottom);
+        var leftRight = Math.Clamp(
+            DipToPixels(CompactCaptionLeftWidthDip, dpi),
+            horizontalBorder,
+            clientRight);
+
+        var captionRects = new List<RectInt32>(2);
+        var headerWidth = headerRight - horizontalBorder;
+        var headerHeight = headerBottom - verticalBorder;
+        if (headerWidth > 0 && headerHeight > 0)
+            captionRects.Add(new RectInt32(horizontalBorder, verticalBorder, headerWidth, headerHeight));
+
+        var leftWidth = leftRight - horizontalBorder;
+        var leftHeight = clientBottom - headerBottom;
+        if (leftWidth > 0 && leftHeight > 0)
+            captionRects.Add(new RectInt32(horizontalBorder, headerBottom, leftWidth, leftHeight));
+
+        if (captionRects.Count == 0)
+            source.ClearRegionRects(NonClientRegionKind.Caption);
+        else
+            source.SetRegionRects(NonClientRegionKind.Caption, captionRects.ToArray());
     }
+
+    private static int DipToPixels(int dip, uint dpi)
+        => (int)Math.Clamp(
+            Math.Round(dip * (double)dpi / 96d, MidpointRounding.AwayFromZero),
+            0d,
+            int.MaxValue);
 
     private void ClearCaptionlessResizeRegions()
     {
@@ -159,7 +203,7 @@ internal sealed class NativeWindowServices : IDisposable
     private static void ClearCaptionlessResizeRegions(InputNonClientPointerSource source)
     {
         Exception? failure = null;
-        foreach (var region in CaptionlessResizeRegions)
+        foreach (var region in CaptionlessFrameRegions)
         {
             try
             {
@@ -188,6 +232,12 @@ internal sealed class NativeWindowServices : IDisposable
         catch (Exception ex)
         {
             _captionlessResizeFrame = false;
+            try { ClearCaptionlessResizeRegions(source); }
+            catch (Exception cleanupFailure)
+            {
+                Console.Error.WriteLine(
+                    $"Captionless region refresh rollback failed ({cleanupFailure.GetType().Name}).");
+            }
             Console.Error.WriteLine(
                 $"Captionless resize regions could not be refreshed ({ex.GetType().Name}).");
         }
@@ -234,6 +284,9 @@ internal sealed class NativeWindowServices : IDisposable
                 : top ? HtTop : HtBottom;
         return true;
     }
+
+
+
 
     public void Dispose()
     {
@@ -307,9 +360,15 @@ internal sealed class NativeWindowServices : IDisposable
                     $"Native message handler failed ({ex.GetType().Name}); forwarding to DefSubclassProc.");
             }
 
-            RefreshCaptionlessResizeRegions(message);
             if (handled)
+            {
+                RefreshCaptionlessResizeRegions(message);
                 return handlerResult;
+            }
+
+            var result = DefSubclassProc(window, message, wParam, lParam);
+            RefreshCaptionlessResizeRegions(message);
+            return result;
         }
 
         return DefSubclassProc(window, message, wParam, lParam);

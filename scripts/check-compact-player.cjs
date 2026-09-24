@@ -13,6 +13,7 @@ class Element {
     this.rect = { left: 10, top: 20, width, height }; this.textContent = '';
     this.complete = true; this.naturalWidth = 64; this.naturalHeight = 64;
     this._queries = new Map(); this.events = [];
+    this._listeners = new Map();
   }
   append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } return this; }
   querySelectorAll(selector) { return this._queries.get(selector) || []; }
@@ -25,19 +26,27 @@ class Element {
   dispatchEvent(event) { this.events.push(event); return true; }
 }
 class HTMLElement extends Element {
-  click() { this.ownerDocument.clicks++; }
+  click() {
+    this.ownerDocument.clicks++;
+    if (this.getAttribute('aria-label') === 'Mute' || this.getAttribute('aria-label') === 'Unmute') {
+      const media = this.ownerDocument.media;
+      media.muted = !media.muted;
+      this.setAttribute('aria-label', media.muted ? 'Unmute' : 'Mute');
+    }
+  }
 }
 class HTMLMediaElement extends HTMLElement {}
 
-function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
+function makePage({ duration = 120, position = 10, volume = 0.5, paused = false, seeking = false,
   lang = 'en', origin = 'https://music.youtube.com', href = origin + '/watch',
   seekable = true, seekableReads, likePressed = 'true', dislikePressed = 'false',
-  duplicate = false, disabled = false, modal = false, buttonHeight = 24,
-  sliderHeight = 0, trackHeight = 8, track = true, image = true } = {}) {
+  duplicate = false, duplicateTransport = false, disabled = false, modal = false, buttonHeight = 24,
+  transport = true, hasMedia = true, sliderHeight = 0, trackHeight = 8, track = true, image = true } = {}) {
   const document = { clicks: 0, documentElement: { lang }, hidden: false };
   const bar = new HTMLElement(document);
   const media = new HTMLMediaElement(document);
-  Object.assign(media, { currentTime: position, duration, volume, paused, muted: false });
+  document.media = media;
+  Object.assign(media, { currentTime: position, duration, volume, paused, muted: false, seeking });
   let seekableRead = 0;
   Object.defineProperty(media, 'seekable', { get() {
     seekableRead++;
@@ -52,7 +61,10 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
     if (disabled) button.setAttribute('disabled', '');
     return button;
   };
-  const buttons = [makeButton('Like', likePressed), makeButton('Dislike', dislikePressed), makeButton('Mute')];
+  const transportButtons = transport
+    ? [makeButton('Previous'), makeButton(paused ? 'Play' : 'Pause'), makeButton('Next')] : [];
+  if (duplicateTransport) transportButtons.push(makeButton(paused ? 'Play' : 'Pause'));
+  const buttons = [...transportButtons, makeButton('Like', likePressed), makeButton('Dislike', dislikePressed), makeButton('Mute')];
   if (duplicate) buttons.push(makeButton('Like', likePressed));
   const makeSlider = (id) => {
     const slider = new HTMLElement(document, '', { width: 220, height: sliderHeight });
@@ -69,14 +81,20 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
   const volumeSlider = makeSlider('volume-slider');
   const title = new HTMLElement(document, '', { width: 160, height: 24 }); title.textContent = 'Track title';
   const artwork = new HTMLElement(document, '', { width: 48, height: 48 }); artwork.currentSrc = 'https://i.ytimg.com/vi/example/hqdefault.jpg';
-  bar.setQuery('button,[role="button"]', buttons)
+  const transportGroup = new HTMLElement(document);
+  transportGroup.setAttribute('id', 'left-controls').setAttribute('class', 'left-controls ytmusic-player-bar');
+  transportGroup.append(...transportButtons);
+  transportGroup.setQuery('button,[role="button"]', transportButtons);
+  bar.append(transportGroup);
+  bar.setQuery('[id="left-controls"].left-controls.ytmusic-player-bar', [transportGroup])
+    .setQuery('button,[role="button"]', buttons)
     .setQuery('tp-yt-paper-slider[id="progress-bar"]', [seekSlider])
     .setQuery('tp-yt-paper-slider[id="volume-slider"]', [volumeSlider])
     .setQuery('.title', [title]).setQuery('img', image ? [artwork] : []);
   const modals = modal ? [new HTMLElement(document)] : [];
   if (modal) modals[0].setAttribute('aria-modal', 'true');
   document.querySelectorAll = selector => selector === 'ytmusic-player-bar' ? [bar]
-    : selector === 'audio,video' ? [media]
+    : selector === 'audio,video' ? (hasMedia ? [media] : [])
     : selector === 'dialog[open],[aria-modal="true"]' ? modals : [];
   const location = { origin, href };
   const window = {}; window.top = window;
@@ -87,9 +105,7 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
 function run(page, request) {
   const context = {
     document: page.document, window: page.window, location: page.location,
-    HTMLElement, HTMLMediaElement, URL, MouseEvent: class MouseEvent {
-      constructor(type, options) { this.type = type; Object.assign(this, options); }
-    },
+    HTMLElement, HTMLMediaElement, URL,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     Date,
   };
@@ -100,27 +116,64 @@ function request(page, mode, command = null, value = null, expectedStateSignatur
     value, expectedStateSignature, ...overrides };
 }
 function state(page, overrides = {}) { return run(page, request(page, 'state', null, null, null, overrides)); }
+function transportReady(page) { return run(page, request(page, 'ready')).code === 'ready'; }
 function action(page, command, value = null, signature = page.signature, overrides = {}) {
   return run(page, request(page, 'action', command, value, signature, overrides)).code;
 }
+function actionResult(page, command, value = null, signature = page.signature, overrides = {}) {
+  return run(page, request(page, 'action', command, value, signature, overrides));
+}
 
 const knownPage = makePage();
+assert.equal(transportReady(knownPage), true);
+assert.equal(knownPage.document.clicks, 0);
+assert.equal(transportReady(makePage({ paused: true })), true);
+assert.equal(transportReady(makePage({ disabled: true })), false);
+assert.equal(transportReady(makePage({ transport: false })), false);
+assert.equal(transportReady(makePage({ duplicateTransport: true })), false);
+assert.equal(state(makePage({ duplicateTransport: true })).code, 'unavailable');
+assert.equal(transportReady(makePage({ hasMedia: false })), true);
+assert.equal(state(makePage({ transport: false })).code, 'unavailable');
+assert.equal(state(makePage({ hasMedia: false })).code, 'unavailable');
 const known = state(knownPage);
 assert.equal(known.code, 'state');
-assert.equal(known.duration, 120); assert.equal(known.canSeek, true); assert.equal(known.canVolume, true);
+assert.equal(known.duration, 120); assert.equal(known.canSeek, true);
 assert.equal(known.canLike, true); assert.equal(known.canDislike, true);
 const unknownPage = makePage({ duration: Infinity, position: 10 });
 const unknown = state(unknownPage);
 assert.equal(unknown.code, 'state'); assert.equal(unknown.duration, 0);
 assert.equal(unknown.position, 10); assert.equal(unknown.canSeek, false);
-assert.equal(state(makePage({ duration: 120, position: 121 })).code, 'unavailable');
-assert.equal(state(makePage({ volume: 1.1 })).code, 'unavailable');
+const clockAheadState = state(makePage({ duration: 120, position: 121 }));
+assert.equal(clockAheadState.code, 'state');
+assert.equal(clockAheadState.position, 121);
+assert.equal(clockAheadState.canSeek, false);
+assert.equal(clockAheadState.canLike, true);
 assert.equal(state(makePage({ likePressed: null })).canLike, false);
 assert.equal(state(makePage({ likePressed: null })).liked, null);
 assert.equal(state(makePage({ track: false })).canSeek, false);
-assert.equal(state(makePage({ track: false })).canVolume, false);
 assert.equal(action(makePage(), 'seek', -1), 'invalid-value');
-assert.equal(action(makePage(), 'volume', 1.01), 'invalid-value');
+const mixedTime = makePage({ track: false });
+mixedTime.seekSlider.setAttribute('aria-valuenow', '100');
+const mixedTimeState = state(mixedTime);
+assert.equal(mixedTimeState.code, 'state');
+assert.equal(mixedTimeState.canSeek, false);
+const inFlightSeek = makePage({ seeking: true });
+assert.equal(state(inFlightSeek).code, 'state');
+assert.equal(state(inFlightSeek).canSeek, false);
+const noAudioControlsPage = makePage();
+const noAudioControlsState = state(noAudioControlsPage);
+assert.equal(noAudioControlsState.code, 'state');
+for (const field of ['volume', 'muted', 'canVolume'])
+  assert.equal(Object.hasOwn(noAudioControlsState, field), false);
+for (const [command, value] of [['volume', 0.75], ['mute', null]]) {
+  const before = { volume: noAudioControlsPage.media.volume, muted: noAudioControlsPage.media.muted };
+  const result = actionResult(noAudioControlsPage, command, value);
+  assert.equal(result.code, 'unsupported-command');
+  assert.equal(result.dispatched, false);
+  assert.equal(noAudioControlsPage.media.volume, before.volume);
+  assert.equal(noAudioControlsPage.media.muted, before.muted);
+  assert.equal(noAudioControlsPage.document.clicks, 0);
+}
 
 for (const [options, expected] of [
   [{ origin: 'https://music.youtube.com.evil.example' }, 'wrong-origin'],
@@ -134,18 +187,62 @@ const staleRequest = request(stale, 'action', 'like', null, stale.signature, { h
 assert.equal(run(stale, staleRequest).code, 'stale-document');
 const lostSeekability = makePage({ seekableReads: [true, false] });
 assert.equal(action(lostSeekability, 'seek', 30), 'invalid-value');
+assert.equal(lostSeekability.media.currentTime, 10);
+const staleSeekPage = makePage();
+staleSeekPage.bar.querySelectorAll('.title')[0].textContent = 'Different synthetic track';
+assert.equal(action(staleSeekPage, 'seek', 30), 'stale-state');
+assert.equal(staleSeekPage.media.currentTime, 10);
 
 const seekPage = makePage({ sliderHeight: 0, trackHeight: 8 });
 assert.equal(action(seekPage, 'seek', 30), 'requested');
-assert.deepEqual(seekPage.seekSlider.children[0].events.map(event => event.type), ['mousedown', 'mouseup']);
-const volumePage = makePage({ sliderHeight: 0, trackHeight: 8 });
-assert.equal(action(volumePage, 'volume', 0.75), 'requested');
-assert.equal(volumePage.media.volume, 0.75);
-assert.deepEqual(volumePage.volumeSlider.children[0].events, []);
+assert.equal(seekPage.media.currentTime, 30);
+assert.deepEqual(seekPage.seekSlider.children[0].events, []);
+const postSeek = makePage();
+postSeek.media.currentTime = 30;
+const seekingState = state(postSeek);
+assert.equal(seekingState.code, 'state');
+assert.equal(seekingState.position, 30);
+assert.equal(seekingState.canSeek, false);
+const blockedInFlightSeek = actionResult(inFlightSeek, 'seek', 40);
+assert.equal(blockedInFlightSeek.code, 'unavailable');
+assert.equal(blockedInFlightSeek.dispatched, false);
+assert.equal(inFlightSeek.media.currentTime, 10);
+assert.equal(seekingState.canLike, true);
+const refusedDuringSkew = actionResult(postSeek, 'seek', 40);
+assert.equal(refusedDuringSkew.code, 'unavailable');
+assert.equal(refusedDuringSkew.dispatched, false);
+assert.equal(postSeek.media.currentTime, 30);
+postSeek.seekSlider.setAttribute('aria-valuenow', '30');
+assert.equal(state(postSeek).canSeek, true);
+assert.equal(action(postSeek, 'seek', 40), 'requested');
+assert.doesNotMatch(script, /\.volume\b/);
+assert.doesNotMatch(script, /\.muted\b/);
+assert.doesNotMatch(script, /\.value\s*=(?!=)/);
+const transitionPage = makePage({ duration: 120, position: 60 });
+for (const [index, duration, position] of [
+  [1, 180, 2], [2, 210, 180], [3, 90, 10], [4, 240, 180]
+]) {
+  transitionPage.bar.querySelectorAll('.title')[0].textContent = `Synthetic track ${index}`;
+  transitionPage.media.duration = duration;
+  transitionPage.media.currentTime = position;
+  const skewedTrackState = state(transitionPage);
+  assert.equal(skewedTrackState.code, 'state');
+  assert.equal(skewedTrackState.title, `Synthetic track ${index}`);
+  assert.equal(skewedTrackState.duration, duration);
+  assert.equal(skewedTrackState.position, position);
+  assert.equal(skewedTrackState.canSeek, false);
+  assert.equal(skewedTrackState.canLike, true);
+  transitionPage.seekSlider.setAttribute('aria-valuemax', String(duration));
+  transitionPage.seekSlider.setAttribute('aria-valuenow', String(position));
+  const settledTrackState = state(transitionPage);
+  assert.equal(settledTrackState.code, 'state');
+  assert.equal(settledTrackState.title, `Synthetic track ${index}`);
+  assert.equal(settledTrackState.canSeek, true);
+}
 const likePage = makePage();
 assert.equal(action(likePage, 'like'), 'requested');
 assert.equal(likePage.document.clicks, 1);
 assert.equal(action(likePage, 'like'), 'requested');
 assert.equal(likePage.document.clicks, 2);
 
-console.log('PASS: compact state bounds/unknown duration, guarded DOM actions, metadata signatures, seekability, seek pointer dispatch, media volume assignment, and single button clicks');
+console.log('PASS: bounded public transport readiness, transient seek-clock recovery, unsupported Compact audio commands, and single-click actions');

@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Reflection;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
@@ -7,6 +8,8 @@ using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using System.Runtime.InteropServices;
+using Microsoft.UI.Input;
 using FoundationRect = Windows.Foundation.Rect;
 using FoundationSize = Windows.Foundation.Size;
 
@@ -20,6 +23,8 @@ internal static class CompactViewChecks
         "Previous", "PlayPause", "Next", "Like", "Dislike", "Repeat", "Shuffle",
         "Volume", "Timer", "ReturnToFull", "More", "Minimize", "Close"
     };
+    private const uint WmNcHitTest = 0x0084;
+    private const int HtLeft = 10;
 
     internal static void Run()
     {
@@ -27,6 +32,57 @@ internal static class CompactViewChecks
             && CompactPlayerView.LogicalMinimumHeightValue == 180
             && CompactPlayerView.LogicalMinimumSize == new Size(800, 180),
             "Compact player minimum logical size changed.");
+
+        using var outputPreference = new WebViewAudioVolume(
+            Path.Combine(AppContext.BaseDirectory, "msedgewebview2.exe"));
+        outputPreference.SetPreferredOutput(.4, true);
+        outputPreference.SetPreferredOutput(.65, null);
+        Require(!outputPreference.Available
+            && !outputPreference.HasVerifiedOwnedSessions
+            && Math.Abs(Convert.ToSingle(ReadField(outputPreference, "_preferredVolume")) - .65f) < .0001f
+            && ReadField(outputPreference, "_hasMutePreference") is true
+            && ReadField(outputPreference, "_preferredMute") is true,
+            "Offline output preference was applied without a session or lost its explicit mute choice.");
+        var rejectedInvalidVolume = false;
+        try { outputPreference.SetPreferredOutput(double.NaN, false); }
+        catch (ArgumentOutOfRangeException) { rejectedInvalidVolume = true; }
+        Require(rejectedInvalidVolume
+            && ReadField(outputPreference, "_preferredMute") is true,
+            "Invalid offline output gain changed the queued mute preference.");
+
+        var ownedProcessIds = new HashSet<int> { 1234, 5678 };
+        Require(WebViewAudioVolume.IsMixedAudioSessionProcessResult(
+                WebViewAudioVolume.AudclntSNoSingleProcess)
+            && !WebViewAudioVolume.IsMixedAudioSessionProcessResult(0)
+            && WebViewAudioVolume.IsOwnedWebViewProcessId(1234, ownedProcessIds)
+            && !WebViewAudioVolume.IsOwnedWebViewProcessId(9876, ownedProcessIds)
+            && !WebViewAudioVolume.IsOwnedWebViewProcessId(0, ownedProcessIds),
+            "Mixed-process sessions were not isolated from exact WebView PID ownership checks.");
+
+        Require(!WebViewAudioVolume.AreOutputStatesConsistent(
+                Array.Empty<(float Volume, bool Muted)>())
+            && WebViewAudioVolume.AreOutputStatesConsistent(
+                new[] { (0.65f, false), (0.65005f, false) })
+            && !WebViewAudioVolume.AreOutputStatesConsistent(
+                new[] { (0.1f, false), (0.7f, false) })
+            && !WebViewAudioVolume.AreOutputStatesConsistent(
+                new[] { (0.65f, false), (0.65f, true) }),
+            "Offline output-state consistency did not distinguish uniform from divergent owned sessions.");
+
+        Require(WebHostWindow.CanAttemptOutputPreferenceRevision(4, 3, 4, 0, 2)
+            && WebHostWindow.CanAttemptOutputPreferenceRevision(4, 3, 4, 1, 2)
+            && !WebHostWindow.CanAttemptOutputPreferenceRevision(4, 3, 4, 2, 2)
+            && !WebHostWindow.CanAttemptOutputPreferenceRevision(4, 4, 4, 0, 2)
+            && WebHostWindow.CanAttemptOutputPreferenceRevision(5, 4, 4, 2, 2),
+            "Failed output preference writes either advanced the applied revision or retried without a bound.");
+
+        Require(WebViewAudioVolume.ShouldRetryNewSessionPreference(0)
+            && WebViewAudioVolume.ShouldRetryNewSessionPreference(
+                WebViewAudioVolume.MaximumNewSessionPreferenceAttempts - 1)
+            && !WebViewAudioVolume.ShouldRetryNewSessionPreference(
+                WebViewAudioVolume.MaximumNewSessionPreferenceAttempts)
+            && !WebViewAudioVolume.ShouldRetryNewSessionPreference(-1),
+            "Failed new-session default applies were not retried within the configured bound.");
 
         Require(CompactPlayerView.ClampSeekTarget(-2, 180) == 0
             && CompactPlayerView.ClampSeekTarget(200, 180) == 180
@@ -69,6 +125,17 @@ internal static class CompactViewChecks
         Require(!CompactPlayerView.ShouldCommitSeek(hasPendingTarget: true, cancelled: true)
             && !CompactPlayerView.ShouldCommitSeek(hasPendingTarget: false, cancelled: false),
             "Cancelled or empty seek interactions committed unexpectedly.");
+
+        var unavailableStatus = WebHostWindow.BuildStatusDetailsText(string.Empty,
+            compact: true, compactPlaybackAvailable: false);
+        Require(unavailableStatus.Contains("Compact playback state: unavailable", StringComparison.Ordinal)
+            && unavailableStatus.Contains("does not identify a YouTube Music website error",
+                StringComparison.Ordinal),
+            "Unavailable Compact status did not distinguish missing state from a website error.");
+        var explicitErrorStatus = WebHostWindow.BuildStatusDetailsText(
+            "[!] Error: Synthetic native failure.", compact: true, compactPlaybackAvailable: false);
+        Require(explicitErrorStatus.Contains("[!] Error: Synthetic native failure.", StringComparison.Ordinal),
+            "Compact diagnostics replaced an explicitly observed application error.");
     }
 
     /// <summary>
@@ -86,6 +153,22 @@ internal static class CompactViewChecks
             throw new SelfCheckException("Compact host did not expose a XAML root.");
         phase = "root-layout";
         Prepare(root);
+        var fullMute = FindPart(root, "OutputMuteButton") as Button;
+        var fullFlyout = fullMute?.ContextFlyout as Flyout;
+        var flyoutSurface = fullFlyout?.Content as FrameworkElement;
+        var fullVolume = flyoutSurface is null ? null
+            : FindPart(flyoutSurface, "OutputVolumeSlider") as CompactVolumeSlider;
+        var fullReadout = flyoutSurface is null ? null
+            : FindPart(flyoutSurface, "OutputVolumeValue") as TextBlock;
+        Require(fullMute is not null && fullFlyout is not null && fullVolume is not null
+            && fullReadout is not null && !fullFlyout.IsOpen
+            && !fullFlyout.ShouldConstrainToRootBounds
+            && !fullMute.IsEnabled && !fullVolume.IsEnabled
+            && WebViewAudioVolume.DefaultVolume == 1f
+            && fullVolume.Maximum == 1000 && fullVolume.Value == fullVolume.Maximum
+            && fullReadout.Text == "100.0%"
+            && AutomationProperties.GetName(fullVolume) == "WebView audio volume",
+            "Full-window output button/flyout or 100% default was absent, mislabeled, or enabled without an owned audio session.");
 
         phase = "compact-layout";
         var view = root as CompactPlayerView ?? FindDescendant<CompactPlayerView>(root)
@@ -94,6 +177,23 @@ internal static class CompactViewChecks
         Require(view.ActualWidth >= CompactPlayerView.LogicalMinimumWidthValue
             && view.ActualHeight >= CompactPlayerView.LogicalMinimumHeightValue,
             "Compact presenter did not honor its 800 by 180 DIP minimum.");
+
+        phase = "queued-output-without-session";
+        var updateOutput = FindMethod(host, "UpdateOutputAudioControls")
+            ?? throw new SelfCheckException("Native output state update hook was not retained.");
+        SetField(host, "_outputAudioExecutablePath", Path.Combine(AppContext.BaseDirectory, "msedgewebview2.exe"));
+        updateOutput.Invoke(host, null);
+        var compactOutput = FindPart(view, "Volume") as Control;
+        Require(fullMute is { IsEnabled: true } && fullVolume is { IsEnabled: true }
+            && compactOutput?.IsEnabled == true
+            && AutomationProperties.GetHelpText(fullMute)?.Contains("pending preference", StringComparison.Ordinal) == true
+            && AutomationProperties.GetHelpText(compactOutput)?.Contains("pending", StringComparison.Ordinal) == true,
+            "Initialized WebView output was disabled or claimed an active audio session while paused.");
+        SetField(host, "_outputAudioExecutablePath", null);
+        updateOutput.Invoke(host, null);
+        Require(fullMute?.IsEnabled == false && fullVolume?.IsEnabled == false
+            && compactOutput?.IsEnabled == false,
+            "Uninitialized WebView output did not return to its disabled state.");
 
         phase = "named-parts";
         var parts = RequiredParts.ToDictionary(name => name, name => FindPart(view, name),
@@ -107,8 +207,11 @@ internal static class CompactViewChecks
             Require(!string.IsNullOrWhiteSpace(AutomationProperties.GetName(part.Value)),
                 $"Compact part {part.Key} lost its automation name.");
         }
+        phase = "compact-native-frame";
+        CheckCompactNativeFrame(host, view);
 
         phase = "progress-row-spacing";
+
         foreach (var (width, height) in new[] { (800d, 180d), (814d, 253d), (1200d, 800d) })
         {
             Prepare(view, width, height);
@@ -149,11 +252,12 @@ internal static class CompactViewChecks
         phase = "playback-state";
         var state = new CompactPlaybackState(
             "Synthetic compact title", null, Paused: false, Position: 10, Duration: 120,
-            Volume: 0.5, Muted: false, Liked: true, Disliked: false, Repeat: "off",
-            CanSeek: true, CanVolume: true, CanLike: true, CanDislike: true,
+            Liked: true, Disliked: false, Repeat: "off",
+            CanSeek: true, CanLike: true, CanDislike: true,
             CanRepeat: true, CanShuffle: true);
         var commands = new List<(string Command, double? Value)>();
         view.CommandRequested += (command, value) => commands.Add((command, value));
+        view.SetOutputVolume(.5, false, true);
         view.SetPlayback(state);
         view.SetArtwork(null);
         view.SetStatus("Synthetic status", isError: false);
@@ -193,7 +297,8 @@ internal static class CompactViewChecks
             && ReferenceEquals(timerIcon, ReadProperty(FindPart(view, "TimerIcon"), "Content")),
             "Repeated compact state/timer binds replaced unchanged native visuals.");
 
-        view.SetPlayback(state with { Paused = true, Muted = true, Repeat = "one" });
+        view.SetPlayback(state with { Paused = true, Repeat = "one" });
+        view.SetOutputVolume(.5, true, true);
         var changedPlayIcon = ReadProperty(parts["PlayPause"], "Content");
         var changedVolumeIcon = ReadProperty(parts["Volume"], "Content");
         var changedRepeatIcon = ReadProperty(FindPart(view, "RepeatIcon"), "Content");
@@ -201,7 +306,7 @@ internal static class CompactViewChecks
             && !ReferenceEquals(volumeIcon, changedVolumeIcon)
             && !ReferenceEquals(repeatIcon, changedRepeatIcon),
             "Changed compact playback glyphs did not replace their native visuals.");
-        view.SetPlayback(state with { Paused = true, Muted = true, Repeat = "one" });
+        view.SetPlayback(state with { Paused = true, Repeat = "one" });
         Require(ReferenceEquals(changedPlayIcon, ReadProperty(parts["PlayPause"], "Content"))
             && ReferenceEquals(changedVolumeIcon, ReadProperty(parts["Volume"], "Content"))
             && ReferenceEquals(changedRepeatIcon, ReadProperty(FindPart(view, "RepeatIcon"), "Content")),
@@ -252,8 +357,6 @@ internal static class CompactViewChecks
             && commands.Any(command => command.Command is "toggle" or "play" or "pause")
             && commands.Any(command => command.Command == "next"),
             "Native transport activation did not reach every Compact command boundary.");
-        Require(ReadProperty(parts["InlineStatus"], "Text") as string == "Playback controls unavailable.",
-            "Unavailable Compact transport activation was silently ignored by the host.");
         commands.Clear();
         phase = "seek-motion-and-cancel";
         var seek = parts["Seek"];
@@ -264,9 +367,48 @@ internal static class CompactViewChecks
         RaiseEvent(seek, "DragPreview", 60d);
         var movedAngle = Convert.ToDouble(ReadProperty(artwork, "Angle") ?? initialAngle);
         Require(movedAngle != initialAngle, "Native seek preview did not update artwork motion.");
+        SetField(seek, "_releaseExpected", false);
+        var captureLost = FindMethod(seek, "DeferCaptureLossCancellation");
+        Require(captureLost is not null, "Seek slider deferred capture-loss recovery was not retained.");
+        captureLost!.Invoke(seek, null);
+        Require(ReadProperty(seek, "Dragging") is true && ReadField(seek, "_releaseExpected") is true,
+            "Capture loss canceled the seek before the pending release could be processed.");
+        SetField(seek, "_releaseExpected", false);
+        SetField(seek, "_dragging", false); // PointerReleased clears drag state before committing.
         RaiseEvent(seek, "DragCommitted", 60d);
-        Require(commands.Any(command => command.Command == "seek"),
-            "Native seek gesture did not reach the Compact command boundary.");
+        Require(commands.Count(command => command.Command == "seek" && command.Value == 60d) == 1,
+            "Native seek release did not emit exactly one command at the selected timestamp.");
+        await Task.Yield();
+        Require(commands.Count(command => command.Command == "seek") == 1
+            && ReadProperty(seek, "Dragging") is false,
+            "Deferred capture-loss cancellation ran after the release commit.");
+        view.SetPlayback(state with { Position = 11 });
+        var staleSeekValue = Convert.ToDouble(ReadProperty(seek, "Value"));
+        var staleSeekTime = ReadProperty(parts["Remaining"], "Text") as string;
+        Require(Math.Abs(staleSeekValue - 500) <= 1 && staleSeekTime == "1:00",
+            $"Stale player time replaced a just-committed seek target: slider={staleSeekValue}, remaining={staleSeekTime}.");
+        view.SetPlayback(state with { Position = 60 });
+        Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 500) <= 1,
+            "Confirmed seek target did not remain at the requested timestamp.");
+        view.SetPlayback(state with { Title = "Different synthetic track", Position = 10 });
+        Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 83.33) <= 1,
+            "A new track inherited the previous song's pending seek.");
+        view.SetPlayback(state);
+        commands.Clear();
+        SetProperty(seek, "Value", 750d);
+        RaiseEvent(seek, "KeyboardCommitted", 90d);
+        Require(commands.Count(command => command.Command == "seek" && command.Value == 90d) == 1,
+            "Keyboard seek did not emit exactly one command at the requested timestamp.");
+        view.SetPlayback(state with { Position = 11 });
+        Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 750) <= 1
+            && ReadProperty(parts["Remaining"], "Text") as string == "0:30",
+            "A stale player read replaced the keyboard seek target.");
+        SetField(view, "_seekPendingUntil", DateTime.UtcNow.AddMilliseconds(-1));
+        view.SetPlayback(state with { Position = 11 });
+        Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 91.67) <= 1
+            && ReadProperty(parts["Remaining"], "Text") as string == "1:49",
+            "An expired seek target continued masking the bounded stale player read.");
+        view.SetPlayback(state);
 
         commands.Clear();
         view.SetPreferences(reduceMotion: true, topmost: false);
@@ -276,26 +418,70 @@ internal static class CompactViewChecks
         RaiseEvent(seek, "DragPreview", 70d);
         Require(Convert.ToDouble(ReadProperty(artwork, "Angle") ?? reducedAngle) == reducedAngle,
             "Reduced-motion seek changed artwork angle.");
-        InvokeOptional(seek, "CancelDrag");
-        Require(commands.Count == 0, "Cancelled native seek emitted a stale command.");
+        var deferredCancel = FindMethod(seek, "DeferCaptureLossCancellation");
+        Require(deferredCancel is not null, "Seek slider capture-loss fallback was not retained.");
+        deferredCancel!.Invoke(seek, null);
+        await Task.Delay(30);
+        Require(commands.Count == 0 && ReadProperty(seek, "Dragging") is false,
+            "Capture loss without a release did not cancel the seek on the next dispatcher turn.");
         view.SetPreferences(reduceMotion: false, topmost: false);
 
-        phase = "volume-gesture";
-        commands.Clear();
-        var showVolume = FindMethod(view, "ShowVolumePopup");
-        Require(showVolume is not null, "Native volume popup activation was not retained.");
-        var volumePopup = ReadField(view, "_volumePopup") as FlyoutBase;
-        Require(volumePopup is not null, "Native volume popup was not created.");
-        await AwaitFlyoutOpenedAsync(volumePopup!, () => showVolume!.Invoke(view, null), "volume");
+        phase = "output-volume";
+        view.SetPlayerBusy(false);
+        view.SetPlayback(state);
+        var volumeButton = parts["Volume"] as Control
+            ?? throw new SelfCheckException("Compact volume button was not a native Control.");
         var volumeSlider = FindOptionalPart(view, "VolumeSlider")
-            ?? ReadField(view, "_volumeSlider") as FrameworkElement;
-        Require(volumeSlider is not null, "Native volume slider was not created.");
-        SetProperty(volumeSlider!, "Value", 75d);
-        RaiseEvent(volumeSlider!, "Committed", 0.75d);
-        Require(commands.Any(command => command.Command == "volume"),
-            "Native volume gesture did not reach the Compact command boundary.");
-        await AwaitFlyoutClosedAsync(volumePopup!, volumePopup!.Hide, "volume");
+            ?? ReadField(view, "_volumeSlider") as FrameworkElement
+            ?? throw new SelfCheckException("Compact volume slider was not created.");
+        var nativeVolumeSlider = volumeSlider as Control
+            ?? throw new SelfCheckException("Compact volume slider was not a native Control.");
+        var volumePopup = ReadField(view, "_volumePopup") as FlyoutBase
+            ?? throw new SelfCheckException("Compact volume popup was not created.");
+        var volumeCommitTimer = ReadField(view, "_volumeCommitTimer")
+            ?? throw new SelfCheckException("Compact volume commit timer was not created.");
+        var hoverCloseTimer = ReadField(view, "_volumeHoverCloseTimer")
+            ?? throw new SelfCheckException("Compact volume hover-close timer was not created.");
+        var showVolumeOnHover = FindMethod(view, "ShowVolumePopupFromHover");
+        var openVolume = FindMethod(view, "OpenVolumePopupForInteraction");
+        Require(showVolumeOnHover is not null && openVolume is not null,
+            "Native Compact output popup entry paths were not retained.");
 
+        view.SetOutputVolume(0, false, false);
+        Require(!volumeButton.IsEnabled && !nativeVolumeSlider.IsEnabled
+            && AutomationProperties.GetHelpText(volumeSlider)?.Contains("unavailable", StringComparison.Ordinal) == true,
+            "Unavailable output session left Compact volume controls enabled.");
+        commands.Clear();
+        showVolumeOnHover!.Invoke(view, null);
+        openVolume!.Invoke(view, null);
+        RaiseEvent(volumeSlider, "Committed", .65d);
+        await Task.Delay(300);
+        Require(commands.Count == 0 && !volumePopup.IsOpen
+            && ReadProperty(volumeCommitTimer, "IsRunning") is false,
+            "Unavailable output session dispatched a volume command or opened its popup.");
+
+        view.SetPlayback(null);
+        view.SetOutputVolume(.4, false, true);
+        Require(volumeButton.IsEnabled && nativeVolumeSlider.IsEnabled
+            && AutomationProperties.GetName(volumeButton) == "Mute app output"
+            && Math.Abs(Convert.ToDouble(ReadProperty(volumeSlider, "Value")) - 400) <= 1,
+            "Confirmed output session did not enable Compact volume independently of playback state.");
+        InvokeControl(volumeButton, "Mute app output");
+        Require(commands.Count(command => command.Command == "output-mute") == 1
+            && !commands.Any(command => command.Command == "mute"),
+            "Compact mute did not target app output exclusively.");
+        commands.Clear();
+        view.SetOutputVolume(.4, true, true);
+        Require(AutomationProperties.GetName(volumeButton) == "Unmute app output",
+            "Output mute state was not reflected by Compact accessibility.");
+        await AwaitFlyoutOpenedAsync(volumePopup, () => openVolume.Invoke(view, null), "App output volume");
+        RaiseEvent(volumeSlider, "Committed", .65d);
+        Require(commands.Count(command => command.Command == "output-volume"
+            && Math.Abs((command.Value ?? -1) - .65) < .001) == 1
+            && !commands.Any(command => command.Command == "volume"),
+            "Compact slider did not route normalized app output volume.");
+        await AwaitFlyoutClosedAsync(volumePopup, () => volumePopup.Hide(), "App output volume");
+        view.SetPlayback(state);
         phase = "status-menu-and-cleanup";
         var moreMenu = ReadField(view, "_moreMenu") as FlyoutBase;
         Require(moreMenu is not null, "Native More menu was not created.");
@@ -312,7 +498,32 @@ internal static class CompactViewChecks
         await AwaitFlyoutClosedAsync(moreMenu!, () => view.SetActive(false), "More");
         view.SetActive(true);
 
-        view.SetPlayback(null);
+        phase = "unavailable-status-menu";
+        var setHostStatus = FindMethod(host, "SetStatus");
+        Require(setHostStatus is not null, "Native application status update hook was not retained.");
+        setHostStatus!.Invoke(host, [string.Empty, false, false]);
+        var invalidateCompactState = FindMethod(host, "InvalidateCompactState");
+        Require(invalidateCompactState is not null,
+            "Native Compact state invalidation hook was not retained.");
+        invalidateCompactState!.Invoke(host, null);
+        Require(host.IsCompact && ReadField(host, "_compactState") is null,
+            "Unavailable Compact fixture did not clear the host-owned playback state.");
+        var compactStatusItem = ReadField(view, "_statusItem") as MenuFlyoutItem;
+        Require(compactStatusItem is not null && compactStatusItem.IsEnabled
+            && AutomationProperties.GetHelpText(compactStatusItem)?.Contains(
+                "does not identify a YouTube Music website error", StringComparison.Ordinal) == true,
+            "Compact status menu was unavailable or misleading when playback state was missing.");
+        var fullStatusItem = ReadField(host, "_statusDetailsItem") as MenuFlyoutItem;
+        Require(fullStatusItem is not null && fullStatusItem.IsEnabled,
+            "Full application status menu remained disabled without a reported message.");
+        await AwaitFlyoutOpenedAsync(moreMenu!, view.ShowMoreMenu, "More with unavailable player");
+        Require(compactStatusItem!.IsEnabled,
+            "Compact More menu did not expose application status while the player was unavailable.");
+        await AwaitFlyoutClosedAsync(moreMenu!, () => moreMenu!.Hide(), "More with unavailable player");
+        var statusDetails = await ReadStatusDetailsAsync(host);
+        Require(statusDetails.Contains("Compact playback state: unavailable", StringComparison.Ordinal)
+            && statusDetails.Contains("does not identify a YouTube Music website error", StringComparison.Ordinal),
+            "Application status details did not truthfully explain the unavailable Compact state.");
         Require(parts["PlayPause"] is Control playPauseControl && !playPauseControl.IsEnabled
             && AutomationProperties.GetName(playPauseControl)?.Contains("unavailable",
                 StringComparison.OrdinalIgnoreCase) == true,
@@ -325,8 +536,17 @@ internal static class CompactViewChecks
         await Task.Yield();
         Require(!host.IsCompact && host.NativeHandle == compactHandle,
             "Compact Return to full activation did not restore the same native presenter.");
+        CheckCaptionlessRegionsCleared(host);
+        var startHoverCloseTimer = FindMethod(hoverCloseTimer!, "Start");
+        Require(startHoverCloseTimer is not null,
+            "Native volume hover-close timer could not be restarted for disposal cleanup.");
+        startHoverCloseTimer!.Invoke(hoverCloseTimer, null);
+        Require(ReadProperty(hoverCloseTimer!, "IsRunning") is true,
+            "Native volume hover-close timer did not start before disposal.");
         view.Dispose();
         view.Dispose();
+        Require(!volumePopup!.IsOpen && ReadProperty(hoverCloseTimer!, "IsRunning") is false,
+            "Disposing Compact left the volume popup or hover-close timer active.");
         }
         catch (Exception exception)
         {
@@ -336,6 +556,141 @@ internal static class CompactViewChecks
             throw;
         }
     }
+
+    private static void CheckCompactNativeFrame(
+        WebHostWindow host, CompactPlayerView view)
+    {
+        var dpi = GetDpiForWindow(host.NativeHandle);
+        if (dpi == 0) dpi = 96;
+        var scale = dpi / 96d;
+        var client = default(NativeRect);
+        Require(host.NativeHandle != 0 && GetClientRect(host.NativeHandle, ref client),
+            "Windows did not provide the Compact client bounds.");
+        var clientWidth = client.Right - client.Left;
+        var clientHeight = client.Bottom - client.Top;
+        Require(clientWidth >= Math.Round(CompactPlayerView.LogicalMinimumWidthValue * scale) - 1
+            && Math.Abs(clientHeight - CompactPlayerView.LogicalMinimumHeightValue * scale) <= 1,
+            "Compact native client stopped honoring its minimum width or fixed 180-DIP height.");
+        Prepare(view, clientWidth / scale, clientHeight / scale);
+
+        var source = InputNonClientPointerSource.GetForWindowId(
+            Win32Interop.GetWindowIdFromWindow(host.NativeHandle));
+        var caption = source.GetRegionRects(NonClientRegionKind.Caption);
+        Require(caption.Length > 0,
+            "Compact native Caption drag region was missing.");
+        Require(CaptionContainsDip(caption, 320, 32, scale)
+            && CaptionContainsDip(caption, 80, 154, scale),
+            "Compact Caption did not cover its safe header and left-side drag points.");
+        Require(!CaptionContainsDip(caption, 660, 30, scale)
+            && !CaptionContainsDip(caption, 320, 140, scale),
+            "Compact Caption intercepted Return to full or the seek control.");
+
+        foreach (var border in new[]
+        {
+            NonClientRegionKind.TopBorder, NonClientRegionKind.LeftBorder,
+            NonClientRegionKind.BottomBorder, NonClientRegionKind.RightBorder
+        })
+        {
+            var borderRects = source.GetRegionRects(border);
+            Require(borderRects.Length > 0,
+                $"Compact native resize region was missing: {border}.");
+            Require(!caption.Any(captionRect => borderRects.Any(
+                    borderRect => RectanglesOverlap(captionRect, borderRect))),
+                $"Compact Caption overlapped native resize region: {border}.");
+        }
+
+        var presenter = ReadField(host, "_presenter");
+        Require(host.IsCompact && presenter is not null
+            && ReadProperty(presenter, "IsMaximizable") is false,
+            "Compact presenter was missing or remained maximizable.");
+
+        var window = default(NativeRect);
+        Require(GetWindowRect(host.NativeHandle, ref window),
+            "Windows did not provide the Compact window bounds for resize hit testing.");
+        var resizePoint = PackScreenPoint(window.Left + 1, (window.Top + window.Bottom) / 2);
+        Require(NativeWindowServices.TryHandleCaptionlessResizeFrame(
+                host.NativeHandle, WmNcHitTest, 0, resizePoint, out var resizeHit)
+            && resizeHit.ToInt32() == HtLeft,
+            "Compact left resize border did not retain native resize hit testing.");
+    }
+
+    private static bool CaptionContainsDip(
+        Windows.Graphics.RectInt32[] regions, double xDip, double yDip, double scale)
+    {
+        var x = Math.Round(xDip * scale, MidpointRounding.AwayFromZero);
+        var y = Math.Round(yDip * scale, MidpointRounding.AwayFromZero);
+        return regions.Any(region => x >= region.X && x < region.X + region.Width
+            && y >= region.Y && y < region.Y + region.Height);
+    }
+
+    private static bool RectanglesOverlap(
+        Windows.Graphics.RectInt32 first, Windows.Graphics.RectInt32 second)
+        => first.X < second.X + second.Width && first.X + first.Width > second.X
+            && first.Y < second.Y + second.Height && first.Y + first.Height > second.Y;
+
+
+
+
+    private static nint PackScreenPoint(int x, int y)
+    {
+        var packed = (uint)unchecked((ushort)(short)x)
+            | ((uint)unchecked((ushort)(short)y) << 16);
+        return unchecked((nint)packed);
+    }
+
+    private static void CheckCaptionlessRegionsCleared(WebHostWindow host)
+    {
+        var services = ReadField(host, "_nativeWindowServices");
+        Require(services is not null
+            && ReadField(services, "_captionlessResizeFrame") is false
+            && ReadField(services, "_nonClientPointerSource") is null,
+            "Returning to full mode retained Compact-owned native resize-frame or pointer-source state.");
+
+        var presenter = ReadField(host, "_presenter");
+        Require(presenter is not null
+            && ReadProperty(presenter, "HasBorder") is true
+            && ReadProperty(presenter, "HasTitleBar") is true
+            && ReadProperty(presenter, "IsMaximizable") is true,
+            "Returning to full mode did not restore the system frame and maximizable presenter.");
+    }
+
+    private static async Task<string> ReadStatusDetailsAsync(WebHostWindow host)
+    {
+        var showStatusDetails = FindMethod(host, "ShowStatusDetails");
+        Require(showStatusDetails is not null, "Native status details action was not retained.");
+        showStatusDetails!.Invoke(host, null);
+        await Task.Yield();
+
+        var dialogs = ReadField(host, "_ownedDialogs") as IEnumerable<Window>;
+        var dialog = dialogs?.FirstOrDefault(window => window.Title == "Application status");
+        Require(dialog?.Content is DependencyObject,
+            "Application status action did not present a native details window.");
+        try
+        {
+            var body = FindDescendant<TextBox>((DependencyObject)dialog!.Content)
+                ?? throw new SelfCheckException("Application status details did not expose its text.");
+            return body.Text;
+        }
+        finally
+        {
+            dialog!.Close();
+            await Task.Yield();
+        }
+    }
+
+
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetClientRect(nint window, ref NativeRect rect);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetWindowRect(nint window, ref NativeRect rect);
+
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint window);
 
     private static void Prepare(FrameworkElement element, double width = 1200, double height = 800)
     {
@@ -483,7 +838,7 @@ internal static class CompactViewChecks
             $"Native control property was not writable: {name}.");
         property!.SetValue(instance, value);
     }
-    private static void SetField(object instance, string name, object value)
+    private static void SetField(object instance, string name, object? value)
     {
         var field = instance.GetType().GetField(name,
             BindingFlags.Instance | BindingFlags.NonPublic);

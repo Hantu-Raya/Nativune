@@ -114,9 +114,10 @@
             </ResourceDictionary.ThemeDictionaries>
             </ResourceDictionary>
         </Grid.Resources>
-        <Canvas x:Name="LayoutCanvas" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+        <Canvas x:Name="LayoutCanvas" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                Background="Transparent">
             <local:CompactArtworkCanvas x:Name="Artwork" Width="112" Height="112" />
-            <local:CompactMarqueeText x:Name="Title" Width="452" Height="32" />
+            <local:CompactMarqueeText x:Name="Title" Width="452" Height="32" Background="Transparent" />
             <TextBlock x:Name="InlineStatus" Width="452" Height="16"
                        FontSize="12"
                        TextTrimming="CharacterEllipsis"
@@ -211,18 +212,42 @@
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
             <Button x:Name="Volume" Width="40" Height="40"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
-                <Button.Flyout>
+                <Button.ContextFlyout>
                     <Flyout x:Name="VolumePopup" Placement="Bottom">
-                        <Grid Width="232" Height="128" Padding="8"
-                              AutomationProperties.Name="Volume control">
-                            <local:CompactVolumeSlider x:Name="VolumeSlider" Width="156" Height="38"
-                                                       Minimum="0" Maximum="100" StepFrequency="1" />
-                            <TextBlock x:Name="VolumeValue" Width="48" Height="28"
-                                       Margin="160,4,0,0" TextAlignment="Right" VerticalAlignment="Center" />
-                            <Button x:Name="MuteButton" Width="96" Height="32" Margin="0,48,0,0" />
+                        <Flyout.FlyoutPresenterStyle>
+                            <Style TargetType="FlyoutPresenter">
+                                <Setter Property="Padding" Value="8,4" />
+                                <Setter Property="Background" Value="{ThemeResource SurfaceBrush}" />
+                                <Setter Property="BorderThickness" Value="0" />
+                                <Setter Property="CornerRadius" Value="0" />
+                            </Style>
+                        </Flyout.FlyoutPresenterStyle>
+                        <Grid x:Name="VolumePopupSurface"
+                              Width="240"
+                              Height="48"
+                              ColumnSpacing="8"
+                              AutomationProperties.Name="App output volume control">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="52" />
+                            </Grid.ColumnDefinitions>
+                            <local:CompactVolumeSlider x:Name="VolumeSlider"
+                                                       Grid.Column="0"
+                                                       Width="180"
+                                                       Height="40"
+                                                       Minimum="0"
+                                                       Maximum="1000"
+                                                       StepFrequency="1" />
+                            <TextBlock x:Name="VolumeValue"
+                                       Grid.Column="1"
+                                       Width="52"
+                                       Height="32"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center"
+                                       Foreground="{ThemeResource PrimaryTextBrush}" />
                         </Grid>
                     </Flyout>
-                </Button.Flyout>
+                </Button.ContextFlyout>
             </Button>
             <Button x:Name="Timer" Width="148" Height="40"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0"

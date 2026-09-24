@@ -9,14 +9,19 @@ internal static class CompactPlaybackChecks
         var payload = new Dictionary<string, object?>
         {
             ["code"] = "state", ["title"] = "Synthetic title", ["artworkUrl"] = null,
-            ["paused"] = true, ["position"] = 10d, ["duration"] = 120d, ["volume"] = .5,
-            ["muted"] = false, ["liked"] = false, ["disliked"] = null, ["repeat"] = "off",
-            ["canSeek"] = true, ["canVolume"] = true, ["canLike"] = true,
-            ["canDislike"] = false, ["canRepeat"] = true, ["canShuffle"] = true
+            ["paused"] = true, ["position"] = 10d, ["duration"] = 120d,
+            ["liked"] = false, ["disliked"] = null, ["repeat"] = "off",
+            ["canSeek"] = true, ["canLike"] = true, ["canDislike"] = false,
+            ["canRepeat"] = true, ["canShuffle"] = true
         };
         string Json() => JsonSerializer.Serialize(payload);
         Require(CompactPlayback.TryParseState(Json(), out var state) && state is { CanSeek: true, Duration: 120 },
             "Valid bounded playback snapshot was rejected.");
+        payload["canSeek"] = false;
+        Require(CompactPlayback.TryParseState(Json(), out state)
+            && state is { CanSeek: false, CanLike: true, Duration: 120 },
+            "A transient seek-clock mismatch discarded otherwise current playback controls.");
+        payload["canSeek"] = true;
         foreach (var malformed in new[] { "null", "[]", "true", "12", "\"text\"", "{}", "{broken", new string(' ', 8193) })
             Require(!CompactPlayback.TryParseState(malformed, out _), "Malformed compact state was accepted.");
         payload["duration"] = 0d;
@@ -25,11 +30,13 @@ internal static class CompactPlaybackChecks
             "Unknown duration discarded otherwise known playback controls.");
         payload["duration"] = 120d;
         payload["position"] = 121d;
-        Require(!CompactPlayback.TryParseState(Json(), out _), "Out-of-range playback position was accepted.");
+        Require(CompactPlayback.TryParseState(Json(), out state)
+            && state is { CanSeek: false, Position: 121, Duration: 120 },
+            "A bounded transition clock skew discarded otherwise current playback controls.");
+        payload["canSeek"] = true;
+        Require(!CompactPlayback.TryParseState(Json(), out _),
+            "A clock-skewed snapshot with seeking enabled was accepted.");
         payload["position"] = 10d;
-        payload["volume"] = 1.1;
-        Require(!CompactPlayback.TryParseState(Json(), out _), "Out-of-range volume was accepted.");
-        payload["volume"] = .5;
         payload["title"] = new string('x', 513);
         Require(!CompactPlayback.TryParseState(Json(), out _), "Oversized playback title was accepted.");
         payload["title"] = "Synthetic title";
@@ -42,7 +49,19 @@ internal static class CompactPlaybackChecks
             Require(!CompactArtwork.IsAllowedUrl(url), "Artwork origin or credential boundary was bypassed.");
         Require(CompactPlayback.TryParseOutcome("{\"code\":\"script-error\",\"dispatched\":true}", out var result)
             && result.Dispatched, "Dispatched failure lost its uncertain-action status.");
-        Console.WriteLine("Compact playback checks passed: malformed/bounded state, unknown seeking and artwork origin restrictions.");
+        Require(CompactPlayback.TryParseOutcome("{\"code\":\"unavailable\",\"dispatched\":true}", out var dispatchedUnavailable)
+            && PlayerControls.FormatCompactOutcome(dispatchedUnavailable) == "Player action outcome unknown; no retry."
+            && CompactPlayback.TryParseOutcome("{\"code\":\"requested\",\"dispatched\":true}", out var requestedOutcome)
+            && PlayerControls.FormatCompactOutcome(requestedOutcome) == PlayerControls.CompactRequestedStatus
+            && CompactPlayback.TryParseOutcome("{\"code\":\"unavailable\"}", out var unavailable)
+            && PlayerControls.FormatCompactOutcome(unavailable).Contains("no action was sent", StringComparison.Ordinal),
+            "Compact dispatch status confused an uncertain side effect with a confirmed no-op.");
+        Require(CompactPlayback.IsTransportReadyResponse("{\"code\":\"ready\"}")
+            && !CompactPlayback.IsTransportReadyResponse("{\"code\":\"unavailable\"}")
+            && !CompactPlayback.IsTransportReadyResponse("{broken")
+            && !CompactPlayback.IsTransportReadyResponse(new string(' ', CompactPlayback.MaxScriptResultLength + 1)),
+            "Compact transport readiness parser accepted a malformed or unconfirmed result.");
+        Console.WriteLine("Compact playback checks passed: bounded state without audio volume controls, seek recovery, transport readiness, and artwork-origin restrictions.");
     }
 
     private static void Require(bool value, string message)

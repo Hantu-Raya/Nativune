@@ -23,6 +23,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private const int LogicalMinimumHeight = 180;
     private const double DegreesPerScrubDip = 0.35;
     private const double DegreesPerSecond = 12;
+    private const string CompactVolumeUnavailableHelp = "App output control is unavailable.";
 
     private readonly NativeIconCache _iconCache = new();
     private IconElement? _previousIconElement;
@@ -37,7 +38,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private IconElement? _moreIconElement;
     private IconElement? _minimizeIconElement;
     private IconElement? _closeIconElement;
-    private IconElement? _muteIconElement;
     private IconElement? _timerIconElement;
     private IconElement? _settingsMenuIconElement;
     private IconElement? _statusMenuIconElement;
@@ -45,7 +45,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private string? _playPauseIconName;
     private string? _volumeIconName;
     private string? _repeatIconName;
-    private string? _muteIconName;
     private string? _timerIconName;
     private bool _playVisualInitialized;
     private bool _lastPlayVisualEnabled;
@@ -54,12 +53,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private bool _lastPlayHighContrast;
     private bool _repeatMarkerThemeInitialized;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _animationTimer;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _volumeCommitTimer;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _volumeHoverCloseTimer;
     private readonly CompactArtworkCanvas _artwork;
     private readonly CompactMarqueeText _title;
     private readonly TextBlock _inlineStatus;
     private readonly TextBlock _remaining;
     private readonly TextBlock _duration;
     private readonly CompactSeekSlider _seek;
+    private readonly Grid _progressRow;
     private readonly Button _previous;
     private readonly Button _playPause;
     private readonly Button _next;
@@ -81,8 +83,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly ToggleMenuFlyoutItem _topmostItem;
     private readonly MenuFlyoutItem _versionItem;
     private readonly Flyout _volumePopup;
+    private readonly Grid _volumePopupSurface;
     private readonly CompactVolumeSlider _volumeSlider;
-    private readonly Button _muteButton;
     private readonly TextBlock _volumeValue;
     private readonly ContentControl _timerIcon;
     private readonly TextBlock _timerText;
@@ -98,10 +100,25 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private bool _playPressed;
     private double _dragStartAngle;
     private DateTime _lastAnimation;
+    private double _outputVolume;
+    private bool _outputMuted;
+    private bool _outputAvailable;
+    private bool _outputSessionActive;
+    private double? _pendingOutputVolume;
+    private DateTime _outputPendingUntil;
+    private double? _pendingSeek;
+    private DateTime _seekPendingUntil;
+    private CompactPlaybackState? _seekPendingState;
     private TimeSpan? _timerRemaining;
     private string _statusMessage = string.Empty;
     private bool _statusIsError;
     private FrameworkElement? _popupInvoker;
+    private bool _volumeButtonPointerOver;
+    private bool _volumePopupPointerOver;
+    private bool _volumeOpeningFromHover;
+    private bool _volumePinnedOpen;
+    private bool _volumeFocusSliderOnOpen;
+    private bool _restoreVolumeFocusOnClose;
     private ShortcutBindings _shortcutBindings = ShortcutBindings.Default;
 
     internal event Action<string, double?>? CommandRequested;
@@ -113,7 +130,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal event Action? ToggleTopmostRequested;
     internal event Action? MinimizeRequested;
     internal event Action? CloseRequested;
-    internal event Action? DragWindowRequested;
 
     public CompactPlayerView()
     {
@@ -126,6 +142,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _remaining = Remaining;
         _duration = Duration;
         _seek = Seek;
+        _progressRow = ProgressRow;
         _previous = Previous;
         _playPause = PlayPause;
         _next = Next;
@@ -149,8 +166,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _versionItem.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
         _volumePopup = VolumePopup;
+        _volumePopupSurface = VolumePopupSurface;
         _volumeSlider = VolumeSlider;
-        _muteButton = MuteButton;
         _volumeValue = VolumeValue;
         _timerIcon = TimerIcon;
         _timerText = TimerText;
@@ -161,8 +178,23 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _animationTimer.Interval = TimeSpan.FromMilliseconds(33);
         _animationTimer.IsRepeating = true;
         _animationTimer.Tick += (_, _) => AnimationTick();
+        _volumeCommitTimer = dispatcher.CreateTimer();
+        _volumeCommitTimer.Interval = TimeSpan.FromMilliseconds(200);
+        _volumeCommitTimer.Tick += (_, _) =>
+        {
+            _volumeCommitTimer.Stop();
+            var pending = _pendingOutputVolume;
+            if (!_disposed && _active && _volumeSlider.IsEnabled
+                && !_volumeSlider.Dragging && pending.HasValue)
+                RaiseCommand("output-volume", pending.Value);
+        };
+        _volumeHoverCloseTimer = dispatcher.CreateTimer();
+        _volumeHoverCloseTimer.Interval = TimeSpan.FromMilliseconds(550);
+        _volumeHoverCloseTimer.IsRepeating = false;
+        _volumeHoverCloseTimer.Tick += (_, _) => CloseHoverVolumePopup();
 
         ConfigureControls();
+        SetOutputVolume(0, false, false);
         SetPlayback(null);
         SetPreferences(false, false);
         SetActive(true);
@@ -208,6 +240,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal static bool ShouldCommitSeek(bool hasPendingTarget, bool cancelled)
         => hasPendingTarget && !cancelled;
 
+
+
     internal void SetPlayback(CompactPlaybackState? state)
     {
         if (_disposed) return;
@@ -219,6 +253,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _seek.CancelDrag();
 
         _state = state;
+        if (_pendingSeek.HasValue && (state is null || _seekPendingState is null
+            || state.Title != _seekPendingState.Title || state.ArtworkUrl != _seekPendingState.ArtworkUrl
+            || state.Duration != _seekPendingState.Duration))
+            ClearPendingSeek();
         _updatingControls = true;
         try
         {
@@ -238,6 +276,37 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (!string.Equals(previousTitle, nextTitle, StringComparison.Ordinal))
             _title.RecalculateOverflow();
         UpdateAnimationTimer();
+    }
+
+    internal void SetOutputVolume(double value, bool muted, bool available, bool sessionActive = true)
+    {
+        if (_disposed) return;
+        _outputVolume = Math.Clamp(double.IsFinite(value) ? value : 0, 0, 1);
+        _outputMuted = muted;
+        _outputAvailable = available;
+        _outputSessionActive = sessionActive;
+        if (!available || _pendingOutputVolume is { } pending
+            && (Math.Abs(value - pending) <= 0.0005 || DateTime.UtcNow >= _outputPendingUntil))
+        {
+            _pendingOutputVolume = null;
+            if (!available) _volumeCommitTimer.Stop();
+        }
+        var sliderStep = Math.Round(_outputVolume * _volumeSlider.Maximum, MidpointRounding.AwayFromZero);
+        _updatingControls = true;
+        try
+        {
+            if (!_volumeSlider.Dragging && !_pendingOutputVolume.HasValue)
+                _volumeSlider.Value = sliderStep;
+            SetTextIfChanged(_volumeValue, FormatVolumePercent(_volumeSlider.Value));
+        }
+        finally { _updatingControls = false; }
+        UpdateVolumeAvailability();
+        RefreshBoundIcons();
+    }
+    private void ClearPendingSeek()
+    {
+        _pendingSeek = null;
+        _seekPendingState = null;
     }
 
     public void SetArtwork(BitmapImage? artwork)
@@ -302,13 +371,29 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_disposed) return;
         _statusMessage = message ?? string.Empty;
         _statusIsError = isError;
-        _statusItem.IsEnabled = _statusMessage.Length != 0;
-        _statusItem.Text = isError ? "Application status (error)" : "Application status";
-        SetAccessible(_statusItem, "Read application status", _statusMessage);
         SetAccessible(_more, "More", _statusMessage.Length == 0
             ? "More settings and application status."
             : $"More settings and application status. Current status: {_statusMessage}");
         UpdateInlineStatus();
+    }
+
+    private void UpdateStatusMenuItem()
+    {
+        _statusItem.IsEnabled = true;
+        _statusItem.Text = _statusIsError ? "Application status (error)" : "Application status";
+        SetAccessible(_statusItem, "Read application status",
+            BuildStatusMenuDescription(_statusMessage, _state is not null));
+    }
+
+    internal static string BuildStatusMenuDescription(string status, bool playbackAvailable)
+    {
+        var current = string.IsNullOrWhiteSpace(status)
+            ? "No current application status has been reported."
+            : status;
+        return playbackAvailable
+            ? current
+            : current + " Player unavailable: Nativune has not confirmed a current playback state. "
+                + "This status alone does not identify a YouTube Music website error; return to full view to continue.";
     }
 
     public void ShowMoreMenu()
@@ -324,6 +409,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _active = active;
         if (!active)
         {
+            _volumeCommitTimer.Stop();
+            _volumeHoverCloseTimer.Stop();
+            _volumeButtonPointerOver = false;
+            _volumePopupPointerOver = false;
+            _volumePinnedOpen = false;
+            _volumeFocusSliderOnOpen = false;
+            _restoreVolumeFocusOnClose = false;
+            ClearPendingSeek();
+            _pendingOutputVolume = null;
             _volumeSlider.CancelDrag();
             _moreMenu.Hide();
             _volumePopup.Hide();
@@ -333,12 +427,20 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         else
             UpdateAnimationTimer();
     }
+    internal void SetPlayerBusy(bool busy)
+    {
+        _ = busy;
+    }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _animationTimer.Stop();
+        _volumeCommitTimer.Stop();
+        _volumeHoverCloseTimer.Stop();
+        _pendingOutputVolume = null;
+        ClearPendingSeek();
         _moreMenu.Hide();
         _volumePopup.Hide();
         _seek.CancelDrag();
@@ -354,15 +456,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ToggleTopmostRequested = null;
         MinimizeRequested = null;
         CloseRequested = null;
-        DragWindowRequested = null;
     }
+
 
     private void ConfigureControls()
     {
         ConfigureButton(_previous, "Previous item", "Previous item.");
         ConfigureButton(_playPause, "Playback controls unavailable", "Playback controls unavailable.");
         ConfigureButton(_next, "Next item", "Next item.");
-        ConfigureButton(_volume, "Volume controls", "Open volume control.");
+        ConfigureButton(_volume, "App output mute", "Activate to mute or unmute app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider.");
         ConfigureButton(_repeat, "Repeat unavailable", "Repeat state is unavailable until playback controls recover.");
         ConfigureButton(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
         ConfigureButton(_returnToFull, "Return to full", "Return to the full app.");
@@ -370,7 +472,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ConfigureButton(_minimize, "Minimize", "Minimize window.");
         ConfigureButton(_close, "Close", "Close app and stop playback.");
         ConfigureButton(_timer, "Set pause timer", "Set a pause timer; the app stays open.");
-        ConfigureButton(_muteButton, "Mute unavailable", "Mute state is unavailable until playback controls recover.");
         ConfigureButton(_like, "Like unavailable", "Like state is unavailable until playback controls recover.");
         ConfigureButton(_dislike, "Dislike unavailable", "Dislike state is unavailable until playback controls recover.");
 
@@ -381,7 +482,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_remaining, "Remaining time", "Remaining time.");
         SetAccessible(_duration, "Total duration", "Total duration.");
         SetAccessible(_seek, "Playback position unavailable", "Playback position unavailable.");
-        SetAccessible(_volumeSlider, "Volume", "Volume from zero to one hundred percent.");
+        SetAccessible(_volumeSlider, "App output volume", "App output volume from zero to one hundred percent. Use Left and Right or Up and Down for 0.1 percent steps, Page Up and Page Down for 1 percent, Home for 0 percent and End for 100 percent.");
         _remaining.Text = "--:--";
         _duration.Text = "--:--";
         _inlineStatus.Visibility = Visibility.Collapsed;
@@ -392,6 +493,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _seek.DragCancelled += CancelSeekDrag;
         _volumeSlider.ValueChanged += VolumeSliderChanged;
         _volumeSlider.Committed += VolumeSliderCommitted;
+        _volume.PointerEntered += VolumePointerEntered;
+        _volume.PointerExited += VolumePointerExited;
+        _volumePopupSurface.PointerEntered += VolumePopupPointerEntered;
+        _volumePopupSurface.PointerExited += VolumePopupPointerExited;
+        _volumePopupSurface.AddHandler(UIElement.PointerPressedEvent,
+            new PointerEventHandler(PinVolumePopupFromPointer), true);
+        _volumePopupSurface.GotFocus += (_, _) => PinVolumePopupFromInteraction();
 
         _previous.Click += (_, _) => RaiseCommand("previous");
         _next.Click += (_, _) => RaiseCommand("next");
@@ -431,8 +539,31 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             RestoreRatingState(_dislike, _state?.Disliked);
             RaiseCommand("dislike");
         };
-        _volume.Click += (_, _) => ShowVolumePopup();
-        _muteButton.Click += (_, _) => RaiseCommand("mute");
+        _volume.Click += (_, _) =>
+        {
+            _volumeHoverCloseTimer.Stop();
+            _volumePopup.Hide();
+            RaiseCommand("output-mute");
+        };
+        _volume.ContextRequested += (_, e) =>
+        {
+            if (!_volume.IsEnabled || !_active) return;
+            e.Handled = true;
+            OpenVolumePopupForInteraction();
+        };
+        _volume.KeyDown += (_, e) =>
+        {
+            if (e.Key != VirtualKey.Down || !_volume.IsEnabled || !_active) return;
+            e.Handled = true;
+            OpenVolumePopupForInteraction();
+        };
+        _volumePopup.Closed += VolumePopupClosed;
+        _volumePopup.Opened += (_, _) =>
+        {
+            if (_volumeFocusSliderOnOpen && _volumeSlider.IsEnabled)
+                _volumeSlider.Focus(FocusState.Programmatic);
+            _volumeFocusSliderOnOpen = false;
+        };
         _repeat.Click += (_, _) => RaiseCommand("repeat");
         _shuffle.Click += (_, _) => RaiseCommand("shuffle");
         _timer.Click += (_, _) =>
@@ -447,7 +578,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close, _muteButton, _playPause
+            _returnToFull, _more, _minimize, _close, _playPause
         })
             button.IsEnabledChanged += (_, _) => ApplySecondaryVisuals();
 
@@ -455,22 +586,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _statusItem.Click += (_, _) => StatusRequested?.Invoke();
         _topmostItem.Click += (_, _) => ToggleTopmostRequested?.Invoke();
         _moreMenu.Closed += (_, _) => RestorePopupFocus();
-        _volumePopup.Closed += (_, _) => RestorePopupFocus();
-        _volumePopup.Opened += (_, _) =>
-        {
-            if (_volumeSlider.IsEnabled)
-                _volumeSlider.Focus(FocusState.Programmatic);
-        };
 
-        foreach (var surface in new FrameworkElement[]
-        {
-            _layoutCanvas, _artwork, _title, _inlineStatus, _remaining, _duration
-        })
-            surface.PointerPressed += DragSurfacePointerPressed;
     }
 
     private void BindUnavailableState()
     {
+        ClearPendingSeek();
         var title = DisplayTitle(null);
         _title.SetText(title);
         SetToolTipIfChanged(_title, null);
@@ -490,13 +611,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_dislike.IsEnabled) _dislike.IsEnabled = false;
         if (_dislike.IsChecked != null) _dislike.IsChecked = null;
         SetAccessible(_dislike, "Dislike unavailable", "Dislike state is unavailable until playback controls recover.");
-        if (_volume.IsEnabled) _volume.IsEnabled = false;
-        SetAccessible(_volume, "Volume controls unavailable", "Volume controls are unavailable until playback controls recover.");
-        _volumeSlider.CancelDrag();
-        if (_volumeSlider.IsEnabled) _volumeSlider.IsEnabled = false;
-        if (_volumePopup.IsOpen) _volumePopup.Hide();
-        if (_muteButton.IsEnabled) _muteButton.IsEnabled = false;
-        SetAccessible(_muteButton, "Mute unavailable", "Mute state is unavailable until playback controls recover.");
+        // Playback state availability does not determine whether app output is controllable.
         if (_repeat.IsEnabled) _repeat.IsEnabled = false;
         SetRepeatAccessibility(null, false);
         if (_shuffle.IsEnabled) _shuffle.IsEnabled = false;
@@ -510,14 +625,20 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetToolTipIfChanged(_title, title);
         SetAccessible(_title, title, title);
         var canSeek = state.CanSeek && state.Duration > 0 && double.IsFinite(state.Duration);
+        if (!canSeek) ClearPendingSeek();
         if (_seek.Dragging && !canSeek) _seek.CancelDrag();
         if (!double.Equals(_seek.DurationSeconds, state.Duration))
             _seek.DurationSeconds = state.Duration;
         if (_seek.IsEnabled != canSeek) _seek.IsEnabled = canSeek;
+        if (_pendingSeek.HasValue
+            && (Math.Abs(state.Position - _pendingSeek.Value) <= 2
+                || DateTime.UtcNow >= _seekPendingUntil))
+            ClearPendingSeek();
         if (!_seek.Dragging)
         {
-            _seek.SetPositionSeconds(state.Position, state.Duration);
-            SetTextIfChanged(_remaining, FormatRemaining(state.Position, state.Duration));
+            var position = _pendingSeek ?? state.Position;
+            _seek.SetPositionSeconds(position, state.Duration);
+            SetTextIfChanged(_remaining, FormatRemaining(position, state.Duration));
         }
         SetTextIfChanged(_duration, FormatTime(state.Duration > 0 ? state.Duration : null));
         SetAccessible(_seek, canSeek ? "Playback position" : "Playback position unavailable",
@@ -541,23 +662,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_dislike.IsChecked != disliked) _dislike.IsChecked = disliked;
         SetRatingAccessibility(_dislike, "Dislike", disliked, state.CanDislike);
 
-        if (_volume.IsEnabled != state.CanVolume) _volume.IsEnabled = state.CanVolume;
-        var percent = Math.Round(Math.Clamp(double.IsFinite(state.Volume) ? state.Volume : 0, 0, 1) * 100);
-        SetAccessible(_volume, state.CanVolume ? "Volume controls" : "Volume controls unavailable",
-            state.CanVolume ? $"Open volume control. {percent:0} percent; {(state.Muted ? "muted" : "unmuted")}."
-                : "Volume controls are unavailable until playback controls recover.");
-        if (_muteButton.IsEnabled != state.CanVolume) _muteButton.IsEnabled = state.CanVolume;
-        SetAccessible(_muteButton, state.CanVolume ? (state.Muted ? "Unmute" : "Mute") : "Mute unavailable",
-            state.CanVolume ? $"{(state.Muted ? "Unmute" : "Mute")} playback." : "Mute state is unavailable until playback controls recover.");
-        if (_volumeSlider.IsEnabled != state.CanVolume) _volumeSlider.IsEnabled = state.CanVolume;
-        if (!state.CanVolume)
-        {
-            _volumeSlider.CancelDrag();
-            if (_volumePopup.IsOpen) _volumePopup.Hide();
-        }
-        if (!_volumeSlider.Dragging && !double.Equals(_volumeSlider.Value, percent))
-            _volumeSlider.Value = percent;
-        SetTextIfChanged(_volumeValue, $"{_volumeSlider.Value:0}%");
+        // Output volume is synchronized separately through SetOutputVolume.
 
         var repeat = state.Repeat is null ? null : FormatRepeat(state.Repeat);
         if (_repeat.IsEnabled != (state.CanRepeat && repeat is not null))
@@ -566,6 +671,22 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_shuffle.IsEnabled != state.CanShuffle) _shuffle.IsEnabled = state.CanShuffle;
         SetAccessible(_shuffle, state.CanShuffle ? "Shuffle queue once" : "Shuffle unavailable",
             state.CanShuffle ? "Shuffle the queue once." : "Shuffle is unavailable until playback controls recover.");
+    }
+    private void UpdateVolumeAvailability()
+    {
+        var sliderStep = Math.Round(_outputVolume * _volumeSlider.Maximum, MidpointRounding.AwayFromZero);
+        if (_volume.IsEnabled != _outputAvailable) _volume.IsEnabled = _outputAvailable;
+        if (_volumeSlider.IsEnabled != _outputAvailable) _volumeSlider.IsEnabled = _outputAvailable;
+        var name = _outputMuted ? "Unmute app output" : "Mute app output";
+        var help = !_outputAvailable
+            ? CompactVolumeUnavailableHelp
+            : $"Activate to {(_outputMuted ? "unmute" : "mute")} app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider. App output {sliderStep / 10:0.0} percent; {(_outputMuted ? "muted" : "unmuted")}."
+                + (_outputSessionActive ? "" : " Preference pending until an owned WebView audio session starts.");
+        SetAccessible(_volume, name, help);
+        SetAccessible(_volumeSlider, "App output volume", !_outputAvailable
+            ? CompactVolumeUnavailableHelp
+            : "App output volume from zero to one hundred percent. Use Left and Right or Up and Down for 0.1 percent steps, Page Up and Page Down for 1 percent, Home for 0 percent and End for 100 percent."
+                + (_outputSessionActive ? "" : " Preference pending until an owned WebView audio session starts."));
     }
 
 
@@ -606,22 +727,130 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
 
     private void ShowVolumePopup()
     {
-        if (_disposed || !_volume.IsEnabled || !_active) return;
-        var volume = _state?.Volume ?? 0;
+        if (_disposed || !_volume.IsEnabled || !_volumeSlider.IsEnabled || !_active || Visibility != Visibility.Visible) return;
+        var volume = _pendingOutputVolume ?? _outputVolume;
         _updatingControls = true;
         try
         {
-            _volumeSlider.Value = Math.Round(Math.Clamp(double.IsFinite(volume) ? volume : 0, 0, 1) * 100,
+            _volumeSlider.Value = Math.Round(
+                Math.Clamp(double.IsFinite(volume) ? volume : 0, 0, 1) * _volumeSlider.Maximum,
                 MidpointRounding.AwayFromZero);
-            _volumeValue.Text = $"{_volumeSlider.Value:0}%";
+            _volumeValue.Text = FormatVolumePercent(_volumeSlider.Value);
         }
         finally
         {
             _updatingControls = false;
         }
-        _popupInvoker = _volume;
+        if (!_volumeOpeningFromHover)
+            _popupInvoker = _volume;
+        _volumePinnedOpen = !_volumeOpeningFromHover;
+        _volumeFocusSliderOnOpen = !_volumeOpeningFromHover;
+        _restoreVolumeFocusOnClose = !_volumeOpeningFromHover;
+        _volumePopup.ShowMode = _volumeOpeningFromHover
+            ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
         _volumePopup.ShowAt(_volume);
     }
+
+    private void ShowVolumePopupFromHover()
+    {
+        if (_disposed || !_volume.IsEnabled || !_volumeSlider.IsEnabled || !_active || Visibility != Visibility.Visible
+            || _volumePopup.IsOpen)
+            return;
+        _volumeOpeningFromHover = true;
+        try { ShowVolumePopup(); }
+        finally { _volumeOpeningFromHover = false; }
+    }
+
+    private void OpenVolumePopupForInteraction()
+    {
+        _volumeHoverCloseTimer.Stop();
+        if (_disposed || !_volume.IsEnabled || !_volumeSlider.IsEnabled || !_active) return;
+        if (!_volumePopup.IsOpen)
+        {
+            ShowVolumePopup();
+            return;
+        }
+        PinVolumePopupFromInteraction();
+        if (_volumeSlider.IsEnabled && _volumeSlider.FocusState == FocusState.Unfocused)
+            _volumeSlider.Focus(FocusState.Programmatic);
+    }
+
+    private void PinVolumePopupFromPointer(object sender, PointerRoutedEventArgs e)
+        => PinVolumePopupFromInteraction();
+
+    private void PinVolumePopupFromInteraction()
+    {
+        if (_disposed || !_volumePopup.IsOpen) return;
+        _volumeHoverCloseTimer.Stop();
+        _volumePinnedOpen = true;
+        _restoreVolumeFocusOnClose = true;
+        _popupInvoker = _volume;
+    }
+
+    private void VolumePointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (!IsHoverPointer(e, _volume)) return;
+        _volumeButtonPointerOver = true;
+        _volumeHoverCloseTimer.Stop();
+        if (!_volumePopup.IsOpen) ShowVolumePopupFromHover();
+    }
+
+    private void VolumePointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (!IsHoverPointer(e, _volume)) return;
+        _volumeButtonPointerOver = false;
+        ScheduleHoverVolumePopupClose();
+    }
+
+    private void VolumePopupPointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (!IsHoverPointer(e, _volumePopupSurface)) return;
+        _volumePopupPointerOver = true;
+        _volumeHoverCloseTimer.Stop();
+    }
+
+    private void VolumePopupPointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (!IsHoverPointer(e, _volumePopupSurface)) return;
+        _volumePopupPointerOver = false;
+        ScheduleHoverVolumePopupClose();
+    }
+
+    private static bool IsHoverPointer(PointerRoutedEventArgs e, UIElement element)
+        => e.GetCurrentPoint(element).PointerDeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen;
+
+    private void ScheduleHoverVolumePopupClose()
+    {
+        if (_disposed || !_volumePopup.IsOpen || _volumePinnedOpen) return;
+        _volumeHoverCloseTimer.Stop();
+        _volumeHoverCloseTimer.Start();
+    }
+
+    private void CloseHoverVolumePopup()
+    {
+        _volumeHoverCloseTimer.Stop();
+        if (!_disposed && _active && !_volumePinnedOpen
+            && !_volumeButtonPointerOver && !_volumePopupPointerOver
+            && _volumePopup.IsOpen)
+            _volumePopup.Hide();
+    }
+
+    private void VolumePopupClosed(object? sender, object e)
+    {
+        _volumeHoverCloseTimer.Stop();
+        _volumeButtonPointerOver = false;
+        _volumePopupPointerOver = false;
+        _volumePinnedOpen = false;
+        _volumeFocusSliderOnOpen = false;
+        var restoreFocus = _restoreVolumeFocusOnClose;
+        _restoreVolumeFocusOnClose = false;
+        if (restoreFocus)
+            RestorePopupFocus();
+        else if (ReferenceEquals(_popupInvoker, _volume))
+            _popupInvoker = null;
+    }
+    private static string FormatVolumePercent(double sliderValue) => $"{sliderValue / 10:0.0}%";
+
 
     private void RestorePopupFocus()
     {
@@ -635,12 +864,17 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void UpdateInlineStatus()
     {
         if (_disposed) return;
-        var fallback = _state is null ? "Controls unavailable — More → Application status." : string.Empty;
+        var fallback = _state is null
+            ? "Player unavailable — no current playback state is confirmed. More → Application status for details."
+            : string.Empty;
         var text = _statusMessage.Length == 0 ? fallback : _statusMessage;
         SetTextIfChanged(_inlineStatus, text);
         var visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_inlineStatus.Visibility != visibility) _inlineStatus.Visibility = visibility;
-        SetAccessible(_inlineStatus, "Application status", _statusMessage.Length == 0 ? fallback : _statusMessage);
+        SetAccessible(_inlineStatus, "Application status", _statusMessage.Length == 0
+            ? BuildStatusMenuDescription(string.Empty, _state is not null)
+            : BuildStatusMenuDescription(_statusMessage, _state is not null));
+        UpdateStatusMenuItem();
     }
 
     private void UpdateTimerVisual()
@@ -666,7 +900,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close, _muteButton
+            _returnToFull, _more, _minimize, _close
         })
         {
             button.Background = transparent;
@@ -692,7 +926,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close, _muteButton
+            _returnToFull, _more, _minimize, _close
         })
             button.Foreground = button.IsEnabled ? primary : secondary;
         _timer.Foreground = _timer.IsEnabled ? secondary : primary;
@@ -744,7 +978,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindFixedIcon(_next, ref _nextIconElement, "next", 20);
             BindFixedIcon(_like, ref _likeIconElement, "like", 20);
             BindFixedIcon(_dislike, ref _dislikeIconElement, "dislike", 20);
-            var volumeIcon = _state?.Muted == true ? "volume-muted" : "volume";
+            var volumeIcon = _outputMuted || _outputVolume <= 0 ? "volume-muted" : "volume";
             BindStatefulIcon(_volume, ref _volumeIconElement, ref _volumeIconName, volumeIcon, 20);
             BindStatefulIcon(_repeatIcon, ref _repeatIconElement, ref _repeatIconName,
                 IsRepeatOne(_state?.Repeat) ? "repeat-one" : "repeat", 20);
@@ -753,7 +987,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
             BindFixedIcon(_minimize, ref _minimizeIconElement, "minimize", 16);
             BindFixedIcon(_close, ref _closeIconElement, "close", 16);
-            BindStatefulIcon(_muteButton, ref _muteIconElement, ref _muteIconName, volumeIcon, 16);
             BindStatefulIcon(_timerIcon, ref _timerIconElement, ref _timerIconName,
                 _timerRemaining.HasValue ? "cancel-timer" : "quit-timer", 16);
             BindMenuIcon(_settingsItem, ref _settingsMenuIconElement, "settings");
@@ -838,7 +1071,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_state is null || !_seek.IsEnabled) return;
         var target = ClampSeekTarget(position, _state.Duration);
         _remaining.Text = FormatRemaining(target, _state.Duration);
-        if (ShouldCommitSeek(wasDragging, false)) RaiseCommand("seek", target);
+        if (ShouldCommitSeek(wasDragging, false))
+        {
+            _pendingSeek = target;
+            _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            _seekPendingState = _state;
+            RaiseCommand("seek", target);
+        }
         UpdateAnimationTimer();
     }
 
@@ -847,6 +1086,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_state is null || !_seek.IsEnabled) return;
         var target = ClampSeekTarget(position, _state.Duration);
         _remaining.Text = FormatRemaining(target, _state.Duration);
+        _pendingSeek = target;
+        _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
+        _seekPendingState = _state;
         if (ShouldCommitSeek(true, false)) RaiseCommand("seek", target);
         UpdateAnimationTimer();
     }
@@ -863,18 +1105,33 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         }
         UpdateAnimationTimer();
     }
-
     private void VolumeSliderChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        _volumeValue.Text = $"{_volumeSlider.Value:0}%";
-        SetAccessible(_volumeSlider, "Volume", $"Volume {_volumeSlider.Value:0} percent. Use Left and Right for five-percent steps.");
+        _volumeValue.Text = FormatVolumePercent(_volumeSlider.Value);
+        var help = !_outputAvailable
+            ? CompactVolumeUnavailableHelp
+            : $"App output volume {_volumeSlider.Value / 10:0.0} percent. Use Left and Right or Up and Down for 0.1 percent steps, Page Up and Page Down for 1 percent, Home for 0 percent and End for 100 percent."
+                + (_outputSessionActive ? "" : " Preference pending until an owned WebView audio session starts.");
+        SetAccessible(_volumeSlider, "App output volume", help);
+        if (_updatingControls || !_active || !_volumePopup.IsOpen || !_volumeSlider.IsEnabled) return;
+        _pendingOutputVolume = Math.Clamp(e.NewValue / Math.Max(1, _volumeSlider.Maximum), 0, 1);
+        _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
+        _volumeCommitTimer.Stop();
+        _volumeCommitTimer.Start();
     }
 
     private void VolumeSliderCommitted(double normalized)
     {
-        if (!_updatingControls && _volumePopup.IsOpen)
-            RaiseCommand("volume", Math.Clamp(normalized, 0, 1));
+        _volumeCommitTimer.Stop();
+        if (!_updatingControls && _volumePopup.IsOpen && _volumeSlider.IsEnabled)
+        {
+            _pendingOutputVolume = Math.Clamp(normalized, 0, 1);
+            _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            RaiseCommand("output-volume", _pendingOutputVolume.Value);
+        }
     }
+
+
 
     private void AnimationTick()
     {
@@ -908,17 +1165,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _animationTimer.Start();
     }
 
-    private void DragSurfacePointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        if (_disposed || !_active) return;
-        if (ReferenceEquals(sender, _layoutCanvas) && !ReferenceEquals(e.OriginalSource, _layoutCanvas)) return;
-        var point = e.GetCurrentPoint((UIElement)sender);
-        if (point.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
-            && !point.Properties.IsLeftButtonPressed)
-            return;
-        DragWindowRequested?.Invoke();
-        e.Handled = true;
-    }
+
 
     private void RaiseCommand(string command, double? value = null)
     {
@@ -1249,6 +1496,7 @@ public sealed class CompactSeekSlider : Slider
 {
     private bool _dragging;
     private bool _releaseExpected;
+    private int _captureLossGeneration;
     private Pointer? _pointer;
     private double _originalValue;
     private double _durationSeconds;
@@ -1271,14 +1519,33 @@ public sealed class CompactSeekSlider : Slider
 
     public CompactSeekSlider()
     {
-        PointerPressed += OnPointerPressedInternal;
-        PointerMoved += OnPointerMovedInternal;
-        PointerReleased += OnPointerReleasedInternal;
+        // Slider handles these routed events internally, so observe handled events to retain
+        // the native single-release command boundary.
+        AddHandler(PointerPressedEvent, new PointerEventHandler(OnPointerPressedInternal), true);
+        AddHandler(PointerMovedEvent, new PointerEventHandler(OnPointerMovedInternal), true);
+        AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleasedInternal), true);
         PointerCanceled += (_, _) => CancelDrag();
-        PointerCaptureLost += (_, _) =>
-        {
-            if (_dragging && !_releaseExpected) CancelDrag();
-        };
+        PointerCaptureLost += OnPointerCaptureLost;
+    }
+
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        if (_pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
+        DeferCaptureLossCancellation();
+    }
+
+    internal void DeferCaptureLossCancellation()
+    {
+        if (!_dragging || _releaseExpected) return;
+        _releaseExpected = true;
+        var generation = ++_captureLossGeneration;
+        var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        if (dispatcher?.TryEnqueue(() =>
+            {
+                if (generation == _captureLossGeneration && _dragging && _releaseExpected)
+                    CancelDrag();
+            }) != true)
+            CancelDrag();
     }
 
     internal void SetPositionSeconds(double position, double duration)
@@ -1295,9 +1562,9 @@ public sealed class CompactSeekSlider : Slider
     {
         if (!_dragging) return;
         _dragging = false;
-        _releaseExpected = true;
-        if (_pointer is not null) ReleasePointerCapture(_pointer);
         _releaseExpected = false;
+        _captureLossGeneration++;
+        _pointer = null;
         Value = _originalValue;
         HorizontalDelta = 0;
         DragCancelled?.Invoke();
@@ -1352,8 +1619,7 @@ public sealed class CompactSeekSlider : Slider
         _originalValue = Value;
         _dragStartX = point.Position.X;
         HorizontalDelta = 0;
-        Focus(FocusState.Pointer);
-        CapturePointer(e.Pointer);
+        // WinUI may update the value before this handled-event observer runs.
         SetValueFromX(point.Position.X);
         DragStarted?.Invoke();
         DragPreview?.Invoke(SecondsFromValue());
@@ -1373,18 +1639,15 @@ public sealed class CompactSeekSlider : Slider
     private void OnPointerReleasedInternal(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
-        var point = e.GetCurrentPoint(this);
-        SetValueFromX(point.Position.X);
+        SetValueFromX(e.GetCurrentPoint(this).Position.X);
         var target = SecondsFromValue();
         _dragging = false;
-        _releaseExpected = true;
-        ReleasePointerCapture(e.Pointer);
         _releaseExpected = false;
+        _captureLossGeneration++;
         _pointer = null;
         DragCommitted?.Invoke(target);
         e.Handled = true;
     }
-
     private void SetValueFromX(double x)
     {
         var width = Math.Max(1, ActualWidth);
@@ -1393,11 +1656,9 @@ public sealed class CompactSeekSlider : Slider
 
     private double SecondsFromValue() => _durationSeconds > 0 ? Value / 1000 * _durationSeconds : 0;
 }
-
 public sealed class CompactVolumeSlider : Slider
 {
     private bool _dragging;
-    private bool _releaseExpected;
     private Pointer? _pointer;
     private double _originalValue;
 
@@ -1406,23 +1667,16 @@ public sealed class CompactVolumeSlider : Slider
 
     public CompactVolumeSlider()
     {
-        PointerPressed += OnPointerPressedInternal;
-        PointerMoved += OnPointerMovedInternal;
-        PointerReleased += OnPointerReleasedInternal;
+        AddHandler(PointerPressedEvent, new PointerEventHandler(OnPointerPressedInternal), true);
+        AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleasedInternal), true);
         PointerCanceled += (_, _) => CancelDrag();
-        PointerCaptureLost += (_, _) =>
-        {
-            if (_dragging && !_releaseExpected) CancelDrag();
-        };
     }
 
     internal void CancelDrag()
     {
         if (!_dragging) return;
         _dragging = false;
-        _releaseExpected = true;
-        if (_pointer is not null) ReleasePointerCapture(_pointer);
-        _releaseExpected = false;
+        _pointer = null;
         Value = _originalValue;
     }
 
@@ -1435,8 +1689,8 @@ public sealed class CompactVolumeSlider : Slider
         }
         var delta = e.Key switch
         {
-            VirtualKey.Left or VirtualKey.Down => -5,
-            VirtualKey.Right or VirtualKey.Up => 5,
+            VirtualKey.Left or VirtualKey.Down => -1,
+            VirtualKey.Right or VirtualKey.Up => 1,
             VirtualKey.PageDown => -10,
             VirtualKey.PageUp => 10,
             VirtualKey.Home => int.MinValue,
@@ -1461,38 +1715,15 @@ public sealed class CompactVolumeSlider : Slider
         if (point.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Mouse
             && !point.Properties.IsLeftButtonPressed) return;
         _dragging = true;
-        _releaseExpected = false;
         _pointer = e.Pointer;
         _originalValue = Value;
-        Focus(FocusState.Pointer);
-        CapturePointer(e.Pointer);
-        SetValueFromX(point.Position.X);
-        e.Handled = true;
-    }
-
-    private void OnPointerMovedInternal(object sender, PointerRoutedEventArgs e)
-    {
-        if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
-        SetValueFromX(e.GetCurrentPoint(this).Position.X);
-        e.Handled = true;
     }
 
     private void OnPointerReleasedInternal(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
-        SetValueFromX(e.GetCurrentPoint(this).Position.X);
         _dragging = false;
-        _releaseExpected = true;
-        ReleasePointerCapture(e.Pointer);
-        _releaseExpected = false;
         _pointer = null;
         Committed?.Invoke(Value / Math.Max(1, Maximum));
-        e.Handled = true;
-    }
-
-    private void SetValueFromX(double x)
-    {
-        var width = Math.Max(1, ActualWidth);
-        Value = Math.Clamp(Math.Round(x / width * (Maximum - Minimum) + Minimum), Minimum, Maximum);
     }
 }

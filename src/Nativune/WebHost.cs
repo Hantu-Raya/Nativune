@@ -160,6 +160,10 @@ public sealed partial class WebHostWindow : Window
     private bool _closing;
     private bool _fullscreen;
     private bool _compact;
+    private bool _compactWhenReady;
+    private bool _compactStartupPending;
+    private bool _compactResumeAfterAccount;
+    private int _compactModeGeneration;
     private bool _fullMaximized;
     private bool _windowMaximized;
     private bool _lastMaximized;
@@ -262,6 +266,7 @@ public sealed partial class WebHostWindow : Window
         TryInitializeNativeWindow();
         BuildMenus();
         WireSurface();
+        InitializeOutputAudio();
         InitializeCompactSurface();
         ApplyAppearance();
         CompactButton.Click += (_, _) => ToggleCompact();
@@ -282,6 +287,11 @@ public sealed partial class WebHostWindow : Window
         if (_settings.TrayEnabled)
             SetTrayEnabled(true);
         ApplyCompactSurface();
+        if (_settings.StartCompact)
+        {
+            _compactStartupPending = true;
+            SetCompact(true);
+        }
         if (_initializeBrowser)
             _initializationTask = InitializeAsync();
         _ = CheckForReleaseUpdateAsync();
@@ -459,6 +469,13 @@ public sealed partial class WebHostWindow : Window
         RefreshCompactActivity();
     }
 
+
+
+
+
+
+
+
     private void BuildMenus()
     {
         _moreFlyout = new MenuFlyout();
@@ -509,7 +526,7 @@ public sealed partial class WebHostWindow : Window
         MoreButton.Flyout = _moreFlyout;
         TimerButton.Flyout = _timerFlyout;
         _retryItem.IsEnabled = false;
-        _statusDetailsItem.IsEnabled = false;
+        _statusDetailsItem.IsEnabled = true;
     }
 
     private MenuFlyoutItem CreateMenuItem(string text, string icon, Action action)
@@ -633,6 +650,7 @@ public sealed partial class WebHostWindow : Window
     private void UpdatePlayerControls()
     {
         var enabled = PlayerAvailable;
+        CompactView.SetPlayerBusy(_playerBusy);
         foreach (var button in _playerButtons)
             button.IsEnabled = enabled;
         _playPauseItem.IsEnabled = enabled;
@@ -672,7 +690,7 @@ public sealed partial class WebHostWindow : Window
         StatusRetryButton.Visibility = _statusIsError && _navigationFailed && canNavigate
             ? Visibility.Visible : Visibility.Collapsed;
         StatusRetryButton.IsEnabled = StatusRetryButton.Visibility == Visibility.Visible;
-        _statusDetailsItem.IsEnabled = _statusDetailsText.Length != 0;
+        _statusDetailsItem.IsEnabled = true;
         UpdatePlayerControls();
     }
 
@@ -773,6 +791,7 @@ public sealed partial class WebHostWindow : Window
             core.Settings.IsWebMessageEnabled = false;
             host.ZoomFactor = _settings.Zoom;
             environment.ProcessInfosChanged += (_, _) => OnProcessInfosChanged();
+            StartOutputAudio(runtimeDirectory);
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
             core.SourceChanged += (_, _) => ObserveSection();
@@ -796,7 +815,30 @@ public sealed partial class WebHostWindow : Window
             _configuringPrivacy = false;
             core.NavigationCompleted += (_, args) => OnNavigationCompleted(args);
             _playerControls = new PlayerControls(core, () => CanNavigate && !_navigationFailed, lifetimeToken);
-            _playerControls.StateChanged += (_, _) => UpdatePlayerControls();
+            _playerControls.StateChanged += (_, _) =>
+            {
+                UpdatePlayerControls();
+                if ((_compactWhenReady || _compactResumeAfterAccount) && _playerControls.IsAvailable)
+                    _dispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (_playerControls?.IsAvailable != true) return;
+                        if (_compactResumeAfterAccount && !_settings.StartCompact)
+                            _compactResumeAfterAccount = false;
+                        if (ShouldResumeStartupCompactAfterAccount(_compactStartupPending,
+                                _settings.StartCompact, _compactResumeAfterAccount, controlsReady: true))
+                        {
+                            _compactResumeAfterAccount = false;
+                            if (!_compact && !_compactWhenReady)
+                            {
+                                _compactStartupPending = true;
+                                SetCompact(true);
+                                return;
+                            }
+                        }
+                        if (_compactWhenReady)
+                            _ = ProbeForCompactTransportAsync();
+                    });
+            };
             CreateTaskbarControls();
             UpdatePlayerControls();
             if (!CanContinueInitialization(lifetimeToken))
@@ -915,9 +957,14 @@ public sealed partial class WebHostWindow : Window
             SetStatus($"Navigation blocked to {destination}. Only Music and Google account pages are allowed.", isError: true);
             Console.WriteLine($"Blocked navigation origin: {destination}");
         }
-        else if (!uri.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase))
+        else if (!PlayerControls.IsMusicUri(args.Uri))
         {
-            if (_compact) SetCompact(false);
+            var preserveStartupIntent = _compactStartupPending && _settings.StartCompact;
+            if (_compact || _compactWhenReady || preserveStartupIntent)
+            {
+                if (preserveStartupIntent) _compactResumeAfterAccount = true;
+                SetCompact(false, preserveStartupIntent);
+            }
             _settings = _settings with { LastSection = "home" };
             CaptureSettings();
         }
@@ -1031,19 +1078,20 @@ public sealed partial class WebHostWindow : Window
         StatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(ShellTheme.ForegroundColor);
         _statusHideTimer.Stop();
         if (!_statusIsPersistent) _statusHideTimer.Start();
-        _statusDetailsItem.IsEnabled = _statusDetailsText.Length != 0;
+        _statusDetailsItem.IsEnabled = true;
         CompactView.SetStatus(_statusDetailsText, _statusIsError);
     }
 
     private void ShowStatusDetails()
     {
-        if (_disposed || _statusDetailsText.Length == 0) return;
+        if (_disposed || _closing) return;
         var body = new TextBox
         {
-            Text = _statusDetailsText,
             IsReadOnly = true,
             TextWrapping = TextWrapping.Wrap,
             AcceptsReturn = true,
+            Text = BuildStatusDetailsText(
+                _statusDetailsText, _compact, _compactState is not null),
         };
         ScrollViewer.SetVerticalScrollBarVisibility(body, ScrollBarVisibility.Auto);
         ScrollViewer.SetHorizontalScrollBarVisibility(body, ScrollBarVisibility.Disabled);
@@ -1067,6 +1115,24 @@ public sealed partial class WebHostWindow : Window
         {
             HandleDialogFailure("Status dialog");
         }
+    }
+
+    internal static string BuildStatusDetailsText(
+        string status,
+        bool compact,
+        bool compactPlaybackAvailable)
+    {
+        var current = string.IsNullOrWhiteSpace(status)
+            ? "No current application status has been reported."
+            : status;
+        if (!compact)
+            return current;
+
+        var playback = compactPlaybackAvailable
+            ? "Compact playback state: available."
+            : "Compact playback state: unavailable. Nativune has not confirmed a current state. "
+                + "This status alone does not identify a YouTube Music website error; return to full view to continue using the website.";
+        return current + " " + playback;
     }
 
     private void SetPauseTimer() => _ = SetPauseTimerAsync();
@@ -1218,8 +1284,14 @@ public sealed partial class WebHostWindow : Window
                 {
                     Shortcuts = dialog.Result.Shortcuts,
                     ReduceMotion = dialog.Result.ReduceMotion,
-                    SleepInBackground = dialog.Result.SleepInBackground
+                    SleepInBackground = dialog.Result.SleepInBackground,
+                    StartCompact = dialog.Result.StartCompact
                 };
+                if (!_settings.StartCompact)
+                {
+                    _compactStartupPending = false;
+                    _compactResumeAfterAccount = false;
+                }
                 RefreshShortcutDescriptions();
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
                 CaptureSettings();
@@ -1376,16 +1448,47 @@ public sealed partial class WebHostWindow : Window
         });
     }
 
-    public void SetCompact(bool compact)
-    {
-        if (_closing || _disposed || compact == _compact) return;
-        ToggleCompact();
-    }
+    public void SetCompact(bool compact) => SetCompact(compact, preserveStartupIntent: false);
 
-    private void ToggleCompact()
+    private void SetCompact(bool compact, bool preserveStartupIntent)
+    {
+        if (_closing || _disposed) return;
+        if (!compact)
+        {
+            _compactWhenReady = false;
+            if (!preserveStartupIntent)
+            {
+                _compactStartupPending = false;
+                _compactResumeAfterAccount = false;
+            }
+            if (_statusDetailsText.StartsWith(CompactReadinessCheckingStatus, StringComparison.Ordinal))
+                SetStatus(string.Empty);
+        }
+        if (compact == _compact) return;
+        if (compact && _initializeBrowser)
+        {
+            _compactWhenReady = true;
+            SetStatus(CompactReadinessCheckingStatus);
+            _ = ProbeForCompactTransportAsync();
+            return;
+        }
+        _compactWhenReady = false;
+        ToggleCompactCore();
+    }
+    internal static bool ShouldResumeStartupCompactAfterAccount(bool startupPending,
+        bool savedOptIn, bool returnedToMusic, bool controlsReady)
+        => startupPending && savedOptIn && returnedToMusic && controlsReady;
+
+    private void ToggleCompact() => SetCompact(!(_compact || _compactWhenReady));
+
+    private void ToggleCompactCore()
     {
         if (_closing) return;
         if (_fullscreen) ToggleFullscreen();
+        if (!_compact)
+        {
+            CloseOutputVolumeFlyout();
+        }
         if (!_compact)
         {
             _fullBounds = GetAppBounds();
@@ -1393,20 +1496,25 @@ public sealed partial class WebHostWindow : Window
             _fullDpi = CurrentDpi();
             _presenter?.Restore();
             _compact = true;
-            _nativeWindowServices?.SetCaptionlessResizeFrame(true);
+            if (_presenter is not null)
+                _presenter.IsMaximizable = false;
             _presenter?.SetBorderAndTitleBar(false, false);
             ResizeCompact();
+            _nativeWindowServices?.SetCaptionlessResizeFrame(true);
         }
         else
         {
             CaptureCompactGeometry();
             _compact = false;
             _nativeWindowServices?.SetCaptionlessResizeFrame(false);
+            if (_presenter is not null)
+                _presenter.IsMaximizable = true;
             _presenter?.SetBorderAndTitleBar(true, true);
             MoveResize(_fullBounds.IsValid ? _fullBounds : GetDefaultBounds());
             if (_fullMaximized) _presenter?.Maximize();
         }
         ApplyCompactSurface();
+        _compactModeGeneration++;
         UpdateWindowPresentation();
         CaptureSettings();
     }
@@ -1414,7 +1522,6 @@ public sealed partial class WebHostWindow : Window
     private void ToggleFullscreen()
     {
         if (_closing) return;
-        if (_compact) ToggleCompact();
         if (!_fullscreen)
         {
             _windowBounds = GetAppBounds();
@@ -1464,7 +1571,8 @@ public sealed partial class WebHostWindow : Window
         var restored = ShellSettings.RestoreCompactBounds(_settings,
             ToDrawingRectangle(GetWorkArea()), CurrentDpi());
         if (restored.Width <= 0 || restored.Height <= 0) return;
-        _appWindow.Resize(new SizeInt32(restored.Width, restored.Height));
+        var height = Dip(CompactPlayerView.LogicalMinimumHeightValue) + GetNonClientDelta().Y;
+        _appWindow.Resize(new SizeInt32(restored.Width, height));
         _appWindow.Move(new PointInt32(restored.X, restored.Y));
     }
 
@@ -1667,6 +1775,7 @@ public sealed partial class WebHostWindow : Window
             info.MinTrackSize = new PointI(
                 Dip(CompactPlayerView.LogicalMinimumSize.Width) + delta.X,
                 Dip(CompactPlayerView.LogicalMinimumSize.Height) + delta.Y);
+            info.MaxTrackSize.Y = info.MinTrackSize.Y;
             Marshal.StructureToPtr(info, lParam, false);
             return true;
         }
@@ -1772,10 +1881,10 @@ public sealed partial class WebHostWindow : Window
             ApplyAppearance();
         });
     }
-
     private async Task ShutdownCoreAsync()
     {
         if (_disposed) return;
+        CloseOutputVolumeFlyout();
         _closing = true;
         Exception? firstFailure = null;
         void RememberFailure(Exception ex) => firstFailure ??= ex;
@@ -1802,6 +1911,7 @@ public sealed partial class WebHostWindow : Window
         try { _playerControls?.Invalidate(); } catch (Exception ex) { RememberFailure(ex); }
         try { _playerControls?.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _playerControls = null;
+        try { DisposeOutputAudio(); } catch (Exception ex) { RememberFailure(ex); }
         try { _taskbarControls?.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _taskbarControls = null;
         try { _sleep?.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
@@ -1904,6 +2014,7 @@ public sealed partial class WebHostWindow : Window
     private void OnProcessInfosChanged()
     {
         if (_closing || _disposed || _environment is null) return;
+        RefreshOutputAudio();
         try
         {
             using var snapshot = CreateToolhelp32Snapshot(2, 0);
@@ -2018,8 +2129,6 @@ public sealed partial class WebHostWindow : Window
 
     private int DipForDialog(int value) => Math.Max(1, (int)Math.Round(value * CurrentDpi() / 96d));
 
-    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
-    [DllImport("user32.dll")] private static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
     [DllImport("user32.dll")] private static extern bool FlashWindow(nint window, bool invert);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int RegisterWindowMessage(string message);
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(nint window);
@@ -2038,12 +2147,4 @@ public sealed partial class WebHostWindow : Window
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetProcessInformation(SafeProcessHandle process, int informationClass, ref PowerThrottlingState information, int informationSize);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetPriorityClass(SafeProcessHandle process, uint priorityClass);
 
-    private static readonly nint HtCaption = 2;
-
-    internal void BeginCompactDrag()
-    {
-        if (!_compact || _closing || _disposed || NativeHandle == 0) return;
-        ReleaseCapture();
-        SendMessage(NativeHandle, 0x00A1, HtCaption, 0);
-    }
 }

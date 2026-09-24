@@ -65,6 +65,7 @@ public sealed partial class SettingsDialog : Window
         _bindingFields = [ToggleField, PreviousField, NextField, CompactField];
         ReduceMotionCheckBox.IsChecked = initial.ReduceMotion;
         SleepInBackgroundCheckBox.IsChecked = initial.SleepInBackground;
+        StartCompactCheckBox.IsChecked = initial.StartCompact;
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
 
@@ -287,6 +288,7 @@ public sealed partial class SettingsDialog : Window
         {
             ReduceMotion = ReduceMotionCheckBox.IsChecked == true,
             SleepInBackground = SleepInBackgroundCheckBox.IsChecked == true,
+            StartCompact = StartCompactCheckBox.IsChecked == true,
             Shortcuts = bindings
         };
         _saved = true;

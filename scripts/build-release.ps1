@@ -2,7 +2,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')]
-    [string] $Version = '0.1.0',
+    [string] $Version = '0.1.3',
     [ValidateSet('Debug', 'Release')]
     [string] $Configuration = 'Release'
 )

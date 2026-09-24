@@ -24,10 +24,12 @@ internal static class Program
                 PrintHelp();
                 return 0;
             }
-            if (options.Command is not ("login" or "library" or "logout" or "self-check" or "media" or "media-control" or "web" or "native-fixture" or "native-interactions"))
+            if (options.Command is not ("login" or "library" or "logout" or "self-check" or "media" or "media-control" or "web" or "native-fixture" or "native-interactions" or "output-audio-fixture"))
                 throw new UsageException("Unknown command. Use help for usage.");
-            var requiresCredentials = options.Command is not ("web" or "native-fixture" or "native-interactions");
-            var root = RootLocator.Resolve(options.Root, requiresCredentials);
+            var requiresCredentials = options.Command is not ("web" or "native-fixture" or "native-interactions" or "output-audio-fixture");
+            var root = options.Command == "output-audio-fixture"
+                ? ResolveOutputAudioFixtureRoot(options.Root)
+                : RootLocator.Resolve(options.Root, requiresCredentials);
             using var cancellation = new CancellationController();
             return options.Command switch
             {
@@ -40,6 +42,7 @@ internal static class Program
                 "web" => WebHost.Run(root),
                 "native-fixture" => NativeFixture.Run(root, measureInteractions: false),
                 "native-interactions" => NativeFixture.Run(root, measureInteractions: true),
+                "output-audio-fixture" => OutputAudioFixture.Run(root),
                 _ => throw new UsageException("Unknown command. Use help for usage.")
             };
         }
@@ -198,6 +201,21 @@ internal static class Program
         return 1;
     }
 
+    private static string ResolveOutputAudioFixtureRoot(string? explicitRoot)
+    {
+        if (explicitRoot is not null && !Directory.Exists(Path.GetFullPath(explicitRoot)))
+            throw new UsageException("output-audio-fixture requires an existing repository root.");
+
+        try
+        {
+            return RootLocator.Resolve(explicitRoot, requireCredentials: false);
+        }
+        catch (CredentialException)
+        {
+            throw new UsageException("output-audio-fixture prerequisite missing: run it from this repository with its project-local .tools/webview2/runtime-path.txt.");
+        }
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine("Nativune - OAuth/library and Windows media capability probe");
@@ -215,6 +233,7 @@ internal static class Program
         Console.WriteLine("  web        Open official YouTube Music in an isolated WebView2 profile");
         Console.WriteLine("  native-fixture Show the account-free native Compact/Settings fixture for 60 seconds");
         Console.WriteLine("  native-interactions Measure the account-free native Compact/Settings interactions");
+        Console.WriteLine("  output-audio-fixture Explicitly run the account-free local WebView2 audio-session check");
         Console.WriteLine();
         Console.WriteLine("The login flow requests only youtube.readonly, uses a loopback callback, and never uses an embedded webview or browser cookies.");
         Console.WriteLine("The web command stores its separate WebView2 profile only under data/webview2.");
@@ -222,7 +241,8 @@ internal static class Program
         Console.WriteLine("Run logout before login to switch accounts. Requests are bounded and Ctrl+C cancels them.");
         Console.WriteLine("Media commands do not access Google credentials or browser cookies, and never close the browser.");
         Console.WriteLine("Media output omits track titles/artists; exit 7 means no/removed session, 8 means Windows access failed.");
-        Console.WriteLine("Native commands require only an existing --root directory and never access OAuth credentials, profiles, WebView2 or playback.");
+        Console.WriteLine("native-fixture and native-interactions require an existing --root and never access OAuth credentials, browser profiles, WebView2 or playback.");
+        Console.WriteLine("output-audio-fixture uses a fresh temporary profile under repository-local data/; click Start test tone when ready. It never runs during self-check.");
     }
 }
 

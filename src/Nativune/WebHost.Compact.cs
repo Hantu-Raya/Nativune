@@ -6,6 +6,11 @@ namespace Nativune;
 
 public sealed partial class WebHostWindow
 {
+    private const int CompactReadinessProbeLimit = 8;
+    private const string CompactReadinessFallbackStatus =
+        "Website playback controls are not ready. Compact controls will stay unavailable until they load; use Return to full to continue browsing.";
+    private const string CompactReadinessCheckingStatus =
+        "Checking the website playback controls before opening Compact.";
     private DispatcherQueueTimer _compactReadTimer = null!;
     private bool _compactActivity;
     private bool _compactReadPending;
@@ -13,6 +18,7 @@ public sealed partial class WebHostWindow
     private long _lastCompactReadAt = -1000;
     private long _lastCompactStateAt;
     private CompactPlaybackState? _compactState;
+    private bool _compactReadinessProbePending;
     private CancellationTokenSource? _compactArtworkCancellation;
     private string? _compactArtworkUrl;
 
@@ -39,13 +45,67 @@ public sealed partial class WebHostWindow
         CompactView.StatusRequested += ShowStatusDetails;
         CompactView.MinimizeRequested += () => _presenter?.Minimize();
         CompactView.CloseRequested += () => _ = ShutdownAsync();
-        CompactView.DragWindowRequested += BeginCompactDrag;
         CompactView.ToggleTopmostRequested += () => SetTopmost(!(_presenter?.IsAlwaysOnTop == true));
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
     }
 
+    private async Task ProbeForCompactTransportAsync()
+    {
+        if (!_initializeBrowser || !_compactWhenReady || _compactReadinessProbePending) return;
+        _compactReadinessProbePending = true;
+        var cancellation = _lifetime.Token;
+        try
+        {
+            for (var attempt = 0; attempt < CompactReadinessProbeLimit; attempt++)
+            {
+                if (!_compactWhenReady || _closing || _disposed) return;
+                var controls = _playerControls;
+                if (controls?.IsAvailable == true
+                    && await controls.AreCompactTransportControlsReadyAsync())
+                {
+                    if (_compactWhenReady && !_closing && !_disposed
+                        && ReferenceEquals(controls, _playerControls) && !_compact)
+                    {
+                        if (_statusDetailsText.StartsWith(CompactReadinessCheckingStatus,
+                                StringComparison.Ordinal))
+                            SetStatus(string.Empty);
+                        _compactWhenReady = false;
+                        ToggleCompactCore();
+                    }
+                    return;
+                }
+
+                if (attempt + 1 < CompactReadinessProbeLimit && _compactWhenReady)
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellation);
+            }
+
+            EnterCompactWithUnavailableControls();
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested || _closing || _disposed)
+        {
+        }
+        catch (Exception)
+        {
+            EnterCompactWithUnavailableControls();
+        }
+        finally
+        {
+            _compactReadinessProbePending = false;
+        }
+    }
+
+    private void EnterCompactWithUnavailableControls()
+    {
+        if (!_compactWhenReady || _closing || _disposed || _compact) return;
+        _compactWhenReady = false;
+        SetStatus(CompactReadinessFallbackStatus, isError: true);
+        ToggleCompactCore();
+    }
+
+
     private void ApplyCompactSurface()
     {
+        if (_compact) CloseOutputVolumeFlyout();
         CompactView.Visibility = _compact ? Visibility.Visible : Visibility.Collapsed;
         ToolbarHost.Visibility = _compact ? Visibility.Collapsed : Visibility.Visible;
         ToolbarRow.Height = _compact ? new GridLength(0) : GridLength.Auto;
@@ -119,9 +179,18 @@ public sealed partial class WebHostWindow
             var state = await controls.ReadCompactStateAsync();
             if (!CompactActive || generation != _compactGeneration) return;
             _compactState = state;
+            if (state is not null)
+            {
+                _compactStartupPending = false;
+                _compactResumeAfterAccount = false;
+            }
             _lastCompactStateAt = Environment.TickCount64;
             CompactView.SetPlayback(state);
             UpdateCompactArtwork(state?.ArtworkUrl);
+            if (state is not null
+                && _statusDetailsText.StartsWith("[!] Error: " + CompactReadinessFallbackStatus,
+                    StringComparison.Ordinal))
+                SetStatus(string.Empty);
         }
         catch (Exception)
         {
@@ -133,6 +202,7 @@ public sealed partial class WebHostWindow
             _compactReadPending = false;
         }
     }
+
 
     private void UpdateCompactArtwork(string? url)
     {
@@ -166,6 +236,17 @@ public sealed partial class WebHostWindow
     private async Task ExecuteCompactCommandAsync(string command, double? value)
     {
         if (!CompactActive) return;
+        if (command == "output-volume")
+        {
+            if (value is { } volume && double.IsFinite(volume) && volume >= 0 && volume <= 1)
+                SetOutputVolume(volume);
+            return;
+        }
+        if (command == "output-mute")
+        {
+            ToggleOutputMute();
+            return;
+        }
         if (command is "toggle" or "previous" or "next")
         {
             await ExecutePlayerCommandAsync(command);

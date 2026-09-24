@@ -223,7 +223,7 @@ internal static class ReleaseUpdater
     private const string Executable = "app/Nativune.exe";
     private const string SetupName = "Nativune-Setup.exe";
     private const string GitHubApiVersion = "2022-11-28";
-    private const string UserAgent = "Nativune/0.1.0";
+    private static string UserAgent => $"{Product}/{AppVersion.Number}";
     private const long MaxReleaseMetadataBytes = 1 * 1024 * 1024;
     private const long MaxAssetBytes = 1024L * 1024 * 1024;
     private static readonly Uri LatestReleaseUri = new("https://api.github.com/repos/Hantu-Raya/Nativune/releases/latest");

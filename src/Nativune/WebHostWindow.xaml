@@ -10,7 +10,7 @@
         TabFocusNavigation="Local">
     <Grid.RowDefinitions>
       <RowDefinition x:Name="ToolbarRow" Height="Auto" />
-      <RowDefinition Height="*" />
+      <RowDefinition x:Name="ContentRow" Height="*" />
       <RowDefinition x:Name="StatusRow" Height="Auto" />
     </Grid.RowDefinitions>
 
@@ -49,6 +49,45 @@
                 AutomationProperties.Name="Next item"
                 ToolTipService.ToolTip="Next item"
                 Content="Next" />
+        <Rectangle Width="8" Fill="Transparent" />
+        <Button x:Name="OutputMuteButton"
+                Width="40"
+                AutomationProperties.Name="Mute WebView audio"
+                AutomationProperties.HelpText="Click to mute or unmute app output. Hover, right-click, or press Down for the volume slider."
+                IsEnabled="False"
+                Content="Mute">
+          <Button.ContextFlyout>
+            <Flyout x:Name="OutputVolumeFlyout" Placement="Bottom" ShouldConstrainToRootBounds="False">
+              <Flyout.FlyoutPresenterStyle>
+                <Style TargetType="FlyoutPresenter">
+                  <Setter Property="Padding" Value="8,4" />
+                  <Setter Property="Background" Value="{ThemeResource SurfaceBrush}" />
+                  <Setter Property="BorderThickness" Value="0" />
+                  <Setter Property="CornerRadius" Value="0" />
+                </Style>
+              </Flyout.FlyoutPresenterStyle>
+              <Grid x:Name="OutputVolumeFlyoutSurface"
+                    Width="240" Height="48" ColumnSpacing="8"
+                    AutomationProperties.Name="WebView output volume control">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="180" />
+                  <ColumnDefinition Width="52" />
+                </Grid.ColumnDefinitions>
+                <local:CompactVolumeSlider x:Name="OutputVolumeSlider"
+                                           Grid.Column="0" Width="180" Height="40"
+                                           VerticalAlignment="Center"
+                                           Minimum="0" Maximum="1000" Value="1000" StepFrequency="1"
+                        IsEnabled="False"
+                        AutomationProperties.Name="WebView audio volume"
+                        AutomationProperties.HelpText="Adjust this app's audio output independently of YouTube Music volume." />
+                <TextBlock x:Name="OutputVolumeValue"
+                           Grid.Column="1" Width="52" Height="32"
+                           Text="100.0%" TextAlignment="Right" VerticalAlignment="Center"
+                           Foreground="{ThemeResource PrimaryTextBrush}" />
+              </Grid>
+            </Flyout>
+          </Button.ContextFlyout>
+        </Button>
         <Rectangle Width="12" Fill="Transparent" />
         <Button x:Name="MoreButton"
                 AutomationProperties.Name="More commands and settings"

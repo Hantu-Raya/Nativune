@@ -8,6 +8,7 @@ namespace Nativune;
 internal sealed class PlayerControls : IDisposable
 {
     private const int MaxScriptResultLength = 4096;
+    internal const string CompactRequestedStatus = "Player action requested; awaiting confirmed website state.";
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan DispatchWindow = TimeSpan.FromMilliseconds(1200);
 
@@ -120,6 +121,19 @@ internal sealed class PlayerControls : IDisposable
         }
     }
 
+    internal async Task<bool> AreCompactTransportControlsReadyAsync()
+    {
+        if (!IsAvailable || !TryStart("compact-readiness", out var request, out _)) return false;
+        try
+        {
+            var script = CompactPlayback.BuildScript("ready", null, request.Href,
+                DateTimeOffset.UtcNow.Add(ScriptTimeout).ToUnixTimeMilliseconds());
+            var json = await RunCompactScriptAsync(request, script);
+            return json is not null && Owns(request) && CompactPlayback.IsTransportReadyResponse(json);
+        }
+        finally { CompleteRequest(request); }
+    }
+
     internal async Task<CompactPlaybackState?> ReadCompactStateAsync()
     {
         if (!IsAvailable || !TryGetSource(out var source)) return null;
@@ -154,10 +168,10 @@ internal sealed class PlayerControls : IDisposable
 
     internal async Task<string> ExecuteCompactAsync(string command, double? value = null)
     {
-        if (command is not ("like" or "dislike" or "repeat" or "shuffle" or "mute" or "seek" or "volume"))
+        if (command is not ("like" or "dislike" or "repeat" or "shuffle" or "seek"))
             return "Unsupported compact command.";
-        if (command is "seek" or "volume"
-            && (value is null || !double.IsFinite(value.Value) || value < 0 || command == "volume" && value > 1))
+        if (command == "seek"
+            && (value is null || !double.IsFinite(value.Value) || value < 0))
             return "Invalid control value; no action was sent.";
         if (!TryStart(command, out var request, out var failure)) return failure;
         try
@@ -176,15 +190,19 @@ internal sealed class PlayerControls : IDisposable
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !Owns(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
                 return "Player action outcome unknown; no retry. If controls remain unavailable, restart the app.";
-            return outcome.Code switch
-            {
-                "requested" when outcome.Dispatched => "Player action requested; awaiting confirmed website state.",
-                "stale-state" => "Playback changed; no action was sent.",
-                "script-error" when outcome.Dispatched => "Player action outcome unknown; no retry.",
-                _ => "Player control unavailable or ambiguous; no action was sent."
-            };
+            return FormatCompactOutcome(outcome);
         }
         finally { CompleteRequest(request); }
+    }
+    internal static string FormatCompactOutcome(CompactPlayback.CompactPlaybackOutcome outcome)
+    {
+        if (outcome.Code == "requested" && outcome.Dispatched)
+            return CompactRequestedStatus;
+        if (outcome.Code == "stale-state" && !outcome.Dispatched)
+            return "Playback changed; no action was sent.";
+        return outcome.Dispatched
+            ? "Player action outcome unknown; no retry."
+            : "Player control unavailable or ambiguous; no action was sent.";
     }
 
     private async Task<string?> RunCompactScriptAsync(Request request, string script)
@@ -488,7 +506,7 @@ internal sealed class PlayerControls : IDisposable
     private static bool IsSupportedCommand(string? command)
         => command is "play" or "pause" or "next" or "previous" or "toggle";
 
-    private static bool IsMusicUri(string? source)
+    internal static bool IsMusicUri(string? source)
     {
         if (source is not { Length: <= 4096 } || !Uri.TryCreate(source, UriKind.Absolute, out var uri))
             return false;

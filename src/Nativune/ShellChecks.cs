@@ -23,10 +23,12 @@ internal static class ShellChecks
             RestoreSection = true,
             LastSection = "library",
             SleepInBackground = false,
+            StartCompact = true,
         };
         ShellSettings.SaveAsync(root, settings, CancellationToken.None).GetAwaiter().GetResult();
         var loaded = ShellSettings.Load(root, out var warning);
-        Require(warning is null && loaded == settings, "Window settings did not survive a save and reload.");
+        Require(warning is null && loaded == settings && loaded.StartCompact,
+            "Window settings or Start in Compact did not survive a save and reload.");
 
         var area = new Rectangle(-1280, 0, 1280, 720);
         var bounds = ShellSettings.RestoreBounds(loaded, area, 144);
@@ -37,6 +39,10 @@ internal static class ShellChecks
             "Small work area clipping failed.");
 
         var file = Path.Combine(root, "data", "settings.json");
+        var savedSettingsText = File.ReadAllText(file);
+        Require(savedSettingsText.Contains("\"Version\": 4", StringComparison.Ordinal)
+            && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal),
+            "Compact startup preference was not written to the current settings schema.");
         Require(loaded.StartupUri == "https://music.youtube.com/library"
             && (loaded with { RestoreSection = false }).StartupUri == "https://music.youtube.com/",
             "Section restoration ignored its opt-in boundary.");
@@ -45,6 +51,17 @@ internal static class ShellChecks
             && ShellSettings.SectionFromUri(new Uri("https://music.youtube.com.evil.example/library")) is null
             && ShellSettings.SectionFromUri(new Uri("https://user@music.youtube.com/library")) is null,
             "Section classification accepted a private route or untrusted origin.");
+        Require(PlayerControls.IsMusicUri("https://music.youtube.com/watch?video=synthetic")
+            && !PlayerControls.IsMusicUri("https://music.youtube.com/signin")
+            && !PlayerControls.IsMusicUri("https://accounts.google.com/signin")
+            && !PlayerControls.IsMusicUri("https://music.youtube.com.evil.example/watch"),
+            "Compact readiness route accepted an account-flow or untrusted origin.");
+        Require(WebHostWindow.ShouldResumeStartupCompactAfterAccount(true, true, true, true)
+            && !WebHostWindow.ShouldResumeStartupCompactAfterAccount(false, true, true, true)
+            && !WebHostWindow.ShouldResumeStartupCompactAfterAccount(true, false, true, true)
+            && !WebHostWindow.ShouldResumeStartupCompactAfterAccount(true, true, false, true)
+            && !WebHostWindow.ShouldResumeStartupCompactAfterAccount(true, true, true, false),
+            "Startup Compact resumed without a preserved opt-in, account return, and ready owned Music view.");
 
         ShellSettings.SaveAsync(root, settings with { LastSection = "https://evil.example/private" },
             CancellationToken.None).GetAwaiter().GetResult();
@@ -53,13 +70,19 @@ internal static class ShellChecks
             "{\"Version\":1,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
         var previous = ShellSettings.Load(root, out warning);
         Require(warning is null && previous.Width == 1234 && !previous.TrayEnabled
-            && !previous.RestoreSection && previous.Zoom == 1 && previous.SleepInBackground,
+            && !previous.RestoreSection && previous.Zoom == 1 && previous.SleepInBackground
+            && !previous.StartCompact,
             "Existing P1 settings changed optional behavior during upgrade.");
         File.WriteAllText(file,
             "{\"Version\":2,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
         var previousV2 = ShellSettings.Load(root, out warning);
-        Require(warning is null && previousV2.SleepInBackground,
-            "Existing P2 settings did not retain background sleeping during upgrade.");
+        Require(warning is null && previousV2.SleepInBackground && !previousV2.StartCompact,
+            "Existing P2 settings did not retain optional behavior during upgrade.");
+        File.WriteAllText(file,
+            "{\"Version\":3,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
+        var previousV3 = ShellSettings.Load(root, out warning);
+        Require(warning is null && !previousV3.StartCompact,
+            "Existing P3 settings did not default Start in Compact to off.");
         var sleepingArguments = WebHostWindow.BrowserArguments(sleepInBackground: true);
         var activeArguments = WebHostWindow.BrowserArguments(sleepInBackground: false);
         Require(!sleepingArguments.Contains("--disable-background-timer-throttling", StringComparison.Ordinal)
@@ -85,6 +108,9 @@ internal static class ShellChecks
         }
         catch (OperationCanceledException) { }
         Require(ShellSettings.Load(root, out _) == settings, "Cancelled save replaced existing settings.");
+        // Leave shared settings at full startup; the isolated native fixture covers opt-in Compact.
+        ShellSettings.SaveAsync(root, settings with { StartCompact = false }, CancellationToken.None)
+            .GetAwaiter().GetResult();
 
         using var timer = new SleepDeadline(() => throw new SelfCheckException("Cancelled timer fired."),
             new SynchronizationContext());
@@ -279,38 +305,49 @@ internal static class ShellChecks
 
     private static void CheckNativeHost(string root)
     {
-        var completion = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        Exception? failure = null;
-        Exception? threadFailure = null;
-        var thread = new Thread(() =>
+        var fixtureRoot = Path.Combine(root, "data", $".self-check-compact-startup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(fixtureRoot);
+        try
         {
-            try
+            ShellSettings.SaveAsync(fixtureRoot, ShellSettings.Default with { StartCompact = true },
+                CancellationToken.None).GetAwaiter().GetResult();
+            var completion = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            Exception? failure = null;
+            Exception? threadFailure = null;
+            var thread = new Thread(() =>
             {
-                ShellApplication.Run(() => _ = RunNativeSessionAsync(root, completion));
-            }
-            catch (Exception exception)
-            {
-                threadFailure = exception;
-                completion.TrySetException(exception);
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join();
+                try
+                {
+                    ShellApplication.Run(() => _ = RunNativeSessionAsync(fixtureRoot, completion));
+                }
+                catch (Exception exception)
+                {
+                    threadFailure = exception;
+                    completion.TrySetException(exception);
+                }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join();
 
-        failure = threadFailure;
-        if (failure is null && !completion.Task.IsCompleted)
-            failure = new SelfCheckException("Native STA session returned without signaling completion.");
-        if (failure is null)
-        {
-            try { completion.Task.GetAwaiter().GetResult(); }
-            catch (Exception exception) { failure = exception; }
+            failure = threadFailure;
+            if (failure is null && !completion.Task.IsCompleted)
+                failure = new SelfCheckException("Native STA session returned without signaling completion.");
+            if (failure is null)
+            {
+                try { completion.Task.GetAwaiter().GetResult(); }
+                catch (Exception exception) { failure = exception; }
+            }
+
+            if (failure is not null)
+                throw new SelfCheckException(
+                    $"Native WinUI startup/disposal contract failed: {failure.GetBaseException().GetType().Name}: {failure.GetBaseException().Message}");
         }
-
-        if (failure is not null)
-            throw new SelfCheckException(
-                $"Native WinUI startup/disposal contract failed: {failure.GetBaseException().GetType().Name}: {failure.GetBaseException().Message}");
+        finally
+        {
+            Directory.Delete(fixtureRoot, recursive: true);
+        }
     }
 
     private static async Task RunNativeSessionAsync(
@@ -332,9 +369,13 @@ internal static class ShellChecks
             host.RequestActivation();
             if (host.Content is not FrameworkElement content)
                 throw new SelfCheckException("WinUI host did not expose a FrameworkElement root.");
-            phase = "full-layout";
+            phase = "compact-startup";
             await AwaitLoadedAsync(content);
             PrepareContent(content);
+            Require(host.IsCompact, "Saved opt-in Compact startup was not applied on the native host.");
+            host.SetCompact(false);
+            PrepareContent(content);
+            Require(!host.IsCompact, "Compact startup fixture did not return to full mode.");
             phase = "accent-resources";
             CheckNativeAccentResources();
             Require(host.NativeHandle != 0, "WinUI host did not create a native HWND.");
