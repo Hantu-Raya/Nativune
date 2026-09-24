@@ -111,10 +111,10 @@ For development commands and project constraints, see [agents.md](agents.md) and
 
 - Windows x64 only
 - The smaller candidate relies on shared Microsoft runtimes; clean-Windows installation, total shared-prerequisite footprint, and the supported-Windows compatibility matrix remain unverified. See [measured local candidate and limits](plan.md#shared-runtime-installer-candidate-24-september-2026).
-- No Authenticode signature yet
+- No Authenticode signature yet; signing will identify the publisher, but new releases may still trigger SmartScreen until reputation is established
 - Website-backed commands are compatibility behavior, not a documented Google playback API
 - Full saved-library parity, Premium behavior, mixed-DPI/high-contrast coverage, long-session stability, and the complete-process resource target remain unverified
-- The updater does not see this repository's private release; a future public channel needs a separate visibility/history decision.
+- Source now lives in the private `Hantu-Raya/Nativune` repository (history mirrored from the archived `Hantu-Raya/youtube`, which keeps the v0.1.4/v0.1.9 release pages). The updater cannot see private releases; making the repository public needs a separate history-privacy decision.
 
 ## License
 
