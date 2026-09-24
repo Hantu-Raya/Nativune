@@ -27,7 +27,7 @@ Website-backed controls depend on the public YouTube Music interface and can bec
 - Enough disk space for the large bundled app and browser runtime plus installation and update staging. The local 0.1.2 setup artifact was 634.44 MB; that is not an installed-size measurement. See the [footprint plan](plan.md#installer-footprint-baseline-and-debloat-plan).
 - A network connection for YouTube Music and release update checks
 
-The verified local 0.1.2 package is self-contained and does not require a global .NET, Windows App SDK, or WebView2 installation. The 0.1.3 source has not been packaged; the proposed footprint work has not changed this prerequisite.
+The verified local 0.1.2 package and the private CI-built 0.1.3 package are self-contained and do not require a global .NET, Windows App SDK, or WebView2 installation. The proposed footprint work has not changed this prerequisite; the CI-built package has not been installed or runtime-tested.
 
 ## Install
 
@@ -65,7 +65,7 @@ Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the
 
 ## Build from source
 
-The repository keeps its toolchain and caches under the repository. Current source and the release-script default are **0.1.3**; local 0.1.2 artifacts predate this source, and the version number does not mean a 0.1.3 package has been built or accepted. On a fresh Windows checkout, prepare the pinned local inputs and restore both projects:
+The repository keeps its toolchain and caches under the repository. Current source and the release-script default are **0.1.3**; local 0.1.2 artifacts predate this source, while the private CI-built 0.1.3 package has not been installed or accepted. On a fresh Windows checkout, prepare the pinned local inputs and restore both projects:
 
 ```powershell
 pwsh -NoProfile -File scripts/setup.ps1
