@@ -27,11 +27,11 @@ Website-backed controls depend on the public YouTube Music interface and can bec
 - The new framework-dependent candidate requires the x64 .NET 10 Runtime (not the Desktop Runtime), Windows App SDK 2.5.1 runtime, Evergreen WebView2 Runtime, and x64 Visual C++ v14 Redistributable. Setup checks for these before changing Nativune files; if one is missing, it shows its official Microsoft link and asks before downloading or installing it. Declining, being offline, or using `--silent` without the prerequisite leaves the installation unchanged. Shared components use machine storage outside the Nativune folder and may require administrator rights or an organization policy change; Setup must not bypass those restrictions.
 - A network connection for YouTube Music and release update checks; installing missing prerequisites also needs a connection.
 
-The verified local 0.1.2 package and private CI-built 0.1.3 package are self-contained. The newer 0.1.4 shared-runtime candidate passed an isolated per-user install and account-free native guest startup on this workstation, but not a clean Windows VM or supported-platform compatibility matrix; a private release is not a publicly supported release.
+The verified local 0.1.2 package and private CI-built 0.1.3 package are self-contained. The private, unsigned 0.1.4 shared-runtime prerelease passed an isolated per-user install and account-free native guest startup on this workstation, but not a clean Windows VM or supported-platform compatibility matrix; it is not a publicly supported release.
 
 ## Install
 
-1. Repository collaborators can download `Nativune-Setup.exe` and `SHA256SUMS.txt` from the same [private GitHub release](https://github.com/Hantu-Raya/youtube/releases). This release is not a public download.
+1. Repository collaborators can download `Nativune-Setup.exe` and `SHA256SUMS.txt` from the same [private v0.1.4 GitHub prerelease](https://github.com/Hantu-Raya/youtube/releases/tag/v0.1.4). This is not a public download.
 2. Verify the installer hash in PowerShell:
 
    ```powershell
@@ -85,7 +85,7 @@ These setup and restore scripts keep downloaded toolchain, development browser, 
 
 ### Private CI artifact
 
-The private installer workflow's first run (35951546259) failed on the old uBO source fingerprint; the corrected [0.1.3 CI run](https://github.com/Hantu-Raya/youtube/actions/runs/35952514474) passed packaging, integrity checks and artifact upload. Its private run artifact is not a release or an installed-size measurement. The workflow does not push, create a tag or GitHub Release, or test signed-in playback. A manually published private 0.1.4 installer is separate from CI and does not establish clean-Windows compatibility or public release acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
+The private installer workflow's first run (35951546259) failed on the old uBO source fingerprint; the corrected [0.1.3 CI run](https://github.com/Hantu-Raya/youtube/actions/runs/35952514474) passed packaging, integrity checks and artifact upload. Its private run artifact was not a release or an installed-size measurement. The workflow itself does not push, create a tag or GitHub Release, or test signed-in playback. The [private 0.1.4 prerelease](https://github.com/Hantu-Raya/youtube/releases/tag/v0.1.4) manually publishes assets from [passing CI run 35964031761](https://github.com/Hantu-Raya/youtube/actions/runs/35964031761); it does not establish clean-Windows compatibility or public release acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
 
 For development commands and project constraints, see [agents.md](agents.md) and the current-state index in [plan.md](plan.md#current-state).
 
