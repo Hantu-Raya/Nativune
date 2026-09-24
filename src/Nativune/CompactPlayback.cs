@@ -9,6 +9,7 @@ internal static class CompactPlayback
     private const int MaxTitleLength = 512;
     private const int MaxArtworkUrlLength = 2048;
     private const double MaxDurationSeconds = 7 * 24 * 60 * 60;
+
     private static readonly JsonSerializerOptions SignatureOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
@@ -29,8 +30,10 @@ internal static class CompactPlayback
         return "(() => { const request = " + request + ";\n" + CompactJavaScript + "\n})()";
     }
 
+    // Item identity only: signed-in media duration can grow while the same item plays.
     internal static string ComputeSignature(CompactPlaybackState state)
-        => JsonSerializer.Serialize(new object?[] { state.Title, state.ArtworkUrl, state.Duration }, SignatureOptions);
+        => JsonSerializer.Serialize(new object?[]
+            { state.Title, state.ArtworkUrl, state.Duration, state.VideoId }, SignatureOptions);
 
     internal static bool TryParseState(string? json, out CompactPlaybackState? state)
     {
@@ -47,11 +50,18 @@ internal static class CompactPlayback
                 || !RequiredString(root, "title", null, out var title)
                 || title.Length == 0 || title.Length > MaxTitleLength
                 || !NullableString(root, "artworkUrl", out var artworkUrl)
+                || !NullableString(root, "videoId", out var videoId)
+                || videoId is not null && (videoId.Length != 11
+                    || videoId.Any(c => c is not (>= 'a' and <= 'z' or >= 'A' and <= 'Z'
+                        or >= '0' and <= '9' or '-' or '_')))
                 || artworkUrl is { Length: > MaxArtworkUrlLength }
                 || artworkUrl is not null && !CompactArtwork.IsAllowedUrl(artworkUrl)
                 || !RequiredBool(root, "paused", out var paused)
                 || !RequiredFinite(root, "position", out var position)
                 || !RequiredFinite(root, "duration", out var duration)
+                || !RequiredFinite(root, "mediaDuration", out var mediaDuration)
+                || !RequiredFinite(root, "mediaPosition", out var mediaPosition)
+                || !RequiredBool(root, "websiteClock", out var websiteClock)
                 || !NullableBool(root, "liked", out var liked)
                 || !NullableBool(root, "disliked", out var disliked)
                 || !NullableRepeat(root, "repeat", out var repeat)
@@ -59,17 +69,29 @@ internal static class CompactPlayback
                 || !RequiredBool(root, "canLike", out var canLike)
                 || !RequiredBool(root, "canDislike", out var canDislike)
                 || !RequiredBool(root, "canRepeat", out var canRepeat)
-                || !RequiredBool(root, "canShuffle", out var canShuffle))
+                || !RequiredBool(root, "canShuffle", out var canShuffle)
+                || !NullableBool(root, "shuffle", out var shuffle)
+                || !RequiredBool(root, "clockMismatch", out var clockMismatch)
+                || !RequiredBool(root, "clockConfirmed", out var clockConfirmed))
                 return false;
 
             if (duration < 0 || duration > MaxDurationSeconds
                 || position < 0 || position > MaxDurationSeconds
+                || mediaDuration < 0 || mediaDuration > MaxDurationSeconds
+                || mediaPosition < 0 || mediaPosition > MaxDurationSeconds
                 || duration > 0 && position > duration && canSeek
-                || duration == 0 && canSeek)
+                || duration == 0 && canSeek
+                || websiteClock && duration <= 0
+                || clockMismatch && canSeek
+                || canSeek && !clockConfirmed
+                || canSeek && !websiteClock && (mediaDuration <= 0 || mediaPosition > mediaDuration)
+                || clockConfirmed && (clockMismatch || duration <= 0 || position > duration))
                 return false;
 
             state = new CompactPlaybackState(title, artworkUrl, paused, position, duration,
-                liked, disliked, repeat, canSeek, canLike, canDislike, canRepeat, canShuffle);
+                liked, disliked, repeat, canSeek, canLike, canDislike, canRepeat, canShuffle,
+                shuffle, clockMismatch, videoId, clockConfirmed, mediaDuration, websiteClock,
+                mediaPosition);
             return true;
         }
         catch (JsonException)
@@ -95,7 +117,8 @@ internal static class CompactPlayback
             var code = codeElement.GetString();
             if (code is not ("requested" or "unavailable" or "wrong-origin" or "stale-document"
                 or "disabled-control" or "ambiguous-control" or "modal-open" or "unsupported-locale"
-                or "expired" or "invalid-value" or "unsupported-command" or "stale-state" or "script-error"))
+                or "expired" or "invalid-value" or "unsupported-command"
+                or "stale-state" or "script-error"))
                 return false;
             var dispatched = root.TryGetProperty("dispatched", out var dispatchedElement)
                 && dispatchedElement.ValueKind is JsonValueKind.True or JsonValueKind.False
@@ -238,7 +261,8 @@ try {
   if (modals.length > 16 || Array.from(modals).some(modalVisible))
     return result('modal-open');
   const acquire = () => {
-    if (document !== requestDocument || location.href !== request.href) return null;
+    if (document !== requestDocument || window !== window.top
+      || location.origin !== 'https://music.youtube.com' || location.href !== request.href) return null;
     const bars = requestDocument.querySelectorAll('ytmusic-player-bar');
     const media = requestDocument.querySelectorAll('audio,video');
     if (bars.length !== 1 || media.length !== 1 || !(media[0] instanceof HTMLMediaElement)) return null;
@@ -262,7 +286,7 @@ try {
     if (command === 'like') return name === 'like' || name === 'remove like';
     if (command === 'dislike') return name === 'dislike' || name === 'remove dislike';
     if (command === 'repeat') return name === 'repeat off' || name === 'repeat all' || name === 'repeat one' || name === 'repeat';
-    if (command === 'shuffle') return name === 'shuffle';
+    if (command === 'shuffle') return name === 'shuffle' || name === 'shuffle on' || name === 'shuffle off';
     return false;
   });
   const transportForBar = bar => {
@@ -291,13 +315,65 @@ try {
     const min = attrNumber(slider, 'aria-valuemin');
     const max = attrNumber(slider, 'aria-valuemax');
     const now = attrNumber(slider, 'aria-valuenow');
-    if (!finite(min) || !finite(max) || !finite(now) || max <= min || now < min || now > max) return null;
+    if (!finite(min) || !finite(max) || !finite(now) || min < 0 || max > 604800
+      || max <= min || now < min || now > max) return null;
     return {min, max, now};
   };
-  const seekClockMatches = (media, range) => {
-    if (!range || media.duration <= 0) return false;
-    const sliderPosition = (range.now - range.min) / (range.max - range.min) * media.duration;
-    return Math.abs(sliderPosition - media.position) <= 5;
+  const secondsFor = text => {
+    if (typeof text !== 'string' || text.length === 0 || text.length > 24) return null;
+    const parts = text.split(':');
+    let seconds;
+    if (parts.length === 2 && /^\d{1,5}$/.test(parts[0]) && /^\d{2}$/.test(parts[1])) {
+      const minutes = Number(parts[0]), remainder = Number(parts[1]);
+      if (remainder >= 60) return null;
+      seconds = minutes * 60 + remainder;
+    } else if (parts.length === 3 && /^\d{1,3}$/.test(parts[0])
+      && /^\d{2}$/.test(parts[1]) && /^\d{2}$/.test(parts[2])) {
+      const hours = Number(parts[0]), minutes = Number(parts[1]), remainder = Number(parts[2]);
+      if (minutes >= 60 || remainder >= 60) return null;
+      seconds = hours * 3600 + minutes * 60 + remainder;
+    } else return null;
+    return finite(seconds) && seconds <= 604800 ? seconds : null;
+  };
+  const timeInfoFor = (acquired, seek) => {
+    const candidates = acquired.bar.querySelectorAll('span.time-info');
+    if (candidates.length === 0) return {status:'absent'};
+    if (candidates.length !== 1 || !layoutVisible(candidates[0])
+      || typeof candidates[0].textContent !== 'string' || candidates[0].textContent.length > 64)
+      return {status:'invalid'};
+    const match = candidates[0].textContent.trim().match(/^([^/]+)\s*\/\s*([^/]+)$/);
+    if (!match) return {status:'invalid'};
+    const position = secondsFor(match[1].trim()), duration = secondsFor(match[2].trim());
+    const range = seek.status === 'ok' ? rangeFor(seek.element) : null;
+    if (!finite(position) || !finite(duration) || duration <= 0 || position > duration || !range
+      || Math.abs(range.min) > 2 || Math.abs(range.max - duration) > 2
+      || Math.abs(range.now - position) > 2) return {status:'invalid'};
+    return {status:'ok', element:candidates[0], position, duration, range};
+  };
+  const seekClockMatches = (media, range) => !!range && media.duration > 0
+    && Math.abs(range.min) <= 2 && Math.abs(range.max - media.duration) <= 2
+    && Math.abs(range.now - media.position) <= 5;
+  // A coherent visible website clock and slider are authoritative. Signed-in playback
+  // can place several items on one media timeline, so media time is display-only.
+  const clockFor = (acquired, media, seek) => {
+    const site = timeInfoFor(acquired, seek);
+    if (site.status === 'ok')
+      return {position:site.position, duration:site.duration, websiteClock:true,
+        mismatch:false, confirmed:true, range:site.range};
+    if (site.status === 'invalid')
+      return {position:media.position, duration:media.duration, websiteClock:false,
+        mismatch:true, confirmed:false, range:null};
+    const range = seek.status === 'ok' ? rangeFor(seek.element) : null;
+    const coherent = !!range && seekClockMatches(media, range);
+    return {position:media.position, duration:media.duration, websiteClock:false,
+      mismatch:!media.clockWithinDuration || !!range && !coherent,
+      confirmed:media.duration > 0 && media.clockWithinDuration && coherent, range};
+  };
+  const videoIdFor = () => {
+    const watchUrl = new URL(location.href);
+    const videoIds = watchUrl.searchParams.getAll('v');
+    return watchUrl.pathname === '/watch' && videoIds.length === 1
+      && /^[A-Za-z0-9_-]{11}$/.test(videoIds[0]) ? videoIds[0] : null;
   };
   const metadataFor = (acquired, duration) => {
     const titles = Array.from(acquired.bar.querySelectorAll('.title'));
@@ -319,16 +395,8 @@ try {
       } catch { return false; }
     });
     const artworkUrl = shown.length === 1 ? shown[0].currentSrc : null;
-    return {title, artworkUrl, signature:JSON.stringify([title, artworkUrl, duration])};
-  };
-  const mediaFor = acquired => {
-    const element = acquired.element;
-    const position = element.currentTime, rawDuration = element.duration;
-    const duration = rawDuration === Infinity || Number.isNaN(rawDuration) ? 0 : rawDuration;
-    if (typeof element.paused !== 'boolean' || typeof element.seeking !== 'boolean'
-      || !finite(position) || !finite(duration) || duration < 0 || duration > 604800
-      || position < 0 || position > 604800 || duration > 0 && position > duration) return null;
-    return {position, duration, paused:element.paused, seeking:element.seeking};
+    const videoId = videoIdFor();
+    return {title, artworkUrl, signature:JSON.stringify([title, artworkUrl, duration, videoId])};
   };
   const stateMediaFor = acquired => {
     const element = acquired.element;
@@ -341,22 +409,47 @@ try {
     return {position, duration, paused:element.paused, seeking:element.seeking,
       clockWithinDuration:duration <= 0 || position <= duration};
   };
-  const seekableFor = element => {
-    try { return Number.isInteger(element.seekable?.length) && element.seekable.length > 0; }
-    catch { return false; }
+  const signedStateFor = (acquired, media, seek = choose(acquired.seekSliders, true)) => {
+    const clock = clockFor(acquired, media, seek);
+    const metadata = metadataFor(acquired, clock.duration);
+    return {clock, metadata, seek};
+  };
+  // Validates a seek in the website slider's own seconds; the site maps it to media.
+  const seekSnapshot = (acquired, targetElement, target) => {
+    if (window !== window.top || location.origin !== 'https://music.youtube.com')
+      return {error:'wrong-origin'};
+    if (document !== requestDocument || location.href !== request.href)
+      return {error:'stale-document'};
+    const media = stateMediaFor(acquired);
+    if (!media) return {error:'invalid-value'};
+    const seek = choose(acquired.seekSliders, true);
+    if (seek.status !== 'ok') return {error:seek.status};
+    if (seek.element !== targetElement) return {error:'stale-document'};
+    const {clock, metadata} = signedStateFor(acquired, media, seek);
+    if (!metadata) return {error:'unavailable'};
+    if (typeof request.expectedStateSignature !== 'string'
+      || request.expectedStateSignature !== metadata.signature)
+      return {error:'stale-state'};
+    if (!trackFor(targetElement)) return {error:'unavailable'};
+    if (media.seeking || !clock.confirmed || clock.mismatch || !clock.range || clock.duration <= 0)
+      return {error:'unavailable'};
+    if (!finite(target) || target < 0 || target > clock.duration
+      || target < clock.range.min || target > clock.range.max)
+      return {error:'invalid-value'};
+    return {};
   };
   const state = () => {
     const acquired = acquire(), media = acquired && stateMediaFor(acquired);
     if (!acquired || !media) return result('unavailable');
     const transport = transportForBar(acquired.bar);
     if (!transport || !enabled(transport.playPause)) return result('unavailable');
-    const metadata = metadataFor(acquired, media.duration);
-    if (!metadata) return result('unavailable');
     const like = choose(buttonsFor(acquired, 'like'));
     const dislike = choose(buttonsFor(acquired, 'dislike'));
     const repeat = choose(buttonsFor(acquired, 'repeat'));
     const shuffle = choose(buttonsFor(acquired, 'shuffle'));
     const seek = choose(acquired.seekSliders, true);
+    const {clock, metadata} = signedStateFor(acquired, media, seek);
+    if (!metadata) return result('unavailable');
     const pressed = choice => {
       if (choice.status !== 'ok') return null;
       const value = choice.element.getAttribute('aria-pressed');
@@ -366,15 +459,34 @@ try {
     const repeatState = repeatLabel === 'repeat off' ? 'off' : repeatLabel === 'repeat all' ? 'all'
       : repeatLabel === 'repeat one' ? 'one' : null;
     const liked = pressed(like), disliked = pressed(dislike);
-    const seekRange = seek.status === 'ok' ? rangeFor(seek.element) : null;
+    const shuffleActive = (() => {
+      if (shuffle.status !== 'ok') return null;
+      const explicit = pressed(shuffle);
+      if (explicit !== null) return explicit;
+      const button = shuffle.element;
+      if (label(button) !== 'shuffle' || button.matches(':hover') || button.matches(':focus-visible')
+        || repeatState !== 'off' || repeat.status !== 'ok'
+        || getComputedStyle(repeat.element).color !== 'rgb(144, 144, 144)')
+        return null;
+      // Trust the observed dark-site white/on and gray/off colors only while
+      // the separate, explicitly labeled Repeat Off button confirms gray is inactive.
+      // An unrecognized theme or style leaves Shuffle unconfirmed.
+      const color = getComputedStyle(button).color;
+      return color === 'rgb(255, 255, 255)' ? true
+        : color === 'rgb(144, 144, 144)' ? false : null;
+    })();
+    const seekRange = clock.range;
     const seekTrack = seek.status === 'ok' ? trackFor(seek.element) : null;
-    // Preserve public media metadata through transient clock skew; seeking waits for both clocks to agree.
-    const seekClockCoherent = media.duration <= 0 || !seekRange || seekClockMatches(media, seekRange);
-    const mediaSeekable = seekableFor(acquired.element);
-    const canSeek = media.duration > 0 && media.clockWithinDuration && seek.status === 'ok'
-      && !!seekRange && !!seekTrack && !media.seeking && seekClockCoherent && mediaSeekable;
+    const canSeek = clock.duration > 0 && seek.status === 'ok' && !!seekRange && !!seekTrack
+      && !media.seeking && clock.confirmed && !clock.mismatch;
+    const clockMismatch = clock.mismatch;
+    const videoId = videoIdFor();
+    const clockConfirmed = clock.confirmed;
     return {code:'state', title:metadata.title, artworkUrl:metadata.artworkUrl, paused:media.paused,
-      position:media.position, duration:media.duration, liked, disliked, repeat:repeatState,
+      position:clock.position, duration:clock.duration, mediaPosition:media.position,
+      mediaDuration:media.duration,
+      websiteClock:clock.websiteClock, liked, disliked, repeat:repeatState,
+      shuffle:shuffleActive, clockMismatch, clockConfirmed, videoId,
       canSeek, canLike:like.status === 'ok' && liked !== null, canDislike:dislike.status === 'ok' && disliked !== null,
       canRepeat:repeat.status === 'ok' && repeatState !== null, canShuffle:shuffle.status === 'ok',
       signature:metadata.signature};
@@ -403,27 +515,23 @@ try {
     ? choose(acquired.seekSliders, true) : choose(buttonsFor(acquired, request.command));
   const initialTarget = targetFor(initial);
   if (initialTarget.status !== 'ok') return result(initialTarget.status);
+  if (request.command === 'seek') {
+    const snapshot = seekSnapshot(initial, initialTarget.element, request.value);
+    if (snapshot.error) return result(snapshot.error);
+  }
   const current = acquire();
   if (!current || current.bar !== initial.bar || current.element !== initial.element) return result('stale-document');
   const currentTarget = targetFor(current);
   if (currentTarget.status !== 'ok') return result(currentTarget.status);
   if (currentTarget.element !== initialTarget.element) return result('stale-document');
   if (request.command === 'like' || request.command === 'dislike') {
-    const media = mediaFor(current), metadata = media && metadataFor(current, media.duration);
-    if (!media || !metadata || typeof request.expectedStateSignature !== 'string'
-      || request.expectedStateSignature !== metadata.signature) return result('stale-state');
+    const media = stateMediaFor(current), signed = media && signedStateFor(current, media);
+    if (!media || !signed?.metadata || typeof request.expectedStateSignature !== 'string'
+      || request.expectedStateSignature !== signed.metadata.signature) return result('stale-state');
   }
   if (request.command === 'seek') {
-    const media = mediaFor(current), metadata = media && metadataFor(current, media.duration);
-    const target = request.value;
-    const range = currentTarget.status === 'ok' ? rangeFor(currentTarget.element) : null;
-    if (!media || !metadata || media.duration <= 0 || !seekableFor(current.element)
-      || typeof request.expectedStateSignature !== 'string'
-      || request.expectedStateSignature !== metadata.signature || !finite(target)
-      || !range || target < range.min || target > range.max || target < 0 || target > media.duration
-      || !trackFor(currentTarget.element)) return result(metadata && request.expectedStateSignature !== metadata.signature
-        ? 'stale-state' : 'invalid-value');
-    if (media.seeking || !seekClockMatches(media, range)) return result('unavailable');
+    const snapshot = seekSnapshot(current, currentTarget.element, request.value);
+    if (snapshot.error) return result(snapshot.error);
   }
   if (Date.now() > request.notAfterUnixMs) return result('expired');
   const final = acquire();
@@ -432,24 +540,23 @@ try {
   if (finalTarget.status !== 'ok') return result(finalTarget.status);
   if (finalTarget.element !== currentTarget.element) return result('stale-document');
   if (request.command === 'like' || request.command === 'dislike') {
-    const media = mediaFor(final), metadata = media && metadataFor(final, media.duration);
-    if (!media || !metadata || typeof request.expectedStateSignature !== 'string'
-      || request.expectedStateSignature !== metadata.signature) return result('stale-state');
+    const media = stateMediaFor(final), signed = media && signedStateFor(final, media);
+    if (!media || !signed?.metadata || typeof request.expectedStateSignature !== 'string'
+      || request.expectedStateSignature !== signed.metadata.signature) return result('stale-state');
   }
   if (request.command === 'seek') {
-    const media = mediaFor(final), metadata = media && metadataFor(final, media.duration);
-    const range = rangeFor(finalTarget.element), target = request.value;
-    if (!media || !metadata || request.expectedStateSignature !== metadata.signature)
-      return result('stale-state');
-    if (media.duration <= 0 || !seekableFor(final.element) || !range || !finite(target)
-      || target < range.min || target > range.max || target < 0 || target > media.duration)
-      return result('invalid-value');
-    if (!trackFor(finalTarget.element)) return result('unavailable');
-    if (media.seeking || !seekClockMatches(media, range)) return result('unavailable');
-    dispatched = true;
-    try { final.element.currentTime = target; }
+    const snapshot = seekSnapshot(final, finalTarget.element, request.value);
+    if (snapshot.error) return result(snapshot.error);
+    const slider = finalTarget.element;
+    // Commit exactly as the site's slider does: its change handler reads value and seeks.
+    try { slider.value = request.value; }
     catch { return result('script-error'); }
-    return Math.abs(final.element.currentTime - target) <= 1 ? result('requested') : result('unavailable');
+    if (!finite(slider.value) || Math.abs(slider.value - request.value) > 1)
+      return result('invalid-value');
+    dispatched = true;
+    try { slider.dispatchEvent(new Event('change', {bubbles:true, composed:true})); }
+    catch { return result('script-error'); }
+    return result('requested');
   }
   const finalButton = finalTarget.element;
   if (!enabled(finalButton)) return result('disabled-control');

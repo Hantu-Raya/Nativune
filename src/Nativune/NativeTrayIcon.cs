@@ -35,7 +35,6 @@ internal sealed class NativeTrayIcon : IDisposable
     private const uint TpmRightButton = 0x00000002;
 
     private const uint ShowId = 0x5101;
-    private const uint HideId = 0x5102;
     private const uint ToggleId = 0x5103;
     private const uint PreviousId = 0x5104;
     private const uint NextId = 0x5105;
@@ -65,6 +64,7 @@ internal sealed class NativeTrayIcon : IDisposable
         _icons = icons;
         _onCommand = onCommand;
     }
+    internal bool IsVisible => !_disposed && _visible;
 
     internal void SetVisible(bool visible)
     {
@@ -252,7 +252,6 @@ internal sealed class NativeTrayIcon : IDisposable
         try
         {
             AddMenuItem(menu, ShowId, "Show");
-            AddMenuItem(menu, HideId, "Hide, keep playing");
             AddSeparator(menu);
             var playbackFlags = _playbackEnabled ? MfString : MfString | MfDisabled | MfGrayed;
             AddMenuItem(menu, ToggleId, "Play or pause", playbackFlags);
@@ -289,7 +288,6 @@ internal sealed class NativeTrayIcon : IDisposable
         var name = command switch
         {
             ShowId => "show",
-            HideId => "hide",
             ToggleId when _playbackEnabled => "toggle",
             PreviousId when _playbackEnabled => "previous",
             NextId when _playbackEnabled => "next",

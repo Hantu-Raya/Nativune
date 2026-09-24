@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
 using Windows.System;
 
@@ -58,10 +59,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly CompactArtworkCanvas _artwork;
     private readonly CompactMarqueeText _title;
     private readonly TextBlock _inlineStatus;
-    private readonly TextBlock _remaining;
+    private readonly TextBlock _elapsed;
     private readonly TextBlock _duration;
     private readonly CompactSeekSlider _seek;
-    private readonly Grid _progressRow;
+    private readonly ProgressBar _seekProgress;
     private readonly Button _previous;
     private readonly Button _playPause;
     private readonly Button _next;
@@ -72,6 +73,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly ContentControl _repeatIcon;
     private readonly TextBlock _repeatMarker;
     private readonly Button _shuffle;
+    private readonly ContentControl _shuffleIcon;
+    private readonly Ellipse _shuffleMarker;
     private readonly Button _timer;
     private readonly Button _returnToFull;
     private readonly Button _more;
@@ -91,6 +94,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Canvas _layoutCanvas;
 
     private CompactPlaybackState? _state;
+    private bool _playerBusy;
     private bool _reduceMotion;
     private bool _active = true;
     private bool _disposed;
@@ -139,10 +143,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _artwork = Artwork;
         _title = Title;
         _inlineStatus = InlineStatus;
-        _remaining = Remaining;
+        _elapsed = Elapsed;
         _duration = Duration;
         _seek = Seek;
-        _progressRow = ProgressRow;
+        _seekProgress = SeekProgress;
         _previous = Previous;
         _playPause = PlayPause;
         _next = Next;
@@ -153,6 +157,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _repeatIcon = RepeatIcon;
         _repeatMarker = RepeatMarker;
         _shuffle = Shuffle;
+        _shuffleIcon = ShuffleIcon;
+        _shuffleMarker = ShuffleMarker;
         _timer = Timer;
         _returnToFull = ReturnToFull;
         _more = More;
@@ -248,14 +254,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var previousState = _state;
         var previousTitle = DisplayTitle(previousState);
         var nextTitle = DisplayTitle(state);
-        if (_seek.Dragging && (state is null || _state is null || state.Title != _state.Title
-            || state.ArtworkUrl != _state.ArtworkUrl || state.Duration != _state.Duration))
+        if (_seek.Dragging && (state is null || _state is null
+            || CompactPlayback.ComputeSignature(state) != CompactPlayback.ComputeSignature(_state)
+            || state.WebsiteClock != _state.WebsiteClock))
             _seek.CancelDrag();
 
         _state = state;
         if (_pendingSeek.HasValue && (state is null || _seekPendingState is null
-            || state.Title != _seekPendingState.Title || state.ArtworkUrl != _seekPendingState.ArtworkUrl
-            || state.Duration != _seekPendingState.Duration))
+            || CompactPlayback.ComputeSignature(state) != CompactPlayback.ComputeSignature(_seekPendingState)
+            || state.WebsiteClock != _seekPendingState.WebsiteClock))
             ClearPendingSeek();
         _updatingControls = true;
         try
@@ -325,12 +332,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _title.ApplyTheme();
         RootGrid.Background = ShellTheme.Brush("CanvasBrush", ColorHelper.FromArgb(0xFF, 0x03, 0x03, 0x03));
         _inlineStatus.Foreground = ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
-        _remaining.Foreground = _inlineStatus.Foreground;
+        _elapsed.Foreground = _inlineStatus.Foreground;
         _duration.Foreground = _inlineStatus.Foreground;
         BindButtonTheme();
         ApplySecondaryVisuals();
         RefreshBoundIcons();
         SetRepeatAccessibility(_state?.Repeat is { } repeat ? FormatRepeat(repeat) : null, _state?.CanRepeat == true);
+        _shuffleMarker.Fill = ShellTheme.Brush("FocusStrokeBrush", Colors.White);
         LayoutControls();
         _title.RecalculateOverflow();
         InvalidateArrange();
@@ -429,7 +437,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     }
     internal void SetPlayerBusy(bool busy)
     {
-        _ = busy;
+        if (_disposed || _playerBusy == busy) return;
+        _playerBusy = busy;
+        SetPlayback(_state);
     }
 
     public void Dispose()
@@ -479,11 +489,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_title, "Track title", "Track title.");
         SetAccessible(_artwork, "Album artwork", "Circular album artwork. Artwork is decorative.");
         SetAccessible(_inlineStatus, "Application status", "Application status.");
-        SetAccessible(_remaining, "Remaining time", "Remaining time.");
+        SetAccessible(_elapsed, "Elapsed time", "Elapsed playback time.");
         SetAccessible(_duration, "Total duration", "Total duration.");
         SetAccessible(_seek, "Playback position unavailable", "Playback position unavailable.");
+        SetAccessible(_seekProgress, "Playback progress unavailable", "Seeking unavailable.");
         SetAccessible(_volumeSlider, "App output volume", "App output volume from zero to one hundred percent. Use Left and Right or Up and Down for 0.1 percent steps, Page Up and Page Down for 1 percent, Home for 0 percent and End for 100 percent.");
-        _remaining.Text = "--:--";
+        _elapsed.Text = "--:--";
         _duration.Text = "--:--";
         _inlineStatus.Visibility = Visibility.Collapsed;
         _seek.DragStarted += BeginSeekDrag;
@@ -597,9 +608,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetToolTipIfChanged(_title, null);
         SetAccessible(_title, title, "Player unavailable. Return to the full app remains available.");
         _artwork.SetImage(null);
-        SetTextIfChanged(_remaining, "--:--");
+        SetTextIfChanged(_elapsed, "--:--");
         SetTextIfChanged(_duration, "--:--");
         if (_seek.IsEnabled) _seek.IsEnabled = false;
+        _seek.Visibility = Visibility.Visible;
+        _seekProgress.Visibility = Visibility.Collapsed;
         _seek.SetPositionSeconds(0, 0);
         SetAccessible(_seek, "Playback position unavailable", "Playback position unavailable. Return to the full app remains available.");
         SetEnabled(_previous, false, "Previous item unavailable", "Previous item is unavailable until playback controls recover.");
@@ -615,21 +628,46 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_repeat.IsEnabled) _repeat.IsEnabled = false;
         SetRepeatAccessibility(null, false);
         if (_shuffle.IsEnabled) _shuffle.IsEnabled = false;
-        SetAccessible(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
+        SetShuffleAccessibility(null, false);
     }
+
+    // Without a coherent website clock, the bounded media clock remains explicitly
+    // approximate and read-only.
+    internal static bool CanDisplayCurrentMediaClock(CompactPlaybackState state)
+        => !state.WebsiteClock && state.ClockMismatch && double.IsFinite(state.Position)
+            && double.IsFinite(state.Duration) && state.Duration > 0
+            && state.Position >= 0 && state.Position <= state.Duration + 2;
 
     private void BindPlaybackState(CompactPlaybackState state)
     {
         var title = DisplayTitle(state);
         _title.SetText(title);
         SetToolTipIfChanged(_title, title);
+        var mediaClock = CanDisplayCurrentMediaClock(state);
+        var displayPosition = mediaClock ? Math.Min(state.Position, state.Duration) : state.Position;
+        var clockMismatch = state.ClockMismatch;
         SetAccessible(_title, title, title);
-        var canSeek = state.CanSeek && state.Duration > 0 && double.IsFinite(state.Duration);
+        var canSeek = !_playerBusy && !clockMismatch && state.CanSeek
+            && state.Duration > 0 && double.IsFinite(state.Duration);
         if (!canSeek) ClearPendingSeek();
         if (_seek.Dragging && !canSeek) _seek.CancelDrag();
         if (!double.Equals(_seek.DurationSeconds, state.Duration))
             _seek.DurationSeconds = state.Duration;
         if (_seek.IsEnabled != canSeek) _seek.IsEnabled = canSeek;
+        _seek.Visibility = canSeek || state.Duration <= 0 ? Visibility.Visible : Visibility.Collapsed;
+        _seekProgress.Visibility = canSeek || state.Duration <= 0 ? Visibility.Collapsed : Visibility.Visible;
+        if (!canSeek && state.Duration > 0)
+        {
+            _seekProgress.Value = Math.Clamp(
+                (clockMismatch && !mediaClock ? 0 : displayPosition)
+                    / state.Duration * _seekProgress.Maximum, 0, _seekProgress.Maximum);
+            SetAccessible(_seekProgress, "Playback progress",
+                mediaClock
+                    ? $"Approximate media time {FormatTime(displayPosition)} of {FormatTime(state.Duration)}. Website seek slider disagrees; seeking is unavailable."
+                    : clockMismatch
+                        ? "Playback timing is updating; elapsed position is unavailable. Seeking is unavailable."
+                        : $"Elapsed {FormatTime(state.Position)} of {FormatTime(state.Duration)}. Seeking is temporarily unavailable.");
+        }
         if (_pendingSeek.HasValue
             && (Math.Abs(state.Position - _pendingSeek.Value) <= 2
                 || DateTime.UtcNow >= _seekPendingUntil))
@@ -637,27 +675,35 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (!_seek.Dragging)
         {
             var position = _pendingSeek ?? state.Position;
-            _seek.SetPositionSeconds(position, state.Duration);
-            SetTextIfChanged(_remaining, FormatRemaining(position, state.Duration));
+            _seek.SetPositionSeconds(clockMismatch ? 0 : position,
+                clockMismatch ? 0 : state.Duration);
+            SetTextIfChanged(_elapsed, clockMismatch
+                ? mediaClock ? "~" + FormatElapsed(displayPosition) : "--:--"
+                : FormatElapsed(position));
         }
-        SetTextIfChanged(_duration, FormatTime(state.Duration > 0 ? state.Duration : null));
+        SetTextIfChanged(_duration, FormatTime(state.ClockMismatch
+            ? mediaClock ? state.Duration : null : state.Duration <= 0 ? null : state.Duration));
         SetAccessible(_seek, canSeek ? "Playback position" : "Playback position unavailable",
-            canSeek
-                ? $"Playback position {FormatTime(state.Position)} of {FormatTime(state.Duration)}. Use Left and Right for five-second steps, Page Up and Page Down for thirty-second steps, Home for the beginning and End for the end."
-                : "Seeking unavailable; track duration or public seek control is unknown.");
+            clockMismatch
+                ? "Playback timing is updating; seeking is unavailable until the website seek slider and playback clock agree."
+                : _playerBusy
+                    ? "Playback command in progress; seeking is temporarily unavailable."
+                    : canSeek
+                        ? $"Playback position {FormatTime(state.Position)} of {FormatTime(state.Duration)}. Use Left and Right for five-second steps, Page Up and Page Down for thirty-second steps, Home for the beginning and End for the end."
+                        : "Seeking unavailable; track duration or public seek control is unknown.");
 
-        SetEnabled(_previous, true, "Previous item", "Previous item.");
-        SetEnabled(_playPause, true, state.Paused ? "Play" : "Pause",
+        SetEnabled(_previous, !_playerBusy, "Previous item", "Previous item.");
+        SetEnabled(_playPause, !_playerBusy, state.Paused ? "Play" : "Pause",
             state.Paused ? "Play website playback." : "Pause website playback.");
-        SetEnabled(_next, true, "Next item", "Next item.");
+        SetEnabled(_next, !_playerBusy, "Next item", "Next item.");
 
         var liked = state.CanLike ? state.Liked : null;
-        var likeEnabled = state.CanLike && liked.HasValue;
+        var likeEnabled = !_playerBusy && state.CanLike && liked.HasValue;
         if (_like.IsEnabled != likeEnabled) _like.IsEnabled = likeEnabled;
         if (_like.IsChecked != liked) _like.IsChecked = liked;
         SetRatingAccessibility(_like, "Like", liked, state.CanLike);
         var disliked = state.CanDislike ? state.Disliked : null;
-        var dislikeEnabled = state.CanDislike && disliked.HasValue;
+        var dislikeEnabled = !_playerBusy && state.CanDislike && disliked.HasValue;
         if (_dislike.IsEnabled != dislikeEnabled) _dislike.IsEnabled = dislikeEnabled;
         if (_dislike.IsChecked != disliked) _dislike.IsChecked = disliked;
         SetRatingAccessibility(_dislike, "Dislike", disliked, state.CanDislike);
@@ -665,12 +711,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         // Output volume is synchronized separately through SetOutputVolume.
 
         var repeat = state.Repeat is null ? null : FormatRepeat(state.Repeat);
-        if (_repeat.IsEnabled != (state.CanRepeat && repeat is not null))
-            _repeat.IsEnabled = state.CanRepeat && repeat is not null;
+        if (_repeat.IsEnabled != (!_playerBusy && state.CanRepeat && repeat is not null))
+            _repeat.IsEnabled = !_playerBusy && state.CanRepeat && repeat is not null;
         SetRepeatAccessibility(repeat, state.CanRepeat);
-        if (_shuffle.IsEnabled != state.CanShuffle) _shuffle.IsEnabled = state.CanShuffle;
-        SetAccessible(_shuffle, state.CanShuffle ? "Shuffle queue once" : "Shuffle unavailable",
-            state.CanShuffle ? "Shuffle the queue once." : "Shuffle is unavailable until playback controls recover.");
+        if (_shuffle.IsEnabled != (!_playerBusy && state.CanShuffle))
+            _shuffle.IsEnabled = !_playerBusy && state.CanShuffle;
+        SetShuffleAccessibility(state.Shuffle, state.CanShuffle);
     }
     private void UpdateVolumeAvailability()
     {
@@ -867,7 +913,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var fallback = _state is null
             ? "Player unavailable — no current playback state is confirmed. More → Application status for details."
             : string.Empty;
-        var text = _statusMessage.Length == 0 ? fallback : _statusMessage;
+        var text = _statusIsError && _statusMessage.Length != 0 ? _statusMessage : fallback;
         SetTextIfChanged(_inlineStatus, text);
         var visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_inlineStatus.Visibility != visibility) _inlineStatus.Visibility = visibility;
@@ -982,7 +1028,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindStatefulIcon(_volume, ref _volumeIconElement, ref _volumeIconName, volumeIcon, 20);
             BindStatefulIcon(_repeatIcon, ref _repeatIconElement, ref _repeatIconName,
                 IsRepeatOne(_state?.Repeat) ? "repeat-one" : "repeat", 20);
-            BindFixedIcon(_shuffle, ref _shuffleIconElement, "shuffle", 20);
+            BindFixedIcon(_shuffleIcon, ref _shuffleIconElement, "shuffle", 20);
             BindFixedIcon(_returnToFull, ref _returnToFullIconElement, "restore-window", 16);
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
             BindFixedIcon(_minimize, ref _minimizeIconElement, "minimize", 16);
@@ -1060,7 +1106,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void PreviewSeekDrag(double position)
     {
         if (!_dragging || _state is null) return;
-        _remaining.Text = FormatRemaining(position, _state.Duration);
+        _elapsed.Text = FormatElapsed(position);
         _artwork.Angle = SeekPreviewAngle(_dragStartAngle, _seek.HorizontalDelta, _reduceMotion);
     }
 
@@ -1070,7 +1116,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _dragging = false;
         if (_state is null || !_seek.IsEnabled) return;
         var target = ClampSeekTarget(position, _state.Duration);
-        _remaining.Text = FormatRemaining(target, _state.Duration);
+        _elapsed.Text = FormatElapsed(target);
         if (ShouldCommitSeek(wasDragging, false))
         {
             _pendingSeek = target;
@@ -1085,7 +1131,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     {
         if (_state is null || !_seek.IsEnabled) return;
         var target = ClampSeekTarget(position, _state.Duration);
-        _remaining.Text = FormatRemaining(target, _state.Duration);
+        _elapsed.Text = FormatElapsed(target);
         _pendingSeek = target;
         _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
         _seekPendingState = _state;
@@ -1100,7 +1146,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _artwork.Angle = _dragStartAngle;
         if (_state is { } state)
         {
-            _remaining.Text = FormatRemaining(state.Position, state.Duration);
+            _elapsed.Text = FormatElapsed(state.Position);
             _seek.SetPositionSeconds(state.Position, state.Duration);
         }
         UpdateAnimationTimer();
@@ -1250,6 +1296,19 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_repeat, $"Repeat {repeat.ToLowerInvariant()}", $"Repeat is {repeat}. Activate to set repeat {next}.");
     }
 
+    private void SetShuffleAccessibility(bool? shuffle, bool available)
+    {
+        var visibility = available && shuffle == true ? Visibility.Visible : Visibility.Collapsed;
+        if (_shuffleMarker.Visibility != visibility) _shuffleMarker.Visibility = visibility;
+        if (!available)
+            SetAccessible(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
+        else if (shuffle is null)
+            SetAccessible(_shuffle, "Shuffle state unconfirmed", "Toggle shuffle; the website has not exposed its current state.");
+        else
+            SetAccessible(_shuffle, shuffle.Value ? "Shuffle on" : "Shuffle off",
+                shuffle.Value ? "Shuffle is on. Activate to turn it off." : "Shuffle is off. Activate to turn it on.");
+    }
+
     private static void RestoreRatingState(ToggleButton button, bool? state)
     {
         button.IsChecked = state;
@@ -1272,9 +1331,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         return hours > 0 ? $"{hours}:{minutes:00}:{remaining:00}" : $"{minutes}:{remaining:00}";
     }
 
-    private static string FormatRemaining(double position, double duration)
-        => !double.IsFinite(duration) || duration <= 0 || !double.IsFinite(position)
-            ? "--:--" : FormatTime(Math.Max(0, duration - position));
+    private static string FormatElapsed(double position)
+        => FormatTime(position);
 
     private static string FormatTimer(TimeSpan value)
     {
@@ -1509,7 +1567,6 @@ public sealed class CompactSeekSlider : Slider
     internal event Action? DragCancelled;
 
     internal bool Dragging => _dragging;
-    internal double DragStartX => _dragStartX;
     internal double HorizontalDelta { get; private set; }
     internal double DurationSeconds
     {

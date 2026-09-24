@@ -62,6 +62,8 @@ internal static class Program
             var root = InstallRoot.Resolve(options.InstallDirectory, options.TestNoShell);
             var engine = new InstallerEngine(root, options);
             var result = options.Uninstall ? engine.Uninstall() : engine.InstallOrUpdate();
+            if (result == ExitCode.Success && !options.Silent && !options.Uninstall)
+                UserInterface.ShowInstallSuccess();
             return (int)result;
         }
         catch (SetupException error)
@@ -255,6 +257,13 @@ internal static class UserInterface
     {
         Console.WriteLine(text);
         _ = MessageBoxW(nint.Zero, text, $"{Program.ProductName} Setup", MessageBoxOk | MessageBoxIconInformation);
+    }
+
+    internal static void ShowInstallSuccess()
+    {
+        _ = MessageBoxW(nint.Zero,
+            "Nativune has been installed or updated successfully.",
+            $"{Program.ProductName} Setup", MessageBoxOk | MessageBoxIconInformation);
     }
 
     internal static void ShowError(string text, bool silent)

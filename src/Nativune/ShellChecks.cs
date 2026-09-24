@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using FoundationRect = Windows.Foundation.Rect;
@@ -29,6 +30,8 @@ internal static class ShellChecks
         var loaded = ShellSettings.Load(root, out var warning);
         Require(warning is null && loaded == settings && loaded.StartCompact,
             "Window settings or Start in Compact did not survive a save and reload.");
+        Require(ShellSettings.Default.TrayEnabled,
+            "New profiles did not enable the native tray/Close-to-hide preference by default.");
 
         var area = new Rectangle(-1280, 0, 1280, 720);
         var bounds = ShellSettings.RestoreBounds(loaded, area, 144);
@@ -397,10 +400,19 @@ internal static class ShellChecks
                 "Full More commands menu did not expose the noninteractive application version.");
             var setStatus = typeof(WebHostWindow).GetMethod("SetStatus", privateInstance);
             Require(setStatus is not null, "WinUI host status method was not retained.");
-            setStatus!.Invoke(host, [new string('x', 8192), true, false]);
-            var status = FindElement(content, "StatusText") as TextBlock;
-            Require(status?.Text.Length == 4096,
-                "Oversized native status was not bounded before presentation.");
+            setStatus!.Invoke(host, [new string('x', 8192), true]);
+            var status = typeof(WebHostWindow).GetField("_statusDetailsText", privateInstance)
+                ?.GetValue(host) as string;
+            var fullMenuStatus = typeof(WebHostWindow).GetField("_statusDetailsItem", privateInstance)
+                ?.GetValue(host) as MenuFlyoutItem;
+            var rootGrid = FindElement(content, "RootGrid") as Grid;
+            var moreButton = FindElement(content, "MoreButton") as Button;
+            Require(status?.Length == 4096 && rootGrid?.RowDefinitions.Count == 2
+                && FindElement(content, "StatusHost") is null
+                && fullMenuStatus?.Text == "Read application status (error)"
+                && AutomationProperties.GetName(moreButton)?.Contains(
+                    "status reports an error", StringComparison.Ordinal) == true,
+                "Full-window debug strip remained or accessible status/error details were lost.");
 
             var timerExpired = typeof(WebHostWindow).GetMethod("OnTimerExpired", privateInstance);
             Require(timerExpired is not null, "WinUI pause timer expiry hook was not retained.");
@@ -430,8 +442,27 @@ internal static class ShellChecks
             PrepareContent(fullContent);
             Require(!host.IsCompact && host.NativeHandle == handle,
                 "Returning to full mode did not restore the same native presenter.");
-            phase = "shutdown";
+            phase = "full-close-to-tray";
+            var setTray = host.GetType().GetMethod("SetTrayEnabled", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new SelfCheckException("Native tray preference hook was not retained.");
+            setTray.Invoke(host, [true]);
+            var tray = host.GetType().GetField("_tray", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(host) as NativeTrayIcon;
+            Require(tray is { IsVisible: true }, "Full-window Close fixture had no available tray icon.");
+            _ = SendMessageW(handle, 0x0010, 0, 0);
+            Require(!IsWindowVisible(handle) && IsWindow(handle) && host.ExitCode == 0,
+                "Full-window Close exited instead of hiding in the tray.");
+            host.RequestActivation();
+            for (var attempt = 0; attempt < 25 && !IsWindowVisible(handle); attempt++)
+                await Task.Delay(20);
+            Require(IsWindowVisible(handle) && host.NativeHandle == handle,
+                "Tray-hidden full window did not restore on its original HWND.");
+            setTray.Invoke(host, [false]);
+
+            phase = "full-close-without-tray";
+            _ = SendMessageW(handle, 0x0010, 0, 0);
             await host.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Require(!IsWindow(handle), "Close without a tray icon left the native window open.");
             host = null;
         }
         catch (Exception exception)
@@ -595,6 +626,9 @@ internal static class ShellChecks
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyWindow(nint window);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern nint SendMessageW(nint window, uint message, nint wParam, nint lParam);
 
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern bool IsWindow(nint window);

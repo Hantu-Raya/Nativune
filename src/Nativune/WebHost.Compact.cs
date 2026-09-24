@@ -14,6 +14,7 @@ public sealed partial class WebHostWindow
     private DispatcherQueueTimer _compactReadTimer = null!;
     private bool _compactActivity;
     private bool _compactReadPending;
+    private TaskCompletionSource<bool>? _compactReadCompleted;
     private int _compactGeneration;
     private long _lastCompactReadAt = -1000;
     private long _lastCompactStateAt;
@@ -44,7 +45,7 @@ public sealed partial class WebHostWindow
         CompactView.CancelTimerRequested += CancelPauseTimer;
         CompactView.StatusRequested += ShowStatusDetails;
         CompactView.MinimizeRequested += () => _presenter?.Minimize();
-        CompactView.CloseRequested += () => _ = ShutdownAsync();
+        CompactView.CloseRequested += CloseOrHideToTray;
         CompactView.ToggleTopmostRequested += () => SetTopmost(!(_presenter?.IsAlwaysOnTop == true));
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
     }
@@ -111,17 +112,6 @@ public sealed partial class WebHostWindow
         ToolbarRow.Height = _compact ? new GridLength(0) : GridLength.Auto;
         WebViewSlot.Visibility = _compact ? Visibility.Collapsed : Visibility.Visible;
         UpdateBrowserVisibility();
-        if (_compact)
-        {
-            StatusHost.Visibility = Visibility.Collapsed;
-            StatusRow.Height = new GridLength(0);
-        }
-        else
-        {
-            StatusHost.Visibility = _statusIsPersistent || _statusDetailsText.Length != 0
-                ? Visibility.Visible : Visibility.Collapsed;
-            StatusRow.Height = StatusHost.Visibility == Visibility.Visible ? GridLength.Auto : new GridLength(0);
-        }
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
         CompactView.SetStatus(_statusDetailsText, _statusIsError);
         UpdateCompactTimer();
@@ -172,6 +162,8 @@ public sealed partial class WebHostWindow
             return;
         }
         _compactReadPending = true;
+        _compactReadCompleted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         _lastCompactReadAt = Environment.TickCount64;
         var generation = _compactGeneration;
         try
@@ -200,6 +192,7 @@ public sealed partial class WebHostWindow
         finally
         {
             _compactReadPending = false;
+            _compactReadCompleted?.TrySetResult(true);
         }
     }
 
@@ -252,20 +245,49 @@ public sealed partial class WebHostWindow
             await ExecutePlayerCommandAsync(command);
             return;
         }
-        if (_compactState is null || _playerBusy) return;
-        var controls = _playerControls;
-        if (controls?.IsAvailable != true)
+        if (_compactState is null)
         {
-            SetStatus("Playback controls are busy or unavailable; no action was sent.", isError: true);
+            SetStatus("Playback state unavailable; no action was sent.", isError: true);
             return;
         }
+        if (_playerBusy)
+        {
+            SetStatus("A playback command is already in progress; no action was sent.", isError: true);
+            return;
+        }
+        var stateBeforeRead = _compactState;
+        var generation = _compactGeneration;
+        var pendingRead = _compactReadPending ? _compactReadCompleted?.Task : null;
         _playerBusy = true;
         UpdatePlayerControls();
         try
         {
+            // A user's single click may arrive while the periodic state script owns the dispatcher.
+            // Await only that existing read; never replay an already-dispatched browser action.
+            if (pendingRead is not null)
+                await pendingRead.WaitAsync(TimeSpan.FromMilliseconds(2500), _lifetime.Token);
+            if (!CompactActive || generation != _compactGeneration || _compactState is null
+                || CompactPlayback.ComputeSignature(stateBeforeRead) != CompactPlayback.ComputeSignature(_compactState))
+            {
+                if (!_closing && !_disposed) SetStatus("Playback changed; no action was sent.", isError: true);
+                return;
+            }
+            var controls = _playerControls;
+            if (controls?.IsAvailable != true)
+            {
+                SetStatus("Playback controls unavailable; no action was sent.", isError: true);
+                return;
+            }
             var status = await controls.ExecuteCompactAsync(command, value);
-            if (!_closing && !_disposed) SetStatus(status);
+            if (!_closing && !_disposed)
+                SetStatus(status, isError: status != PlayerControls.CompactRequestedStatus);
         }
+        catch (TimeoutException)
+        {
+            if (!_closing && !_disposed)
+                SetStatus("Playback state read timed out; no action was sent.", isError: true);
+        }
+        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { }
         catch (Exception)
         {
             if (!_closing && !_disposed) SetStatus("Player action outcome unknown; no retry.", isError: true);

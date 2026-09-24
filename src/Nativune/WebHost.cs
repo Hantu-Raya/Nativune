@@ -129,7 +129,6 @@ public sealed partial class WebHostWindow : Window
     private readonly NativeIconCache _iconCache = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly CancellationTokenSource _saveCancellation = new();
-    private readonly UiDispatcherQueueTimer _statusHideTimer;
     private readonly UiDispatcherQueueTimer _saveTimer;
     private readonly List<Button> _playerButtons = new();
     private ShellSettings _settings;
@@ -184,7 +183,6 @@ public sealed partial class WebHostWindow : Window
     private string? _settingsWarning;
     private string _statusDetailsText = string.Empty;
     private bool _statusIsError;
-    private bool _statusIsPersistent;
     private int _activationPending;
     private DrawingBounds _fullBounds;
     private DrawingBounds _windowBounds;
@@ -209,7 +207,6 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyoutItem _compactItem = null!;
     private ToggleMenuFlyoutItem _topmostItem = null!;
     private ToggleMenuFlyoutItem _trayItem = null!;
-    private MenuFlyoutItem _hideItem = null!;
     private ToggleMenuFlyoutItem _restoreItem = null!;
     private MenuFlyoutItem _setTimerItem = null!;
     private MenuFlyoutItem _cancelTimerItem = null!;
@@ -251,17 +248,6 @@ public sealed partial class WebHostWindow : Window
 
         _dispatcherQueue = UiDispatcherQueue.GetForCurrentThread()
             ?? throw new InvalidOperationException("Web host requires a dispatcher queue.");
-        _statusHideTimer = _dispatcherQueue.CreateTimer();
-        _statusHideTimer.Interval = TimeSpan.FromSeconds(4);
-        _statusHideTimer.IsRepeating = false;
-        _statusHideTimer.Tick += (_, _) =>
-        {
-            if (!_statusIsPersistent && !_disposed)
-            {
-                StatusHost.Visibility = Visibility.Collapsed;
-                StatusRow.Height = new GridLength(0);
-            }
-        };
         _saveTimer = _dispatcherQueue.CreateTimer();
         _saveTimer.Interval = TimeSpan.FromSeconds(1);
         _saveTimer.IsRepeating = false;
@@ -378,7 +364,7 @@ public sealed partial class WebHostWindow : Window
             if (!await choice.Task || _closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
 
-            SetStatus("Downloading and verifying the Nativune update.", persistent: true);
+            SetStatus("Downloading and verifying the Nativune update.");
             var downloaded = await ReleaseUpdater.DownloadAsync(_root, update, _lifetime.Token);
             if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
@@ -388,7 +374,7 @@ public sealed partial class WebHostWindow : Window
                 return;
             }
 
-            SetStatus("Starting the verified Nativune update.", persistent: true);
+            SetStatus("Starting the verified Nativune update.");
             var launched = await ReleaseUpdater.LaunchVerifiedSetupAsync(
                 downloaded,
                 _root,
@@ -499,7 +485,6 @@ public sealed partial class WebHostWindow : Window
         _shortcutsItem = CreateToggleItem("Enable session playback shortcuts", "settings", value => SetShortcutsEnabled(value));
         _topmostItem = CreateToggleItem("Keep window on top", "pin", value => SetTopmost(value));
         _trayItem = CreateToggleItem("Enable tray icon", "tray", value => { SetTrayEnabled(value); CaptureSettings(); });
-        _hideItem = CreateMenuItem("Hide, keep playing", "hide", HideToTray);
         _restoreItem = CreateToggleItem("Start on last Home or Library section", "restore-section", value =>
         {
             _settings = _settings with { RestoreSection = value, LastSection = "home" };
@@ -523,7 +508,7 @@ public sealed partial class WebHostWindow : Window
         AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(), _playPauseItem, _playItem, _pauseItem,
             _previousItem, _nextItem, new MenuFlyoutSeparator(), _shortcutsItem, new MenuFlyoutSeparator(),
             _zoomInItem, _zoomOutItem, _zoomResetItem, _fullscreenItem, _compactItem, _topmostItem,
-            new MenuFlyoutSeparator(), _trayItem, _hideItem, _restoreItem, new MenuFlyoutSeparator(),
+            new MenuFlyoutSeparator(), _trayItem, _restoreItem, new MenuFlyoutSeparator(),
             _setTimerItem, _cancelTimerItem, _settingsItem, _statusDetailsItem,
             new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
@@ -571,8 +556,6 @@ public sealed partial class WebHostWindow : Window
         PreviousButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("previous");
         PlayPauseButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("toggle");
         NextButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("next");
-        StatusRetryButton.Click += (_, _) => RetryNavigation();
-        StatusDetailsButton.Click += (_, _) => ShowStatusDetails();
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
         {
@@ -596,7 +579,6 @@ public sealed partial class WebHostWindow : Window
         CompactView.ApplyAppearance();
         SetButtonIcons();
         SetMenuIcons();
-        StatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(ShellTheme.ForegroundColor);
         _taskbarControls?.UpdateAppearance(CurrentDpi(), ToDrawingColor(ShellTheme.ForegroundColor));
         try { _tray?.Recreate(); }
         catch (Exception) { SetStatus("Tray icon could not be refreshed for the current theme.", isError: true); }
@@ -631,7 +613,6 @@ public sealed partial class WebHostWindow : Window
         _compactItem.Icon = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 16);
         _topmostItem.Icon = _iconCache.CreateElement("pin", 16);
         _trayItem.Icon = _iconCache.CreateElement("tray", 16);
-        _hideItem.Icon = _iconCache.CreateElement("hide", 16);
         _restoreItem.Icon = _iconCache.CreateElement("restore-section", 16);
         _setTimerItem.Icon = _iconCache.CreateElement("quit-timer", 16);
         _cancelTimerItem.Icon = _iconCache.CreateElement("cancel-timer", 16);
@@ -689,11 +670,7 @@ public sealed partial class WebHostWindow : Window
         BackButton.IsEnabled = canNavigate && _browserHost?.Core.CanGoBack == true;
         ForwardButton.IsEnabled = canNavigate && _browserHost?.Core.CanGoForward == true;
         HomeButton.IsEnabled = canNavigate;
-        _hideItem.IsEnabled = canNavigate && _tray is not null && NativeHandle != 0;
         _retryItem.IsEnabled = canNavigate && _navigationFailed;
-        StatusRetryButton.Visibility = _statusIsError && _navigationFailed && canNavigate
-            ? Visibility.Visible : Visibility.Collapsed;
-        StatusRetryButton.IsEnabled = StatusRetryButton.Visibility == Visibility.Visible;
         _statusDetailsItem.IsEnabled = true;
         UpdatePlayerControls();
     }
@@ -765,7 +742,7 @@ public sealed partial class WebHostWindow : Window
             RootLocator.EnsureNoReparsePath(_root, profileDirectory);
             SetStatus(runtimeDirectory is null
                 ? "Starting shared WebView2 Evergreen runtime..."
-                : "Starting repository-local fixed WebView2 runtime...", persistent: true);
+                : "Starting repository-local fixed WebView2 runtime...");
             var environmentCreation = runtimeDirectory is null
                 ? CoreWebView2Environment.CreateWithOptionsAsync(null, profileDirectory, options).AsTask()
                 : CoreWebView2Environment.CreateWithOptionsAsync(runtimeDirectory, profileDirectory, options).AsTask();
@@ -853,7 +830,7 @@ public sealed partial class WebHostWindow : Window
             if (!CanContinueInitialization(lifetimeToken))
                 return;
 
-            SetStatus("Loading official YouTube Music...", persistent: true);
+            SetStatus("Loading official YouTube Music...");
             UpdateBrowserVisibility();
             if (!CanContinueInitialization(lifetimeToken))
                 return;
@@ -867,7 +844,7 @@ public sealed partial class WebHostWindow : Window
                 return;
             ExitCode = 1;
             _browserFailed = true;
-            SetStatus(ex.Message, isError: true, persistent: true);
+            SetStatus(ex.Message, isError: true);
             Console.Error.WriteLine(ex.Message);
             UpdateNavigation();
         }
@@ -966,7 +943,7 @@ public sealed partial class WebHostWindow : Window
 
         _activeNavigation = args.NavigationId;
         _navigationFailed = false;
-        SetStatus("Loading page...", persistent: true);
+        SetStatus("Loading page...");
         UpdateNavigation();
         if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) || !WebHostPolicy.IsAllowedMainFrameNavigation(uri))
         {
@@ -1078,25 +1055,19 @@ public sealed partial class WebHostWindow : Window
         SetStatus($"Zoom: {_settings.Zoom:P0}.");
     }
 
-    private void SetStatus(string text, bool isError = false, bool persistent = false)
+    private void SetStatus(string text, bool isError = false)
     {
         if (_disposed || _closing) return;
         if (!isError && _statusIsError && (_browserFailed || _navigationFailed)) return;
         var warning = _settingsWarning is not null && text != _settingsWarning ? " " + _settingsWarning : string.Empty;
         _statusIsError = isError;
-        _statusIsPersistent = isError || persistent || _settingsWarning is not null;
         _statusDetailsText = (isError ? "[!] Error: " : string.Empty) + text + warning;
         if (_statusDetailsText.Length > 4096)
             _statusDetailsText = _statusDetailsText[..4096];
-        StatusText.Text = _statusDetailsText;
-        StatusHost.Visibility = Visibility.Visible;
-        StatusRow.Height = GridLength.Auto;
-        StatusRetryButton.Visibility = isError && _navigationFailed && CanNavigate
-            ? Visibility.Visible : Visibility.Collapsed;
-        StatusDetailsButton.Visibility = isError ? Visibility.Visible : Visibility.Collapsed;
-        StatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(ShellTheme.ForegroundColor);
-        _statusHideTimer.Stop();
-        if (!_statusIsPersistent) _statusHideTimer.Start();
+        _statusDetailsItem.Text = isError ? "Read application status (error)" : "Read application status";
+        AutomationProperties.SetName(MoreButton, isError
+            ? "More commands and settings. Application status reports an error."
+            : "More commands and settings");
         _statusDetailsItem.IsEnabled = true;
         CompactView.SetStatus(_statusDetailsText, _statusIsError);
     }
@@ -1153,6 +1124,8 @@ public sealed partial class WebHostWindow : Window
                 + "This status alone does not identify a YouTube Music website error; return to full view to continue using the website.";
         return current + " " + playback;
     }
+
+
 
     private void SetPauseTimer() => _ = SetPauseTimerAsync();
 
@@ -1424,7 +1397,7 @@ public sealed partial class WebHostWindow : Window
         _trayItem.IsChecked = enabled;
         _settings = _settings with { TrayEnabled = enabled };
         if (enabled)
-            SetStatus("Tray enabled. Hide keeps playback running. Close and Quit exit. Launch again or use the tray to restore.");
+            SetStatus("Tray enabled. Close hides to the tray and keeps playback running; use Quit to exit.");
         UpdateNavigation();
     }
 
@@ -1434,7 +1407,6 @@ public sealed partial class WebHostWindow : Window
         switch (command)
         {
             case "show": RequestActivation(); break;
-            case "hide": HideToTray(); break;
             case "toggle": _ = ExecutePlayerCommandAsync("toggle"); break;
             case "previous": _ = ExecutePlayerCommandAsync("previous"); break;
             case "next": _ = ExecutePlayerCommandAsync("next"); break;
@@ -1443,12 +1415,29 @@ public sealed partial class WebHostWindow : Window
         }
     }
 
-    private void HideToTray()
+
+    private bool TryHideToTray()
     {
-        if (_tray is null || !CanNavigate || NativeHandle == 0) return;
-        CaptureSettings();
-        try { _browserHost?.SetVisible(false); } catch (Exception) { }
-        _appWindow?.Hide();
+        if (_tray is not { IsVisible: true } || NativeHandle == 0 || _appWindow is null
+            || _closing || _disposed)
+            return false;
+        try
+        {
+            CaptureSettings();
+            _browserHost?.SetVisible(false);
+            _appWindow.Hide();
+            return !_appWindow.IsVisible;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void CloseOrHideToTray()
+    {
+        if (!TryHideToTray())
+            _ = ShutdownAsync();
     }
 
     public void RequestActivation()
@@ -1712,7 +1701,7 @@ public sealed partial class WebHostWindow : Window
         }
         if (message == WmClose && !_closeReady)
         {
-            _ = ShutdownAsync();
+            CloseOrHideToTray();
             return true;
         }
         if (message == WmHotKey && _shortcutsEnabled)
@@ -1924,7 +1913,6 @@ public sealed partial class WebHostWindow : Window
 
         RootGrid.Loaded -= OnLoaded;
         try { RefreshCompactActivity(); } catch (Exception ex) { RememberFailure(ex); }
-        try { _statusHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _saveTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { UnregisterSessionShortcuts(); } catch (Exception ex) { RememberFailure(ex); }
         try { _playerControls?.Invalidate(); } catch (Exception ex) { RememberFailure(ex); }
@@ -1989,11 +1977,6 @@ public sealed partial class WebHostWindow : Window
             if (!_windowClosed)
                 Close();
         }
-    }
-
-    private void DisposeTransientState()
-    {
-        _environment = null;
     }
 
     private int CurrentDpi()

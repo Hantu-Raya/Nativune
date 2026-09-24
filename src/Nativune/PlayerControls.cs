@@ -8,7 +8,7 @@ namespace Nativune;
 internal sealed class PlayerControls : IDisposable
 {
     private const int MaxScriptResultLength = 4096;
-    internal const string CompactRequestedStatus = "Player action requested; awaiting confirmed website state.";
+    internal const string CompactRequestedStatus = "Player control click sent; website result not confirmed.";
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan DispatchWindow = TimeSpan.FromMilliseconds(1200);
 
@@ -138,8 +138,15 @@ internal sealed class PlayerControls : IDisposable
     {
         if (!IsAvailable || !TryGetSource(out var source)) return null;
         lock (_gate)
+        {
+            if (_lastCompactHref is not null && !string.Equals(_lastCompactHref, source, StringComparison.Ordinal))
+            {
+                _lastCompactState = null;
+                _lastCompactHref = null;
+            }
             if (Environment.TickCount64 - _lastCompactReadAt < 1000)
                 return _lastCompactHref == source ? _lastCompactState : null;
+        }
         if (!TryStart("compact-state", out var request, out _)) return null;
         try
         {
@@ -154,12 +161,13 @@ internal sealed class PlayerControls : IDisposable
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !Owns(request) || !CompactPlayback.TryParseState(json, out var state))
                 return null;
+            var sampledAt = Environment.TickCount64;
             lock (_gate)
             {
                 if (_generation != request.Generation) return null;
                 _lastCompactState = state;
                 _lastCompactHref = request.Href;
-                _lastCompactStateAt = Environment.TickCount64;
+                _lastCompactStateAt = sampledAt;
             }
             return state;
         }
@@ -186,7 +194,8 @@ internal sealed class PlayerControls : IDisposable
             if (command is "seek" or "like" or "dislike" && signature is null)
                 return "Playback state is stale; no action was sent.";
             var script = CompactPlayback.BuildScript("action", command, request.Href,
-                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds(), value, signature);
+                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds(),
+                value, signature);
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !Owns(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
                 return "Player action outcome unknown; no retry. If controls remain unavailable, restart the app.";
@@ -232,7 +241,6 @@ internal sealed class PlayerControls : IDisposable
         request.Cancellation.Dispose();
         RaiseStateChanged();
     }
-
     public void Invalidate()
     {
         CancellationTokenSource? operation;
@@ -414,6 +422,8 @@ internal sealed class PlayerControls : IDisposable
             _poisoned = true;
             _generation++;
             operation = _operation;
+            _lastCompactState = null;
+            _lastCompactHref = null;
         }
         operation?.Cancel();
         RaiseStateChanged();

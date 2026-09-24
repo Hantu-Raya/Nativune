@@ -11,7 +11,6 @@
     <Grid.RowDefinitions>
       <RowDefinition x:Name="ToolbarRow" Height="Auto" />
       <RowDefinition x:Name="ContentRow" Height="*" />
-      <RowDefinition x:Name="StatusRow" Height="Auto" />
     </Grid.RowDefinitions>
 
     <Border x:Name="ToolbarHost"
@@ -119,36 +118,5 @@
                                VerticalAlignment="Stretch" />
     </Grid>
 
-    <Border x:Name="StatusHost"
-            Grid.Row="2"
-            Background="{ThemeResource SurfaceBrush}"
-            BorderBrush="{ThemeResource RaisedBrush}"
-            BorderThickness="0,1,0,0"
-            Padding="8,4"
-            Visibility="Collapsed">
-      <Grid ColumnSpacing="8">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*" />
-          <ColumnDefinition Width="Auto" />
-          <ColumnDefinition Width="Auto" />
-        </Grid.ColumnDefinitions>
-        <TextBlock x:Name="StatusText"
-                   Grid.Column="0"
-                   TextWrapping="Wrap"
-                   VerticalAlignment="Center"
-                   Foreground="{ThemeResource PrimaryTextBrush}"
-                   AutomationProperties.Name="Current application status" />
-        <Button x:Name="StatusRetryButton"
-                Grid.Column="1"
-                Content="Retry"
-                AutomationProperties.Name="Retry failed navigation"
-                Visibility="Collapsed" />
-        <Button x:Name="StatusDetailsButton"
-                Grid.Column="2"
-                Content="Details"
-                AutomationProperties.Name="Read application status"
-                Visibility="Collapsed" />
-      </Grid>
-    </Border>
   </Grid>
 </Window>

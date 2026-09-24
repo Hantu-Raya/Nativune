@@ -19,7 +19,7 @@ internal static class CompactViewChecks
 {
     private static readonly string[] RequiredParts =
     {
-        "Artwork", "Title", "InlineStatus", "Remaining", "Duration", "Seek",
+        "Artwork", "Title", "InlineStatus", "Elapsed", "Duration", "Seek", "SeekProgress",
         "Previous", "PlayPause", "Next", "Like", "Dislike", "Repeat", "Shuffle",
         "Volume", "Timer", "ReturnToFull", "More", "Minimize", "Close"
     };
@@ -182,6 +182,7 @@ internal static class CompactViewChecks
         var updateOutput = FindMethod(host, "UpdateOutputAudioControls")
             ?? throw new SelfCheckException("Native output state update hook was not retained.");
         SetField(host, "_outputAudioExecutablePath", Path.Combine(AppContext.BaseDirectory, "msedgewebview2.exe"));
+        SetField(host, "_outputAudioPathVerified", true); // Fixture bypasses process discovery, not production.
         updateOutput.Invoke(host, null);
         var compactOutput = FindPart(view, "Volume") as Control;
         Require(fullMute is { IsEnabled: true } && fullVolume is { IsEnabled: true }
@@ -190,6 +191,7 @@ internal static class CompactViewChecks
             && AutomationProperties.GetHelpText(compactOutput)?.Contains("pending", StringComparison.Ordinal) == true,
             "Initialized WebView output was disabled or claimed an active audio session while paused.");
         SetField(host, "_outputAudioExecutablePath", null);
+        SetField(host, "_outputAudioPathVerified", false);
         updateOutput.Invoke(host, null);
         Require(fullMute?.IsEnabled == false && fullVolume?.IsEnabled == false
             && compactOutput?.IsEnabled == false,
@@ -200,7 +202,7 @@ internal static class CompactViewChecks
             StringComparer.Ordinal);
         foreach (var part in parts)
         {
-            var optionalStatus = part.Key == "InlineStatus";
+            var optionalStatus = part.Key is "InlineStatus" or "SeekProgress";
             Require((optionalStatus || part.Value.Visibility == Visibility.Visible)
                 && (optionalStatus || part.Value.ActualWidth > 0 && part.Value.ActualHeight > 0),
                 $"Compact part {part.Key} was not laid out at the native minimum.");
@@ -233,7 +235,7 @@ internal static class CompactViewChecks
                 new FoundationRect(0, 0, thumb.ActualWidth, thumb.ActualHeight));
             Require(thumbBounds.Top >= 2 && thumbBounds.Bottom + 2 <= parts["Seek"].ActualHeight,
                 "Compact seek slider clipped its native thumb or outer border.");
-            foreach (var name in new[] { "Remaining", "Duration" })
+            foreach (var name in new[] { "Elapsed", "Duration" })
             {
                 var label = parts[name];
                 var labelBounds = label.TransformToVisual(progressRow).TransformBounds(
@@ -254,7 +256,8 @@ internal static class CompactViewChecks
             "Synthetic compact title", null, Paused: false, Position: 10, Duration: 120,
             Liked: true, Disliked: false, Repeat: "off",
             CanSeek: true, CanLike: true, CanDislike: true,
-            CanRepeat: true, CanShuffle: true);
+            CanRepeat: true, CanShuffle: true, Shuffle: true,
+            VideoId: "AbCdEfGhI01", ClockConfirmed: true);
         var commands = new List<(string Command, double? Value)>();
         view.CommandRequested += (command, value) => commands.Add((command, value));
         view.SetOutputVolume(.5, false, true);
@@ -264,9 +267,10 @@ internal static class CompactViewChecks
         view.SetTimer(TimeSpan.FromMinutes(14));
         view.SetPreferences(reduceMotion: false, topmost: false);
         Prepare(view);
-        Require(parts["InlineStatus"].Visibility == Visibility.Visible
-            && parts["InlineStatus"].ActualWidth > 0 && parts["InlineStatus"].ActualHeight > 0,
-            "Compact status state did not reveal its native status surface.");
+        Require(parts["InlineStatus"].Visibility == Visibility.Collapsed
+            && AutomationProperties.GetHelpText(parts["More"])?.Contains(
+                "Synthetic status", StringComparison.Ordinal) == true,
+            "Routine Compact status remained as debug text or disappeared from More.");
 
         Require(AutomationProperties.GetName(parts["PlayPause"])?.Contains("Pause",
                 StringComparison.OrdinalIgnoreCase) == true,
@@ -274,6 +278,25 @@ internal static class CompactViewChecks
         Require(AutomationProperties.GetName(parts["Like"])?.Length > 0
             && AutomationProperties.GetName(parts["Seek"])?.Length > 0,
             "Confirmed Compact state lost control accessibility names.");
+        phase = "busy-controls";
+        view.SetPlayerBusy(true);
+        Require(parts["Previous"] is Control { IsEnabled: false }
+            && parts["PlayPause"] is Control { IsEnabled: false }
+            && parts["Next"] is Control { IsEnabled: false }
+            && parts["Like"] is Control { IsEnabled: false }
+            && parts["Repeat"] is Control { IsEnabled: false }
+            && parts["Shuffle"] is Control { IsEnabled: false }
+            && parts["Seek"] is Control { IsEnabled: false }
+            && parts["Volume"] is Control { IsEnabled: true }
+            && parts["More"] is Control { IsEnabled: true }
+            && parts["Close"] is Control { IsEnabled: true },
+            "In-flight Compact action left duplicate playback controls active or blocked independent shell actions.");
+        view.SetPlayerBusy(false);
+        Require(parts["PlayPause"] is Control { IsEnabled: true }
+            && parts["Shuffle"] is Control { IsEnabled: true }
+            && parts["Seek"] is Control { IsEnabled: true },
+            "Confirmed playback controls did not recover after the in-flight request completed.");
+
         var timerText = FindPart(view, "TimerText");
         Require(ReadProperty(timerText, "Text") is string timerValue
             && timerValue.StartsWith("Pause in ", StringComparison.Ordinal),
@@ -330,11 +353,24 @@ internal static class CompactViewChecks
         Require(repeatMarker.Visibility == Visibility.Collapsed
             && ReadProperty(repeatMarker, "Text") as string == string.Empty,
             "Repeat Off state retained a stale native marker.");
+        var shuffleMarker = FindPart(view, "ShuffleMarker");
+        Require(shuffleMarker.Visibility == Visibility.Visible
+            && AutomationProperties.GetName(parts["Shuffle"]) == "Shuffle on",
+            "Confirmed Shuffle-on state did not show the active dot or accessible state.");
+        view.SetPlayback(state with { Shuffle = false });
+        Require(shuffleMarker.Visibility == Visibility.Collapsed
+            && AutomationProperties.GetName(parts["Shuffle"]) == "Shuffle off",
+            "Confirmed Shuffle-off state retained an active marker.");
+        view.SetPlayback(state with { Shuffle = null });
+        Require(shuffleMarker.Visibility == Visibility.Collapsed
+            && AutomationProperties.GetName(parts["Shuffle"]) == "Shuffle state unconfirmed",
+            "Unknown Shuffle state falsely displayed an active indicator.");
         view.SetPlayback(null);
         Require(repeatMarker.Visibility == Visibility.Collapsed
+            && shuffleMarker.Visibility == Visibility.Collapsed
             && ReadProperty(repeatMarker, "Text") as string == string.Empty
             && ToolTipService.GetToolTip(parts["Title"]) is null,
-            "Unavailable Compact state retained repeat marker or title tooltip.");
+            "Unavailable Compact state retained a stale Shuffle/Repeat marker or title tooltip.");
         view.SetTimer(null);
         var unavailablePlayIcon = ReadProperty(parts["PlayPause"], "Content");
         var unavailableCloseIcon = ReadProperty(parts["Close"], "Content");
@@ -346,6 +382,149 @@ internal static class CompactViewChecks
         Require(ReferenceEquals(unavailablePlayIcon, ReadProperty(parts["PlayPause"], "Content"))
             && ReferenceEquals(unavailableCloseIcon, ReadProperty(parts["Close"], "Content")),
             "Repeated unavailable compact binds replaced native visuals.");
+        view.SetPlayback(state);
+
+        phase = "unavailable-seek-progress-and-duration-correction";
+        view.SetPlayback(state with { Position = 120, Duration = 138, CanSeek = false });
+        var progress = (ProgressBar)parts["SeekProgress"];
+        Require(progress.Visibility == Visibility.Visible && parts["Seek"].Visibility == Visibility.Collapsed
+            && Math.Abs(progress.Value - 120d / 138 * 1000) < 1
+            && ReadProperty(parts["Elapsed"], "Text") as string == "2:00",
+            "Unreadable gray seek slider replaced visible playback progress.");
+        view.SetPlayback(state with { Position = 132, Duration = 250, CanSeek = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "2:12"
+            && ReadProperty(parts["Duration"], "Text") as string == "4:10"
+            && progress.Value < 600,
+            "A same-track duration correction made the left playback clock count backward.");
+        view.SetPlayback(state with { Position = 121, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(parts["Seek"].Visibility == Visibility.Collapsed && progress.Visibility == Visibility.Visible
+            && parts["Seek"] is Control { IsEnabled: false }
+            && progress.Value == progress.Maximum
+            && ReadProperty(parts["Elapsed"], "Text") as string == "~2:00"
+            && ReadProperty(parts["Duration"], "Text") as string == "2:00"
+            && AutomationProperties.GetHelpText(progress)?.Contains("Approximate media time",
+                StringComparison.Ordinal) == true,
+            "Current bounded media time was blanked by a disagreeing website slider.");
+        // Signed-in cumulative media timeline: the coherent website clock stays interactive.
+        var signedInTimeline = state with
+        {
+            Position = 156, Duration = 180, MediaDuration = 378, MediaPosition = 354, WebsiteClock = true,
+            CanSeek = true, ClockMismatch = false, ClockConfirmed = true
+        };
+        view.SetPlayback(signedInTimeline);
+        view.SetPlayback(signedInTimeline with { MediaDuration = 402, MediaPosition = 355 });
+        Require(parts["Seek"] is Control { IsEnabled: true }
+            && parts["Seek"].Visibility == Visibility.Visible
+            && progress.Visibility == Visibility.Collapsed
+            && ReadProperty(parts["Elapsed"], "Text") as string == "2:36"
+            && ReadProperty(parts["Duration"], "Text") as string == "3:00"
+            && !CompactPlayerView.CanDisplayCurrentMediaClock(signedInTimeline),
+            "A longer cumulative media timeline disabled the website-clock seek slider.");
+        view.SetPlayback(state with { Position = 118, Duration = 120 });
+        view.SetPlayback(state with { Position = 119, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(parts["Seek"] is Control { IsEnabled: false }
+            && Math.Abs(progress.Value - 119d / 120 * 1000) < 1
+            && ReadProperty(parts["Elapsed"], "Text") as string == "~1:59",
+            "A mismatched slider displayed an old confirmed position instead of the current media time.");
+        view.SetPlayback(state with { Position = 126, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "--:--"
+            && progress.Value == 0,
+            "A media overrun beyond two seconds displayed implausible progress.");
+        view.SetPlayback(state with { Position = 10, Duration = 120 });
+        view.SetPlayback(state with { Position = 119, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~1:59",
+            "A valid current media sample depended on proximity to an earlier sample.");
+        view.SetPlayback(state with { Title = "New item", Position = 4, Duration = 120,
+            CanSeek = false, ClockMismatch = true, ClockConfirmed = false });
+        Require(Math.Abs(progress.Value - 4d / 120 * 1000) < 1
+            && ReadProperty(parts["Elapsed"], "Text") as string == "~0:04",
+            "A changed item inherited the previous item's progress instead of its own current clock.");
+        view.SetPlayback(state with { Position = 118, Duration = 120 });
+        view.SetPlayback(state with { Position = 2, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~0:02"
+            && Math.Abs(progress.Value - 2d / 120 * 1000) < 1,
+            "A reset media clock inherited near-end progress.");
+        view.SetPlayback(state with { Position = 118, Duration = 120 });
+        view.SetPlayback(null);
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "--:--",
+            "An unavailable playback snapshot kept stale progress visible.");
+        view.SetPlayback(state with { Position = 119, Duration = 120, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~1:59",
+            "A fresh media snapshot following an unavailable read stayed blank.");
+        view.SetPlayback(state with { Position = 119, Duration = 120 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "1:59"
+            && parts["Seek"] is Control { IsEnabled: true },
+            "Coherent playback did not recover timing and seek after a mismatch.");
+        view.SetPlayback(state with { Position = 118, Duration = 120, VideoId = null });
+        view.SetPlayback(state with { Position = 119, Duration = 120, VideoId = null,
+            CanSeek = false, ClockMismatch = true, ClockConfirmed = false });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~1:59"
+            && parts["Seek"] is Control { IsEnabled: false },
+            "Current media time was hidden solely because a validated watch ID is absent.");
+        view.SetPlayback(state with { Position = 10, Duration = 0, CanSeek = false,
+            ClockConfirmed = false });
+        Require(progress.Visibility == Visibility.Collapsed && double.IsFinite(progress.Value)
+            && parts["Seek"].Visibility == Visibility.Visible
+            && parts["Seek"] is Control { IsEnabled: false },
+            "Unknown duration produced an invalid or interactive progress indicator.");
+        view.SetPlayback(state);
+        Require(progress.Visibility == Visibility.Collapsed && parts["Seek"].Visibility == Visibility.Visible
+            && parts["Seek"] is Control { IsEnabled: true },
+            "The seek slider did not recover after public controls became coherent.");
+
+        phase = "read-only-current-media-clock-without-prior";
+        var unlinked = state with { VideoId = null, Position = 40 };
+        var skew = unlinked with { Position = 112, CanSeek = false,
+            ClockMismatch = true, ClockConfirmed = false };
+        view.SetPlayback(null);
+        view.SetPlayback(skew);
+        Require(parts["Seek"] is Control { IsEnabled: false }
+            && parts["Seek"].Visibility == Visibility.Collapsed
+            && ReadProperty(parts["Elapsed"], "Text") as string == "~1:52"
+            && ReadProperty(parts["Duration"], "Text") as string == "2:00"
+            && Math.Abs(progress.Value - 112d / 120 * 1000) < 1
+            && AutomationProperties.GetHelpText(progress)?.Contains(
+                "Approximate media time", StringComparison.Ordinal) == true,
+            "A valid first mismatched media snapshot after unavailable playback stayed blank.");
+        view.SetPlayback(skew with { Position = 113 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~1:53"
+            && Math.Abs(progress.Value - 113d / 120 * 1000) < 1,
+            "Current mismatched media time did not advance progress independently of the website slider.");
+        view.SetPlayback(skew with { Position = 113, Paused = true });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~1:53"
+            && parts["Seek"] is Control { IsEnabled: false },
+            "A stable paused current media clock was hidden during website-slider disagreement.");
+        view.SetPlayback(skew with { Position = 2 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~0:02"
+            && Math.Abs(progress.Value - 2d / 120 * 1000) < 1,
+            "A reset current media clock reused near-end progress.");
+        view.SetPlayback(skew with { Title = "Changed item", Position = 4 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~0:04",
+            "A changed item reused the previous item's elapsed time.");
+        view.SetPlayback(skew with { VideoId = "ZbCdEfGhI01", Position = 7 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~0:07",
+            "A changed public video identity prevented displaying its own media time.");
+        view.SetPlayback(null);
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "--:--",
+            "An unavailable media snapshot retained old progress.");
+        view.SetPlayback(skew with { Position = 121 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "~2:00"
+            && progress.Value == progress.Maximum,
+            "A bounded media-time overrun failed to clamp the read-only end clock.");
+        view.SetPlayback(skew with { Position = 122.1 });
+        Require(ReadProperty(parts["Elapsed"], "Text") as string == "--:--"
+            && progress.Value == 0,
+            "An overrun outside the bounded media clock displayed implausible timing.");
+        Require(!CompactPlayerView.CanDisplayCurrentMediaClock(skew with { Position = double.NaN })
+            && !CompactPlayerView.CanDisplayCurrentMediaClock(skew with { Position = double.PositiveInfinity })
+            && !CompactPlayerView.CanDisplayCurrentMediaClock(skew with { Duration = 0 }),
+            "Invalid media timing was accepted as read-only progress.");
         view.SetPlayback(state);
 
         phase = "automation-activation";
@@ -367,6 +546,9 @@ internal static class CompactViewChecks
         RaiseEvent(seek, "DragPreview", 60d);
         var movedAngle = Convert.ToDouble(ReadProperty(artwork, "Angle") ?? initialAngle);
         Require(movedAngle != initialAngle, "Native seek preview did not update artwork motion.");
+        view.SetPlayback(state with { MediaDuration = 777, MediaPosition = 10 });
+        Require(ReadProperty(seek, "Dragging") is true,
+            "A growing media timeline on the same item canceled an in-progress seek drag.");
         SetField(seek, "_releaseExpected", false);
         var captureLost = FindMethod(seek, "DeferCaptureLossCancellation");
         Require(captureLost is not null, "Seek slider deferred capture-loss recovery was not retained.");
@@ -384,9 +566,12 @@ internal static class CompactViewChecks
             "Deferred capture-loss cancellation ran after the release commit.");
         view.SetPlayback(state with { Position = 11 });
         var staleSeekValue = Convert.ToDouble(ReadProperty(seek, "Value"));
-        var staleSeekTime = ReadProperty(parts["Remaining"], "Text") as string;
+        var staleSeekTime = ReadProperty(parts["Elapsed"], "Text") as string;
         Require(Math.Abs(staleSeekValue - 500) <= 1 && staleSeekTime == "1:00",
-            $"Stale player time replaced a just-committed seek target: slider={staleSeekValue}, remaining={staleSeekTime}.");
+            $"Stale player time replaced a just-committed seek target: slider={staleSeekValue}, elapsed={staleSeekTime}.");
+        view.SetPlayback(state with { Position = 11, MediaDuration = 999 });
+        Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 500) <= 1,
+            "A growing media timeline on the same item discarded the pending seek target.");
         view.SetPlayback(state with { Position = 60 });
         Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 500) <= 1,
             "Confirmed seek target did not remain at the requested timestamp.");
@@ -401,12 +586,12 @@ internal static class CompactViewChecks
             "Keyboard seek did not emit exactly one command at the requested timestamp.");
         view.SetPlayback(state with { Position = 11 });
         Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 750) <= 1
-            && ReadProperty(parts["Remaining"], "Text") as string == "0:30",
+            && ReadProperty(parts["Elapsed"], "Text") as string == "1:30",
             "A stale player read replaced the keyboard seek target.");
         SetField(view, "_seekPendingUntil", DateTime.UtcNow.AddMilliseconds(-1));
         view.SetPlayback(state with { Position = 11 });
         Require(Math.Abs(Convert.ToDouble(ReadProperty(seek, "Value")) - 91.67) <= 1
-            && ReadProperty(parts["Remaining"], "Text") as string == "1:49",
+            && ReadProperty(parts["Elapsed"], "Text") as string == "0:11",
             "An expired seek target continued masking the bounded stale player read.");
         view.SetPlayback(state);
 
@@ -492,16 +677,49 @@ internal static class CompactViewChecks
             "Compact More menu did not expose the noninteractive application version.");
         view.SetTimer(null);
         view.SetStatus("Synthetic error", isError: true);
+        Require(parts["InlineStatus"].Visibility == Visibility.Visible
+            && ReadProperty(parts["InlineStatus"], "Text") as string == "Synthetic error",
+            "Actionable Compact error disappeared with routine debug text.");
         view.SetPreferences(reduceMotion: true, topmost: false);
         Require(!CompactPlayerView.ShouldAnimate(true, true, true, false, true),
             "Reduced-motion preference did not suspend Compact animation policy.");
         await AwaitFlyoutClosedAsync(moreMenu!, () => view.SetActive(false), "More");
         view.SetActive(true);
 
+        phase = "shuffle-during-compact-read";
+        Require(ReadProperty(host, "CompactActive") is true,
+            "Compact command overlap fixture did not enter the active native presenter.");
+        var executeCompact = FindMethod(host, "ExecuteCompactCommandAsync")
+            ?? throw new SelfCheckException("Compact command dispatcher was not retained.");
+        var readFinished = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        SetField(host, "_compactState", state);
+        SetField(host, "_compactReadPending", true);
+        SetField(host, "_compactReadCompleted", readFinished);
+        var shuffleRequest = executeCompact.Invoke(host, ["shuffle", null]) as Task;
+        Require(shuffleRequest is { IsCompleted: false } && ReadField(host, "_playerBusy") is true,
+            "Shuffle was rejected as busy instead of awaiting the existing Compact state read.");
+        readFinished.TrySetResult(true);
+        SetField(host, "_compactReadPending", false);
+        await shuffleRequest!.WaitAsync(TimeSpan.FromSeconds(2));
+        SetField(host, "_compactReadCompleted", null);
+        Require(ReadField(host, "_playerBusy") is false
+            && (ReadField(host, "_statusDetailsText") as string)?.Contains(
+                "Playback controls unavailable; no action was sent.", StringComparison.Ordinal) == true,
+            "Unavailable dispatcher did not fail closed after the in-flight read completed.");
+        view.SetPlayback(state);
+
         phase = "unavailable-status-menu";
         var setHostStatus = FindMethod(host, "SetStatus");
         Require(setHostStatus is not null, "Native application status update hook was not retained.");
-        setHostStatus!.Invoke(host, [string.Empty, false, false]);
+        setHostStatus!.Invoke(host, ["Synthetic Compact status", false]);
+        var rootGrid = FindPart(root, "RootGrid") as Grid;
+        Require(rootGrid?.RowDefinitions.Count == 2 && FindPartCore(root, "StatusHost") is null
+            && parts["InlineStatus"].Visibility == Visibility.Collapsed
+            && AutomationProperties.GetHelpText(parts["More"])?.Contains(
+                "Synthetic Compact status", StringComparison.Ordinal) == true,
+            "Compact retained the lower strip or hid routine status from More.");
+        setHostStatus.Invoke(host, [string.Empty, false]);
         var invalidateCompactState = FindMethod(host, "InvalidateCompactState");
         Require(invalidateCompactState is not null,
             "Native Compact state invalidation hook was not retained.");
@@ -529,6 +747,29 @@ internal static class CompactViewChecks
                 StringComparison.OrdinalIgnoreCase) == true,
             "Unavailable Compact state left stale playback affordances enabled.");
         view.SetPlayback(state);
+
+        phase = "compact-close-to-tray";
+        var setTray = FindMethod(host, "SetTrayEnabled")
+            ?? throw new SelfCheckException("Native tray preference hook was not retained.");
+        setTray.Invoke(host, [true]);
+        var tray = ReadField(host, "_tray") as NativeTrayIcon;
+        var appWindow = ReadField(host, "_appWindow") as Microsoft.UI.Windowing.AppWindow
+            ?? throw new SelfCheckException("Compact fixture has no native app window.");
+        Require(tray is { IsVisible: true } && appWindow.IsVisible,
+            "Tray-enabled Compact close fixture has no visible icon or window.");
+        var trayHandle = host.NativeHandle;
+        InvokeControl(parts["Close"], "Compact close");
+        Require(appWindow.IsVisible == false && host.NativeHandle == trayHandle
+            && ReadField(host, "_shutdownTask") is null,
+            "Compact Close exited instead of hiding in the available tray.");
+        host.RequestActivation();
+        for (var attempt = 0; attempt < 25 && !appWindow.IsVisible; attempt++)
+            await Task.Delay(20);
+        Require(appWindow.IsVisible && host.NativeHandle == trayHandle,
+            "Tray-hidden Compact window did not restore on the same HWND.");
+        setTray.Invoke(host, [false]);
+        Require(ReadField(host, "_tray") is null,
+            "Disabling the tray icon left the fixture's icon registered.");
 
         phase = "return-to-full";
         var compactHandle = host.NativeHandle;
@@ -768,10 +1009,6 @@ internal static class CompactViewChecks
         invoke!.Invoke();
     }
 
-    private static void InvokeOptional(FrameworkElement element, string methodName)
-    {
-        FindMethod(element, methodName)?.Invoke(element, null);
-    }
     private static async Task AwaitFlyoutOpenedAsync(
         FlyoutBase flyout, Action open, string phase)
     {

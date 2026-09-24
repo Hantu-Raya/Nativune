@@ -15,7 +15,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Nativune.Setup</AssemblyName>
     <RootNamespace>Nativune.Installer</RootNamespace>
-    <Version>0.1.4</Version>
+    <Version>0.1.9</Version>
     <RepositoryUrl>https://github.com/Hantu-Raya/Nativune</RepositoryUrl>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

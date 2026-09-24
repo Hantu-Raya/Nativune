@@ -42,7 +42,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     private const double MinZoom = 0.75;
     private const double MaxZoom = 1.5;
 
-    private static readonly ShellSettings Defaults = new(100, 100, 1280, 800, DefaultDpi, false, 1.0);
+    private static readonly ShellSettings Defaults = new(100, 100, 1280, 800, DefaultDpi, false, 1.0)
+    {
+        TrayEnabled = true
+    };
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = null,

@@ -130,12 +130,18 @@
                     <ColumnDefinition Width="8" />
                     <ColumnDefinition Width="48" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="Remaining" Grid.Column="0" Width="44"
+                <TextBlock x:Name="Elapsed" Grid.Column="0" Width="44"
                            FontSize="12" HorizontalAlignment="Left"
                            VerticalAlignment="Center"
                            Foreground="{ThemeResource SecondaryTextBrush}" />
-                <local:CompactSeekSlider x:Name="Seek" Grid.Column="1" Height="40"
-                                         MinWidth="80" Minimum="0" Maximum="1000" StepFrequency="1" />
+                <Grid Grid.Column="1" MinWidth="80">
+                    <ProgressBar x:Name="SeekProgress" Minimum="0" Maximum="1000"
+                                 Height="4" VerticalAlignment="Center" Visibility="Collapsed"
+                                 IsHitTestVisible="False" Foreground="{ThemeResource AccentBrush}"
+                                 Background="{ThemeResource SecondaryTextBrush}" />
+                    <local:CompactSeekSlider x:Name="Seek" Height="40"
+                                             Minimum="0" Maximum="1000" StepFrequency="1" />
+                </Grid>
                 <TextBlock x:Name="Duration" Grid.Column="3"
                            FontSize="12" TextAlignment="Right"
                            VerticalAlignment="Center"
@@ -209,7 +215,18 @@
                 </Grid>
             </Button>
             <Button x:Name="Shuffle" Width="40" Height="40"
-                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
+                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
+                <Grid Width="24" Height="24">
+                    <ContentControl x:Name="ShuffleIcon"
+                                    Width="20" Height="20"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center" />
+                    <Ellipse x:Name="ShuffleMarker" Width="6" Height="6"
+                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                             Visibility="Collapsed"
+                             Fill="{ThemeResource FocusStrokeBrush}" />
+                </Grid>
+            </Button>
             <Button x:Name="Volume" Width="40" Height="40"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
                 <Button.ContextFlyout>

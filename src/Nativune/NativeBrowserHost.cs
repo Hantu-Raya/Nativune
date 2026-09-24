@@ -33,6 +33,7 @@ internal sealed class NativeBrowserHost : IDisposable
     private TypedEventHandler<XamlRoot, XamlRootChangedEventArgs>? _xamlRootChanged;
     private bool _containerVisible;
     private bool _disposed;
+    private (int X, int Y, int Width, int Height)? _lastBounds;
 
     private NativeBrowserHost(CoreWebView2Controller controller, FrameworkElement slot, nint containerWindow)
     {
@@ -42,6 +43,7 @@ internal sealed class NativeBrowserHost : IDisposable
         try
         {
             _slot.SizeChanged += OnSlotChanged;
+            _slot.LayoutUpdated += OnSlotLayoutUpdated;
             _slot.Loaded += OnSlotLoaded;
             _slot.Unloaded += OnSlotUnloaded;
             AttachXamlRoot();
@@ -51,6 +53,7 @@ internal sealed class NativeBrowserHost : IDisposable
         catch
         {
             _slot.SizeChanged -= OnSlotChanged;
+            _slot.LayoutUpdated -= OnSlotLayoutUpdated;
             _slot.Loaded -= OnSlotLoaded;
             _slot.Unloaded -= OnSlotUnloaded;
             DetachXamlRoot();
@@ -154,6 +157,7 @@ internal sealed class NativeBrowserHost : IDisposable
         if (visible)
         {
             _containerVisible = true;
+            _lastBounds = null;
             UpdateBounds();
             _controller.IsVisible = true;
         }
@@ -161,6 +165,7 @@ internal sealed class NativeBrowserHost : IDisposable
         {
             _controller.IsVisible = false;
             _containerVisible = false;
+            _lastBounds = null;
             SetContainerVisibility(false);
         }
     }
@@ -188,6 +193,7 @@ internal sealed class NativeBrowserHost : IDisposable
         if (_disposed) return;
         _disposed = true;
         _slot.SizeChanged -= OnSlotChanged;
+        _slot.LayoutUpdated -= OnSlotLayoutUpdated;
         _slot.Loaded -= OnSlotLoaded;
         _slot.Unloaded -= OnSlotUnloaded;
         Core.NavigationCompleted -= OnNavigationCompleted;
@@ -212,6 +218,11 @@ internal sealed class NativeBrowserHost : IDisposable
 
     private void OnSlotChanged(object sender, SizeChangedEventArgs args)
     {
+        UpdateBounds();
+    }
+    private void OnSlotLayoutUpdated(object? sender, object args)
+    {
+        // Compact/full mode moves this slot even when its size is unchanged.
         UpdateBounds();
     }
 
@@ -246,9 +257,11 @@ internal sealed class NativeBrowserHost : IDisposable
             var height = Math.Max(1, ToPixels(_slot.ActualHeight, scale));
             var x = ToPixels(origin.X, scale);
             var y = ToPixels(origin.Y, scale);
+            if (_lastBounds == (x, y, width, height)) return;
             _controller.Bounds = new Windows.Foundation.Rect(0, 0, width, height);
             SetWindowPosition(x, y, width, height, _containerVisible);
             _controller.NotifyParentWindowPositionChanged();
+            _lastBounds = (x, y, width, height);
             RepairWindows11Input();
         }
         catch (Exception) when (_disposed) { }
