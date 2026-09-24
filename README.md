@@ -85,7 +85,7 @@ These setup and restore scripts keep downloaded toolchain, browser, extension an
 
 ### Private CI artifact
 
-The private installer workflow's first run (35951546259) failed on the old uBO source fingerprint. The corrective build script now extracts and validates the pristine verified upstream archive, but no successful 0.1.3 CI artifact build has yet been achieved; the updated source pin has not demonstrated package savings. The workflow does not push, create a tag or GitHub Release, or test signed-in playback. A future manual tag/release remains separate and only follows package and compatibility acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
+The private installer workflow's first run (35951546259) failed on the old uBO source fingerprint; the corrected [0.1.3 CI run](https://github.com/Hantu-Raya/youtube/actions/runs/35952514474) passed packaging, integrity checks and artifact upload. Its private run artifact is not a release or an installed-size measurement. The workflow does not push, create a tag or GitHub Release, or test signed-in playback. A future manual tag/release remains separate and only follows package and compatibility acceptance. See the [CI and footprint plan](plan.md#private-ci-artifact-build).
 
 For development commands and project constraints, see [agents.md](agents.md) and the current-state index in [plan.md](plan.md#current-state).
 
