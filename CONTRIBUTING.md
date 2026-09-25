@@ -26,6 +26,7 @@ node scripts/check-player-controls.cjs
 node scripts/check-compact-player.cjs
 python scripts/check-native-icons.py
 python scripts/check-launcher.py
+python scripts/check-pinvoke.py
 ```
 
 For the app checks, publish the app to the path expected by `scripts/probe.ps1`, then run:

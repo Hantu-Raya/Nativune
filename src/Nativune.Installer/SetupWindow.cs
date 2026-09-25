@@ -416,7 +416,29 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
             _callback);
     }
 
+    // A managed exception must never unwind through comctl32's native frames: that leaves an orphaned,
+    // unresponsive dialog and a Windows "Unknown Hard Error" popup. Fail the operation and close instead.
     private int OnTaskDialogNotification(nint hwnd, uint notification, nint wParam, nint lParam, nint data)
+    {
+        try
+        {
+            return HandleNotification(hwnd, notification, wParam);
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                FailAndClose(hwnd, error);
+            }
+            catch
+            {
+                // Nothing else can be done inside a native callback.
+            }
+            return 0;
+        }
+    }
+
+    private int HandleNotification(nint hwnd, uint notification, nint wParam)
     {
         if (notification == TdnDestroyed)
         {
@@ -448,6 +470,11 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         }
 
         var button = unchecked((int)wParam);
+        if (_allowClose && button == 2)
+        {
+            // WM_CLOSE posted by CompleteResult/FailAndClose: close on any page, keeping the recorded outcome.
+            return 0;
+        }
         if (_page == DialogPage.Confirmation)
         {
             if (button == ButtonInstall)
@@ -715,7 +742,7 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern nint SendMessageW(nint hwnd, uint message, nint wParam, nint lParam);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DllImport("user32.dll", EntryPoint = "PostMessageW", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(nint hwnd, int message, nint wParam, nint lParam);
 

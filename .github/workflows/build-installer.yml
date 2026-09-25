@@ -111,6 +111,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Player controls regression check failed.' }
           node scripts/check-compact-player.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Compact player regression check failed.' }
+          python scripts/check-pinvoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'P/Invoke entry point check failed.' }
 
       - name: Build release package after tests
         shell: pwsh
