@@ -1654,7 +1654,7 @@ public sealed partial class WebHostWindow : Window
             _nativeWindowServices?.SetCaptionlessResizeFrame(false);
             if (_presenter is not null)
                 _presenter.IsMaximizable = true;
-            _presenter?.SetBorderAndTitleBar(true, true);
+            RestoreSystemFrame();
             MoveResize(_fullBounds.IsValid ? _fullBounds : GetDefaultBounds());
             if (_fullMaximized) _presenter?.Maximize();
         }
@@ -1680,11 +1680,21 @@ public sealed partial class WebHostWindow : Window
         else
         {
             _fullscreen = false;
-            _presenter?.SetBorderAndTitleBar(true, true);
+            RestoreSystemFrame();
             MoveResize(_windowBounds.IsValid ? _windowBounds : GetDefaultBounds());
             if (_windowMaximized) _presenter?.Maximize();
         }
         UpdateWindowPresentation();
+    }
+
+    // SetBorderAndTitleBar(false, false) also sets AppWindow.TitleBar.ExtendsContentIntoTitleBar, and
+    // SetBorderAndTitleBar(true, true) does not clear it. Left extended, the full window loses its
+    // caption row and the system caption buttons cover the right end of the toolbar.
+    private void RestoreSystemFrame()
+    {
+        _presenter?.SetBorderAndTitleBar(true, true);
+        if (_appWindow is not null && AppWindowTitleBar.IsCustomizationSupported())
+            _appWindow.TitleBar.ExtendsContentIntoTitleBar = false;
     }
 
     private void UpdateWindowPresentation()

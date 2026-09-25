@@ -893,6 +893,11 @@ internal static class CompactViewChecks
             && ReadProperty(presenter, "HasTitleBar") is true
             && ReadProperty(presenter, "IsMaximizable") is true,
             "Returning to full mode did not restore the system frame and maximizable presenter.");
+
+        Require(ReadField(host, "_appWindow") is not Microsoft.UI.Windowing.AppWindow appWindow
+            || !Microsoft.UI.Windowing.AppWindowTitleBar.IsCustomizationSupported()
+            || !appWindow.TitleBar.ExtendsContentIntoTitleBar,
+            "Returning to full mode left content extended into the title bar, hiding the caption row.");
     }
 
     private static async Task<string> ReadStatusDetailsAsync(WebHostWindow host)
