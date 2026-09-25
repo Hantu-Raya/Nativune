@@ -67,6 +67,7 @@ public sealed partial class SettingsDialog : Window
         SleepInBackgroundCheckBox.IsChecked = initial.SleepInBackground;
         StartCompactCheckBox.IsChecked = initial.StartCompact;
         AutoCheckUpdatesCheckBox.IsChecked = initial.AutoCheckUpdates;
+        BlockAdsCheckBox.IsChecked = initial.BlockAds;
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
 
@@ -291,6 +292,7 @@ public sealed partial class SettingsDialog : Window
             SleepInBackground = SleepInBackgroundCheckBox.IsChecked == true,
             StartCompact = StartCompactCheckBox.IsChecked == true,
             AutoCheckUpdates = AutoCheckUpdatesCheckBox.IsChecked == true,
+            BlockAds = BlockAdsCheckBox.IsChecked == true,
             Shortcuts = bindings
         };
         _saved = true;

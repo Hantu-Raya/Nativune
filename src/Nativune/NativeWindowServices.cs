@@ -49,6 +49,7 @@ internal sealed class NativeWindowServices : IDisposable
     private bool _disposed;
     private InputNonClientPointerSource? _nonClientPointerSource;
     private bool _captionlessResizeFrame;
+    private bool _compactUpdateVisible;
 
 
     internal NativeWindowServices(nint window, NativeMessageHandler handler)
@@ -110,6 +111,17 @@ internal sealed class NativeWindowServices : IDisposable
         }
     }
 
+    /// <summary>
+    /// Tells the drag-region planner whether Compact shows its Update button, so the caption never
+    /// covers it; regions are re-applied at once while the captionless frame is active.
+    /// </summary>
+    internal void SetCompactUpdateVisible(bool visible)
+    {
+        if (_disposed || _compactUpdateVisible == visible) return;
+        _compactUpdateVisible = visible;
+        if (_captionlessResizeFrame && _nonClientPointerSource is not null)
+            RefreshCaptionlessResizeRegions(WmSize);
+    }
 
     private void ApplyCaptionlessResizeRegions(InputNonClientPointerSource source)
     {
@@ -151,7 +163,7 @@ internal sealed class NativeWindowServices : IDisposable
         var clientRight = Math.Max(horizontalBorder, width - horizontalBorder);
         var clientBottom = Math.Max(verticalBorder, height - verticalBorder);
         var captionRects = new List<RectInt32>(4);
-        foreach (var region in CompactCaptionRegions(width, height, dpi))
+        foreach (var region in CompactCaptionRegions(width, height, dpi, _compactUpdateVisible))
         {
             var left = Math.Clamp(region.X, horizontalBorder, clientRight);
             var top = Math.Clamp(region.Y, verticalBorder, clientBottom);
@@ -172,10 +184,12 @@ internal sealed class NativeWindowServices : IDisposable
     /// rectangles come from the same planner that positions the Compact controls, so every interactive
     /// control stays outside them at every size class and DPI.
     /// </summary>
-    internal static IReadOnlyList<RectInt32> CompactCaptionRegions(int width, int height, uint dpi)
+    internal static IReadOnlyList<RectInt32> CompactCaptionRegions(int width, int height, uint dpi,
+        bool updateVisible = false)
     {
         var scale = dpi / 96d;
-        var plan = CompactPlayerView.PlanLayout(width / scale, height / scale, scale, statusVisible: false);
+        var plan = CompactPlayerView.PlanLayout(width / scale, height / scale, scale, statusVisible: false,
+            updateVisible);
         var regions = new List<RectInt32>(plan.CaptionRegions.Count);
         foreach (var region in plan.CaptionRegions)
         {

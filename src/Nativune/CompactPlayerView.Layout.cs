@@ -67,7 +67,8 @@ internal sealed record CompactLayoutPlan(
     LayoutRect? Minimize,
     LayoutRect Close,
     IReadOnlyList<LayoutRect> CaptionRegions,
-    IReadOnlyList<CompactOverflowControl> Overflow)
+    IReadOnlyList<CompactOverflowControl> Overflow,
+    LayoutRect? Update = null)
 {
     /// <summary>Every pointer/keyboard target that is visible in this plan.</summary>
     public IEnumerable<(string Name, LayoutRect Rect)> InteractiveRects()
@@ -83,6 +84,7 @@ internal sealed record CompactLayoutPlan(
         if (Shuffle is { } shuffle) yield return ("Shuffle", shuffle);
         if (Volume is { } volume) yield return ("Volume", volume);
         if (Timer is { } timer) yield return ("Timer", timer);
+        if (Update is { } update) yield return ("Update", update);
         yield return ("ReturnToFull", ReturnToFull);
         yield return ("More", More);
         if (Minimize is { } minimize) yield return ("Minimize", minimize);
@@ -157,14 +159,17 @@ public sealed partial class CompactPlayerView
     /// Pure layout planner. <paramref name="width"/>/<paramref name="height"/> are client DIPs,
     /// <paramref name="scale"/> the rasterization scale used to snap edges onto device pixels.
     /// The caption regions do not depend on <paramref name="statusVisible"/>, so the native window
-    /// code can plan from the client rectangle alone.
+    /// code can plan from the client rectangle and <paramref name="updateVisible"/> alone.
+    /// <paramref name="updateVisible"/> asks for the Update button (shown only when an update is
+    /// available); it is dropped first when the row is too narrow, since More always offers it.
     /// </summary>
-    internal static CompactLayoutPlan PlanLayout(double width, double height, double scale, bool statusVisible)
+    internal static CompactLayoutPlan PlanLayout(double width, double height, double scale, bool statusVisible,
+        bool updateVisible = false)
     {
         width = double.IsFinite(width) ? Math.Max(LogicalMinimumWidth, width) : LogicalMinimumWidth;
         height = double.IsFinite(height) ? Math.Max(LogicalMinimumHeight, height) : LogicalMinimumHeight;
         scale = double.IsFinite(scale) && scale > 0 ? scale : 1;
-        var builder = new PlanBuilder(width, height, scale, statusVisible);
+        var builder = new PlanBuilder(width, height, scale, statusVisible, updateVisible);
         switch (ClassifySize(width, height))
         {
             case CompactSizeClass.Strip: PlanStrip(builder); break;
@@ -180,8 +185,10 @@ public sealed partial class CompactPlayerView
     {
         var centerY = b.Height / 2;
         b.SizeClass = CompactSizeClass.Strip;
-        var fixedWidth = EdgeMargin * 2 + TransportWidth + ItemGap + UtilityWidth;
+        var fixedWidth = EdgeMargin * 2 + TransportWidth + ItemGap + UtilityWidth + b.UpdateWidth;
         var available = b.Width - fixedWidth;
+        if (available < StripTitleMinWidth + ItemGap && b.UpdateWidth > 0)
+            available += b.HideUpdate();
         if (available < StripTitleMinWidth + ItemGap)
         {
             // Minimize is the only window button the More menu can replace; the title is the drag handle.
@@ -265,8 +272,10 @@ public sealed partial class CompactPlayerView
         var row1Bottom = row1Top + PlayButton;
         var progressTop = Math.Max(row1Bottom + PairGap, b.Height - margin - ProgressHeight);
 
-        var fixedWidth = EdgeMargin * 2 + TransportWidth + ItemGap + UtilityWidth;
+        var fixedWidth = EdgeMargin * 2 + TransportWidth + ItemGap + UtilityWidth + b.UpdateWidth;
         var available = b.Width - fixedWidth;
+        if (available < TitleMinWidth + ItemGap && b.UpdateWidth > 0)
+            available += b.HideUpdate();
         if (available < TitleMinWidth + ItemGap)
         {
             b.HideMinimize();
@@ -442,12 +451,24 @@ public sealed partial class CompactPlayerView
         private readonly List<CompactOverflowControl> _overflow = new();
         private bool _minimizeHidden;
 
-        public PlanBuilder(double width, double height, double scale, bool statusVisible)
+        public PlanBuilder(double width, double height, double scale, bool statusVisible, bool updateVisible)
         {
             Width = width;
             Height = height;
             Scale = scale;
             StatusVisible = statusVisible;
+            _updateVisible = updateVisible;
+        }
+
+        private bool _updateVisible;
+        /// <summary>Extra utility-row width the Update button takes while it is shown.</summary>
+        public double UpdateWidth => _updateVisible ? UtilityButton + UtilityGap : 0;
+        /// <summary>Drops the Update button (More still offers it) and returns the width freed.</summary>
+        public double HideUpdate()
+        {
+            var freed = UpdateWidth;
+            _updateVisible = false;
+            return freed;
         }
 
         public double Width { get; }
@@ -475,6 +496,7 @@ public sealed partial class CompactPlayerView
         public LayoutRect More { get; set; }
         public LayoutRect? Minimize { get; set; }
         public LayoutRect Close { get; set; }
+        public LayoutRect? Update { get; set; }
 
         public void HideMinimize() => _minimizeHidden = true;
 
@@ -548,7 +570,7 @@ public sealed partial class CompactPlayerView
             return x;
         }
 
-        /// <summary>Right-aligns Return/More/[Minimize]/Close and returns the cluster's left edge.</summary>
+        /// <summary>Right-aligns [Update]/Return/More/[Minimize]/Close and returns the cluster's left edge.</summary>
         public double PlaceUtility(double top)
         {
             var x = Width - EdgeMargin - UtilityButton;
@@ -564,6 +586,11 @@ public sealed partial class CompactPlayerView
             More = new LayoutRect(x, top, UtilityButton, UtilityButton);
             x -= UtilityButton + UtilityGap;
             ReturnToFull = new LayoutRect(x, top, UtilityButton, UtilityButton);
+            if (_updateVisible)
+            {
+                x -= UtilityButton + UtilityGap;
+                Update = new LayoutRect(x, top, UtilityButton, UtilityButton);
+            }
             return x;
         }
 
@@ -587,7 +614,8 @@ public sealed partial class CompactPlayerView
                 Snap(Like), Snap(Dislike), Snap(Playlists), Snap(Repeat), Snap(Shuffle), Snap(Volume), Snap(Timer), TimerShowsText,
                 Snap(ReturnToFull), Snap(More), Snap(Minimize), Snap(Close),
                 _caption.Select(Snap).ToArray(),
-                order.Where(_overflow.Contains).ToArray());
+                order.Where(_overflow.Contains).ToArray(),
+                Snap(Update));
         }
 
         private LayoutRect? Snap(LayoutRect? rect) => rect is { } value ? Snap(value) : null;
@@ -641,7 +669,7 @@ public sealed partial class CompactPlayerView
         var width = ActualWidth > 0 ? ActualWidth : ShellSettings.Default.CompactWidth;
         var height = ActualHeight > 0 ? ActualHeight : ShellSettings.Default.CompactHeight;
         var scale = XamlRoot?.RasterizationScale is > 0 and double rasterization ? rasterization : 1;
-        var plan = PlanLayout(width, height, scale, _inlineStatus.Visibility == Visibility.Visible);
+        var plan = PlanLayout(width, height, scale, _inlineStatus.Visibility == Visibility.Visible, _updateVisible);
         _layoutPlan = plan;
 
         ApplyBounds(_artwork, plan.Artwork);
@@ -668,6 +696,7 @@ public sealed partial class CompactPlayerView
         ApplyBounds(_timer, plan.Timer);
         var timerTextVisibility = plan.TimerShowsText ? Visibility.Visible : Visibility.Collapsed;
         if (_timerText.Visibility != timerTextVisibility) _timerText.Visibility = timerTextVisibility;
+        ApplyBounds(_update, plan.Update);
         ApplyBounds(_returnToFull, plan.ReturnToFull);
         ApplyBounds(_more, plan.More);
         ApplyBounds(_minimize, plan.Minimize);

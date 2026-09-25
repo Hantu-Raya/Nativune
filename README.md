@@ -2,11 +2,11 @@
 
 Nativune is an unofficial, native Windows desktop app for YouTube Music, built with C# and WinUI 3. It embeds the official YouTube Music website in an isolated Microsoft Edge WebView2 view and adds native desktop controls such as a Compact mini player, tray and taskbar buttons, and a pause timer.
 
-Nativune is for Windows users who want YouTube Music in its own desktop window with native controls, rather than in a browser tab or an Electron-based client. It uses the shared WebView2 runtime that Windows already provides instead of bundling its own copy of Chromium. It does not block ads, download media or use a private playback API.
+Nativune is for Windows users who want YouTube Music in its own desktop window with native controls, rather than in a browser tab or an Electron-based client. It uses the shared WebView2 runtime that Windows already provides instead of bundling its own copy of Chromium. It does not download media or use a private playback API, and it blocks ads only if you turn that on yourself (off by default).
 
-![Nativune full window showing the YouTube Music Home page (signed out) below the native Nativune toolbar](assets/screenshots/nativune-full-view.png)
+![Nativune full window with the native toolbar above YouTube Music's player page, showing Viva La Vida by Coldplay with its cover and the Up next queue (signed out)](assets/screenshots/nativune-full-view.png)
 
-![Nativune Compact mini player with artwork, track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
+![Nativune Compact mini player at 800 × 180: the album cover on a CD with a hole in the middle, the track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
 
 ## Notice
 
@@ -23,7 +23,7 @@ YouTube and YouTube Music are trademarks of Google LLC.
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.15](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.15) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.16](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.16) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -34,7 +34,48 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
 ## Features
 
-- **Full and Compact views in one window.** The Compact view is a native mini player, 800 × 180 by default. You can resize it freely, from a 360 × 56 strip to a tall view with large artwork; the layout adapts, and controls that don't fit move into its More menu. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. A short notice under the title confirms actions such as a dislike or a started playlist.
+- **Full and Compact views in one window.** The Compact view is a native mini player, 800 × 180 by default. You can resize it freely, from a 360 × 56 strip to a tall view with large artwork; the layout adapts, and controls that don't fit move into its More menu. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. The artwork is shown on a spinning CD, with a see-through hole in the middle, using the high-resolution cover from YouTube Music's player when it is loaded. A short notice under the title confirms actions such as a dislike or a started playlist.
+- **Compact layouts for every window size and display scale.** Compact picks one of five layouts from the window's size, measured in device-independent pixels (DIP), so it looks the same at 100%–200% Windows display scaling:
+
+  | Layout | When | What it shows |
+  | --- | --- | --- |
+  | Strip | under 96 DIP tall | one row: title, transport, seek bar and as many buttons as fit |
+  | Compact | 96–143 DIP tall | title and controls on one row, a full-width seek bar below |
+  | Standard | 144 DIP or taller | the classic 800 × 180 arrangement with artwork |
+  | Wide | Standard at 1100 DIP or wider | the title and seek bar stretch; buttons group on the right |
+  | Tall | 300 DIP or taller and roughly square | large artwork, with the title and controls below |
+
+  Controls leave in a fixed order when space runs out: artwork first, then the pause timer, then Playlists/Repeat/Shuffle, Volume, and finally Like/Dislike. Play/Pause, Previous/Next and the title always stay, and the seek bar stays except in the narrowest strips. Moved controls appear in the More menu. Layout edges snap to whole screen pixels at each scale, so icons and text stay sharp, and the window's drag area and resize edges follow the current layout.
+
+  Each layout at 100% display scaling (sizes are the window's client area in DIP):
+
+  **Strip, 360 × 56** (the minimum size; Minimize and the secondary buttons are in More)
+
+  ![Compact Strip layout at 360 × 56 with a scrolling title, previous, play and next, Return to full, More and Close](assets/screenshots/compact-layout/strip-360x56.png)
+
+  **Strip, 800 × 64**
+
+  ![Compact Strip layout at 800 × 64 with the title, transport, a short seek bar, rating, playlists, repeat, shuffle and volume buttons](assets/screenshots/compact-layout/strip-800x64.png)
+
+  **Compact, 800 × 120**
+
+  ![Compact layout at 800 × 120 with the title and all controls on one row and a full-width seek bar with times below](assets/screenshots/compact-layout/compact-800x120.png)
+
+  **Standard, 400 × 180** (small disc; Playlists, Repeat, Shuffle and the timer move to More)
+
+  ![Standard layout at 400 × 180 with a small CD disc, the title, transport, like, dislike and volume, and a seek bar](assets/screenshots/compact-layout/standard-400x180.png)
+
+  **Standard, 800 × 180** (the default)
+
+  ![Standard layout at 800 × 180 with the CD disc, the title, every control including the Pause timer label, and a seek bar](assets/screenshots/compact-layout/standard-800x180.png)
+
+  **Wide, 1400 × 200**
+
+  ![Wide layout at 1400 × 200 with the CD disc, a long seek bar and the secondary buttons grouped on the right](assets/screenshots/compact-layout/wide-1400x200.png)
+
+  **Tall, 480 × 480**
+
+  ![Tall layout at 480 × 480 with a large CD disc above the title, controls and seek bar](assets/screenshots/compact-layout/tall-480x480.png)
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
 - **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
@@ -44,7 +85,8 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 - **Keyboard shortcuts you can customize.** They only work after you enable them for the current session from the menu.
 - **Window options:** keep on top, fullscreen, page zoom, start in Compact, and reopen on the last Home or Library section.
 - **Reduce motion** setting that stops the rotating artwork and scrolling titles in Compact.
-- **Privacy-only uBlock Origin Lite.** Only the EasyPrivacy tracker list is enabled, and only on `music.youtube.com`. No ad-blocking lists are enabled.
+- **uBlock Origin Lite, privacy-only by default.** Only the EasyPrivacy tracker list is enabled, and only on `music.youtube.com`.
+- **Optional ad blocking, off by default.** **Settings > Block ads** adds uBlock Origin Lite's ad filters on `music.youtube.com` after a restart. Blocking ads is against YouTube's terms; YouTube may detect it, interrupt playback or warn your account. YouTube Premium removes ads legitimately.
 - **Per-user installer** with SHA-256 checksums. It does not need administrator rights to install Nativune itself.
 - **Update indicator** that checks GitHub Releases and never downloads or installs anything without a click.
 
@@ -67,7 +109,7 @@ The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It instal
 - **No native bridge.** WebView2 host objects and web messaging are disabled, so page scripts cannot call into the native app.
 - **Isolated profile.** Cookies and site data stay in Nativune's own WebView2 profile. Nativune does not import cookies from other browsers and does not collect passwords.
 - **Library data stays on screen.** The Compact Playlists menu reads playlist names from the page only when you open it. They are shown in the menu and not stored, sent anywhere or written to the log.
-- **Tracker filtering only.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are not blocked.
+- **Tracker filtering by default.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are blocked only if you turn on **Block ads**, which adds uBlock Origin Lite's ad lists and page filtering on `music.youtube.com` only. Either way, Nativune checks the extension's configuration before loading Music and stops if it doesn't match.
 - **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Opening the update dialog makes one more anonymous request, for the release notes. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
 
 ## Performance
@@ -99,7 +141,7 @@ This compares architecture, not measured performance.
 | --- | --- | --- | --- |
 | Web engine | Shared WebView2 runtime from Windows | Chromium bundled with each app | Your browser |
 | Native UI | WinUI 3 window, Compact player, tray, taskbar buttons | Varies by client | Browser window |
-| Website changes | None beyond privacy-only tracker filtering | Often plugins, some with ad blocking or downloads | Your browser extensions |
+| Website changes | Privacy-only tracker filtering; optional ad blocking, off by default | Often plugins, some with ad blocking or downloads | Your browser extensions |
 | Profile | Isolated, app-only | App-only | Shared with your browser profile |
 | Platforms | Windows x64 only | Often Windows, macOS and Linux | Any supported browser |
 
@@ -138,7 +180,7 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 1. Open **Nativune** from the Start menu.
 2. Select **Sign in** on the YouTube Music page and complete Google sign-in in the embedded view. You can also use it signed out.
 3. Play music as you would on the website. The website's player bar, the taskbar buttons, the More menu and the Compact player all control the same player.
-4. Select the **Compact window** button at the left of the toolbar to switch to the mini player, and **Return to full** to switch back.
+4. Select the **Compact window** button at the left of the toolbar (a window with an arrow pointing into a small player) to switch to the mini player, and **Return to full** (the same window with the arrow pointing out) to switch back.
 5. In Compact, select **Playlists** (the list-and-play icon next to Dislike) to choose one of your playlists. The menu shows what YouTube Music lists in its sidebar, so you need to be signed in.
 6. Open **More commands and settings** (`…`) for playback commands, tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
 
@@ -151,7 +193,7 @@ The app never opens an update dialog on its own and never downloads an update wi
 
 The button shows "Click to check for Nativune updates." until a check runs, and reports "up to date" only after a successful check. Update checks run only in installed builds. Development runs show "Update checks are available only in installed Nativune builds."
 
-Compact mode has no update button. Click `update-available` to open the confirmation dialog. It lists what changed between your installed version and the new one, covering every release in between, newest first, in a scrollable area. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Setup asks again before upgrading. Click `update` to run a manual check. If checking fails, the tooltip reads "Couldn't check for updates. Click to try again."
+In Compact, the same action is in the More menu ("Check for Nativune updates"), and an accent-tinted `update-available` button appears next to **Return to full** while an update is available; in the narrowest Compact sizes it stays in More only. Click `update-available` to open the confirmation dialog. It lists what changed between your installed version and the new one, covering every release in between, newest first, in a scrollable area. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Setup asks again before upgrading. Click `update` to run a manual check. If checking fails, the tooltip reads "Couldn't check for updates. Click to try again."
 
 When **Check for updates automatically** is enabled in Settings (the default), the app checks at startup and every 24 hours while running. Automatic checks only report availability; they never open a dialog or download anything.
 
@@ -171,7 +213,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.15 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.16 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json` and `SHA256SUMS.txt` to `artifacts/release/`.
@@ -193,11 +235,12 @@ Development builds keep their WebView2 profile in the repository's `data/` direc
 - The Compact Playlists menu lists only what the website's sidebar shows, and it is empty while signed out.
 - Nativune has no native audio engine; playback always runs in the embedded official website.
 - Not yet verified: a clean-Windows installation matrix, Premium features, full parity with the saved library, and resource use over long sessions.
+- Compact layouts have been checked on screen at 100% display scaling; 125%–200% are checked by the app's layout self-checks only.
 - Resource figures are informal maintainer observations, not benchmarks.
 
 ## Roadmap
 
-Planned work includes Authenticode signing, a clean-Windows installation matrix, measurement of long-session stability and resource use, and an accessibility review. See [ROADMAP.md](ROADMAP.md). Non-goals: downloading media, blocking ads, using private playback APIs and collecting credentials.
+Planned work includes Authenticode signing, a clean-Windows installation matrix, measurement of long-session stability and resource use, and an accessibility review. See [ROADMAP.md](ROADMAP.md). Non-goals: downloading media, blocking ads by default, using private playback APIs and collecting credentials.
 
 ## FAQ
 
@@ -211,7 +254,7 @@ The window, toolbar, Compact player, dialogs, tray and taskbar integration are n
 YouTube Music's website skips a song as soon as you dislike it, and Nativune presses the website's own button. Compact's Dislike therefore reads "Dislike and skip". One click gives one dislike and one skip, and extra clicks can't dislike the songs that follow.
 
 **Does Nativune block ads or download music?**
-No. It enables only the EasyPrivacy tracker list, and it cancels website downloads.
+It never downloads music; website downloads are cancelled. By default it enables only the EasyPrivacy tracker list and does not block ads. You can turn on **Settings > Block ads**, which adds uBlock Origin Lite's ad filters after a restart. That is against YouTube's terms, YouTube may detect it and interrupt playback or warn your account, and some ads may still get through.
 
 **Do I need YouTube Premium?**
 No. Nativune works signed out or with any account the website accepts. What you can play, and whether you see ads, depends on your account, just as on the website.

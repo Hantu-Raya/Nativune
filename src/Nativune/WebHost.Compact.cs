@@ -43,6 +43,7 @@ public sealed partial class WebHostWindow
 
         CompactView.CommandRequested += (command, value) => _ = ExecuteCompactCommandAsync(command, value);
         CompactView.ReturnToFullRequested += () => SetCompact(false);
+        CompactView.UpdateRequested += OnUpdateButtonClick;
         CompactView.SettingsRequested += ShowSettings;
         CompactView.TimerRequested += SetPauseTimer;
         CompactView.CancelTimerRequested += CancelPauseTimer;

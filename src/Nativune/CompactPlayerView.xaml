@@ -282,6 +282,8 @@
                 </StackPanel>
             </Button>
 
+            <Button x:Name="Update" Width="36" Height="36" Visibility="Collapsed"
+                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
             <Button x:Name="ReturnToFull" Width="36" Height="36"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
             <Button x:Name="More" Width="36" Height="36"
@@ -290,6 +292,7 @@
                     <MenuFlyout x:Name="MoreMenu">
                         <MenuFlyoutItem x:Name="SettingsItem" Text="Settings..." />
                         <MenuFlyoutItem x:Name="StatusItem" Text="Application status" />
+                        <MenuFlyoutItem x:Name="UpdateItem" Text="Check for Nativune updates" />
                         <MenuFlyoutSeparator />
                         <ToggleMenuFlyoutItem x:Name="TopmostItem" Text="Keep window on top" />
                         <MenuFlyoutSeparator />

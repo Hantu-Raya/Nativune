@@ -6,7 +6,7 @@ Bug reports and feature ideas are welcome as [GitHub issues](https://github.com/
 
 These are project non-goals, and pull requests that add them will not be accepted:
 
-- downloading media or blocking ads
+- downloading media, or blocking ads by default (the existing Block ads setting stays opt-in and off by default)
 - private or undocumented playback APIs, stream extraction or native audio playback of YouTube content
 - collecting passwords, importing browser cookies or automating Google sign-in
 - a native bridge that lets web content call into the app

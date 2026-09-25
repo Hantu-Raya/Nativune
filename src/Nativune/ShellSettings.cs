@@ -22,6 +22,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     // so Nativune leaves the session's own mute state alone.
     public double OutputVolume { get; init; } = 1;
     public bool? OutputMuted { get; init; }
+    // Opt-in uBO Lite ad filters on music.youtube.com (owner decision, 25 September 2026). Off by default.
+    public bool BlockAds { get; init; }
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -203,7 +205,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             CompactDpi = IsDpi(settings.CompactDpi) ? settings.CompactDpi : DefaultDpi,
             OutputVolume = double.IsFinite(settings.OutputVolume) && settings.OutputVolume is >= 0 and <= 1
                 ? settings.OutputVolume : 1,
-            OutputMuted = settings.OutputMuted
+            OutputMuted = settings.OutputMuted,
+            BlockAds = settings.BlockAds
         };
     }
 
@@ -261,7 +264,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
         int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi,
         bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
-        double OutputVolume = 1, bool? OutputMuted = null)
+        double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -279,7 +282,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             CompactHeight = CompactHeight,
             CompactDpi = CompactDpi,
             OutputVolume = OutputVolume,
-            OutputMuted = OutputMuted
+            OutputMuted = OutputMuted,
+            BlockAds = BlockAds
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -288,6 +292,6 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
-                settings.OutputVolume, settings.OutputMuted);
+                settings.OutputVolume, settings.OutputMuted, settings.BlockAds);
     }
 }

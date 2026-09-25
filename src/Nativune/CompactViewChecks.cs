@@ -158,9 +158,13 @@ internal static class CompactViewChecks
         foreach (var (width, height, expectedClass) in LayoutSamples)
         foreach (var scale in LayoutScales)
         foreach (var statusVisible in new[] { false, true })
+        foreach (var updateVisible in new[] { false, true })
         {
-            var label = $"{width}x{height}@{scale:0.00}{(statusVisible ? "+status" : "")}";
-            var plan = CompactPlayerView.PlanLayout(width, height, scale, statusVisible);
+            var label = $"{width}x{height}@{scale:0.00}{(statusVisible ? "+status" : "")}{(updateVisible ? "+update" : "")}";
+            var plan = CompactPlayerView.PlanLayout(width, height, scale, statusVisible, updateVisible);
+            Require(updateVisible || plan.Update is null, $"Compact {label}: Update shown without an available update.");
+            Require(!updateVisible || plan.Update is not null || plan.SizeClass is CompactSizeClass.Strip or CompactSizeClass.Compact,
+                $"Compact {label}: an available update was hidden although the utility row has room.");
             Require(plan.SizeClass == expectedClass,
                 $"Compact {label} resolved to {plan.SizeClass} instead of {expectedClass}.");
             var interactive = plan.InteractiveRects().ToList();
@@ -228,7 +232,7 @@ internal static class CompactViewChecks
             var dpi = (uint)Math.Round(96 * scale);
             var pixelWidth = (int)Math.Round(width * scale);
             var pixelHeight = (int)Math.Round(height * scale);
-            var nativeCaption = NativeWindowServices.CompactCaptionRegions(pixelWidth, pixelHeight, dpi);
+            var nativeCaption = NativeWindowServices.CompactCaptionRegions(pixelWidth, pixelHeight, dpi, updateVisible);
             Require(nativeCaption.Count == plan.CaptionRegions.Count,
                 $"Compact {label}: native drag regions did not follow the layout plan.");
             foreach (var region in nativeCaption)
@@ -351,6 +355,32 @@ internal static class CompactViewChecks
                 && (optionalStatus || part.Value.ActualWidth > 0 && part.Value.ActualHeight > 0),
                 $"Compact part {part.Key} was not laid out at the native minimum.");
         }
+        phase = "update-button";
+        var updateRequests = 0;
+        Action countUpdate = () => updateRequests++;
+        view.UpdateRequested += countUpdate;
+        PrepareViewSize(view, 800, 180);
+        view.SetUpdate("update-available", "Update Nativune to 9.9.9", "Nativune 9.9.9 is available. Click to update.",
+            enabled: true, available: true);
+        view.UpdateLayout();
+        var updatePart = FindPart(view, "Update");
+        Require(updatePart.Visibility == Visibility.Visible && updatePart.ActualWidth > 0
+            && view.CurrentLayoutPlan?.Update is { } updateRect
+            && updateRect.Right <= Canvas.GetLeft(parts["ReturnToFull"]) + 0.5,
+            "An available update did not show the Compact Update button left of Return to full.");
+        Require(AutomationProperties.GetName(updatePart) == "Update Nativune to 9.9.9",
+            "The Compact Update button did not take the full window's update name.");
+        InvokeControl(updatePart, "update");
+        Require(updateRequests == 1, "The Compact Update button did not request the update action.");
+        view.SetUpdate("update", "Check for Nativune updates", "Click to check for Nativune updates.",
+            enabled: true, available: false);
+        view.UpdateLayout();
+        Require(updatePart.Visibility == Visibility.Collapsed && view.CurrentLayoutPlan?.Update is null,
+            "The Compact Update button stayed visible without an available update.");
+        view.UpdateRequested -= countUpdate;
+        ReleaseViewSize(view);
+        Prepare(view);
+
         phase = "compact-native-frame";
         CheckCompactNativeFrame(host, view);
 

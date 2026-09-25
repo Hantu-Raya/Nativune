@@ -32,7 +32,7 @@ Credentials, profiles and generated files stay out of version control. User data
 
 ## Protect accounts and playback
 
-The owner performs Google sign-in and consent. No password collection, sign-in evasion, substituted OAuth identity, downloads or ad blocking.
+The owner performs Google sign-in and consent. No password collection, sign-in evasion, substituted OAuth identity or downloads. Ad blocking exists only as the owner-approved opt-in setting (Settings > Block ads, off by default); never enable it by default or silently.
 
 Keep remote content isolated from native file, process and credential access. Preserve exact-origin validation and the disabled native bridge. Existing public-UI commands target the owned view, fail closed and do not automatically retry or switch players. Their compatibility is not a documented Google playback API.
 

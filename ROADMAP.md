@@ -18,6 +18,6 @@ This roadmap names areas for future work; it is not a release schedule or a prom
 ## Non-goals
 
 - Downloading media
-- Blocking ads
+- Blocking ads by default (an opt-in, off-by-default setting exists)
 - Using private playback APIs
 - Collecting credentials

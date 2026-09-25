@@ -51,7 +51,7 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
   sliderHeight = 0, trackHeight = 8, track = true, image = true,
   timeInfo = false, websitePosition = position, websiteDuration = duration, timeText,
   duplicateTimeInfo = false, hiddenTimeInfo = false, ariaMin, ariaMax, ariaNow,
-  sliderValueWritable = true, allowSeeking = true, siteOffset = 0 } = {}) {
+  sliderValueWritable = true, allowSeeking = true, siteOffset = 0, largeArtworks = [] } = {}) {
   const document = { clicks: 0, documentElement: { lang }, hidden: false };
   const bar = new HTMLElement(document);
   const media = new HTMLMediaElement(document);
@@ -143,8 +143,14 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
     .setQuery('span.time-info', timeInfos);
   const modals = modal ? [new HTMLElement(document)] : [];
   if (modal) modals[0].setAttribute('aria-modal', 'true');
+  const player = new HTMLElement(document).setQuery('#song-image img', largeArtworks.map(({ src, size = 544 }) => {
+    const large = new HTMLElement(document, '', { width: 0, height: 0 });
+    large.currentSrc = src; large.naturalWidth = size; large.naturalHeight = size;
+    return large;
+  }));
   document.querySelectorAll = selector => selector === 'ytmusic-player-bar' ? [bar]
     : selector === 'audio,video' ? (hasMedia ? [media] : [])
+    : selector === 'ytmusic-player' ? [player]
     : selector === 'dialog[open],[aria-modal="true"]' ? modals : [];
   const location = { origin, href };
   const window = {}; window.top = window;
@@ -204,6 +210,15 @@ assert.equal(state(makePage({ href: 'https://music.youtube.com/watch?v=AbCdEfGhI
 assert.equal(state(makePage({ href: 'https://music.youtube.com/watch?v=invalid' })).videoId, null);
 assert.equal(state(makePage({ href: 'https://music.youtube.com/playlist?v=AbCdEfGhI01' })).videoId, null);
 assert.equal(known.canLike, true); assert.equal(known.canDislike, true);
+// Compact uses the player's large artwork only when it is the bar thumbnail's picture at another size.
+const barArt = 'https://i.ytimg.com/vi/example/hqdefault.jpg';
+assert.equal(known.artworkUrl, barArt);
+assert.equal(state(makePage({ largeArtworks: [{ src: 'https://i.ytimg.com/vi/example/sddefault.jpg' }] })).artworkUrl,
+  'https://i.ytimg.com/vi/example/sddefault.jpg');
+assert.equal(state(makePage({ largeArtworks: [{ src: 'https://i.ytimg.com/vi/previous/sddefault.jpg' }] })).artworkUrl, barArt);
+assert.equal(state(makePage({ largeArtworks: [{ src: 'https://i.ytimg.com/vi/example/maxresdefault.jpg', size: 1280 }] })).artworkUrl, barArt);
+assert.equal(state(makePage({ largeArtworks: [{ src: 'https://example.com/vi/example/sddefault.jpg' }] })).artworkUrl, barArt);
+assert.equal(state(makePage({ image: false, largeArtworks: [{ src: 'https://i.ytimg.com/vi/example/sddefault.jpg' }] })).artworkUrl, null);
 assert.equal(known.canShuffle, true);
 assert.equal(known.shuffle, null);
 assert.equal(state(makePage({ shufflePressed: 'true' })).shuffle, true);

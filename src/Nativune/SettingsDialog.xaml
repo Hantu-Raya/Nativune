@@ -29,6 +29,7 @@
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0"
@@ -234,7 +235,15 @@
                   Foreground="{ThemeResource PrimaryTextBrush}"
                   AutomationProperties.Name="Check for updates automatically"
                   AutomationProperties.HelpText="Check for updates at startup and every 24 hours while Nativune is running." />
-        <Border Grid.Row="7"
+
+        <CheckBox x:Name="BlockAdsCheckBox"
+                  Grid.Row="7"
+                  Content="Block ads (against YouTube's terms; may interrupt playback)"
+                  MinHeight="36"
+                  Foreground="{ThemeResource PrimaryTextBrush}"
+                  AutomationProperties.Name="Block ads"
+                  AutomationProperties.HelpText="Turns on uBlock Origin Lite's ad filters for YouTube Music. Off by default. YouTube may detect it, interrupt playback or warn your account. Restart required." />
+        <Border Grid.Row="8"
                 Padding="14,10"
                 IsHitTestVisible="False"
                 Background="{ThemeResource SurfaceBrush}"
@@ -259,7 +268,7 @@
         </Border>
 
         <Border x:Name="ErrorHost"
-                Grid.Row="8"
+                Grid.Row="9"
                 MinHeight="38"
                 Padding="8,6"
                 Visibility="Collapsed"

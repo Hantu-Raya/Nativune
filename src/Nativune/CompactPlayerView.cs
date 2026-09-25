@@ -42,6 +42,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private IconElement? _settingsMenuIconElement;
     private IconElement? _statusMenuIconElement;
     private IconElement? _topmostMenuIconElement;
+    private IconElement? _updateIconElement;
+    private IconElement? _updateMenuIconElement;
+    private string? _updateMenuIconName;
     private string? _playPauseIconName;
     private string? _volumeIconName;
     private string? _repeatIconName;
@@ -83,6 +86,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Ellipse _shuffleMarker;
     private readonly Button _timer;
     private readonly Button _returnToFull;
+    private readonly Button _update;
+    private readonly MenuFlyoutItem _updateItem;
+    // Update button: shown beside Return to full only while an update is available; More always
+    // offers the same action ("Check for updates" or "Update to …").
+    private bool _updateVisible;
+    private string _updateIconName = "update";
     private readonly Button _more;
     private readonly Button _minimize;
     private readonly Button _close;
@@ -137,6 +146,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
 
     internal event Action<string, double?>? CommandRequested;
     internal event Action? ReturnToFullRequested;
+    internal event Action? UpdateRequested;
     internal event Action? SettingsRequested;
     internal event Action? StatusRequested;
     internal event Action? TimerRequested;
@@ -173,6 +183,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _shuffleMarker = ShuffleMarker;
         _timer = Timer;
         _returnToFull = ReturnToFull;
+        _update = Update;
+        _updateItem = UpdateItem;
         _more = More;
         _minimize = Minimize;
         _close = Close;
@@ -331,6 +343,26 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     {
         _pendingSeek = null;
         _seekPendingState = null;
+    }
+
+    /// <summary>
+    /// Mirrors the full window's update button. <paramref name="name"/>/<paramref name="help"/> describe
+    /// the current action; the Update button is shown only while <paramref name="available"/>.
+    /// </summary>
+    internal void SetUpdate(string iconName, string name, string help, bool enabled, bool available)
+    {
+        if (_disposed) return;
+        _updateIconName = iconName;
+        _updateItem.Text = name;
+        _updateItem.IsEnabled = enabled;
+        SetAccessible(_updateItem, name, help);
+        _update.IsEnabled = enabled;
+        SetAccessible(_update, name, help);
+        ToolTipService.SetToolTip(_update, help);
+        RefreshBoundIcons();
+        if (_updateVisible == available) return;
+        _updateVisible = available;
+        LayoutControls();
     }
 
     public void SetArtwork(BitmapImage? artwork)
@@ -571,6 +603,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _iconCache.Dispose();
         CommandRequested = null;
         ReturnToFullRequested = null;
+        UpdateRequested = null;
         SettingsRequested = null;
         StatusRequested = null;
         TimerRequested = null;
@@ -593,6 +626,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ConfigureButton(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
         ConfigureButton(_playlists, "Playlists", "Show your YouTube Music playlists and play one.");
         ConfigureButton(_returnToFull, "Return to full", "Return to the full app.");
+        ConfigureButton(_update, "Update Nativune", "A Nativune update is available. Click to update.");
+        SetAccessible(_updateItem, "Check for Nativune updates", "Click to check for Nativune updates.");
         ConfigureButton(_more, "More", "More settings and application status.");
         ConfigureButton(_minimize, "Minimize", "Minimize window.");
         ConfigureButton(_close, "Close", "Close app and stop playback.");
@@ -714,6 +749,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
 
         _settingsItem.Click += (_, _) => SettingsRequested?.Invoke();
         _statusItem.Click += (_, _) => StatusRequested?.Invoke();
+        _update.Click += (_, _) => { if (_active) UpdateRequested?.Invoke(); };
+        // The menu closes first; the update prompt opens on the next dispatcher turn.
+        _updateItem.Click += (_, _) => DispatcherQueue.TryEnqueue(() => { if (_active && !_disposed) UpdateRequested?.Invoke(); });
         _topmostItem.Click += (_, _) => ToggleTopmostRequested?.Invoke();
         _moreMenu.Closed += (_, _) => RestorePopupFocus();
 
@@ -1038,7 +1076,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close
+            _returnToFull, _update, _more, _minimize, _close
         })
         {
             button.Background = transparent;
@@ -1050,6 +1088,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             button.VerticalContentAlignment = VerticalAlignment.Center;
         }
         _timer.Foreground = secondary;
+        _update.Foreground = ShellTheme.Brush("AccentBrush", ShellTheme.ForegroundColor);
         _playPause.BorderThickness = new Thickness(0);
         _playPause.Padding = new Thickness(0);
         _playPause.HorizontalContentAlignment = HorizontalAlignment.Center;
@@ -1069,6 +1108,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             button.Foreground = button.IsEnabled ? primary : secondary;
         _timer.Foreground = _timer.IsEnabled ? secondary : primary;
         ApplyPlayVisual();
+        // The Update button only shows while an update is available, in the accent colour like the
+        // full window's toolbar button.
+        _update.Foreground = _update.IsEnabled
+            ? ShellTheme.Brush("AccentBrush", ShellTheme.ForegroundColor) : secondary;
     }
 
     private void ApplyPlayVisual()
@@ -1125,6 +1168,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
                 IsRepeatOne(_state?.Repeat) ? "repeat-one" : "repeat", 20);
             BindFixedIcon(_shuffleIcon, ref _shuffleIconElement, "shuffle", 20);
             BindFixedIcon(_returnToFull, ref _returnToFullIconElement, "restore-window", 16);
+            BindFixedIcon(_update, ref _updateIconElement, "update-available", 16);
+            if (_updateMenuIconName != _updateIconName || !ReferenceEquals(_updateItem.Icon, _updateMenuIconElement))
+            {
+                _updateMenuIconElement = _iconCache.CreateElement(_updateIconName, 16);
+                _updateItem.Icon = _updateMenuIconElement;
+                _updateMenuIconName = _updateIconName;
+            }
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
             BindFixedIcon(_playlists, ref _playlistsIconElement, "playlist", 20);
             BindFixedIcon(_minimize, ref _minimizeIconElement, "minimize", 16);
@@ -1449,35 +1499,65 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     }
 
 }
+// Compact artwork drawn as a CD: the album art is the spinning data side, around a clear hub with a
+// real see-through hole. Rings are radially symmetric and the sheen stays still, like light on a
+// spinning disc, so only the art rotates.
 public sealed class CompactArtworkCanvas : Grid
 {
-    private readonly Image _image;
-    private readonly TextBlock _placeholder;
+    // Radii as fractions of the disc radius, measured from a standard 120 mm CD.
+    private const double ClampRingOuter = 0.40, HubOuter = 0.33, HubLine = 0.30, Hole = 0.125;
+    // Every layer is an Ellipse whose stroke is the ring (a XAML ellipse stroke is drawn inside its
+    // bounds), so the centre is truly empty. Path geometry circles here rendered as diamonds.
+    private readonly Ellipse _face = new();
+    private readonly Ellipse _sheen = new() { IsHitTestVisible = false };
+    private readonly Ellipse _clampRing = new() { IsHitTestVisible = false };
+    private readonly Ellipse _hub = new() { IsHitTestVisible = false };
+    private readonly Ellipse _hubLine = new() { IsHitTestVisible = false };
+    private readonly Ellipse _holeEdge = new() { IsHitTestVisible = false };
+    private readonly Ellipse _rim = new() { IsHitTestVisible = false };
     private readonly RotateTransform _rotation = new();
+    private BitmapImage? _image;
     private double _angle;
 
     public CompactArtworkCanvas()
     {
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
-        RenderTransform = _rotation;
-        Children.Add(new Border
+        _face.RenderTransform = _rotation;
+        _face.RenderTransformOrigin = new Point(0.5, 0.5);
+        _sheen.Stroke = new LinearGradientBrush
         {
-            Background = ShellTheme.Brush("RaisedBrush", ColorHelper.FromArgb(0xFF, 0x21, 0x21, 0x21)),
-            CornerRadius = new CornerRadius(64),
-            Child = _image = new Image { Stretch = Stretch.UniformToFill, Visibility = Visibility.Collapsed }
-        });
-        Children.Add(_placeholder = new TextBlock
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(1, 1),
+            GradientStops =
+            {
+                new GradientStop { Color = ColorHelper.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 0.18 },
+                new GradientStop { Color = ColorHelper.FromArgb(0x30, 0xFF, 0xFF, 0xFF), Offset = 0.36 },
+                new GradientStop { Color = ColorHelper.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 0.50 },
+                new GradientStop { Color = ColorHelper.FromArgb(0x22, 0xFF, 0xFF, 0xFF), Offset = 0.64 },
+                new GradientStop { Color = ColorHelper.FromArgb(0x00, 0xFF, 0xFF, 0xFF), Offset = 0.82 }
+            }
+        };
+        _clampRing.Stroke = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x14, 0x14, 0x14));
+        _hub.Stroke = new SolidColorBrush(ColorHelper.FromArgb(0xD9, 0xE4, 0xE4, 0xE4));
+        _hubLine.Stroke = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xA8, 0xA8, 0xA8));
+        _holeEdge.Stroke = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x9A, 0x9A, 0x9A));
+        _rim.Stroke = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x5A, 0x5A, 0x5A));
+        foreach (var ring in new[] { _face, _sheen, _clampRing, _hub, _hubLine, _holeEdge, _rim })
         {
-            Text = "♪",
-            FontSize = 44,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            TextAlignment = TextAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Foreground = ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA))
-        });
-        SizeChanged += (_, _) => UpdateClip();
-        UpdateClip();
+            ring.HorizontalAlignment = HorizontalAlignment.Center;
+            ring.VerticalAlignment = VerticalAlignment.Center;
+        }
+        Children.Add(_face);
+        Children.Add(_sheen);
+        Children.Add(_clampRing);
+        Children.Add(_hub);
+        Children.Add(_hubLine);
+        Children.Add(_holeEdge);
+        Children.Add(_rim);
+        ApplyTheme();
+        SizeChanged += (_, _) => UpdateGeometry();
+        UpdateGeometry();
     }
 
     internal double Angle
@@ -1487,36 +1567,42 @@ public sealed class CompactArtworkCanvas : Grid
         {
             _angle = Normalize(value);
             _rotation.Angle = _angle;
-            _rotation.CenterX = ActualWidth / 2;
-            _rotation.CenterY = ActualHeight / 2;
         }
     }
 
     internal void SetImage(BitmapImage? image)
     {
-        var imageVisible = image is not null;
-        if (ReferenceEquals(_image.Source, image)
-            && _image.Visibility == (imageVisible ? Visibility.Visible : Visibility.Collapsed)
-            && _placeholder.Visibility == (imageVisible ? Visibility.Collapsed : Visibility.Visible))
-            return;
-        _image.Source = image;
-        _image.Visibility = imageVisible ? Visibility.Visible : Visibility.Collapsed;
-        _placeholder.Visibility = imageVisible ? Visibility.Collapsed : Visibility.Visible;
+        if (ReferenceEquals(_image, image)) return;
+        _image = image;
+        ApplyTheme();
     }
 
     internal void ApplyTheme()
     {
-        if (Children[0] is Border border)
-            border.Background = ShellTheme.Brush("RaisedBrush", ColorHelper.FromArgb(0xFF, 0x21, 0x21, 0x21));
-        _placeholder.Foreground = ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
+        // Without artwork the disc is a blank one in the theme's raised colour.
+        _face.Stroke = _image is null
+            ? ShellTheme.Brush("RaisedBrush", ColorHelper.FromArgb(0xFF, 0x21, 0x21, 0x21))
+            : new ImageBrush { ImageSource = _image, Stretch = Stretch.UniformToFill };
     }
 
-    private void UpdateClip()
+    private void UpdateGeometry()
     {
-        var diameter = Math.Max(0, Math.Min(ActualWidth, ActualHeight));
-        if (Children[0] is Border border)
-            border.CornerRadius = new CornerRadius(diameter / 2);
-        Angle = _angle;
+        var radius = Math.Max(0, Math.Min(ActualWidth, ActualHeight)) / 2;
+        SizeRing(_face, radius * 2, radius * (1 - HubOuter));
+        SizeRing(_sheen, radius * 2, radius * (1 - ClampRingOuter));
+        SizeRing(_clampRing, radius * ClampRingOuter * 2, radius * (ClampRingOuter - HubOuter));
+        SizeRing(_hub, radius * HubOuter * 2, radius * (HubOuter - Hole));
+        var line = Math.Max(1, radius * 0.012);
+        SizeRing(_hubLine, radius * HubLine * 2, line);
+        SizeRing(_holeEdge, radius * Hole * 2, line);
+        SizeRing(_rim, radius * 2, line);
+    }
+
+    private static void SizeRing(Ellipse ring, double diameter, double thickness)
+    {
+        ring.Width = diameter;
+        ring.Height = diameter;
+        ring.StrokeThickness = thickness;
     }
 
     private static double Normalize(double value)

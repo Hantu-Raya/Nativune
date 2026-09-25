@@ -98,7 +98,7 @@
       "logicalName": "Nativune.NativeIcons.16.compact.png",
       "width": 16,
       "height": 16,
-      "sha256": "9710239b11eba413a3dfd3b2cf5158ecf75458ead667a4fd2038a16303fdc1e7"
+      "sha256": "090eb8374393032553c36388933e736c2e04a4b1121bc95a456473aeac223521"
     },
     {
       "path": "16/dislike.png",
@@ -273,7 +273,7 @@
       "logicalName": "Nativune.NativeIcons.16.restore-window.png",
       "width": 16,
       "height": 16,
-      "sha256": "ca96c7f1f38d5ca1a82075af909bd3551647f450fe147660d5d7eb57e818f7bb"
+      "sha256": "c789b80a108b4f77ce5e0e14f5b395a655e7232cb9befc8a4f57622a02f7d168"
     },
     {
       "path": "16/retry.png",
@@ -399,7 +399,7 @@
       "logicalName": "Nativune.NativeIcons.20.compact.png",
       "width": 20,
       "height": 20,
-      "sha256": "0e0583cd90bf24c920bca8c7fde4020cc0b0d9a0aaca55ce4b7884e6242042e1"
+      "sha256": "1a725d41f115c5ad31dbce15c9daee58af67500308770c8dfa369adc626e272d"
     },
     {
       "path": "20/dislike.png",
@@ -574,7 +574,7 @@
       "logicalName": "Nativune.NativeIcons.20.restore-window.png",
       "width": 20,
       "height": 20,
-      "sha256": "73a3497deb7580b6a49f22ba6dadc78876d066f6a08dd3b68c572159abb4b62d"
+      "sha256": "7e5ba4a7b724b210273e173bd12e0691619d8f81f179a2bbe1da6a57cdd2b531"
     },
     {
       "path": "20/retry.png",
@@ -700,7 +700,7 @@
       "logicalName": "Nativune.NativeIcons.24.compact.png",
       "width": 24,
       "height": 24,
-      "sha256": "d5f7453c309fec4301950d6e2bcbb66040358775caade9384c5f1015b681a131"
+      "sha256": "21d56fa82770f68bb49bb7e644a738092cbbbd41ff8db69d0476206756101f34"
     },
     {
       "path": "24/dislike.png",
@@ -875,7 +875,7 @@
       "logicalName": "Nativune.NativeIcons.24.restore-window.png",
       "width": 24,
       "height": 24,
-      "sha256": "a24b7786bd68feb01083310d55e268a3ff82e267fa7c29d8813887279eb8c213"
+      "sha256": "959798f898f799e4996894ac553a625e9647097000169cad936504103be71a55"
     },
     {
       "path": "24/retry.png",
@@ -1001,7 +1001,7 @@
       "logicalName": "Nativune.NativeIcons.25.compact.png",
       "width": 25,
       "height": 25,
-      "sha256": "33a28e653ff9dcbc27e36c49b967bb5bb33a9430150dfcf08e94c8a3e80c8e95"
+      "sha256": "144bcb1ee736d994a3aad2effb234ebc12fabff2b75155d26aa4ddc5505b60aa"
     },
     {
       "path": "25/dislike.png",
@@ -1176,7 +1176,7 @@
       "logicalName": "Nativune.NativeIcons.25.restore-window.png",
       "width": 25,
       "height": 25,
-      "sha256": "9b999cc4289ecc41a66f7fec89cf2a3ebc646f4daf7981452ff26380eeb0c51d"
+      "sha256": "6e3a2038f8b6e4c7f4524ab4de0bfad1c20b7e7d403c2b43389147ad1bb7baf5"
     },
     {
       "path": "25/retry.png",
@@ -1302,7 +1302,7 @@
       "logicalName": "Nativune.NativeIcons.30.compact.png",
       "width": 30,
       "height": 30,
-      "sha256": "0c1245d6ce960524fbe67f13f887466d6b8ed4b31e77884f0338a3b1240a38b7"
+      "sha256": "ff1f1911393792afb00467c13984891c91abf00bd3718fb7ccf6cde551603e68"
     },
     {
       "path": "30/dislike.png",
@@ -1477,7 +1477,7 @@
       "logicalName": "Nativune.NativeIcons.30.restore-window.png",
       "width": 30,
       "height": 30,
-      "sha256": "7d2a291aafc14be96977f8ea9317f9bbac942f05df5b06ab1976b5047773c4d6"
+      "sha256": "82a93291899d8cca17b358c972ab54275d2ae8a283c7482d58e9bd80471fd160"
     },
     {
       "path": "30/retry.png",
@@ -1603,7 +1603,7 @@
       "logicalName": "Nativune.NativeIcons.32.compact.png",
       "width": 32,
       "height": 32,
-      "sha256": "72c2a46b4b4178e15ac6651a05dd28acc57bb6352f553569becfcc6b5511bd9c"
+      "sha256": "7b55293dbc02c335ff19831551ab6a4dab214886f56303a1b49233efbea752a1"
     },
     {
       "path": "32/dislike.png",
@@ -1778,7 +1778,7 @@
       "logicalName": "Nativune.NativeIcons.32.restore-window.png",
       "width": 32,
       "height": 32,
-      "sha256": "ea8861ceea3bb82fbf26a0e55a6bdbb8bc55228944af93e62e6cfb752d8f7037"
+      "sha256": "c855815d4b859fa197dc94c9c79a9f3df9ee42a45e806828e05c4abd69532eb5"
     },
     {
       "path": "32/retry.png",
@@ -1904,7 +1904,7 @@
       "logicalName": "Nativune.NativeIcons.40.compact.png",
       "width": 40,
       "height": 40,
-      "sha256": "90ff090ee3a0b9da1aef7bffade12d4b28e985b9210736f194d1cef34ceb4514"
+      "sha256": "3c5111fa4f08037e57aa8ebb31000307e5c4b9b93d55487de349c036a655a774"
     },
     {
       "path": "40/dislike.png",
@@ -2079,7 +2079,7 @@
       "logicalName": "Nativune.NativeIcons.40.restore-window.png",
       "width": 40,
       "height": 40,
-      "sha256": "cdf82644afe7ca7d75221a9bc64b2376f44ba5fafa29f0b48d4d8df66046df19"
+      "sha256": "4131bac0d6db5d8874ace206956f68efa1809c8ef408b8e4f328c6c539efc0a1"
     },
     {
       "path": "40/retry.png",
@@ -2205,7 +2205,7 @@
       "logicalName": "Nativune.NativeIcons.48.compact.png",
       "width": 48,
       "height": 48,
-      "sha256": "3da0eb21d77773d211fbba7b8ffa6c7e538704f021d579a153fec47e1802e26d"
+      "sha256": "46af62d4119fe92fbbe3cd0c3d944e032d273c76d61d5391957c3ecbcf2e521f"
     },
     {
       "path": "48/dislike.png",
@@ -2380,7 +2380,7 @@
       "logicalName": "Nativune.NativeIcons.48.restore-window.png",
       "width": 48,
       "height": 48,
-      "sha256": "9a3ad3d39b61f329062df19506d35f659b6cabcf1843ba482afc8f6e648744cf"
+      "sha256": "bd6397f717ad25f108468b0d89735ab820c0ff56d94843dbc35f106e62b78698"
     },
     {
       "path": "48/retry.png",
@@ -2506,7 +2506,7 @@
       "logicalName": "Nativune.NativeIcons.64.compact.png",
       "width": 64,
       "height": 64,
-      "sha256": "7b7251d38bdf02b32ed66df05c0b1cff35fee80975e4afd7396123ccd4e932d8"
+      "sha256": "48b0685fda8671880878f6acdedaef9a19c6790cf9b39388e46e9658c0e39fc8"
     },
     {
       "path": "64/dislike.png",
@@ -2681,7 +2681,7 @@
       "logicalName": "Nativune.NativeIcons.64.restore-window.png",
       "width": 64,
       "height": 64,
-      "sha256": "4e28e575c98e3b11b27e9b09cd452d06be48575dff34434ae5bddc791dd9e619"
+      "sha256": "b964e7f115866ff532431dd0d3d84221a6058066db5b6c27d07bd944a115cdc9"
     },
     {
       "path": "64/retry.png",

@@ -412,21 +412,36 @@ try {
     if (titles.length !== 1 || typeof titles[0].textContent !== 'string') return null;
     const title = titles[0].textContent.trim();
     if (title.length === 0 || title.length > 512) return null;
-    const images = Array.from(acquired.bar.querySelectorAll('img'));
-    const shown = images.filter(image => {
-      if (!layoutVisible(image) || image.complete !== true || !finite(image.naturalWidth)
+    const artworkHosts = ['lh3.googleusercontent.com','i.ytimg.com','yt3.ggpht.com','yt3.googleusercontent.com'];
+    const loadedArtwork = (image, maxSize) => {
+      if (!isPresent(image) || image.complete !== true || !finite(image.naturalWidth)
         || !finite(image.naturalHeight) || image.naturalWidth <= 0 || image.naturalHeight <= 0
-        || image.naturalWidth > 4096 || image.naturalHeight > 4096) return false;
+        || image.naturalWidth > maxSize || image.naturalHeight > maxSize) return null;
       const raw = image.currentSrc;
-      if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return false;
+      if (typeof raw !== 'string' || raw.length === 0 || raw.length > 2048) return null;
       try {
         const uri = new URL(raw);
         return uri.protocol === 'https:' && (uri.port === '' || uri.port === '443')
           && uri.username === '' && uri.password === ''
-          && ['lh3.googleusercontent.com','i.ytimg.com','yt3.ggpht.com','yt3.googleusercontent.com'].includes(uri.hostname.toLowerCase());
-      } catch { return false; }
-    });
-    const artworkUrl = shown.length === 1 ? shown[0].currentSrc : null;
+          && artworkHosts.includes(uri.hostname.toLowerCase()) ? uri : null;
+      } catch { return null; }
+    };
+    // Same picture at another size: lh3/yt3 art differs only after '=', i.ytimg.com only in the file name.
+    const artworkKey = uri => uri.hostname.toLowerCase() === 'i.ytimg.com'
+      ? uri.hostname + uri.pathname.replace(/\/[^/]*$/, '')
+      : uri.hostname + uri.pathname.split('=')[0];
+    const shown = Array.from(acquired.bar.querySelectorAll('img'))
+      .filter(image => layoutVisible(image) && loadedArtwork(image, 4096));
+    const barArtwork = shown.length === 1 ? loadedArtwork(shown[0], 4096) : null;
+    // The player's own large artwork (ytmusic-player #song-image, beside #song-media-window) is used in
+    // high definition when it is the same picture as the player bar's thumbnail, so a track change can
+    // never show the previous song's art. It may be hidden while Compact is shown; it is only displayed.
+    const players = Array.from(requestDocument.querySelectorAll('ytmusic-player'));
+    const large = players.length === 1
+      ? Array.from(players[0].querySelectorAll('#song-image img')).map(image => loadedArtwork(image, 1024)).filter(Boolean)
+      : [];
+    const hdArtwork = barArtwork && large.length === 1 && artworkKey(large[0]) === artworkKey(barArtwork) ? large[0] : null;
+    const artworkUrl = (hdArtwork ?? barArtwork)?.href ?? null;
     const videoId = videoIdFor();
     return {title, artworkUrl, signature:JSON.stringify([title, videoId])};
   };

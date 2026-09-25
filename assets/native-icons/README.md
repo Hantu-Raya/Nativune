@@ -24,7 +24,7 @@ The ten active additions (`volume`, `volume-muted`, `like`, `dislike`, `repeat`,
 
 On 20 September 2026, the project owner confirmed ownership or permission to distribute these additions publicly and selected the repository's MIT License for Nativune. No Google trademark or third-party brand license is asserted by this provenance statement. The supplied review ZIP has SHA-256 `d8f967cd5882a3846f8ac519c20e2f0942f002626a31e96384c385907ac485fb`; the ten master/mask pairs retain the supplied geometry and colors unchanged.
 
-`update` and `update-available` were designed for Nativune in September 2026 as original glyphs under the repository's MIT License. `playlist` (three list lines and a play triangle, for the Compact Playlists button), `like-filled` and `dislike-filled` (solid thumbs shown when a song is liked or disliked) were added in the same way on 25 September 2026.
+`update` and `update-available` were designed for Nativune in September 2026 as original glyphs under the repository's MIT License. `playlist` (three list lines and a play triangle, for the Compact Playlists button), `like-filled` and `dislike-filled` (solid thumbs shown when a song is liked or disliked) were added in the same way on 25 September 2026. On the same day `compact` and `restore-window` were redrawn in the same way so they read at a glance: a window with a solid mini-player in its corner, with an arrow pointing into it (switch to Compact) or out of it (return to the full view).
 
 The two notification masters and historical variants remain as evidence/inventory only. They are deliberately excluded from the active renderer list, project resource glob, cache registry, and native checks. No notification canonical resources are generated or bundled.
 

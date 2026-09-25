@@ -440,6 +440,10 @@ public sealed partial class WebHostWindow : Window
         AutomationProperties.SetHelpText(UpdateButton, presentation.Tooltip);
         ToolTipService.SetToolTip(UpdateButton, presentation.Tooltip);
         UpdateButton.IsEnabled = presentation.IsEnabled && !_closing && !_disposed;
+        var available = state == ReleaseUpdateButtonState.Available;
+        CompactView.SetUpdate(presentation.IconName, AutomationProperties.GetName(UpdateButton),
+            presentation.Tooltip, UpdateButton.IsEnabled, available);
+        _nativeWindowServices?.SetCompactUpdateVisible(available);
     }
 
     private async Task ShowReleaseUpdatePromptAsync(ReleaseUpdateResult update)
@@ -968,7 +972,7 @@ public sealed partial class WebHostWindow : Window
                     return;
                 _privacySetupUri = setupUri;
                 _configuringPrivacy = setupUri is not null;
-            }, lifetimeToken);
+            }, _settings.BlockAds, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
 
@@ -1497,13 +1501,15 @@ public sealed partial class WebHostWindow : Window
             if (await dialog.ShowAsync(this))
             {
                 var sleepSettingChanged = _settings.SleepInBackground != dialog.Result.SleepInBackground;
+                var adSettingChanged = _settings.BlockAds != dialog.Result.BlockAds;
                 _settings = _settings with
                 {
                     Shortcuts = dialog.Result.Shortcuts,
                     ReduceMotion = dialog.Result.ReduceMotion,
                     SleepInBackground = dialog.Result.SleepInBackground,
                     StartCompact = dialog.Result.StartCompact,
-                    AutoCheckUpdates = dialog.Result.AutoCheckUpdates
+                    AutoCheckUpdates = dialog.Result.AutoCheckUpdates,
+                    BlockAds = dialog.Result.BlockAds
                 };
                 ConfigureAutomaticReleaseUpdateChecks();
                 if (!_settings.StartCompact)
@@ -1514,8 +1520,8 @@ public sealed partial class WebHostWindow : Window
                 RefreshShortcutDescriptions();
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
                 CaptureSettings();
-                SetStatus(sleepSettingChanged
-                    ? "Settings saved. Restart Nativune to apply the background sleeping change."
+                SetStatus(sleepSettingChanged || adSettingChanged
+                    ? "Settings saved. Restart Nativune to apply the background sleeping or ad-blocking change."
                     : _shortcutsEnabled
                         ? "Settings saved. Updated global shortcuts are active for this session."
                         : "Settings saved. Global shortcuts remain off until enabled for this session.");
@@ -1750,6 +1756,7 @@ public sealed partial class WebHostWindow : Window
                 _presenter.IsMaximizable = false;
             _presenter?.SetBorderAndTitleBar(false, false);
             ResizeCompact();
+            _nativeWindowServices?.SetCompactUpdateVisible(_releaseUpdateButtonState == ReleaseUpdateButtonState.Available);
             _nativeWindowServices?.SetCaptionlessResizeFrame(true);
         }
         else

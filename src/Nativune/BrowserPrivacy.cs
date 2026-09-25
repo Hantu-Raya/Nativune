@@ -13,10 +13,15 @@ internal static class BrowserPrivacy
     private static readonly TimeSpan ConfigurationTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan CleanupTimeout = TimeSpan.FromSeconds(5);
 
+    // blockAds is the owner-approved opt-in (Settings > Block ads, off by default). Off keeps the
+    // privacy-only configuration: EasyPrivacy network rules on music.youtube.com and nothing else.
+    // On adds uBO Lite's ad lists and its "optimal" mode (cosmetic filters and scriptlets such as the
+    // YouTube ad-payload pruning) for music.youtube.com only.
     public static async Task ConfigureAsync(
         CoreWebView2 core,
         string projectRoot,
         Action<string?> setTrustedSetupUri,
+        bool blockAds,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(core);
@@ -82,27 +87,36 @@ internal static class BrowserPrivacy
                 if (!string.Equals(core.Source, setupUri, StringComparison.Ordinal))
                     throw new InvalidOperationException("Privacy configuration origin changed.");
 
-                const string expression = """
+                var rulesets = blockAds
+                    ? new[] { "easyprivacy", "easylist", "ublock-filters" }
+                    : new[] { "easyprivacy" };
+                var modes = blockAds
+                    ? new Dictionary<string, string[]> { ["none"] = ["all-urls"], ["basic"] = [], ["optimal"] = ["music.youtube.com"], ["complete"] = [] }
+                    : new Dictionary<string, string[]> { ["none"] = ["all-urls"], ["basic"] = ["music.youtube.com"], ["optimal"] = [], ["complete"] = [] };
+                var expression = $$"""
                     (async () => {
                         if (chrome.runtime.getManifest().version !== '2026.907.2003')
                             throw new Error('Unexpected uBO Lite version');
+                        const wanted = {{JsonSerializer.Serialize(rulesets)}};
+                        const modes = {{JsonSerializer.Serialize(modes)}};
+                        const blockAds = {{(blockAds ? "true" : "false")}};
                         const send = message => chrome.runtime.sendMessage(message);
                         await send({what:'getOptionsPageData'});
                         await send({what:'setStrictBlockMode',state:false});
                         await send({what:'setPopupBlockMode',state:false});
-                        await send({what:'applyRulesets',enabledRulesets:['easyprivacy']});
-                        const modes = {none:['all-urls'],basic:['music.youtube.com'],optimal:[],complete:[]};
+                        await send({what:'applyRulesets',enabledRulesets:wanted});
                         await send({what:'setFilteringModeDetails',modes});
                         const config = await send({what:'getOptionsPageData'});
                         const enabled = await chrome.declarativeNetRequest.getEnabledRulesets();
                         const actualModes = await send({what:'getFilteringModeDetails'});
                         const scripts = await chrome.scripting.getRegisteredContentScripts();
-                        return enabled.length === 1 && enabled[0] === 'easyprivacy'
-                            && config.enabledRulesets.length === 1 && config.enabledRulesets[0] === 'easyprivacy'
+                        const same = list => JSON.stringify([...list].sort()) === JSON.stringify([...wanted].sort());
+                        return same(enabled) && same(config.enabledRulesets)
                             && !config.strictBlockMode && !config.popupBlockMode
                             && JSON.stringify(actualModes) === JSON.stringify(modes)
-                            // The upstream toolbar-state notifier does not filter page content.
-                            && scripts.every(s => s.id === 'toolbar-icon');
+                            // Privacy-only: the upstream toolbar-state notifier is the only content script.
+                            // Ad blocking registers uBO Lite's own filtering scripts for music.youtube.com.
+                            && (blockAds || scripts.every(s => s.id === 'toolbar-icon'));
                     })()
                     """;
                 var parameters = JsonSerializer.Serialize(new { expression, awaitPromise = true, returnByValue = true });
@@ -115,8 +129,9 @@ internal static class BrowserPrivacy
                     || !result.RootElement.GetProperty("result").TryGetProperty("value", out var value)
                     || value.ValueKind != JsonValueKind.True)
                 {
-                    throw new InvalidOperationException(
-                        "uBO Lite privacy-only configuration could not be verified; Music was not loaded.");
+                    throw new InvalidOperationException(blockAds
+                        ? "uBO Lite ad-filter configuration could not be verified; Music was not loaded."
+                        : "uBO Lite privacy-only configuration could not be verified; Music was not loaded.");
                 }
             }
             finally
