@@ -2,7 +2,7 @@
 
 ## Find the relevant context
 
-For planning, setup, implementation or scope changes, read [Current state](plan.md#current-state) first, then follow its task-specific links. `plan.md` owns product decisions and evidence; this file owns execution. A wording-only correction needs only its surrounding text. Historical approvals apply to their stated task, not every future run. If current instructions conflict with a recorded decision, resolve the affected boundary before acting.
+For planning, setup, implementation or scope changes, read [Current state](notes/plan.md#current-state) first, then follow its task-specific links. `notes/` is a private, git-ignored maintainer clone; public contributors without it should follow README and ROADMAP. `notes/plan.md` owns product decisions and evidence; this file owns execution. A wording-only correction needs only its surrounding text. Historical approvals apply to their stated task, not every future run. If current instructions conflict with a recorded decision, resolve the affected boundary before acting.
 
 Keep this filename lowercase. Runners that discover only `AGENTS.md` must load `agents.md` explicitly rather than create a duplicate.
 
@@ -18,7 +18,7 @@ Finish with changed files, checks actually run and remaining blockers. Remove te
 
 ## Keep project state local
 
-Keep project-owned tools, downloads, dependencies, caches, temporary files, runtime/profile data, logs and outputs under this repository. Resolve paths from the project or executable, not the caller's directory. Use the existing local launchers and [Folder plan](plan.md#folder-plan) for setup/environment details. Configure package-manager paths before invocation; PATH and environment changes are process-local.
+Keep project-owned tools, downloads, dependencies, caches, temporary files, runtime/profile data, logs and outputs under this repository. Resolve paths from the project or executable, not the caller's directory. Use the existing local launchers and [Folder plan](notes/plan.md#folder-plan) for setup/environment details. Configure package-manager paths before invocation; PATH and environment changes are process-local.
 
 Credentials, profiles and generated files stay out of version control. User data is not build cleanup. Windows facilities, the existing harness and browser/cloud state are external prerequisites, not proof of zero external writes. New global installs, machine settings, services/startup tasks or outside-root writes need explicit approval for the exact exception. Prior exceptions are not general permission. Commit, push, publishing, billing and deployment require the corresponding user request.
 

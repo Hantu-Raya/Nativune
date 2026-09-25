@@ -11,6 +11,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public bool ReduceMotion { get; init; }
     public ShortcutBindings Shortcuts { get; init; } = ShortcutBindings.Default;
     public bool SleepInBackground { get; init; } = true;
+    public bool AutoCheckUpdates { get; init; } = true;
     public bool StartCompact { get; init; }
     public int CompactX { get; init; } = 100;
     public int CompactY { get; init; } = 100;
@@ -29,7 +30,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 4;
+    private const int CurrentVersion = 5;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
     private const int MinDpi = 48;
@@ -73,7 +74,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version is not (1 or 2 or 3 or CurrentVersion) || !IsCoreValid(persisted))
+            if (persisted is null || persisted.Version is not (1 or 2 or 3 or 4 or CurrentVersion) || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;
@@ -188,6 +189,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             Shortcuts = shortcuts,
             SleepInBackground = settings.SleepInBackground,
             StartCompact = settings.StartCompact,
+            AutoCheckUpdates = settings.AutoCheckUpdates,
             CompactX = settings.CompactX,
             CompactY = settings.CompactY,
             CompactWidth = settings.CompactWidth is >= MinCompactWidth and <= MaxDimension
@@ -251,7 +253,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         double Zoom, bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home",
         bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
         int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi,
-        bool SleepInBackground = true, bool StartCompact = false)
+        bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -262,6 +264,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             Shortcuts = Shortcuts ?? ShortcutBindings.Default,
             SleepInBackground = SleepInBackground,
             StartCompact = StartCompact,
+            AutoCheckUpdates = AutoCheckUpdates ?? true,
             CompactX = CompactX,
             CompactY = CompactY,
             CompactWidth = CompactWidth,
@@ -274,6 +277,6 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection,
                 settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
-                settings.SleepInBackground, settings.StartCompact);
+                settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates);
     }
 }

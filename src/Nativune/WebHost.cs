@@ -86,6 +86,18 @@ internal static class WebHostPolicy
     }
 }
 
+internal enum ReleaseUpdateButtonState
+{
+    Checking,
+    Available,
+    UpToDate,
+    Failed
+}
+
+internal readonly record struct ReleaseUpdateButtonPresentation(
+    string IconName, string Tooltip, bool IsEnabled);
+
+
 public sealed partial class WebHostWindow : Window
 {
     private const string MinimumWebView2RuntimeVersionText = "152.0.4191.62";
@@ -130,6 +142,7 @@ public sealed partial class WebHostWindow : Window
     private readonly CancellationTokenSource _lifetime = new();
     private readonly CancellationTokenSource _saveCancellation = new();
     private readonly UiDispatcherQueueTimer _saveTimer;
+    private readonly UiDispatcherQueueTimer _releaseUpdateTimer;
     private readonly List<Button> _playerButtons = new();
     private ShellSettings _settings;
     private ShellSettings? _pendingSettings;
@@ -146,6 +159,7 @@ public sealed partial class WebHostWindow : Window
     private Task? _initializationTask;
     private Task? _lateBrowserCleanupTask;
     private static readonly TimeSpan InitializationShutdownTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ReleaseUpdateCheckInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan LateCleanupShutdownTimeout = TimeSpan.FromSeconds(5);
     private AppWindow? _appWindow;
     private OverlappedPresenter? _presenter;
@@ -173,7 +187,10 @@ public sealed partial class WebHostWindow : Window
     private bool _settingsDialogOpen;
     private bool _shortcutsEnabled;
     private SessionShortcuts? _sessionShortcuts;
-    private int _releaseUpdateCheckStarted;
+    private ReleaseUpdateResult? _availableReleaseUpdate;
+    private DateTimeOffset? _lastReleaseUpdateCheckUtc;
+    private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.UpToDate;
+    private bool _releaseUpdateCheckRunning;
     private bool _releaseUpdatePromptOpen;
     private readonly HashSet<Window> _ownedDialogs = new();
     private bool _timerDialogOpen;
@@ -252,6 +269,10 @@ public sealed partial class WebHostWindow : Window
         _saveTimer.Interval = TimeSpan.FromSeconds(1);
         _saveTimer.IsRepeating = false;
         _saveTimer.Tick += (_, _) => CaptureSettings();
+        _releaseUpdateTimer = _dispatcherQueue.CreateTimer();
+        _releaseUpdateTimer.Interval = ReleaseUpdateCheckInterval;
+        _releaseUpdateTimer.IsRepeating = true;
+        _releaseUpdateTimer.Tick += (_, _) => _ = CheckForReleaseUpdateAsync(manual: false);
 
         TryInitializeNativeWindow();
         BuildMenus();
@@ -284,30 +305,120 @@ public sealed partial class WebHostWindow : Window
         }
         if (_initializeBrowser)
             _initializationTask = InitializeAsync();
-        _ = CheckForReleaseUpdateAsync();
+        ConfigureAutomaticReleaseUpdateChecks();
     }
 
-    private async Task CheckForReleaseUpdateAsync()
+    internal static ReleaseUpdateButtonPresentation GetReleaseUpdateButtonPresentation(
+        ReleaseUpdateButtonState state, string? version)
+        => state switch
+        {
+            ReleaseUpdateButtonState.Available => new(
+                "update-available",
+                $"Nativune {(string.IsNullOrWhiteSpace(version) ? "the latest version" : version)} is available. Click to update.",
+                true),
+            ReleaseUpdateButtonState.UpToDate => new(
+                "update", "Nativune is up to date. Click to check for updates.", true),
+            ReleaseUpdateButtonState.Failed => new(
+                "update", "Couldn't check for updates. Click to try again.", true),
+            ReleaseUpdateButtonState.Checking => new(
+                "update", "Checking for updates…", false),
+            _ => new("update", "Couldn't check for updates. Click to try again.", true)
+        };
+
+    private void ConfigureAutomaticReleaseUpdateChecks()
     {
-        if (Interlocked.Exchange(ref _releaseUpdateCheckStarted, 1) != 0)
+        if (_settings.AutoCheckUpdates && !_closing && !_disposed)
+        {
+            if (!_releaseUpdateTimer.IsRunning)
+                _releaseUpdateTimer.Start();
+            if (_lastReleaseUpdateCheckUtc is not { } lastCheck
+                || DateTimeOffset.UtcNow - lastCheck >= ReleaseUpdateCheckInterval)
+                _ = CheckForReleaseUpdateAsync(manual: false);
+            return;
+        }
+
+        _releaseUpdateTimer.Stop();
+    }
+
+    private async Task CheckForReleaseUpdateAsync(bool manual)
+    {
+        if (_releaseUpdateCheckRunning || _closing || _disposed || _lifetime.IsCancellationRequested
+            || (!manual && !_settings.AutoCheckUpdates))
             return;
 
+        _releaseUpdateCheckRunning = true;
+        _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
+        SetReleaseUpdateButtonState(ReleaseUpdateButtonState.Checking);
         try
         {
             var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
-            if (_closing || _disposed || _lifetime.IsCancellationRequested || !update.IsAvailable)
+            if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
 
-            SetStatus($"Nativune {update.Version} is available.");
-            await ShowReleaseUpdatePromptAsync(update);
+            _availableReleaseUpdate = update.IsAvailable ? update : null;
+            var state = update.Status switch
+            {
+                ReleaseUpdateStatus.Available when update.IsAvailable => ReleaseUpdateButtonState.Available,
+                ReleaseUpdateStatus.None => ReleaseUpdateButtonState.UpToDate,
+                _ => ReleaseUpdateButtonState.Failed
+            };
+            SetReleaseUpdateButtonState(state, update.Version);
+
+            if (manual && state == ReleaseUpdateButtonState.Available)
+                SetStatus($"Nativune {update.Version} is available.");
+            else if (manual && state == ReleaseUpdateButtonState.UpToDate)
+                SetStatus("Nativune is up to date.");
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
         {
         }
         catch (Exception)
         {
-            // Release checks are optional and must never prevent browser startup.
+            if (!_closing && !_disposed)
+            {
+                _availableReleaseUpdate = null;
+                SetReleaseUpdateButtonState(ReleaseUpdateButtonState.Failed);
+            }
         }
+        finally
+        {
+            _releaseUpdateCheckRunning = false;
+        }
+    }
+
+    private void OnUpdateButtonClick()
+    {
+        if (_closing || _disposed || _releaseUpdateCheckRunning)
+            return;
+        if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Available
+            && _availableReleaseUpdate is { IsAvailable: true } update)
+        {
+            _ = ShowReleaseUpdatePromptAsync(update);
+            return;
+        }
+
+        _ = CheckForReleaseUpdateAsync(manual: true);
+    }
+
+    private void SetReleaseUpdateButtonState(ReleaseUpdateButtonState state, string? version = null)
+    {
+        _releaseUpdateButtonState = state;
+        var presentation = GetReleaseUpdateButtonPresentation(state, version);
+        UpdateButton.Content = _iconCache.CreateElement(presentation.IconName, 20);
+        if (state == ReleaseUpdateButtonState.Available)
+            UpdateButton.Foreground = ShellTheme.Brush("AccentBrush", ShellTheme.ForegroundColor);
+        else
+            UpdateButton.ClearValue(Control.ForegroundProperty);
+        AutomationProperties.SetName(UpdateButton, state switch
+        {
+            ReleaseUpdateButtonState.Available => $"Update Nativune to {version ?? "the latest version"}",
+            ReleaseUpdateButtonState.Checking => "Checking for Nativune updates",
+            ReleaseUpdateButtonState.Failed => "Retry checking for Nativune updates",
+            _ => "Check for Nativune updates"
+        });
+        AutomationProperties.SetHelpText(UpdateButton, presentation.Tooltip);
+        ToolTipService.SetToolTip(UpdateButton, presentation.Tooltip);
+        UpdateButton.IsEnabled = presentation.IsEnabled && !_closing && !_disposed;
     }
 
     private async Task ShowReleaseUpdatePromptAsync(ReleaseUpdateResult update)
@@ -555,6 +666,7 @@ public sealed partial class WebHostWindow : Window
         HomeButton.Click += (_, _) => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); };
         PreviousButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("previous");
         PlayPauseButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("toggle");
+        UpdateButton.Click += (_, _) => OnUpdateButtonClick();
         NextButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("next");
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
@@ -595,6 +707,8 @@ public sealed partial class WebHostWindow : Window
         MoreButton.Content = _iconCache.CreateElement("overflow", 20);
         TimerButton.Content = _iconCache.CreateElement("quit-timer", 20);
         CompactButton.Content = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 20);
+        SetReleaseUpdateButtonState(
+            _releaseUpdateButtonState, _availableReleaseUpdate?.Version);
     }
 
     private void SetMenuIcons()
@@ -1277,8 +1391,10 @@ public sealed partial class WebHostWindow : Window
                     Shortcuts = dialog.Result.Shortcuts,
                     ReduceMotion = dialog.Result.ReduceMotion,
                     SleepInBackground = dialog.Result.SleepInBackground,
-                    StartCompact = dialog.Result.StartCompact
+                    StartCompact = dialog.Result.StartCompact,
+                    AutoCheckUpdates = dialog.Result.AutoCheckUpdates
                 };
+                ConfigureAutomaticReleaseUpdateChecks();
                 if (!_settings.StartCompact)
                 {
                     _compactStartupPending = false;
@@ -1897,6 +2013,7 @@ public sealed partial class WebHostWindow : Window
         Exception? firstFailure = null;
         void RememberFailure(Exception ex) => firstFailure ??= ex;
 
+        try { _releaseUpdateTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
         try { await WaitForInitializationAsync(); }
         catch (Exception ex) { RememberFailure(ex); }

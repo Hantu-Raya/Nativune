@@ -18,11 +18,12 @@
             Background="{ThemeResource SurfaceBrush}"
             BorderBrush="{ThemeResource RaisedBrush}"
             BorderThickness="0,0,0,1">
-      <StackPanel x:Name="Toolbar"
-                  Orientation="Horizontal"
-                  Spacing="4"
-                  Padding="12,4"
-                  HorizontalAlignment="Stretch">
+      <Grid x:Name="Toolbar"
+            Margin="12,4"
+            HorizontalAlignment="Stretch">
+        <StackPanel Orientation="Horizontal"
+                    Spacing="4"
+                    HorizontalAlignment="Left">
         <Button x:Name="BackButton"
                 AutomationProperties.Name="Back"
                 ToolTipService.ToolTip="Back (Alt+Left)"
@@ -101,6 +102,15 @@
                 ToolTipService.ToolTip="Compact window"
                 Content="Compact" />
       </StackPanel>
+        <Button x:Name="UpdateButton"
+                Width="40"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                AutomationProperties.Name="Check for Nativune updates"
+                AutomationProperties.HelpText="Nativune is up to date. Click to check for updates."
+                ToolTipService.ToolTip="Nativune is up to date. Click to check for updates."
+                Content="Update" />
+      </Grid>
     </Border>
 
     <Grid x:Name="ContentGrid" Grid.Row="1" Background="{ThemeResource CanvasBrush}">

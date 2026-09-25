@@ -68,6 +68,8 @@ internal sealed class NativeIconCache : IDisposable
             ["shuffle"] = "shuffle",
             ["status"] = "status",
             ["tray"] = "tray",
+            ["update"] = "update",
+            ["update-available"] = "update-available",
             ["volume-muted"] = "volume-muted",
             ["volume"] = "volume",
             ["zoom-in"] = "zoom-in",

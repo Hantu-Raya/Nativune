@@ -66,6 +66,7 @@ public sealed partial class SettingsDialog : Window
         ReduceMotionCheckBox.IsChecked = initial.ReduceMotion;
         SleepInBackgroundCheckBox.IsChecked = initial.SleepInBackground;
         StartCompactCheckBox.IsChecked = initial.StartCompact;
+        AutoCheckUpdatesCheckBox.IsChecked = initial.AutoCheckUpdates;
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
 
@@ -289,6 +290,7 @@ public sealed partial class SettingsDialog : Window
             ReduceMotion = ReduceMotionCheckBox.IsChecked == true,
             SleepInBackground = SleepInBackgroundCheckBox.IsChecked == true,
             StartCompact = StartCompactCheckBox.IsChecked == true,
+            AutoCheckUpdates = AutoCheckUpdatesCheckBox.IsChecked == true,
             Shortcuts = bindings
         };
         _saved = true;

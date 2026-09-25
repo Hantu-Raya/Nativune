@@ -53,6 +53,8 @@
     "shuffle",
     "status",
     "tray",
+    "update",
+    "update-available",
     "volume-muted",
     "volume",
     "zoom-in",
@@ -290,6 +292,20 @@
       "width": 16,
       "height": 16,
       "sha256": "18a5ddbee575201d95ca5136a69c2ec8ed287700864d05e4c21e282f95960c35"
+    },
+    {
+      "path": "16/update.png",
+      "logicalName": "Nativune.NativeIcons.16.update.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "2b9e058ee08098907791b28ad69d7bad29ad2c2b385765c56559ed546b9e8141"
+    },
+    {
+      "path": "16/update-available.png",
+      "logicalName": "Nativune.NativeIcons.16.update-available.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "b643de7388853d8ac7f99d79bb303cf1468bb8d1fd84cd634f453df1508a87df"
     },
     {
       "path": "16/volume-muted.png",
@@ -558,6 +574,20 @@
       "sha256": "d55f1f86860d635cdf0ed725281878913fb2668ff91225aedef8c106edd44513"
     },
     {
+      "path": "20/update.png",
+      "logicalName": "Nativune.NativeIcons.20.update.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "a49071b90cd028315a80a08cf346357a8f775ca11fa9a3ee859dbf271ea6a5cf"
+    },
+    {
+      "path": "20/update-available.png",
+      "logicalName": "Nativune.NativeIcons.20.update-available.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "5cd80874bcfd1f64375bb42f801ea1dd1afd8b85f94cd93b77c3c4dd52304828"
+    },
+    {
       "path": "20/volume-muted.png",
       "logicalName": "Nativune.NativeIcons.20.volume-muted.png",
       "width": 20,
@@ -822,6 +852,20 @@
       "width": 24,
       "height": 24,
       "sha256": "ca2050c7f2b303bb8c07d2671fa0c5a9988303cb21fd29f86a783028484ca89e"
+    },
+    {
+      "path": "24/update.png",
+      "logicalName": "Nativune.NativeIcons.24.update.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "90ac6eee46426c43c2cc89969d386383a49040c8cfd66c4c17428ec2aa0b551c"
+    },
+    {
+      "path": "24/update-available.png",
+      "logicalName": "Nativune.NativeIcons.24.update-available.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "d83cb8ceddb0b0b1a14816b175afce9f5bf75ad82d3f67acc481c0af9288d7ae"
     },
     {
       "path": "24/volume-muted.png",
@@ -1090,6 +1134,20 @@
       "sha256": "5963df10b62aa0cd8de1945ff42cd337295def4b1093f824daffd98cf7981872"
     },
     {
+      "path": "25/update.png",
+      "logicalName": "Nativune.NativeIcons.25.update.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "cc505ae918b97f1bc433fa09d4e5145204f7963751ea98e29f71093cd4c5f489"
+    },
+    {
+      "path": "25/update-available.png",
+      "logicalName": "Nativune.NativeIcons.25.update-available.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "7e8a97b0cbf09fe4ef7a45cbca783ea324df492a9ab2f8a223f1b86f58e95c22"
+    },
+    {
       "path": "25/volume-muted.png",
       "logicalName": "Nativune.NativeIcons.25.volume-muted.png",
       "width": 25,
@@ -1354,6 +1412,20 @@
       "width": 30,
       "height": 30,
       "sha256": "c1d7188f8905d3b1d8129d8a864f5e90e54aa2fc286233d326599a69b0fa2027"
+    },
+    {
+      "path": "30/update.png",
+      "logicalName": "Nativune.NativeIcons.30.update.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "28e8ec6b7c4891db872defa1768cb1b07291f87fed770a55c6c885fe0e32e8ad"
+    },
+    {
+      "path": "30/update-available.png",
+      "logicalName": "Nativune.NativeIcons.30.update-available.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "5601a830be54c874aaded2e5eff5a0d02954ad99cd06ebf0fcecdc673f2cdbe3"
     },
     {
       "path": "30/volume-muted.png",
@@ -1622,6 +1694,20 @@
       "sha256": "6cb4690ee37cad8a90d06182b775571756480bb9a5844969a513125b26196e05"
     },
     {
+      "path": "32/update.png",
+      "logicalName": "Nativune.NativeIcons.32.update.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "5f7aaf6d00766d8016e15b84cbc8762c3d7e4e13db4fa19cc03dd14da04c3adf"
+    },
+    {
+      "path": "32/update-available.png",
+      "logicalName": "Nativune.NativeIcons.32.update-available.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "abbfd0e7a4e99e66a02740c2a603c23151ad50f10c83ec5766f023f57217c75e"
+    },
+    {
       "path": "32/volume-muted.png",
       "logicalName": "Nativune.NativeIcons.32.volume-muted.png",
       "width": 32,
@@ -1886,6 +1972,20 @@
       "width": 40,
       "height": 40,
       "sha256": "592c7c9356418fb75f56d248f7136fc319bd2e83f57af5aa434eb224a8dada26"
+    },
+    {
+      "path": "40/update.png",
+      "logicalName": "Nativune.NativeIcons.40.update.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "9806f29051ad6aee0f50fd1d6e8dd0eac4fb3ab3b1293d4ef62d2b74bc6ce4cf"
+    },
+    {
+      "path": "40/update-available.png",
+      "logicalName": "Nativune.NativeIcons.40.update-available.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "8080d01362f94910b19894fe4e981a94a94d28a8e58666fb85a2aeb6ed2488a0"
     },
     {
       "path": "40/volume-muted.png",
@@ -2154,6 +2254,20 @@
       "sha256": "43ba0e7a387f7842d3d89a92169567d5a4a447111dd5fcb0c965f371bdfc0630"
     },
     {
+      "path": "48/update.png",
+      "logicalName": "Nativune.NativeIcons.48.update.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "592995cae1fac5fc8cf38f121d12ca63582761bebc8b544df28877ef8da63a79"
+    },
+    {
+      "path": "48/update-available.png",
+      "logicalName": "Nativune.NativeIcons.48.update-available.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "b2bab899762ad4bfe9e11540e43b663f8bd4560d0da6ea4f44505fc149e27b79"
+    },
+    {
       "path": "48/volume-muted.png",
       "logicalName": "Nativune.NativeIcons.48.volume-muted.png",
       "width": 48,
@@ -2418,6 +2532,20 @@
       "width": 64,
       "height": 64,
       "sha256": "9dc92b5021d1c41dc30775cce84427ba7b30f103852f2728858561e3af1f85c8"
+    },
+    {
+      "path": "64/update.png",
+      "logicalName": "Nativune.NativeIcons.64.update.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1641ae72b46c70aa48f304452a5739b5a2d7904dd94db394abb071b25f8b264e"
+    },
+    {
+      "path": "64/update-available.png",
+      "logicalName": "Nativune.NativeIcons.64.update-available.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "d02f83273b1fd3f294ad39a185e78828eb33a7f4abe575ffa9ba322c46402738"
     },
     {
       "path": "64/volume-muted.png",

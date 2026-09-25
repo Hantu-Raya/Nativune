@@ -28,6 +28,7 @@
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
           <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0"
@@ -225,7 +226,15 @@
                   Foreground="{ThemeResource PrimaryTextBrush}"
                   AutomationProperties.Name="Start in Compact"
                   AutomationProperties.HelpText="Open Nativune in Compact view on the next app start." />
-        <Border Grid.Row="6"
+
+        <CheckBox x:Name="AutoCheckUpdatesCheckBox"
+                  Grid.Row="6"
+                  Content="Check for updates automatically"
+                  MinHeight="36"
+                  Foreground="{ThemeResource PrimaryTextBrush}"
+                  AutomationProperties.Name="Check for updates automatically"
+                  AutomationProperties.HelpText="Check for updates at startup and every 24 hours while Nativune is running." />
+        <Border Grid.Row="7"
                 Padding="14,10"
                 IsHitTestVisible="False"
                 Background="{ThemeResource SurfaceBrush}"
@@ -250,7 +259,7 @@
         </Border>
 
         <Border x:Name="ErrorHost"
-                Grid.Row="7"
+                Grid.Row="8"
                 MinHeight="38"
                 Padding="8,6"
                 Visibility="Collapsed"

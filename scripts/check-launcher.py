@@ -1,4 +1,4 @@
-"""Account-free default WinUI and explicit legacy launcher checks; no build."""
+"""Account-free WinUI launcher checks; no build."""
 from pathlib import Path
 import os
 import shutil
@@ -18,27 +18,23 @@ def run(script, *args):
     )
 
 
-for name, missing_message, is_winui in (
-    ('probe.ps1', 'WinUI application not found', True),
-    ('probe-legacy.ps1', 'Legacy WinForms application not found', False),
-):
-    launcher = root / 'scripts' / name
-    help_result = run(launcher)
-    assert help_result.returncode == 0, f'{name}: default help failed'
-    assert ('native-fixture' in help_result.stdout) == is_winui, f'{name}: wrong application selected'
-    invalid = run(launcher, 'help', '--invalid-launcher-check')
-    assert invalid.returncode == 2, f'{name}: application usage exit code was not propagated'
-    assert 'Unknown option' in invalid.stderr, f'{name}: option did not reach application parser'
-    with tempfile.TemporaryDirectory(prefix='launcher check ', dir=temp) as directory:
-        isolated = Path(directory)
-        # The final explicit root must override the real root, without reading credentials.
-        override = run(launcher, 'library', '--root', str(isolated))
-        assert override.returncode == 3, f'{name}: spaced root argument or root precedence changed'
-        assert 'no installed OAuth credentials' in override.stderr, f'{name}: wrong root was selected'
-        scripts = isolated / 'scripts'
-        scripts.mkdir()
-        shutil.copyfile(launcher, scripts / name)
-        missing = run(scripts / name)
-        assert missing.returncode != 0, f'{name}: missing output incorrectly succeeded'
-        assert missing_message in missing.stderr, f'{name}: missing-output diagnostic lost'
-print('PASS: WinUI default and legacy identity, help, parser exit 2, spaced root override, missing artifacts; external working directory')
+launcher = root / 'scripts' / 'probe.ps1'
+help_result = run(launcher)
+assert help_result.returncode == 0, 'probe.ps1: default help failed'
+assert 'native-fixture' in help_result.stdout, 'probe.ps1: WinUI application was not selected'
+invalid = run(launcher, 'help', '--invalid-launcher-check')
+assert invalid.returncode == 2, 'probe.ps1: application usage exit code was not propagated'
+assert 'Unknown option' in invalid.stderr, 'probe.ps1: option did not reach application parser'
+with tempfile.TemporaryDirectory(prefix='launcher check ', dir=temp) as directory:
+    isolated = Path(directory)
+    missing_root = isolated / 'missing root'
+    override = run(launcher, 'self-check', '--root', str(missing_root))
+    assert override.returncode == 2, 'probe.ps1: spaced root argument or root override was ignored'
+    assert 'The specified project root does not exist.' in override.stderr, 'probe.ps1: the explicit root was not selected'
+    scripts = isolated / 'scripts'
+    scripts.mkdir()
+    shutil.copyfile(launcher, scripts / 'probe.ps1')
+    missing = run(scripts / 'probe.ps1')
+    assert missing.returncode != 0, 'probe.ps1: missing output incorrectly succeeded'
+    assert 'WinUI application not found' in missing.stderr, 'probe.ps1: missing-output diagnostic lost'
+print('PASS: WinUI identity, help, parser exit 2, spaced root override, missing artifacts; external working directory')

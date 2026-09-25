@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'login', 'library', 'logout', 'self-check', 'media', 'media-control', 'web', 'native-fixture', 'native-interactions')]
+    [ValidateSet('help', 'self-check', 'media', 'media-control', 'web', 'native-fixture', 'native-interactions')]
     [string] $Command = 'help',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $Arguments

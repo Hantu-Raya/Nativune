@@ -42,8 +42,8 @@ $iconNames = @(
     'like', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
     'play', 'previous', 'quit-timer', 'quit', 'repeat-one', 'repeat',
     'restore-section', 'restore-window', 'retry', 'settings', 'show',
-    'shuffle', 'status', 'tray', 'volume-muted', 'volume', 'zoom-in',
-    'zoom-out', 'zoom-reset'
+    'shuffle', 'status', 'tray', 'update', 'update-available',
+    'volume-muted', 'volume', 'zoom-in', 'zoom-out', 'zoom-reset'
 )
 # 20-DIP toolbar at 100/125/150/200%; 16-DIP taskbar at 100/125/150/200%;
 # 32-DIP tray at 100/125/150/200%.
@@ -237,7 +237,7 @@ $expectedFiles = @($iconNames | ForEach-Object { '{0}.svg' -f $_ })
 $actualFiles = @($files.Name | Sort-Object)
 $expectedSorted = @($expectedFiles | Sort-Object)
 if ($actualFiles.Count -ne $expectedSorted.Count -or (Compare-Object $actualFiles $expectedSorted)) {
-    Fail 'mask directory must contain exactly the 38 active SVG filenames (historical notification masks live outside this input)'
+    Fail 'mask directory must contain exactly the 40 active SVG filenames (historical notification masks live outside this input)'
 }
 foreach ($file in $files) {
     if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

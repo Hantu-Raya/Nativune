@@ -14,3 +14,13 @@ token*.json
 *.pem
 *.pfx
 *.p12
+/notes/
+/plan.md
+/research/
+/experiments/
+/legacy/
+/handoff*/
+/*handoff*.zip*
+/media-control-handoff/
+/notification-handoff/
+/.omp/

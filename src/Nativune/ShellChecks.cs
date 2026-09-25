@@ -25,13 +25,39 @@ internal static class ShellChecks
             LastSection = "library",
             SleepInBackground = false,
             StartCompact = true,
+            AutoCheckUpdates = false,
         };
         ShellSettings.SaveAsync(root, settings, CancellationToken.None).GetAwaiter().GetResult();
         var loaded = ShellSettings.Load(root, out var warning);
-        Require(warning is null && loaded == settings && loaded.StartCompact,
-            "Window settings or Start in Compact did not survive a save and reload.");
-        Require(ShellSettings.Default.TrayEnabled,
-            "New profiles did not enable the native tray/Close-to-hide preference by default.");
+        Require(warning is null && loaded == settings && loaded.StartCompact && !loaded.AutoCheckUpdates,
+            "Window settings or disabled automatic update checks did not survive a save and reload.");
+        Require(ShellSettings.Default.TrayEnabled && ShellSettings.Default.AutoCheckUpdates,
+            "New profiles did not enable tray and automatic update checks by default.");
+
+        var availableUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.Available, "v0.1.11");
+        var currentUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.UpToDate, null);
+        var failedUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.Failed, null);
+        var checkingUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.Checking, null);
+        Require(availableUpdate.IconName == "update-available"
+            && availableUpdate.Tooltip == "Nativune v0.1.11 is available. Click to update."
+            && availableUpdate.IsEnabled,
+            "Available-update button state did not include its version and enabled action.");
+        Require(currentUpdate.IconName == "update"
+            && currentUpdate.Tooltip == "Nativune is up to date. Click to check for updates."
+            && currentUpdate.IsEnabled,
+            "Up-to-date button state did not offer a manual check.");
+        Require(failedUpdate.IconName == "update"
+            && failedUpdate.Tooltip == "Couldn't check for updates. Click to try again."
+            && failedUpdate.IsEnabled,
+            "Failed button state did not offer a retry.");
+        Require(checkingUpdate.IconName == "update"
+            && checkingUpdate.Tooltip == "Checking for updates…"
+            && !checkingUpdate.IsEnabled,
+            "Checking button state did not disable the update action.");
 
         var area = new Rectangle(-1280, 0, 1280, 720);
         var bounds = ShellSettings.RestoreBounds(loaded, area, 144);
@@ -43,9 +69,10 @@ internal static class ShellChecks
 
         var file = Path.Combine(root, "data", "settings.json");
         var savedSettingsText = File.ReadAllText(file);
-        Require(savedSettingsText.Contains("\"Version\": 4", StringComparison.Ordinal)
-            && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal),
-            "Compact startup preference was not written to the current settings schema.");
+        Require(savedSettingsText.Contains("\"Version\": 5", StringComparison.Ordinal)
+            && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal)
+            && savedSettingsText.Contains("\"AutoCheckUpdates\": false", StringComparison.Ordinal),
+            "Current settings schema did not persist compact startup and automatic update preferences.");
         Require(loaded.StartupUri == "https://music.youtube.com/library"
             && (loaded with { RestoreSection = false }).StartupUri == "https://music.youtube.com/",
             "Section restoration ignored its opt-in boundary.");
@@ -86,6 +113,11 @@ internal static class ShellChecks
         var previousV3 = ShellSettings.Load(root, out warning);
         Require(warning is null && !previousV3.StartCompact,
             "Existing P3 settings did not default Start in Compact to off.");
+        File.WriteAllText(file,
+            "{\"Version\":4,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"StartCompact\":false}");
+        var previousV4 = ShellSettings.Load(root, out warning);
+        Require(warning is null && previousV4.AutoCheckUpdates,
+            "Existing P4 settings without the automatic update preference did not default to true.");
         var sleepingArguments = WebHostWindow.BrowserArguments(sleepInBackground: true);
         var activeArguments = WebHostWindow.BrowserArguments(sleepInBackground: false);
         Require(!sleepingArguments.Contains("--disable-background-timer-throttling", StringComparison.Ordinal)
@@ -150,10 +182,10 @@ internal static class ShellChecks
             "like", "minimize", "next", "overflow", "pause", "pin", "play-pause",
             "play", "previous", "quit-timer", "quit", "repeat-one", "repeat",
             "restore-section", "restore-window", "retry", "settings", "show",
-            "shuffle", "status", "tray", "volume-muted", "volume", "zoom-in",
+            "shuffle", "status", "tray", "update", "update-available", "volume-muted", "volume", "zoom-in",
             "zoom-out", "zoom-reset"
         };
-        Require(names.Length == 38, "Native icon registry must contain exactly 38 active canonical names.");
+        Require(names.Length == 40, "Native icon registry must contain exactly 40 active canonical names.");
 
         var resources = typeof(ShellChecks).Assembly.GetManifestResourceNames();
         Require(!resources.Any(name => name.Contains(".notifications", StringComparison.Ordinal)),
