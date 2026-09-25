@@ -28,7 +28,10 @@ internal sealed record PrerequisiteDefinition(
     string[] Arguments,
     long MaxDownloadBytes,
     bool RequireX64Executable,
-    int InstallOrder);
+    int InstallOrder,
+    // Machine-wide installers (VC++ and the .NET runtime) cannot install from this asInvoker
+    // Setup; after the user's consent Windows shows its own administrator (UAC) prompt for them.
+    bool RequiresAdministrator = false);
 
 internal sealed record MissingPrerequisite(PrerequisiteDefinition Definition, string Reason);
 
@@ -84,7 +87,8 @@ internal static class PrerequisiteInstaller
             ["/install", "/quiet", "/norestart"],
             MaxDownloadBytes,
             RequireX64Executable: true,
-            InstallOrder: 0),
+            InstallOrder: 0,
+            RequiresAdministrator: true),
         new(
             "dotnet-runtime-x64",
             ".NET 10 Runtime (x64)",
@@ -94,7 +98,8 @@ internal static class PrerequisiteInstaller
             ["/install", "/quiet", "/norestart"],
             MaxDownloadBytes,
             RequireX64Executable: true,
-            InstallOrder: 1),
+            InstallOrder: 1,
+            RequiresAdministrator: true),
         new(
             "webview2-evergreen-x64",
             "Microsoft Edge WebView2 Evergreen Runtime (x64)",
@@ -127,15 +132,14 @@ internal static class PrerequisiteInstaller
         "msedge.sf.dl.delivery.mp.microsoft.com",
     };
 
-    internal static PrerequisitePlan Prepare(SetupOptions options, string installRoot)
+    internal static PrerequisitePlan DetectForConsent(SetupOptions options)
     {
 #if INSTALLER_TEST_HOOKS
         if (options.TestPrerequisiteScenario != PrerequisiteTestScenario.None)
         {
-            return PrepareInjected(options.TestPrerequisiteScenario);
+            return PrepareInjectedForDetection(options.TestPrerequisiteScenario);
         }
 #endif
-
         IReadOnlyList<MissingPrerequisite> missing;
         try
         {
@@ -155,66 +159,71 @@ internal static class PrerequisiteInstaller
                 error);
         }
 
-        if (missing.Count == 0)
-        {
-            return new PrerequisitePlan(missing, downloadDirectory: null);
-        }
-        if (options.Silent)
+        if (options.Silent && missing.Count > 0)
         {
             throw new SetupException(ExitCode.PrerequisiteFailure, BuildSilentFailure(missing));
         }
+        return new PrerequisitePlan(missing, downloadDirectory: null);
+    }
 
-        var consent =
-            "Nativune requires the following prerequisite(s), which are missing or below the required version. " +
-            "Setup will download and install only the listed items, after validating each Microsoft Authenticode signature. " +
-            "Prerequisites already installed will not be run again. Nativune will not be changed if you decline, a download fails, or an installer fails.\n\n" +
-            FormatLinks(missing) +
-            "\n\nDownload and install only these prerequisites now?";
-        if (!UserInterface.Confirm(consent))
+    internal static PrerequisitePlan PrepareAfterConsent(
+        PrerequisitePlan approvedPlan,
+        string installRoot,
+        ISetupReporter reporter,
+        CancellationToken cancellationToken)
+    {
+#if INSTALLER_TEST_HOOKS
+        if (approvedPlan.TestScenario == PrerequisiteTestScenario.Present)
+        {
+            return new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present);
+        }
+#endif
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<MissingPrerequisite> currentMissing;
+        try
+        {
+            currentMissing = DetectMissing();
+        }
+        catch (Exception error)
         {
             throw new SetupException(
-                ExitCode.Cancelled,
-                "Prerequisite installation was declined. Nativune was not changed. Run Setup interactively and explicitly approve these prerequisites, or install them yourself from the official sources:\n\n" +
-                FormatLinks(missing));
+                ExitCode.PrerequisiteFailure,
+                "Nativune Setup could not recheck prerequisite availability after consent. No Nativune files were changed. Official sources:\n\n" +
+                FormatLinks(approvedPlan.Missing),
+                error);
+        }
+
+        var approvedIds = approvedPlan.Missing.Select(item => item.Definition.Id).ToHashSet(StringComparer.Ordinal);
+        if (currentMissing.Any(item => !approvedIds.Contains(item.Definition.Id)))
+        {
+            throw new SetupException(
+                ExitCode.PrerequisiteFailure,
+                "A different prerequisite became missing after approval. Nativune was not changed. Restart Setup to review and explicitly approve the updated list:\n\n" +
+                FormatLinks(currentMissing));
+        }
+        if (currentMissing.Count == 0)
+        {
+            return new PrerequisitePlan(currentMissing, downloadDirectory: null);
         }
 
         string? downloadDirectory = null;
         try
         {
-            IReadOnlyList<MissingPrerequisite> currentMissing;
-            try
-            {
-                currentMissing = DetectMissing();
-            }
-            catch (Exception error)
-            {
-                throw new SetupException(
-                    ExitCode.PrerequisiteFailure,
-                    "Nativune Setup could not recheck prerequisite availability after consent. No Nativune files were changed. Official sources:\n\n" +
-                    FormatLinks(missing),
-                    error);
-            }
-            var approvedIds = missing.Select(item => item.Definition.Id).ToHashSet(StringComparer.Ordinal);
-            if (currentMissing.Any(item => !approvedIds.Contains(item.Definition.Id)))
-            {
-                throw new SetupException(
-                    ExitCode.PrerequisiteFailure,
-                    "A different prerequisite became missing after approval. Nativune was not changed. Restart Setup to review and explicitly approve the updated list:\n\n" +
-                    FormatLinks(currentMissing));
-            }
-            if (currentMissing.Count == 0)
-            {
-                return new PrerequisitePlan(currentMissing, downloadDirectory: null);
-            }
-
             downloadDirectory = CreateDownloadDirectory(installRoot);
-            foreach (var item in currentMissing.OrderBy(value => value.Definition.InstallOrder))
+            var ordered = currentMissing.OrderBy(value => value.Definition.InstallOrder).ToArray();
+            for (var index = 0; index < ordered.Length; index++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                var item = ordered[index];
                 var path = Path.Combine(downloadDirectory, $"{item.Definition.Id}.exe");
                 try
                 {
-                    Download(item.Definition, path);
+                    Download(item.Definition, path, reporter, index + 1, ordered.Length, cancellationToken);
                     using var verifiedFile = ValidateInstaller(item.Definition, path);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception error)
                 {
@@ -235,7 +244,10 @@ internal static class PrerequisiteInstaller
         }
     }
 
-    internal static void InstallAndVerify(PrerequisitePlan plan)
+    internal static void InstallAndVerify(
+        PrerequisitePlan plan,
+        ISetupReporter reporter,
+        CancellationToken cancellationToken)
     {
 #if INSTALLER_TEST_HOOKS
         if (plan.TestScenario == PrerequisiteTestScenario.Present)
@@ -248,6 +260,7 @@ internal static class PrerequisiteInstaller
             return;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         IReadOnlyList<MissingPrerequisite> currentMissing;
         try
         {
@@ -267,19 +280,35 @@ internal static class PrerequisiteInstaller
             .Where(item => currentIds.Contains(item.Definition.Id))
             .OrderBy(item => item.Definition.InstallOrder)
             .ToArray();
-        foreach (var item in installersToRun)
+        for (var index = 0; index < installersToRun.Length; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var item = installersToRun[index];
             var installerPath = plan.GetInstallerPath(item);
             try
             {
                 using var verifiedFile = ValidateInstaller(item.Definition, installerPath);
+                cancellationToken.ThrowIfCancellationRequested();
+                reporter.Step(
+                    $"Installing prerequisite {item.Definition.Name} ({index + 1} of {installersToRun.Length})… Windows may ask for permission.",
+                    cancellable: false);
+                reporter.Progress(0, 0);
+                cancellationToken.ThrowIfCancellationRequested();
                 RunInstaller(item.Definition, installerPath);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (SetupException error) when (error.Code == ExitCode.Cancelled)
+            {
+                throw;
             }
             catch (SetupException error)
             {
                 throw new SetupException(
                     ExitCode.PrerequisiteFailure,
-                    $"The {item.Definition.Name} could not be installed ({error.Message}). Nativune was not changed. Setup did not request administrator elevation. If Microsoft requires administrator rights, install this prerequisite from the official source after choosing whether to elevate:\n\n" +
+                    $"The {item.Definition.Name} could not be installed ({error.Message}). Nativune was not changed. Run Setup again, or install this prerequisite from the official source:\n\n" +
                     FormatLinks([item]),
                     error);
             }
@@ -287,7 +316,7 @@ internal static class PrerequisiteInstaller
             {
                 throw new SetupException(
                     ExitCode.PrerequisiteFailure,
-                    $"The {item.Definition.Name} installer failed. Nativune was not changed. Setup did not request administrator elevation. If Microsoft requires administrator rights, install this prerequisite from the official source after choosing whether to elevate:\n\n" +
+                    $"The {item.Definition.Name} installer failed. Nativune was not changed. Run Setup again, or install this prerequisite from the official source:\n\n" +
                     FormatLinks([item]),
                     error);
             }
@@ -316,7 +345,7 @@ internal static class PrerequisiteInstaller
     }
 
 #if INSTALLER_TEST_HOOKS
-    private static PrerequisitePlan PrepareInjected(PrerequisiteTestScenario scenario)
+    private static PrerequisitePlan PrepareInjectedForDetection(PrerequisiteTestScenario scenario)
     {
         var injectedMissing = Definitions
             .Select(definition => new MissingPrerequisite(definition, "injected test state"))
@@ -498,7 +527,13 @@ internal static class PrerequisiteInstaller
     private static string CreateDownloadDirectory(string installRoot)
         => InstallRoot.CreateAdjacentDirectory(installRoot, ".nativune-prerequisites");
 
-    private static void Download(PrerequisiteDefinition definition, string destination)
+    private static void Download(
+        PrerequisiteDefinition definition,
+        string destination,
+        ISetupReporter reporter,
+        int itemNumber,
+        int itemCount,
+        CancellationToken cancellationToken)
     {
         using var handler = new HttpClientHandler
         {
@@ -516,7 +551,7 @@ internal static class PrerequisiteInstaller
         {
             ValidateDownloadUri(currentUri);
             using var request = new HttpRequestMessage(HttpMethod.Get, currentUri);
-            using var response = client.Send(request, HttpCompletionOption.ResponseHeadersRead);
+            using var response = client.Send(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (IsRedirect(response.StatusCode))
             {
                 if (redirectCount == MaxRedirects || response.Headers.Location is null)
@@ -533,19 +568,21 @@ internal static class PrerequisiteInstaller
             {
                 throw new IOException("The official download source returned an unsuccessful response.");
             }
-            if (response.Content.Headers.ContentLength is long contentLength
-                && (contentLength <= 0 || contentLength > definition.MaxDownloadBytes))
+            var contentLength = response.Content.Headers.ContentLength ?? 0;
+            if (contentLength < 0 || contentLength > definition.MaxDownloadBytes)
             {
                 throw new IOException("The downloaded installer size is outside the allowed range.");
             }
 
-            using var source = response.Content.ReadAsStream();
+            using var source = response.Content.ReadAsStream(cancellationToken);
             using var target = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             var buffer = new byte[1024 * 128];
             long written = 0;
+            ReportDownloadProgress(reporter, definition, itemNumber, itemCount, written, contentLength);
             while (true)
             {
-                var count = source.Read(buffer, 0, buffer.Length);
+                cancellationToken.ThrowIfCancellationRequested();
+                var count = source.ReadAsync(buffer.AsMemory(), cancellationToken).AsTask().GetAwaiter().GetResult();
                 if (count == 0)
                 {
                     break;
@@ -556,17 +593,44 @@ internal static class PrerequisiteInstaller
                     throw new IOException("The downloaded installer exceeded the allowed size.");
                 }
                 target.Write(buffer, 0, count);
+                ReportDownloadProgress(reporter, definition, itemNumber, itemCount, written, contentLength);
             }
             target.Flush(flushToDisk: true);
+            cancellationToken.ThrowIfCancellationRequested();
             if (written == 0)
             {
                 throw new IOException("The official download source returned an empty file.");
             }
+            ReportDownloadProgress(reporter, definition, itemNumber, itemCount, written, contentLength);
             return;
         }
         throw new IOException("The official download source could not be reached safely.");
     }
 
+    private static void ReportDownloadProgress(
+        ISetupReporter reporter,
+        PrerequisiteDefinition definition,
+        int itemNumber,
+        int itemCount,
+        long downloaded,
+        long total)
+    {
+        var text = total > 0
+            ? $"Downloading prerequisite {itemNumber} of {itemCount}: {definition.Name} — {FormatBytes(downloaded)} of {FormatBytes(total)}"
+            : $"Downloading prerequisite {itemNumber} of {itemCount}: {definition.Name} — {FormatBytes(downloaded)} downloaded";
+        reporter.Step(text, cancellable: true);
+        reporter.Progress(downloaded, total);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1_000_000)
+        {
+            var megabytes = bytes / 1_000_000d;
+            return megabytes < 100 ? $"{megabytes:0.0} MB" : $"{megabytes:0} MB";
+        }
+        return bytes >= 1_000 ? $"{bytes / 1_000d:0.0} KB" : $"{bytes} B";
+    }
     private static void ValidateDownloadUri(Uri uri)
     {
         if (!uri.IsAbsoluteUri
@@ -675,20 +739,46 @@ internal static class PrerequisiteInstaller
 
     private static void RunInstaller(PrerequisiteDefinition definition, string path)
     {
+        const int ErrorCancelled = 1223; // The user declined the Windows UAC prompt.
         var startInfo = new ProcessStartInfo
         {
             FileName = path,
             WorkingDirectory = Path.GetDirectoryName(path)!,
-            UseShellExecute = false,
-            CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
         };
-        foreach (var argument in definition.Arguments)
+        if (definition.RequiresAdministrator)
         {
-            startInfo.ArgumentList.Add(argument);
+            // "runas" asks Windows to show its administrator prompt; only the verified Microsoft
+            // installer is elevated, never Setup or Nativune itself.
+            startInfo.UseShellExecute = true;
+            startInfo.Verb = "runas";
+            startInfo.Arguments = string.Join(' ', definition.Arguments);
+        }
+        else
+        {
+            startInfo.UseShellExecute = false;
+            startInfo.CreateNoWindow = true;
+            foreach (var argument in definition.Arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
         }
 
-        using var process = Process.Start(startInfo)
+        Process? started;
+        try
+        {
+            started = Process.Start(startInfo);
+        }
+        catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == ErrorCancelled)
+        {
+            throw new SetupException(
+                ExitCode.Cancelled,
+                $"Administrator permission for the {definition.Name} was not given, so it was not installed and Nativune was not changed. " +
+                "Run Setup again and choose Yes when Windows asks, or install it yourself from the official source:\n\n" +
+                FormatLinks([new MissingPrerequisite(definition, "administrator permission was declined")]),
+                error);
+        }
+        using var process = started
             ?? throw new SetupException(ExitCode.PrerequisiteFailure, "Windows could not start the signed prerequisite installer.");
         if (!process.WaitForExit((int)InstallerTimeout.TotalMilliseconds))
         {
@@ -703,11 +793,21 @@ internal static class PrerequisiteInstaller
             }
             throw new SetupException(ExitCode.PrerequisiteFailure, "The prerequisite installer timed out.");
         }
+        if (definition.Id == "vcredist-x64" && process.ExitCode == 1638)
+        {
+            return;
+        }
         if (process.ExitCode is 3010 or 1641)
         {
             throw new SetupException(
                 ExitCode.PrerequisiteFailure,
                 "The prerequisite installer requested a Windows restart. Nativune was not changed. Restart Windows, then run Setup again.");
+        }
+        if (process.ExitCode is 1602 or unchecked((int)0x800704C7))
+        {
+            throw new SetupException(
+                ExitCode.Cancelled,
+                $"The {definition.Name} installation was cancelled. Nativune was not changed. Run Setup again to install it.");
         }
         if (process.ExitCode != 0)
         {

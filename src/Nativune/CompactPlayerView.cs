@@ -1,3 +1,4 @@
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
@@ -65,6 +66,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _noticeTimer;
     private string _notice = string.Empty;
     private string? _pendingDislikeTitle;
+    private string _updateNotice = string.Empty;
     private readonly CompactArtworkCanvas _artwork;
     private readonly CompactMarqueeText _title;
     private readonly TextBlock _inlineStatus;
@@ -88,6 +90,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Button _returnToFull;
     private readonly Button _update;
     private readonly MenuFlyoutItem _updateItem;
+    private readonly MenuFlyoutItem _whatsNewItem;
+    private IconElement? _whatsNewMenuIconElement;
+    private string? _updateButtonIconName;
     // Update button: shown beside Return to full only while an update is available; More always
     // offers the same action ("Check for updates" or "Update to …").
     private bool _updateVisible;
@@ -147,6 +152,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal event Action<string, double?>? CommandRequested;
     internal event Action? ReturnToFullRequested;
     internal event Action? UpdateRequested;
+    internal event Action? WhatsNewRequested;
     internal event Action? SettingsRequested;
     internal event Action? StatusRequested;
     internal event Action? TimerRequested;
@@ -185,6 +191,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _returnToFull = ReturnToFull;
         _update = Update;
         _updateItem = UpdateItem;
+        _whatsNewItem = WhatsNewItem;
         _more = More;
         _minimize = Minimize;
         _close = Close;
@@ -363,6 +370,30 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_updateVisible == available) return;
         _updateVisible = available;
         LayoutControls();
+    }
+
+    internal void SetWhatsNew(string? label)
+    {
+        if (_disposed) return;
+        var available = !string.IsNullOrWhiteSpace(label);
+        _whatsNewItem.Text = available ? label! : string.Empty;
+        _whatsNewItem.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+        _whatsNewItem.IsEnabled = available;
+        SetAccessible(_whatsNewItem, available ? label! : string.Empty,
+            available ? label! : string.Empty);
+        RefreshBoundIcons();
+    }
+
+    internal void SetUpdateProgress(string? text, bool announce)
+    {
+        if (_disposed) return;
+        _updateNotice = text ?? string.Empty;
+        UpdateInlineStatus();
+        AutomationProperties.SetLiveSetting(_inlineStatus,
+            announce ? AutomationLiveSetting.Polite : AutomationLiveSetting.Off);
+        if (announce && _updateNotice.Length != 0)
+            Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(_inlineStatus)
+                ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
     }
 
     public void SetArtwork(BitmapImage? artwork)
@@ -572,6 +603,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _noticeTimer.Start();
         UpdateInlineStatus();
         // Screen readers hear the notice without focus moving.
+        AutomationProperties.SetLiveSetting(_inlineStatus, AutomationLiveSetting.Polite);
         Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(_inlineStatus)
             ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
     }
@@ -593,6 +625,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeHoverCloseTimer.Stop();
         _noticeTimer.Stop();
         _pendingOutputVolume = null;
+        _notice = string.Empty;
+        _updateNotice = string.Empty;
+        _statusMessage = string.Empty;
+        _statusIsError = false;
         ClearPendingSeek();
         _moreMenu.Hide();
         _playlistMenu.Hide();
@@ -604,6 +640,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         CommandRequested = null;
         ReturnToFullRequested = null;
         UpdateRequested = null;
+        _whatsNewItem.Visibility = Visibility.Collapsed;
+        _whatsNewItem.IsEnabled = false;
+        _whatsNewItem.Text = string.Empty;
+        _whatsNewItem.Icon = null;
+        _whatsNewMenuIconElement = null;
+        SetAccessible(_whatsNewItem, string.Empty, string.Empty);
+        SetTextIfChanged(_inlineStatus, string.Empty);
+        _inlineStatus.Visibility = Visibility.Collapsed;
+        WhatsNewRequested = null;
         SettingsRequested = null;
         StatusRequested = null;
         TimerRequested = null;
@@ -639,7 +684,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_title, "Track title", "Track title.");
         SetAccessible(_artwork, "Album artwork", "Circular album artwork. Artwork is decorative.");
         SetAccessible(_inlineStatus, "Application status", "Application status.");
-        AutomationProperties.SetLiveSetting(_inlineStatus, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        AutomationProperties.SetLiveSetting(_inlineStatus, AutomationLiveSetting.Off);
         SetAccessible(_elapsed, "Elapsed time", "Elapsed playback time.");
         SetAccessible(_duration, "Total duration", "Total duration.");
         SetAccessible(_seek, "Playback position unavailable", "Playback position unavailable.");
@@ -752,6 +797,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _update.Click += (_, _) => { if (_active) UpdateRequested?.Invoke(); };
         // The menu closes first; the update prompt opens on the next dispatcher turn.
         _updateItem.Click += (_, _) => DispatcherQueue.TryEnqueue(() => { if (_active && !_disposed) UpdateRequested?.Invoke(); });
+        _whatsNewItem.Click += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_active && !_disposed && _whatsNewItem.Visibility == Visibility.Visible)
+                WhatsNewRequested?.Invoke();
+        });
         _topmostItem.Click += (_, _) => ToggleTopmostRequested?.Invoke();
         _moreMenu.Closed += (_, _) => RestorePopupFocus();
 
@@ -1039,16 +1089,21 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             ? "Player unavailable — no current playback state is confirmed. More → Application status for details."
             : string.Empty;
         var error = _statusIsError && _statusMessage.Length != 0;
-        var notice = !error && _notice.Length != 0;
-        var text = error ? _statusMessage : notice ? _notice : fallback;
+        var timedNotice = !error && _notice.Length != 0;
+        var updateNotice = !error && !timedNotice && _updateNotice.Length != 0;
+        var text = error ? _statusMessage
+            : timedNotice ? _notice
+            : updateNotice ? _updateNotice
+            : fallback;
         SetTextIfChanged(_inlineStatus, text);
         var visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_inlineStatus.Visibility != visibility) _inlineStatus.Visibility = visibility;
-        _inlineStatus.Foreground = notice
+        var isNotice = updateNotice || timedNotice;
+        _inlineStatus.Foreground = isNotice
             ? ShellTheme.Brush("PrimaryTextBrush", Colors.White)
             : ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
-        SetAccessible(_inlineStatus, notice ? "Notice" : "Application status", notice
-            ? _notice
+        SetAccessible(_inlineStatus, isNotice ? "Notice" : "Application status", isNotice
+            ? text
             : BuildStatusMenuDescription(_statusMessage, _state is not null));
         UpdateStatusMenuItem();
     }
@@ -1168,12 +1223,18 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
                 IsRepeatOne(_state?.Repeat) ? "repeat-one" : "repeat", 20);
             BindFixedIcon(_shuffleIcon, ref _shuffleIconElement, "shuffle", 20);
             BindFixedIcon(_returnToFull, ref _returnToFullIconElement, "restore-window", 16);
-            BindFixedIcon(_update, ref _updateIconElement, "update-available", 16);
+            BindStatefulIcon(_update, ref _updateIconElement, ref _updateButtonIconName, _updateIconName, 16);
             if (_updateMenuIconName != _updateIconName || !ReferenceEquals(_updateItem.Icon, _updateMenuIconElement))
             {
                 _updateMenuIconElement = _iconCache.CreateElement(_updateIconName, 16);
                 _updateItem.Icon = _updateMenuIconElement;
                 _updateMenuIconName = _updateIconName;
+            }
+            if (_whatsNewItem.Visibility == Visibility.Visible
+                && (!ReferenceEquals(_whatsNewItem.Icon, _whatsNewMenuIconElement)))
+            {
+                _whatsNewMenuIconElement = _iconCache.CreateElement("status", 16);
+                _whatsNewItem.Icon = _whatsNewMenuIconElement;
             }
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
             BindFixedIcon(_playlists, ref _playlistsIconElement, "playlist", 20);

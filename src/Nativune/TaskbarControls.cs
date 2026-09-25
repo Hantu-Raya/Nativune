@@ -60,6 +60,36 @@ internal sealed class TaskbarControls : IDisposable
         }
     }
 
+    private TaskbarProgressState _progressState = TaskbarProgressState.NoProgress;
+    private ulong _progressCompleted;
+    private ulong _progressTotal;
+
+    public void SetProgress(ulong completed, ulong total)
+    {
+        if (_disposed) return;
+        _progressCompleted = completed;
+        _progressTotal = total;
+        EnsureRegistered();
+        if (_taskbarUnavailable || !_registered) return;
+        try { _taskbar!.SetProgressValue(_window, completed, total); }
+        catch (Exception ex) { AppLog.Write("taskbar", $"Progress value unavailable ({ex.GetType().Name})."); }
+    }
+
+    public void SetProgressState(TaskbarProgressState state)
+    {
+        if (_disposed) return;
+        _progressState = state;
+        if (state == TaskbarProgressState.NoProgress)
+        {
+            _progressCompleted = 0;
+            _progressTotal = 0;
+        }
+        EnsureRegistered();
+        if (_taskbarUnavailable || !_registered) return;
+        try { _taskbar!.SetProgressState(_window, state); }
+        catch (Exception ex) { AppLog.Write("taskbar", $"Progress state unavailable ({ex.GetType().Name})."); }
+    }
+
     internal void SetEnabled(bool enabled)
     {
         if (_disposed)
@@ -129,6 +159,17 @@ internal sealed class TaskbarControls : IDisposable
         _taskbarUnavailable = false;
         _reportedUnavailable = false;
         EnsureRegistered();
+        if (_registered && !_taskbarUnavailable)
+        {
+            try
+            {
+                _taskbar!.SetProgressState(_window, _progressState);
+                if ((_progressState is TaskbarProgressState.Normal or TaskbarProgressState.Paused
+                        or TaskbarProgressState.Error) && _progressTotal > 0)
+                    _taskbar.SetProgressValue(_window, _progressCompleted, _progressTotal);
+            }
+            catch (Exception ex) { AppLog.Write("taskbar", $"Progress restore unavailable ({ex.GetType().Name})."); }
+        }
     }
 
     internal static bool TryGetCommand(nint wParam, out string command)
@@ -391,7 +432,7 @@ internal sealed class TaskbarControls : IDisposable
         Disabled = 0x0001
     }
 
-    private enum TaskbarProgressState : uint
+    internal enum TaskbarProgressState : uint
     {
         NoProgress = 0x00000000,
         Indeterminate = 0x00000001,

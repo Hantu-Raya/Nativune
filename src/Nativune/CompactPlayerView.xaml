@@ -123,7 +123,8 @@
                        FontSize="12"
                        TextTrimming="CharacterEllipsis"
                        VerticalAlignment="Center"
-                       Foreground="{ThemeResource SecondaryTextBrush}" />
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.LiveSetting="Off" />
             <Grid x:Name="ProgressRow" Width="632" Height="40">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="52" />
@@ -293,6 +294,7 @@
                         <MenuFlyoutItem x:Name="SettingsItem" Text="Settings..." />
                         <MenuFlyoutItem x:Name="StatusItem" Text="Application status" />
                         <MenuFlyoutItem x:Name="UpdateItem" Text="Check for Nativune updates" />
+                        <MenuFlyoutItem x:Name="WhatsNewItem" Visibility="Collapsed" />
                         <MenuFlyoutSeparator />
                         <ToggleMenuFlyoutItem x:Name="TopmostItem" Text="Keep window on top" />
                         <MenuFlyoutSeparator />

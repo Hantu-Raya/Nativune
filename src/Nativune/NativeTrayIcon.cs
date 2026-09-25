@@ -13,10 +13,13 @@ internal sealed class NativeTrayIcon : IDisposable
     private const uint IconId = 1;
     private const uint NimAdd = 0x00000000;
     private const uint NimDelete = 0x00000002;
+    private const uint NimModify = 0x00000001;
     private const uint NimSetVersion = 0x00000004;
     private const uint NifMessage = 0x00000001;
     private const uint NifIcon = 0x00000002;
     private const uint NifTip = 0x00000004;
+    private const uint NifInfo = 0x00000010;
+    private const uint NiifError = 0x00000003;
     private const uint NotifyIconVersion4 = 4;
 
     private const uint WmContextMenu = 0x007B;
@@ -50,6 +53,7 @@ internal sealed class NativeTrayIcon : IDisposable
     private nint _icon;
     private bool _visible;
     private bool _playbackEnabled;
+    private string _tooltip = "Nativune";
     private bool _disposed;
     private bool _menuShowing;
 
@@ -83,6 +87,36 @@ internal sealed class NativeTrayIcon : IDisposable
         ThrowIfDisposed();
         _playbackEnabled = enabled;
     }
+    public bool SetTooltip(string text)
+    {
+        if (_disposed || text is null) return false;
+        _tooltip = text.Length > 127 ? text[..127] : text;
+        if (!_visible) return true;
+        try
+        {
+            var data = CreateData(NifTip);
+            return Shell_NotifyIcon(NimModify, ref data);
+        }
+        catch (Exception) { return false; }
+    }
+
+    public bool ShowBalloon(string title, string text)
+    {
+        if (_disposed || title is null || text is null) return false;
+        if (!_visible) return false;
+        try
+        {
+            var data = CreateData(NifInfo);
+            data.szInfoTitle = Truncate(title, 63);
+            data.szInfo = Truncate(text, 255);
+            data.dwInfoFlags = NiifError;
+            return Shell_NotifyIcon(NimModify, ref data);
+        }
+        catch (Exception) { return false; }
+    }
+
+    private static string Truncate(string value, int length)
+        => value.Length <= length ? value : value[..length];
 
     internal void Recreate()
     {
@@ -322,7 +356,7 @@ internal sealed class NativeTrayIcon : IDisposable
         uFlags = flags,
         uCallbackMessage = CallbackMessage,
         hIcon = _icon,
-        szTip = "Nativune",
+        szTip = _tooltip,
         szInfo = string.Empty,
         szInfoTitle = string.Empty,
         guidItem = Guid.Empty

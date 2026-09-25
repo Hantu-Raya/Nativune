@@ -154,7 +154,7 @@ This compares architecture, not measured performance.
 - x64 Visual C++ v14 Redistributable
 - Internet access for YouTube Music, update checks and downloading missing prerequisites
 
-Setup checks for missing shared prerequisites and asks before installing them. Installing shared components may need administrator rights or a change to organization policy.
+Setup checks for missing shared prerequisites and asks before downloading and installing them. The .NET 10 Runtime and the Visual C++ runtime install for all users, so Windows then shows its administrator (UAC) prompt for those two Microsoft installers only; Setup and Nativune themselves still run without administrator rights. If you choose No, Setup stops and Nativune is not installed or changed (a Microsoft component that already finished installing stays installed). Organization policy can still block shared components.
 
 ## Install
 
@@ -167,7 +167,8 @@ Setup checks for missing shared prerequisites and asks before installing them. I
    ```
 
    Compare the reported hash with the `Nativune-Setup.exe` entry in `SHA256SUMS.txt`. Do not run the installer if they differ.
-3. Run `Nativune-Setup.exe` and follow Setup.
+3. Run `Nativune-Setup.exe`. One Setup window asks once to install (and lists any Microsoft components it will download, marking those that need administrator permission), then shows each step with a progress bar: checking components, downloading and installing them, unpacking and installing Nativune's files, and adding shortcuts. You can cancel while it downloads components or unpacks files, but not while a Microsoft installer is running or Nativune's files are being installed.
+4. When it finishes, select **Open Nativune**. If something fails, the window says what went wrong, that Nativune was not changed where that is true, and offers **Copy details**.
 
 The default install location is `%LOCALAPPDATA%\Nativune`. Setup adds Start menu and desktop shortcuts. In-place upgrades keep the existing `data/` directory.
 
@@ -193,7 +194,17 @@ The app never opens an update dialog on its own and never downloads an update wi
 
 The button shows "Click to check for Nativune updates." until a check runs, and reports "up to date" only after a successful check. Update checks run only in installed builds. Development runs show "Update checks are available only in installed Nativune builds."
 
-In Compact, the same action is in the More menu ("Check for Nativune updates"), and an accent-tinted `update-available` button appears next to **Return to full** while an update is available; in the narrowest Compact sizes it stays in More only. Click `update-available` to open the confirmation dialog. It lists what changed between your installed version and the new one, covering every release in between, newest first, in a scrollable area. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Setup asks again before upgrading. Click `update` to run a manual check. If checking fails, the tooltip reads "Couldn't check for updates. Click to try again."
+In Compact, the same action is in the More menu ("Check for Nativune updates"), and an accent-tinted `update-available` button appears next to **Return to full** while an update is available; in the narrowest Compact sizes it stays in More only. Click `update-available` to open the confirmation dialog. It lists what changed between your installed version and the new one, covering every release in between, newest first, in a scrollable area. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Click `update` to run a manual check.
+
+While you update, Nativune tells you what is happening and keeps playing:
+
+- **Checks you start** show a bar under the toolbar: up to date, an update is available, or why the check failed (for example no internet connection, or GitHub limiting checks from your network until a given time). Automatic checks only change the button.
+- **Downloading** shows MB done, percent and time left in that bar, on the taskbar button and in the tray tooltip; Compact shows it under the title and turns its Update button into **Cancel**. You can cancel until the download is being checked.
+- **Checking the download** compares it with the SHA-256 published for the release; a mismatch deletes the file and nothing is installed.
+- **Setup** then takes over, shows its own progress window, and reopens Nativune when it finishes. If you cancel Setup or it fails before changing anything, your current version reopens unchanged. It doesn't reopen if Nativune was still running after a minute, if the install location failed Setup's safety checks, or if a failed upgrade couldn't be rolled back; Setup says which.
+- **After the update**, a bar says "Nativune was updated to vX" with **What's new**, and the downloaded Setup is deleted. If the update didn't finish, the bar says so and offers **Try again**.
+
+Failures are written to `data/nativune.log` with the reason and HTTP status only.
 
 When **Check for updates automatically** is enabled in Settings (the default), the app checks at startup and every 24 hours while running. Automatic checks only report availability; they never open a dialog or download anything.
 

@@ -372,8 +372,38 @@ internal static class CompactViewChecks
             "The Compact Update button did not take the full window's update name.");
         InvokeControl(updatePart, "update");
         Require(updateRequests == 1, "The Compact Update button did not request the update action.");
+        var initialUpdateIcon = ReadField(view, "_updateIconElement");
+        view.SetUpdate("close", "Cancel the Nativune update download", "Cancel the update download.",
+            enabled: true, available: true);
+        Require(!ReferenceEquals(initialUpdateIcon, ReadField(view, "_updateIconElement"))
+            && AutomationProperties.GetName(updatePart) == "Cancel the Nativune update download"
+            && ToolTipService.GetToolTip(updatePart) as string == "Cancel the update download.",
+            "The Compact Update button did not refresh its cancel icon and host-provided accessibility text.");
+        var whatsNewRequests = 0;
+        view.WhatsNewRequested += () => whatsNewRequests++;
+        var whatsNewItem = FindPart(view, "WhatsNewItem") as MenuFlyoutItem
+            ?? throw new SelfCheckException("The Compact What's new menu item was not retained.");
+        Require(whatsNewItem.Visibility == Visibility.Collapsed,
+            "The Compact What's new menu item was not initially hidden.");
+        view.SetWhatsNew("What's new in v0.1.17");
+        Require(whatsNewItem.Visibility == Visibility.Visible && whatsNewItem.IsEnabled
+            && whatsNewItem.Text == "What's new in v0.1.17"
+            && AutomationProperties.GetName(whatsNewItem) == "What's new in v0.1.17",
+            "SetWhatsNew did not expose an accessible menu item with the supplied label.");
+        var whatsNewMenu = ReadField(view, "_moreMenu") as FlyoutBase
+            ?? throw new SelfCheckException("The Compact More menu was not retained.");
+        await AwaitFlyoutOpenedAsync(whatsNewMenu, view.ShowMoreMenu, "More");
+        InvokeControl(whatsNewItem, "What's new in v0.1.17");
+        for (var attempt = 0; attempt < 25 && whatsNewRequests == 0; attempt++) await Task.Delay(20);
+        Require(whatsNewRequests == 1,
+            "The Compact What's new item did not raise its event exactly once on activation.");
+        await AwaitFlyoutClosedAsync(whatsNewMenu, () => whatsNewMenu.Hide(), "More");
+        view.SetWhatsNew(null);
+        Require(whatsNewItem.Visibility == Visibility.Collapsed && !whatsNewItem.IsEnabled,
+            "SetWhatsNew(null) did not hide the temporary menu item.");
         view.SetUpdate("update", "Check for Nativune updates", "Click to check for Nativune updates.",
             enabled: true, available: false);
+        view.SetWhatsNew(null);
         view.UpdateLayout();
         Require(updatePart.Visibility == Visibility.Collapsed && view.CurrentLayoutPlan?.Update is null,
             "The Compact Update button stayed visible without an available update.");
@@ -851,6 +881,38 @@ internal static class CompactViewChecks
         await AwaitFlyoutClosedAsync(volumePopup, () => volumePopup.Hide(), "App output volume");
         view.SetPlayback(state);
         phase = "status-menu-and-cleanup";
+        var inlineStatus = parts["InlineStatus"] as TextBlock
+            ?? throw new SelfCheckException("The Compact inline status line was not a TextBlock.");
+        view.SetUpdateProgress("Downloading update · 42 %", announce: false);
+        view.SetStatus("Routine application status", isError: false);
+        Require(inlineStatus.Visibility == Visibility.Visible
+            && inlineStatus.Text == "Downloading update · 42 %"
+            && AutomationProperties.GetName(inlineStatus) == "Notice"
+            && AutomationProperties.GetLiveSetting(inlineStatus) == AutomationLiveSetting.Off,
+            "The Compact update notice was not shown as a persistent, non-announcing notice.");
+        (FindMethod(view, "ShowNotice") ?? throw new SelfCheckException("Compact timed notice display was not retained."))
+            .Invoke(view, ["Playing “Synthetic playlist”"]);
+        Require(inlineStatus.Text == "Playing “Synthetic playlist”"
+            && AutomationProperties.GetName(inlineStatus) == "Notice",
+            "A Compact timed notice did not temporarily take priority over the persistent update notice.");
+        (FindMethod(view, "ClearNotice") ?? throw new SelfCheckException("Compact notice reset was not retained."))
+            .Invoke(view, [true]);
+        Require(inlineStatus.Text == "Downloading update · 42 %",
+            "The Compact update notice did not return after the timed notice expired.");
+        view.SetStatus("Synthetic update error", isError: true);
+        Require(inlineStatus.Text == "Synthetic update error",
+            "A Compact error did not take priority over the persistent update notice.");
+        view.SetStatus("Routine status after the error", isError: false);
+        Require(inlineStatus.Text == "Downloading update · 42 %",
+            "The Compact update notice did not return after the error cleared.");
+        view.SetUpdateProgress("Checking the downloaded Setup…", announce: true);
+        Require(inlineStatus.Text == "Checking the downloaded Setup…"
+            && AutomationProperties.GetLiveSetting(inlineStatus) == AutomationLiveSetting.Polite,
+            "An announced Compact update phase did not enable the polite live region.");
+        view.SetUpdateProgress(null, announce: false);
+        Require(inlineStatus.Visibility == Visibility.Collapsed
+            && AutomationProperties.GetLiveSetting(inlineStatus) == AutomationLiveSetting.Off,
+            "SetUpdateProgress(null) did not clear the Compact update notice.");
         var moreMenu = ReadField(view, "_moreMenu") as FlyoutBase;
         Require(moreMenu is not null, "Native More menu was not created.");
         await AwaitFlyoutOpenedAsync(moreMenu!, view.ShowMoreMenu, "More");
@@ -955,7 +1017,7 @@ internal static class CompactViewChecks
         var setHostStatus = FindMethod(host, "SetStatus");
         setHostStatus!.Invoke(host, ["Synthetic Compact status", false]);
         var rootGrid = FindPart(root, "RootGrid") as Grid;
-        Require(rootGrid?.RowDefinitions.Count == 2 && FindPartCore(root, "StatusHost") is null
+        Require(rootGrid?.RowDefinitions.Count == 3 && FindPartCore(root, "StatusHost") is null
             && parts["InlineStatus"].Visibility == Visibility.Collapsed,
             "Compact retained the lower strip or hid routine status from More.");
         setHostStatus.Invoke(host, [string.Empty, false]);

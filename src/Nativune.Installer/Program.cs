@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Nativune.Installer;
 
@@ -44,7 +46,10 @@ internal static class Program
     private static int Main(string[] args)
     {
         var silentRequested = args.Contains("--silent", StringComparer.Ordinal);
+        var updateRequested = args.Contains("--update", StringComparer.Ordinal);
         SetupOptions? options = null;
+        string? root = null;
+        InstallerEngine? engine = null;
         try
         {
             options = SetupOptions.Parse(args);
@@ -59,24 +64,206 @@ internal static class Program
                 throw new SetupException(ExitCode.UnsupportedPlatform, "Nativune Setup runs on Windows only.");
             }
 
-            var root = InstallRoot.Resolve(options.InstallDirectory, options.TestNoShell);
-            var engine = new InstallerEngine(root, options);
-            var result = options.Uninstall ? engine.Uninstall() : engine.InstallOrUpdate();
-            if (result == ExitCode.Success && !options.Silent && !options.Uninstall)
-                UserInterface.ShowInstallSuccess();
-            return (int)result;
+            root = InstallRoot.Resolve(options.InstallDirectory, options.TestNoShell);
+            var installEngine = new InstallerEngine(root, options);
+            engine = installEngine;
+            if (options.Uninstall)
+            {
+                return (int)installEngine.Uninstall();
+            }
+            return RunInstallFlow(installEngine, root, options);
         }
         catch (SetupException error)
         {
             var silent = options?.Silent == true || silentRequested;
-            UserInterface.ShowError(error.Message, silent);
+            var rootValidated = engine?.RootValidated == true && error.Code != ExitCode.UnsafeRoot;
+            if (root is not null && options is { Uninstall: false } && rootValidated)
+            {
+                var fromVersion = InstallerEngine.TryGetInstalledVersion(root);
+                var canReopen = CanReopenCurrent(options, root, fromVersion, error.Code);
+                var outcome = error.Code == ExitCode.Cancelled
+                    ? SetupOutcome.Cancelled(fromVersion, engine?.PayloadVersion ?? SetupVersion(), fromVersion is null, canReopen, error.Message)
+                    : SetupOutcome.Failed(error, fromVersion, engine?.PayloadVersion ?? SetupVersion(), fresh: fromVersion is null, canReopen: canReopen);
+                if (error.Code != ExitCode.LaunchFailure)
+                {
+                    UpdateOutcomeWriter.TryWrite(root, outcome);
+                }
+                var reopenRequested = ShowOutcome(outcome, silent);
+                if (canReopen && (silent || outcome.Status == "cancelled" || reopenRequested))
+                {
+                    TryReopen(root, silent);
+                }
+            }
+            else if (options?.Uninstall != true && OperatingSystem.IsWindows())
+            {
+                ShowOutcome(CreateEarlyFailure(error, options?.Update == true || updateRequested), silent);
+            }
+            else
+            {
+                UserInterface.ShowError(error.Message, silent);
+            }
             return (int)error.Code;
         }
         catch (Exception error)
         {
-            UserInterface.ShowError($"Nativune Setup failed: {error.Message}", options?.Silent == true || silentRequested);
+            var silent = options?.Silent == true || silentRequested;
+            var rootValidated = engine?.RootValidated == true;
+            if (root is not null && options is { Uninstall: false } && rootValidated)
+            {
+                var setupError = new SetupException(ExitCode.IoFailure, "Nativune Setup failed.", error);
+                var fromVersion = InstallerEngine.TryGetInstalledVersion(root);
+                var canReopen = CanReopenCurrent(options, root, fromVersion, setupError.Code);
+                var outcome = SetupOutcome.Failed(setupError, fromVersion, engine?.PayloadVersion ?? SetupVersion(), fresh: fromVersion is null, canReopen: canReopen);
+                UpdateOutcomeWriter.TryWrite(root, outcome);
+                var reopenRequested = ShowOutcome(outcome, silent);
+                if (canReopen && (silent || reopenRequested))
+                {
+                    TryReopen(root, silent);
+                }
+            }
+            else if (options?.Uninstall != true && OperatingSystem.IsWindows())
+            {
+                var setupError = new SetupException(ExitCode.IoFailure, "Nativune Setup failed.", error);
+                ShowOutcome(CreateEarlyFailure(setupError, options?.Update == true || updateRequested), silent);
+            }
+            else
+            {
+                UserInterface.ShowError($"Nativune Setup failed: {error.Message}", silent);
+            }
             return (int)ExitCode.IoFailure;
         }
+    }
+
+    private static int RunInstallFlow(InstallerEngine engine, string root, SetupOptions options)
+    {
+        ISetupReporter reporter;
+        if (options.Silent)
+        {
+            reporter = ConsoleSetupReporter.Instance;
+            reporter.Step("Checking for required Microsoft components…", cancellable: true);
+        }
+        else
+        {
+            reporter = new SetupWindow();
+        }
+
+        using var preparation = engine.PrepareInstall();
+        SetupOutcome outcome;
+        var reopenRequested = false;
+        if (options.Silent)
+        {
+            _ = reporter.Confirm(preparation.Confirmation);
+            outcome = Task.Run(() => engine.Execute(preparation, reporter, CancellationToken.None)).GetAwaiter().GetResult();
+            reporter.Result(outcome);
+        }
+        else
+        {
+            var setupWindow = (SetupWindow)reporter;
+            using (setupWindow)
+            {
+                outcome = setupWindow.Run(
+                    preparation.Confirmation,
+                    cancellationToken => engine.Execute(preparation, setupWindow, cancellationToken),
+                    result => UpdateOutcomeWriter.TryWrite(root, result),
+                    () => CanReopenCurrent(options, root, preparation.Confirmation.FromVersion, ExitCode.Cancelled));
+                reopenRequested = setupWindow.ReopenRequested;
+                if (outcome.Status == "installed" && setupWindow.OpenRequested)
+                {
+                    Launcher.Start(root);
+                }
+            }
+        }
+
+        if (!outcome.Succeeded && options.Silent)
+        {
+            Console.Error.WriteLine(outcome.Error?.Message ?? outcome.MainInstruction);
+        }
+        if (options.Update && outcome.CanReopen
+            && (options.Silent || outcome.Status == "cancelled" || reopenRequested)
+            && CanReopenCurrent(options, root, outcome.FromVersion, outcome.ExitCode))
+        {
+            TryReopen(root, options.Silent);
+        }
+        return (int)outcome.ExitCode;
+    }
+
+    private static bool ShowOutcome(SetupOutcome outcome, bool silent)
+    {
+        if (silent)
+        {
+            if (!outcome.Succeeded)
+            {
+                Console.Error.WriteLine(outcome.Error?.Message ?? outcome.MainInstruction);
+            }
+            return false;
+        }
+        try
+        {
+            return SetupWindow.ShowResult(outcome);
+        }
+        catch
+        {
+            UserInterface.ShowError(outcome.Error?.Message ?? outcome.MainInstruction, silent: false);
+            return false;
+        }
+    }
+
+    private static SetupOutcome CreateEarlyFailure(SetupException error, bool updateMode)
+    {
+        var displayError = updateMode
+            ? new SetupException(
+                error.Code,
+                $"{error.Message}\n\nThe existing Nativune version was left untouched. Setup did not reopen it because it could not confirm that the install location was safe.",
+                error.InnerException ?? error)
+            : error;
+        return error.Code == ExitCode.Cancelled
+            ? SetupOutcome.Cancelled(null, SetupVersion(), fresh: true, canReopen: false, message: displayError.Message)
+            : SetupOutcome.Failed(displayError, null, SetupVersion(), fresh: true, canReopen: false);
+    }
+
+
+    private static bool CanReopenCurrent(SetupOptions options, string root, string? fromVersion, ExitCode code)
+    {
+        if (!options.Update
+            || options.NoLaunch
+            || fromVersion is null
+            || code is ExitCode.WaitTimeout or ExitCode.RollbackFailure or ExitCode.UnsafeRoot)
+        {
+            return false;
+        }
+        try
+        {
+            if (options.WaitPid is int waitPid)
+            {
+                ProcessWaiter.WaitForExit(waitPid, TimeSpan.FromSeconds(60));
+            }
+            return InstallerEngine.IsInstalledManifestIntact(root, fromVersion, options.TestNoShell);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryReopen(string root, bool silent)
+    {
+        try
+        {
+            Launcher.Start(root);
+        }
+        catch (Exception error)
+        {
+            if (silent)
+            {
+                Console.Error.WriteLine($"Nativune could not be reopened: {error.Message}");
+            }
+        }
+    }
+
+    internal static string SetupVersion()
+    {
+        var version = typeof(Program).Assembly.GetName().Version;
+        return version is null ? "0.0.0" : $"{version.Major}.{Math.Max(0, version.Minor)}.{Math.Max(0, version.Build)}";
     }
 }
 
@@ -232,13 +419,11 @@ internal sealed record SetupOptions(
             throw new SetupException(ExitCode.Usage, "--expected-version is valid only with --update.");
         }
 #if INSTALLER_TEST_HOOKS
-        if (testNoShell && !silent)
+        // Test-hook builds may run the interactive window with --test-no-shell so the Setup UI can be
+        // exercised without touching the real Start menu, desktop or uninstall registration.
+        if (testPrerequisiteScenario != PrerequisiteTestScenario.None && !testNoShell)
         {
-            throw new SetupException(ExitCode.Usage, "--test-no-shell requires --silent.");
-        }
-        if (testPrerequisiteScenario != PrerequisiteTestScenario.None && (!silent || !testNoShell))
-        {
-            throw new SetupException(ExitCode.Usage, "--test-prerequisites requires --silent and --test-no-shell.");
+            throw new SetupException(ExitCode.Usage, "--test-prerequisites requires --test-no-shell.");
         }
 #endif
         return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, waitPid, testPrerequisiteScenario);
@@ -259,12 +444,6 @@ internal static class UserInterface
         _ = MessageBoxW(nint.Zero, text, $"{Program.ProductName} Setup", MessageBoxOk | MessageBoxIconInformation);
     }
 
-    internal static void ShowInstallSuccess()
-    {
-        _ = MessageBoxW(nint.Zero,
-            "Nativune has been installed or updated successfully.",
-            $"{Program.ProductName} Setup", MessageBoxOk | MessageBoxIconInformation);
-    }
 
     internal static void ShowError(string text, bool silent)
     {
@@ -289,6 +468,8 @@ internal sealed class InstallerEngine
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(60);
     private readonly string _root;
     private readonly SetupOptions _options;
+    internal bool RootValidated { get; private set; }
+    internal string? PayloadVersion { get; private set; }
 
     internal InstallerEngine(string root, SetupOptions options)
     {
@@ -296,102 +477,177 @@ internal sealed class InstallerEngine
         _options = options;
     }
 
-    internal ExitCode InstallOrUpdate()
+    internal InstallerPreparation PrepareInstall()
     {
-        using var operationLock = InstallOperationLock.Acquire(_root);
-        InstallRoot.ValidateTarget(_root);
-        var manifestPath = Path.Combine(_root, Program.ManifestFileName);
-        Manifest? installedManifest = null;
-        var rootExists = Directory.Exists(_root);
-        if (rootExists && File.Exists(manifestPath))
-        {
-            installedManifest = Manifest.Load(manifestPath);
-            if (installedManifest.Product != Program.ProductName)
-            {
-                throw new SetupException(ExitCode.TargetConflict, "The target contains a different product manifest.");
-            }
-        }
-
-        if (_options.Update && installedManifest is null)
-        {
-            throw new SetupException(ExitCode.TargetConflict, "--update requires an existing Nativune installation manifest.");
-        }
-        if (installedManifest is null)
-        {
-            InstallRoot.ValidateFreshTarget(_root);
-        }
-        else
-        {
-            InstallRoot.ValidateManagedTarget(_root, installedManifest);
-        }
-
-        if (!_options.Silent)
-        {
-            var action = installedManifest is null
-                ? "install Nativune"
-                : $"upgrade Nativune {installedManifest.Version} to the newer packaged version";
-            if (!UserInterface.Confirm($"Continue to {action} in:\n\n{_root}\n\nContinuing accepts the included third-party license terms."))
-            {
-                return ExitCode.Cancelled;
-            }
-        }
-
-        if (_options.WaitPid is int waitPid)
-        {
-            ProcessWaiter.WaitForExit(waitPid, WaitTimeout);
-        }
-        if (installedManifest is not null)
-        {
-            ProcessWaiter.EnsureApplicationStopped(_root);
-        }
-
-        var stage = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-stage");
-        var backup = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-backup");
-        ShellState? shellState = null;
-        var changed = false;
+        var operationLock = InstallOperationLock.Acquire(_root);
+        PrerequisitePlan? prerequisitePlan = null;
         try
         {
-            var incomingManifest = PayloadReader.ExtractVerified(SelfPath(), stage);
-            if (incomingManifest.Product != Program.ProductName)
+            InstallRoot.ValidateTarget(_root);
+            var manifestPath = Path.Combine(_root, Program.ManifestFileName);
+            Manifest? installedManifest = null;
+            if (Directory.Exists(_root) && File.Exists(manifestPath))
+            {
+                installedManifest = Manifest.Load(manifestPath);
+                if (installedManifest.Product != Program.ProductName)
+                {
+                    throw new SetupException(ExitCode.TargetConflict, "The target contains a different product manifest.");
+                }
+            }
+
+            if (_options.Update && installedManifest is null)
+            {
+                throw new SetupException(ExitCode.TargetConflict, "--update requires an existing Nativune installation manifest.");
+            }
+            if (installedManifest is null)
+            {
+                InstallRoot.ValidateFreshTarget(_root, allowUpdateArtifacts: true);
+            }
+            else
+            {
+                InstallRoot.ValidateManagedTarget(_root, installedManifest);
+            }
+            RootValidated = true;
+
+            var payloadManifest = PayloadReader.ReadPackagedManifest(SelfPath());
+            PayloadVersion = payloadManifest.Version;
+            if (payloadManifest.Product != Program.ProductName)
             {
                 throw new SetupException(ExitCode.InvalidPayload, "The release payload has an unexpected product.");
             }
-            if (installedManifest is not null && Manifest.CompareVersions(incomingManifest.Version, installedManifest.Version) <= 0)
+            var payloadBytes = payloadManifest.Files.Sum(file => file.Length);
+            prerequisitePlan = PrerequisiteInstaller.DetectForConsent(_options);
+            var confirmation = new SetupConfirmation(
+                installedManifest is null,
+                _options.Update,
+                installedManifest?.Version,
+                payloadManifest.Version,
+                _root,
+                prerequisitePlan.Missing,
+                payloadBytes);
+            return new InstallerPreparation(operationLock, installedManifest, prerequisitePlan, confirmation);
+        }
+        catch
+        {
+            prerequisitePlan?.Dispose();
+            operationLock.Dispose();
+            throw;
+        }
+    }
+
+    internal SetupOutcome Execute(InstallerPreparation preparation, ISetupReporter reporter, CancellationToken cancellationToken)
+    {
+        var installedManifest = preparation.InstalledManifest;
+        var fromVersion = installedManifest?.Version;
+        var toVersion = preparation.Confirmation.ToVersion;
+        var freshInstall = installedManifest is null;
+        var waitPassed = _options.WaitPid is null;
+        string? stage = null;
+        string? backup = null;
+        ShellState? shellState = null;
+        var changed = false;
+        SetupOutcome outcome;
+        try
+        {
+            reporter.Step("Checking for required Microsoft components…", cancellable: true);
+            if (_options.WaitPid is int waitPid)
             {
-                throw new SetupException(ExitCode.TargetConflict, "The release payload must be newer than the installed version.");
+                ProcessWaiter.WaitForExit(waitPid, WaitTimeout, reporter, cancellationToken);
+                waitPassed = true;
+            }
+            if (installedManifest is not null)
+            {
+                ProcessWaiter.EnsureApplicationStopped(_root);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var prerequisitePlan = PrerequisiteInstaller.PrepareAfterConsent(
+                preparation.Prerequisites, _root, reporter, cancellationToken);
+            PrerequisiteInstaller.InstallAndVerify(prerequisitePlan, reporter, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            stage = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-stage");
+            backup = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-backup");
+            var incomingManifest = PayloadReader.ExtractVerified(SelfPath(), stage, reporter, cancellationToken);
+            toVersion = incomingManifest.Version;
+            if (incomingManifest.Product != Program.ProductName)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The release payload has an unexpected product.");
             }
             if (_options.ExpectedVersion is not null
                 && !string.Equals(incomingManifest.Version, _options.ExpectedVersion, StringComparison.Ordinal))
             {
                 throw new SetupException(ExitCode.InvalidPayload, "The release payload version does not match the version selected by the updater.");
             }
-            using var prerequisitePlan = PrerequisiteInstaller.Prepare(_options, _root);
+            if (installedManifest is not null && Manifest.CompareVersions(incomingManifest.Version, installedManifest.Version) <= 0)
+            {
+                throw new SetupException(ExitCode.TargetConflict, "The release payload must be newer than the installed version.");
+            }
 
             var backupBytes = InstallTransaction.EstimateBackupBytes(_root, installedManifest, incomingManifest);
+            reporter.Step("Checking free space…", cancellable: true);
+            cancellationToken.ThrowIfCancellationRequested();
             PayloadReader.EnsureFreeSpace(_root, backupBytes);
-            PrerequisiteInstaller.InstallAndVerify(prerequisitePlan);
-
             if (!_options.TestNoShell)
             {
                 shellState = ShellManager.Capture(_root);
             }
 
-            InstallTransaction.Apply(_root, stage, backup, installedManifest, incomingManifest, _options.TestNoShell, shellState);
+            reporter.Step($"Installing files (0 of {incomingManifest.Files.Count:N0}) — This step can't be cancelled.", cancellable: false);
+            cancellationToken.ThrowIfCancellationRequested();
+            InstallTransaction.Apply(
+                _root, stage, backup, installedManifest, incomingManifest,
+                _options.TestNoShell, shellState, reporter);
             changed = true;
 
-            if (!_options.NoLaunch)
+            outcome = SetupOutcome.SucceededInstall(fromVersion, incomingManifest.Version, freshInstall, _root, canOpen: !_options.NoLaunch);
+            UpdateOutcomeWriter.TryWrite(_root, outcome);
+            if (!_options.NoLaunch && (!freshInstall || _options.Silent))
             {
+                reporter.Step("Starting Nativune…", cancellable: false);
                 Launcher.Start(_root);
             }
-            return ExitCode.Success;
         }
-        catch (SetupException)
+        catch (OperationCanceledException)
         {
-            throw;
+            var canReopen = CanReopenAfterOperation(fromVersion, ExitCode.Cancelled, waitPassed);
+            outcome = SetupOutcome.Cancelled(fromVersion, toVersion, freshInstall, canReopen);
+            UpdateOutcomeWriter.TryWrite(_root, outcome);
+        }
+        catch (SetupException error)
+        {
+            var canReopen = CanReopenAfterOperation(fromVersion, error.Code, waitPassed);
+            var displayError = error;
+            if (error.Code == ExitCode.UnsafeRoot && _options.Update)
+            {
+                var unchangedText = changed
+                    ? "Setup did not reopen Nativune because the install location failed safety validation."
+                    : "The existing Nativune version was left untouched. Setup did not reopen it because the install location failed safety validation.";
+                displayError = new SetupException(error.Code, $"{error.Message}\n\n{unchangedText}", error.InnerException ?? error);
+            }
+            outcome = error.Code == ExitCode.Cancelled
+                ? SetupOutcome.Cancelled(fromVersion, toVersion, freshInstall, canReopen, displayError.Message)
+                : SetupOutcome.Failed(displayError, fromVersion, toVersion, freshInstall, canReopen);
+            if (error.Code != ExitCode.UnsafeRoot)
+            {
+                if (changed && error.Code == ExitCode.LaunchFailure)
+                {
+                    var appliedOutcome = SetupOutcome.SucceededInstall(fromVersion, toVersion, fresh: freshInstall, root: _root, canOpen: false)
+                        with { ExitCode = error.Code, ResultMessage = error.Message };
+                    UpdateOutcomeWriter.TryWrite(_root, appliedOutcome);
+                }
+                else
+                {
+                    UpdateOutcomeWriter.TryWrite(_root, outcome);
+                }
+            }
         }
         catch (Exception error)
         {
-            throw new SetupException(ExitCode.IoFailure, "Nativune could not be installed.", error);
+            var setupError = new SetupException(ExitCode.IoFailure, "Nativune could not be installed.", error);
+            var canReopen = CanReopenAfterOperation(fromVersion, setupError.Code, waitPassed);
+            outcome = SetupOutcome.Failed(setupError, fromVersion, toVersion, freshInstall, canReopen);
+            UpdateOutcomeWriter.TryWrite(_root, outcome);
         }
         finally
         {
@@ -399,10 +655,76 @@ internal sealed class InstallerEngine
             InstallRoot.TryDeleteDirectory(backup);
             if (!changed && shellState is not null)
             {
-                // InstallTransaction restores shell state when its transaction fails. This branch
-                // only protects against a failure before the transaction was entered.
                 ShellManager.TryRestore(shellState);
             }
+        }
+        return outcome;
+    }
+
+    internal static string? TryGetInstalledVersion(string root)
+    {
+        try
+        {
+            var manifestPath = Path.Combine(root, Program.ManifestFileName);
+            InstallRoot.EnsureNoReparseChain(manifestPath);
+            if (!File.Exists(manifestPath) || InstallRoot.IsReparsePoint(manifestPath))
+            {
+                return null;
+            }
+            var manifest = Manifest.Load(manifestPath);
+            return manifest.Product == Program.ProductName ? manifest.Version : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+    internal static bool IsInstalledManifestIntact(string root, string expectedVersion, bool allowTestRoot)
+    {
+        try
+        {
+            var validatedRoot = InstallRoot.Resolve(root, allowTestRoot);
+            InstallRoot.ValidateTarget(validatedRoot);
+            var manifestPath = Path.Combine(validatedRoot, Program.ManifestFileName);
+            if (!File.Exists(manifestPath) || InstallRoot.IsReparsePoint(manifestPath))
+            {
+                return false;
+            }
+            var manifest = Manifest.Load(manifestPath);
+            if (manifest.Product != Program.ProductName
+                || !string.Equals(manifest.Version, expectedVersion, StringComparison.Ordinal))
+            {
+                return false;
+            }
+            InstallRoot.ValidateManagedTarget(validatedRoot, manifest);
+            return ProcessWaiter.IsApplicationStopped(validatedRoot);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool CanReopenAfterOperation(string? fromVersion, ExitCode code, bool waitPassed)
+    {
+        if (!_options.Update
+            || _options.NoLaunch
+            || code is ExitCode.WaitTimeout or ExitCode.RollbackFailure or ExitCode.UnsafeRoot
+            || fromVersion is null)
+        {
+            return false;
+        }
+        try
+        {
+            if (!waitPassed && _options.WaitPid is int waitPid)
+            {
+                ProcessWaiter.WaitForExit(waitPid, WaitTimeout);
+            }
+            return IsInstalledManifestIntact(_root, fromVersion, _options.TestNoShell);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -517,9 +839,24 @@ internal sealed class InstallerEngine
             {
                 File.Delete(setupPath);
             }
+            var resultPath = Path.Combine(updatesDirectory, "last-update.json");
+            if (File.Exists(resultPath) && !InstallRoot.IsReparsePoint(resultPath))
+            {
+                File.Delete(resultPath);
+            }
             foreach (var stalePath in Directory.EnumerateFiles(
                 updatesDirectory,
                 ".Nativune-Setup.exe.*.tmp",
+                SearchOption.TopDirectoryOnly))
+            {
+                if (!InstallRoot.IsReparsePoint(stalePath))
+                {
+                    File.Delete(stalePath);
+                }
+            }
+            foreach (var stalePath in Directory.EnumerateFiles(
+                updatesDirectory,
+                ".last-update.*.tmp",
                 SearchOption.TopDirectoryOnly))
             {
                 if (!InstallRoot.IsReparsePoint(stalePath))
@@ -575,6 +912,33 @@ internal sealed class InstallerEngine
             throw new SetupException(ExitCode.IoFailure, "The setup executable path is unavailable.");
         }
         return Path.GetFullPath(path);
+    }
+}
+
+internal sealed class InstallerPreparation : IDisposable
+{
+    private InstallOperationLock? _operationLock;
+
+    internal InstallerPreparation(
+        InstallOperationLock operationLock,
+        Manifest? installedManifest,
+        PrerequisitePlan prerequisites,
+        SetupConfirmation confirmation)
+    {
+        _operationLock = operationLock;
+        InstalledManifest = installedManifest;
+        Prerequisites = prerequisites;
+        Confirmation = confirmation;
+    }
+
+    internal Manifest? InstalledManifest { get; }
+    internal PrerequisitePlan Prerequisites { get; }
+    internal SetupConfirmation Confirmation { get; }
+
+    public void Dispose()
+    {
+        Prerequisites.Dispose();
+        Interlocked.Exchange(ref _operationLock, null)?.Dispose();
     }
 }
 
@@ -660,6 +1024,45 @@ internal static class ProcessWaiter
         }
     }
 
+    internal static void WaitForExit(int pid, TimeSpan timeout, ISetupReporter reporter, CancellationToken cancellationToken)
+    {
+        if (pid == Environment.ProcessId)
+        {
+            throw new SetupException(ExitCode.Usage, "--wait-pid cannot name the setup process.");
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            var seconds = (int)Math.Ceiling(timeout.TotalSeconds);
+            for (var remaining = seconds; remaining > 0; remaining--)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (process.HasExited)
+                {
+                    return;
+                }
+                reporter.Step($"Waiting for Nativune to close… ({remaining} s remaining)", cancellable: true);
+                if (process.WaitForExit(1000) || process.HasExited)
+                {
+                    return;
+                }
+            }
+            if (!process.HasExited)
+            {
+                throw new SetupException(ExitCode.WaitTimeout, "Nativune is still running. Close it, then run Setup again.");
+            }
+        }
+        catch (ArgumentException)
+        {
+            // A process that disappeared before GetProcessById is already stopped.
+        }
+        catch (InvalidOperationException)
+        {
+            // A process that disappeared while being inspected is already stopped.
+        }
+    }
+
     internal static void EnsureApplicationStopped(string root)
     {
         var processName = Path.GetFileNameWithoutExtension(Program.AppExecutable);
@@ -696,6 +1099,18 @@ internal static class ProcessWaiter
             }
         }
     }
+    internal static bool IsApplicationStopped(string root)
+    {
+        try
+        {
+            EnsureApplicationStopped(root);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 internal static class Launcher
@@ -704,14 +1119,22 @@ internal static class Launcher
     {
         var executable = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
         PathSafety.EnsureRegularFile(executable);
-        var process = Process.Start(new ProcessStartInfo
+        Process? process;
+        try
         {
-            FileName = executable,
-            Arguments = $"web --root {ArgumentQuoter.Quote(root)}",
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = false,
-        });
+            process = Process.Start(new ProcessStartInfo
+            {
+                FileName = executable,
+                Arguments = $"web --root {ArgumentQuoter.Quote(root)}",
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = false,
+            });
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            throw new SetupException(ExitCode.LaunchFailure, "Nativune was installed but could not be launched.", error);
+        }
         if (process is null)
         {
             throw new SetupException(ExitCode.LaunchFailure, "Nativune was installed but could not be launched.");
@@ -750,5 +1173,120 @@ internal static class ArgumentQuoter
             builder.Append('\\', backslashes * 2);
         }
         return builder.Append('"').ToString();
+    }
+}
+
+internal static class UpdateOutcomeWriter
+{
+    private sealed record OutcomeDocument(
+        [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
+        [property: JsonPropertyName("fromVersion")] string? FromVersion,
+        [property: JsonPropertyName("toVersion")] string ToVersion,
+        [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("exitCode")] int ExitCode,
+        [property: JsonPropertyName("message")] string? Message,
+        [property: JsonPropertyName("completedUtc")] string CompletedUtc);
+
+    internal static void TryWrite(string root, SetupOutcome outcome)
+    {
+        string? temporaryPath = null;
+        try
+        {
+            if (outcome.Status is not ("success" or "installed" or "cancelled" or "failed"))
+            {
+                return;
+            }
+
+            var fullRoot = Path.GetFullPath(root);
+            if (InstallRoot.IsReparsePoint(fullRoot))
+            {
+                return;
+            }
+            InstallRoot.EnsureNoReparseChain(fullRoot);
+            if (InstallRoot.PathExists(fullRoot) && !Directory.Exists(fullRoot))
+            {
+                return;
+            }
+            if (outcome.IsFreshInstall && !Directory.Exists(fullRoot))
+            {
+                return;
+            }
+            if (!Directory.Exists(fullRoot))
+            {
+                InstallRoot.CreateSafeDirectory(fullRoot);
+            }
+
+            var updatesDirectory = Path.Combine(fullRoot, "updates");
+            if (InstallRoot.IsReparsePoint(updatesDirectory))
+            {
+                return;
+            }
+            InstallRoot.EnsureNoReparseChain(updatesDirectory);
+            if (InstallRoot.PathExists(updatesDirectory) && !Directory.Exists(updatesDirectory))
+            {
+                return;
+            }
+            if (!Directory.Exists(updatesDirectory))
+            {
+                InstallRoot.CreateSafeDirectory(updatesDirectory);
+            }
+            InstallRoot.EnsureNoReparseChain(updatesDirectory);
+
+            var resultPath = Path.Combine(updatesDirectory, "last-update.json");
+            if (InstallRoot.IsReparsePoint(resultPath)
+                || (InstallRoot.PathExists(resultPath) && !File.Exists(resultPath)))
+            {
+                return;
+            }
+            InstallRoot.EnsureNoReparseChain(resultPath);
+
+            var document = new OutcomeDocument(
+                1,
+                outcome.FromVersion,
+                outcome.ToVersion,
+                outcome.Status,
+                (int)outcome.ExitCode,
+                outcome.ResultMessage,
+                DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(document);
+            if (bytes.Length > 16 * 1024)
+            {
+                return;
+            }
+            temporaryPath = Path.Combine(updatesDirectory, $".last-update.{Guid.NewGuid():N}.tmp");
+            using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+            InstallRoot.EnsureNoReparseChain(resultPath);
+            if (InstallRoot.IsReparsePoint(resultPath))
+            {
+                return;
+            }
+            File.Move(temporaryPath, resultPath, overwrite: true);
+            temporaryPath = null;
+        }
+        catch
+        {
+            // The result file is best-effort and must never change Setup's exit code.
+        }
+        finally
+        {
+            if (temporaryPath is not null)
+            {
+                try
+                {
+                    if (File.Exists(temporaryPath) && !InstallRoot.IsReparsePoint(temporaryPath))
+                    {
+                        File.Delete(temporaryPath);
+                    }
+                }
+                catch
+                {
+                    // A leftover temporary result is harmless and is never followed.
+                }
+            }
+        }
     }
 }

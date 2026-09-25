@@ -52,7 +52,15 @@ internal static class InstallTransaction
         return bytes;
     }
 
-    internal static void Apply(string root, string stage, string backup, Manifest? installed, Manifest incoming, bool noShell, ShellState? shellState)
+    internal static void Apply(
+        string root,
+        string stage,
+        string backup,
+        Manifest? installed,
+        Manifest incoming,
+        bool noShell,
+        ShellState? shellState,
+        ISetupReporter? reporter = null)
     {
         var oldPaths = installed?.Files.Select(file => file.Path).ToHashSet(StringComparer.OrdinalIgnoreCase)
             ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -107,11 +115,20 @@ internal static class InstallTransaction
                     EnsureManagedTargetAbsent(root, path);
                 }
             }
+            var completedFiles = 0;
             foreach (var file in incoming.Files.OrderBy(file => file.Path, StringComparer.Ordinal))
             {
                 MoveStagedToTarget(root, stage, file.Path, backedUpPaths);
                 changedPaths.Add(file.Path);
+                completedFiles++;
+                reporter?.Step($"Installing files ({completedFiles:N0} of {incoming.Files.Count:N0}) — This step can't be cancelled.", cancellable: false);
+                reporter?.Progress(completedFiles, incoming.Files.Count);
             }
+
+            reporter?.Step(
+                noShell ? "Checking Start menu and desktop shortcuts…" : "Adding Start menu and desktop shortcuts…",
+                cancellable: false);
+            reporter?.Progress(0, 0);
 
             if (!noShell)
             {

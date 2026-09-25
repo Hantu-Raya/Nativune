@@ -10,6 +10,7 @@
         TabFocusNavigation="Local">
     <Grid.RowDefinitions>
       <RowDefinition x:Name="ToolbarRow" Height="Auto" />
+      <RowDefinition x:Name="UpdateInfoRow" Height="Auto" />
       <RowDefinition x:Name="ContentRow" Height="*" />
     </Grid.RowDefinitions>
 
@@ -171,7 +172,31 @@
       </Grid>
     </Border>
 
-    <Grid x:Name="ContentGrid" Grid.Row="1" Background="{ThemeResource CanvasBrush}">
+    <controls:InfoBar x:Name="UpdateInfoBar"
+                      Grid.Row="1"
+                      IsOpen="False"
+                      IsClosable="True"
+                      Severity="Informational"
+                      Background="{ThemeResource SurfaceBrush}"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Nativune update status">
+      <controls:InfoBar.Content>
+        <StackPanel Spacing="4">
+          <ProgressBar x:Name="UpdateProgressBar"
+                       Minimum="0" Maximum="100"
+                       Visibility="Collapsed"
+                       Foreground="{ThemeResource AccentBrush}"
+                       AutomationProperties.Name="Nativune update download progress" />
+          <TextBlock x:Name="UpdateLiveAnnouncement"
+                     Width="1" Height="1" Opacity="0"
+                     IsHitTestVisible="False"
+                     AutomationProperties.LiveSetting="Polite"
+                     AutomationProperties.Name="Nativune update progress announcement" />
+        </StackPanel>
+      </controls:InfoBar.Content>
+    </controls:InfoBar>
+
+    <Grid x:Name="ContentGrid" Grid.Row="2" Background="{ThemeResource CanvasBrush}">
       <Border x:Name="WebViewSlot"
               Background="{ThemeResource CanvasBrush}"
               IsHitTestVisible="False"

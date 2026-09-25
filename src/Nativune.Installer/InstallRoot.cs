@@ -68,7 +68,7 @@ internal static class InstallRoot
         }
     }
 
-    internal static void ValidateFreshTarget(string root)
+    internal static void ValidateFreshTarget(string root, bool allowUpdateArtifacts = false)
     {
         if (!Directory.Exists(root))
         {
@@ -85,9 +85,48 @@ internal static class InstallRoot
                 }
                 continue;
             }
+            if (string.Equals(name, "updates", StringComparison.OrdinalIgnoreCase) && allowUpdateArtifacts)
+            {
+                if (!Directory.Exists(child) || IsReparsePoint(child))
+                {
+                    throw new SetupException(ExitCode.UnsafeRoot, "The existing updates directory is not a normal directory.");
+                }
+                EnsureNoReparseChain(child);
+                foreach (var entry in Directory.EnumerateFileSystemEntries(child))
+                {
+                    if (!IsUpdateOutcomeArtifact(Path.GetFileName(entry))
+                        || Directory.Exists(entry)
+                        || !File.Exists(entry)
+                        || IsReparsePoint(entry))
+                    {
+                        throw new SetupException(ExitCode.TargetConflict, "The existing install directory contains unmanaged files.");
+                    }
+                    EnsureNoReparseChain(entry);
+                }
+                continue;
+            }
             throw new SetupException(ExitCode.TargetConflict, "The existing install directory contains unmanaged files.");
         }
     }
+
+    private static bool IsUpdateOutcomeArtifact(string name)
+    {
+        if (string.Equals(name, "last-update.json", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        const string prefix = ".last-update.";
+        const string suffix = ".tmp";
+        if (!name.StartsWith(prefix, StringComparison.Ordinal)
+            || !name.EndsWith(suffix, StringComparison.Ordinal)
+            || name.Length != prefix.Length + 32 + suffix.Length)
+        {
+            return false;
+        }
+        var id = name.Substring(prefix.Length, name.Length - prefix.Length - suffix.Length);
+        return id.All(Uri.IsHexDigit);
+    }
+
 
     internal static void ValidateManagedTarget(string root, Manifest manifest)
     {

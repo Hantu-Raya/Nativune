@@ -45,6 +45,11 @@ public sealed partial class WebHostWindow
         CompactView.ReturnToFullRequested += () => SetCompact(false);
         CompactView.UpdateRequested += OnUpdateButtonClick;
         CompactView.SettingsRequested += ShowSettings;
+        CompactView.WhatsNewRequested += () =>
+        {
+            if (_pendingWhatsNewVersion is { } version)
+                _ = ShowWhatsNewAsync(version, _pendingWhatsNewFromVersion);
+        };
         CompactView.TimerRequested += SetPauseTimer;
         CompactView.CancelTimerRequested += CancelPauseTimer;
         CompactView.StatusRequested += ShowStatusDetails;
@@ -116,6 +121,8 @@ public sealed partial class WebHostWindow
         CompactView.Visibility = _compact ? Visibility.Visible : Visibility.Collapsed;
         ToolbarHost.Visibility = _compact ? Visibility.Collapsed : Visibility.Visible;
         ToolbarRow.Height = _compact ? new GridLength(0) : GridLength.Auto;
+        UpdateInfoBar.Visibility = _compact || _fullscreen ? Visibility.Collapsed : Visibility.Visible;
+        UpdateInfoRow.Height = _compact || _fullscreen ? new GridLength(0) : GridLength.Auto;
         WebViewSlot.Visibility = _compact ? Visibility.Collapsed : Visibility.Visible;
         UpdateBrowserVisibility();
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
