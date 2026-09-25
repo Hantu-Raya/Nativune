@@ -30,11 +30,6 @@ internal sealed class NativeWindowServices : IDisposable
     private const int SmCxPaddedBorder = 92;
     private const uint WmSize = 0x0005;
     private const uint WmDpiChanged = 0x02E0;
-    private const int CompactCaptionWidthDip = 800;
-    private const int CompactCaptionRightControlsDip = 160;
-    private const int CompactCaptionHeaderRightDip = 640;
-    private const int CompactCaptionLeftWidthDip = 152;
-    private const int CompactCaptionHeaderHeightDip = 64;
 
     private static long _nextSubclassId;
     private static readonly NonClientRegionKind[] CaptionlessFrameRegions =
@@ -155,29 +150,16 @@ internal sealed class NativeWindowServices : IDisposable
 
         var clientRight = Math.Max(horizontalBorder, width - horizontalBorder);
         var clientBottom = Math.Max(verticalBorder, height - verticalBorder);
-        var headerRight = width > DipToPixels(CompactCaptionWidthDip, dpi)
-            ? width - DipToPixels(CompactCaptionRightControlsDip, dpi)
-            : DipToPixels(CompactCaptionHeaderRightDip, dpi);
-        headerRight = Math.Clamp(headerRight, horizontalBorder, clientRight);
-        var headerBottom = Math.Clamp(
-            DipToPixels(CompactCaptionHeaderHeightDip, dpi),
-            verticalBorder,
-            clientBottom);
-        var leftRight = Math.Clamp(
-            DipToPixels(CompactCaptionLeftWidthDip, dpi),
-            horizontalBorder,
-            clientRight);
-
-        var captionRects = new List<RectInt32>(2);
-        var headerWidth = headerRight - horizontalBorder;
-        var headerHeight = headerBottom - verticalBorder;
-        if (headerWidth > 0 && headerHeight > 0)
-            captionRects.Add(new RectInt32(horizontalBorder, verticalBorder, headerWidth, headerHeight));
-
-        var leftWidth = leftRight - horizontalBorder;
-        var leftHeight = clientBottom - headerBottom;
-        if (leftWidth > 0 && leftHeight > 0)
-            captionRects.Add(new RectInt32(horizontalBorder, headerBottom, leftWidth, leftHeight));
+        var captionRects = new List<RectInt32>(4);
+        foreach (var region in CompactCaptionRegions(width, height, dpi))
+        {
+            var left = Math.Clamp(region.X, horizontalBorder, clientRight);
+            var top = Math.Clamp(region.Y, verticalBorder, clientBottom);
+            var right = Math.Clamp(region.X + region.Width, horizontalBorder, clientRight);
+            var bottom = Math.Clamp(region.Y + region.Height, verticalBorder, clientBottom);
+            if (right > left && bottom > top)
+                captionRects.Add(new RectInt32(left, top, right - left, bottom - top));
+        }
 
         if (captionRects.Count == 0)
             source.ClearRegionRects(NonClientRegionKind.Caption);
@@ -185,11 +167,30 @@ internal sealed class NativeWindowServices : IDisposable
             source.SetRegionRects(NonClientRegionKind.Caption, captionRects.ToArray());
     }
 
-    private static int DipToPixels(int dip, uint dpi)
-        => (int)Math.Clamp(
-            Math.Round(dip * (double)dpi / 96d, MidpointRounding.AwayFromZero),
-            0d,
-            int.MaxValue);
+    /// <summary>
+    /// Drag (caption) rectangles in client pixels for a Compact client of the given pixel size. The
+    /// rectangles come from the same planner that positions the Compact controls, so every interactive
+    /// control stays outside them at every size class and DPI.
+    /// </summary>
+    internal static IReadOnlyList<RectInt32> CompactCaptionRegions(int width, int height, uint dpi)
+    {
+        var scale = dpi / 96d;
+        var plan = CompactPlayerView.PlanLayout(width / scale, height / scale, scale, statusVisible: false);
+        var regions = new List<RectInt32>(plan.CaptionRegions.Count);
+        foreach (var region in plan.CaptionRegions)
+        {
+            var left = DipToPixels(region.X, scale);
+            var top = DipToPixels(region.Y, scale);
+            var right = DipToPixels(region.Right, scale);
+            var bottom = DipToPixels(region.Bottom, scale);
+            if (right > left && bottom > top)
+                regions.Add(new RectInt32(left, top, right - left, bottom - top));
+        }
+        return regions;
+    }
+
+    private static int DipToPixels(double dip, double scale)
+        => (int)Math.Clamp(Math.Round(dip * scale, MidpointRounding.AwayFromZero), 0d, int.MaxValue);
 
     private void ClearCaptionlessResizeRegions()
     {

@@ -20,8 +20,6 @@ namespace Nativune;
 /// </summary>
 public sealed partial class CompactPlayerView : UserControl, IDisposable
 {
-    private const int LogicalMinimumWidth = 800;
-    private const int LogicalMinimumHeight = 180;
     private const double DegreesPerScrubDip = 0.35;
     private const double DegreesPerSecond = 12;
     private const string CompactVolumeUnavailableHelp = "App output control is unavailable.";
@@ -200,6 +198,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeHoverCloseTimer.Tick += (_, _) => CloseHoverVolumePopup();
 
         ConfigureControls();
+        InitializeLayout();
         SetOutputVolume(0, false, false);
         SetPlayback(null);
         SetPreferences(false, false);
@@ -222,10 +221,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             if (!_disposed) _animationTimer.Stop();
         };
     }
-
-    internal static int LogicalMinimumWidthValue => LogicalMinimumWidth;
-    internal static int LogicalMinimumHeightValue => LogicalMinimumHeight;
-    internal static System.Drawing.Size LogicalMinimumSize => new(LogicalMinimumWidth, LogicalMinimumHeight);
 
     internal static double ClampSeekTarget(double position, double duration)
     {
@@ -733,42 +728,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             ? CompactVolumeUnavailableHelp
             : "App output volume from zero to one hundred percent. Use Left and Right or Up and Down for 0.1 percent steps, Page Up and Page Down for 1 percent, Home for 0 percent and End for 100 percent."
                 + (_outputSessionActive ? "" : " Preference pending until an owned WebView audio session starts."));
-    }
-
-
-    private void LayoutControls()
-    {
-        if (_disposed) return;
-        var width = Math.Max(LogicalMinimumWidth, ActualWidth > 0 ? ActualWidth : LogicalMinimumWidth);
-        var horizontalExtra = Math.Max(0, width - LogicalMinimumWidth);
-        var utilityShift = horizontalExtra;
-        const double seekY = 120;
-
-        SetBounds(_artwork, 20, 26, 112, 112);
-        SetBounds(_title, 152, 16, 452 + horizontalExtra, 32);
-        SetBounds(_inlineStatus, 152, 48, 452 + horizontalExtra, 16);
-        SetBounds(_returnToFull, 640 + utilityShift, 12, 36, 36);
-        SetBounds(_more, 680 + utilityShift, 12, 36, 36);
-        SetBounds(_minimize, 720 + utilityShift, 12, 36, 36);
-        SetBounds(_close, 760 + utilityShift, 12, 36, 36);
-        SetBounds(_previous, 152, 68, 40, 40);
-        SetBounds(_playPause, 200, 64, 48, 48);
-        SetBounds(_next, 256, 68, 40, 40);
-        SetBounds(_like, 312, 68, 40, 40);
-        SetBounds(_dislike, 356, 68, 40, 40);
-        SetBounds(_repeat, 424, 68, 40, 40);
-        SetBounds(_shuffle, 468, 68, 40, 40);
-        SetBounds(_volume, 512, 68, 40, 40);
-        SetBounds(_timer, 568, 68, 148, 40);
-        SetBounds(ProgressRow, 152, seekY, 632 + horizontalExtra, 40);
-    }
-
-    private static void SetBounds(FrameworkElement element, double left, double top, double width, double height)
-    {
-        Canvas.SetLeft(element, left);
-        Canvas.SetTop(element, top);
-        element.Width = width;
-        element.Height = height;
     }
 
     private void ShowVolumePopup()
@@ -1433,7 +1392,7 @@ public sealed class CompactMarqueeText : UserControl
 {
     private const double GapDip = 48;
     private static readonly TimeSpan TitlePause = TimeSpan.FromMilliseconds(900);
-    private readonly Grid _content = new();
+    private readonly Canvas _content = new();
     private readonly TextBlock _primary;
     private readonly TextBlock _secondary;
     private readonly TranslateTransform _primaryTransform = new();
@@ -1484,6 +1443,8 @@ public sealed class CompactMarqueeText : UserControl
 
     internal void RecalculateOverflow()
     {
+        // Measure the text at its natural width (an explicit scrolling width would mask it).
+        _primary.Width = double.NaN;
         _primary.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         _textWidth = _primary.DesiredSize.Width;
         var wasOverflow = _overflow;
@@ -1524,15 +1485,22 @@ public sealed class CompactMarqueeText : UserControl
     {
         if (Clip is RectangleGeometry rectangle)
             rectangle.Rect = new Rect(0, 0, ActualWidth, ActualHeight);
+        // Canvas children are never constrained or clipped by the slot: the copies are laid out at
+        // their natural width from the left edge and this control's clip trims them.
+        var top = Math.Max(0, (ActualHeight - _primary.DesiredSize.Height) / 2);
+        Canvas.SetTop(_primary, top);
+        Canvas.SetTop(_secondary, top);
         if (!_overflow || _reduceMotion)
         {
             _primary.TextTrimming = TextTrimming.CharacterEllipsis;
+            _primary.Width = Math.Max(0, ActualWidth);
             _primaryTransform.X = 0;
             _secondary.Visibility = Visibility.Collapsed;
         }
         else
         {
             _primary.TextTrimming = TextTrimming.None;
+            _primary.Width = double.NaN;
             _secondary.Visibility = Visibility.Visible;
             _primaryTransform.X = -_offset;
             _secondaryTransform.X = -_offset + _textWidth + GapDip;
@@ -1544,7 +1512,6 @@ public sealed class CompactMarqueeText : UserControl
         {
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = TextWrapping.NoWrap,
             RenderTransform = transform
         };

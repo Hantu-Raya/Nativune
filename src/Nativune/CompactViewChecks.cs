@@ -28,10 +28,11 @@ internal static class CompactViewChecks
 
     internal static void Run()
     {
-        Require(CompactPlayerView.LogicalMinimumWidthValue == 800
-            && CompactPlayerView.LogicalMinimumHeightValue == 180
-            && CompactPlayerView.LogicalMinimumSize == new Size(800, 180),
+        Require(CompactPlayerView.LogicalMinimumWidthValue == 360
+            && CompactPlayerView.LogicalMinimumHeightValue == 56
+            && CompactPlayerView.LogicalMinimumSize == new Size(360, 56),
             "Compact player minimum logical size changed.");
+        CheckLayoutPlans();
 
         using var outputPreference = new WebViewAudioVolume(
             Path.Combine(AppContext.BaseDirectory, "msedgewebview2.exe"));
@@ -138,6 +139,162 @@ internal static class CompactViewChecks
             "Compact diagnostics replaced an explicitly observed application error.");
     }
 
+    private static readonly (double Width, double Height, CompactSizeClass SizeClass)[] LayoutSamples =
+    {
+        (360, 56, CompactSizeClass.Strip), (440, 56, CompactSizeClass.Strip), (800, 64, CompactSizeClass.Strip),
+        (1400, 80, CompactSizeClass.Strip), (360, 92, CompactSizeClass.Strip),
+        (360, 96, CompactSizeClass.Compact), (420, 108, CompactSizeClass.Compact), (640, 120, CompactSizeClass.Compact),
+        (800, 128, CompactSizeClass.Compact), (1200, 140, CompactSizeClass.Compact),
+        (360, 144, CompactSizeClass.Standard), (400, 160, CompactSizeClass.Standard), (520, 180, CompactSizeClass.Standard),
+        (800, 180, CompactSizeClass.Standard), (800, 220, CompactSizeClass.Standard), (1000, 260, CompactSizeClass.Standard),
+        (1100, 180, CompactSizeClass.Wide), (1600, 240, CompactSizeClass.Wide),
+        (360, 300, CompactSizeClass.Tall), (400, 400, CompactSizeClass.Tall), (640, 300, CompactSizeClass.Tall),
+        (800, 600, CompactSizeClass.Tall), (1000, 1000, CompactSizeClass.Tall)
+    };
+    private static readonly double[] LayoutScales = { 1, 1.25, 1.5, 1.75, 2 };
+
+    /// <summary>
+    /// Pure geometry contract for every size class at 100–200 % scale: controls stay inside the client,
+    /// never overlap, keep 32-DIP hit targets, land on device pixels, and the drag (caption) regions
+    /// never cover an interactive control while still offering a usable drag area.
+    /// </summary>
+    private static void CheckLayoutPlans()
+    {
+        foreach (var (width, height, expectedClass) in LayoutSamples)
+        foreach (var scale in LayoutScales)
+        foreach (var statusVisible in new[] { false, true })
+        {
+            var label = $"{width}x{height}@{scale:0.00}{(statusVisible ? "+status" : "")}";
+            var plan = CompactPlayerView.PlanLayout(width, height, scale, statusVisible);
+            Require(plan.SizeClass == expectedClass,
+                $"Compact {label} resolved to {plan.SizeClass} instead of {expectedClass}.");
+            var interactive = plan.InteractiveRects().ToList();
+            foreach (var (name, rect) in interactive)
+            {
+                Require(rect.X >= -0.001 && rect.Y >= -0.001 && rect.Right <= width + 0.001 && rect.Bottom <= height + 0.001,
+                    $"Compact {label}: {name} left the client area ({rect}).");
+                Require(rect.Width >= 32 && rect.Height >= 32,
+                    $"Compact {label}: {name} is smaller than a 32-DIP hit target ({rect}).");
+                RequireSnapped(rect, scale, $"{label}: {name}");
+            }
+            for (var first = 0; first < interactive.Count; first++)
+                for (var second = first + 1; second < interactive.Count; second++)
+                    Require(!interactive[first].Rect.Overlaps(interactive[second].Rect),
+                        $"Compact {label}: {interactive[first].Name} overlaps {interactive[second].Name}.");
+            foreach (var (name, rect) in new[] { ("Artwork", plan.Artwork), ("Title", plan.Title), ("Status", plan.Status) })
+            {
+                if (rect is not { } passive) continue;
+                Require(passive.X >= -0.001 && passive.Y >= -0.001 && passive.Right <= width + 0.001
+                    && passive.Bottom <= height + 0.001, $"Compact {label}: {name} left the client area.");
+                RequireSnapped(passive, scale, $"{label}: {name}");
+                foreach (var (other, otherRect) in interactive)
+                    Require(!passive.Overlaps(otherRect), $"Compact {label}: {name} overlaps {other}.");
+            }
+            Require(plan.Title is { } title && plan.Status is { } status
+                && Math.Abs(status.X - title.X) < 0.001 && Math.Abs(status.Width - title.Width) < 0.001
+                && Math.Abs(status.Height - 16) < 0.5 && status.Y >= title.Y
+                && (statusVisible
+                    ? Math.Abs(status.Y - title.Bottom) < 0.001
+                    : status.Bottom - title.Y >= 40 - 0.5 && status.Bottom - title.Y <= 48 + 0.5),
+                $"Compact {label}: InlineStatus is not one line directly under the title at the title width.");
+            Require(plan.Progress is null && plan.SizeClass == CompactSizeClass.Strip
+                || plan.Progress is { } progressRect && Math.Abs(progressRect.Height - 40) < 0.01 && progressRect.Width >= 119,
+                $"Compact {label}: progress row is missing or too small.");
+            Require(!plan.ProgressShowsTimes || plan.Progress is { Width: >= 187 },
+                $"Compact {label}: timestamps shown without room for them.");
+            Require(!plan.TimerShowsText || plan.Timer is { Width: >= 147 },
+                $"Compact {label}: timer label shown without room for it.");
+            foreach (var control in Enum.GetValues<CompactOverflowControl>())
+            {
+                LayoutRect? rect = control switch
+                {
+                    CompactOverflowControl.Like => plan.Like,
+                    CompactOverflowControl.Dislike => plan.Dislike,
+                    CompactOverflowControl.Playlists => plan.Playlists,
+                    CompactOverflowControl.Repeat => plan.Repeat,
+                    CompactOverflowControl.Shuffle => plan.Shuffle,
+                    CompactOverflowControl.Volume => plan.Volume,
+                    CompactOverflowControl.Timer => plan.Timer,
+                    _ => plan.Minimize
+                };
+                Require(rect.HasValue != plan.Overflow.Contains(control),
+                    $"Compact {label}: {control} is neither shown nor offered in the More menu (or both).");
+            }
+
+            Require(plan.CaptionRegions.Count > 0 && plan.CaptionRegions.Any(region => region.Width >= 24 && region.Height >= 24),
+                $"Compact {label}: no usable drag region.");
+            foreach (var region in plan.CaptionRegions)
+            {
+                Require(region.X >= -0.001 && region.Y >= -0.001 && region.Right <= width + 0.001 && region.Bottom <= height + 0.001,
+                    $"Compact {label}: drag region left the client area.");
+                foreach (var (name, rect) in interactive)
+                    Require(!region.Overlaps(rect), $"Compact {label}: drag region covers {name}.");
+            }
+            var dpi = (uint)Math.Round(96 * scale);
+            var pixelWidth = (int)Math.Round(width * scale);
+            var pixelHeight = (int)Math.Round(height * scale);
+            var nativeCaption = NativeWindowServices.CompactCaptionRegions(pixelWidth, pixelHeight, dpi);
+            Require(nativeCaption.Count == plan.CaptionRegions.Count,
+                $"Compact {label}: native drag regions did not follow the layout plan.");
+            foreach (var region in nativeCaption)
+            {
+                Require(region.X >= 0 && region.Y >= 0 && region.X + region.Width <= pixelWidth
+                    && region.Y + region.Height <= pixelHeight,
+                    $"Compact {label}: native drag region left the client pixels.");
+                foreach (var (name, rect) in interactive)
+                {
+                    var pixelRect = new LayoutRect(
+                        Math.Round(rect.X * scale), Math.Round(rect.Y * scale),
+                        Math.Round(rect.Right * scale) - Math.Round(rect.X * scale),
+                        Math.Round(rect.Bottom * scale) - Math.Round(rect.Y * scale));
+                    Require(!pixelRect.Overlaps(new LayoutRect(region.X, region.Y, region.Width, region.Height)),
+                        $"Compact {label}: native drag region covers {name}.");
+                }
+            }
+        }
+
+        var standard = CompactPlayerView.PlanLayout(800, 180, 1, statusVisible: false);
+        Require(standard.Artwork is { Width: 112, Height: 112 } && standard.Like is { X: 312 } && standard.Dislike is { X: 356 }
+            && standard.Playlists is { X: 400 } && standard.Repeat is { X: 444 } && standard.Shuffle is { X: 488 }
+            && standard.Volume is { X: 532 } && standard.Timer is { X: 588, Width: 148 } && standard.TimerShowsText
+            && standard.Minimize is not null && standard.Overflow.Count == 0 && standard.ProgressShowsTimes
+            && standard.Previous.X == 152 && standard.Progress is { X: 152 },
+            "The 800x180 Standard layout no longer shows the full control set at its agreed positions with the 112-DIP artwork column.");
+        var narrow = CompactPlayerView.PlanLayout(360, 180, 1, statusVisible: false);
+        Require(narrow.Like is not null && narrow.Volume is not null && narrow.Playlists is null && narrow.Repeat is null
+            && narrow.Timer is null
+            && narrow.Overflow.SequenceEqual(new[]
+            {
+                CompactOverflowControl.Playlists, CompactOverflowControl.Repeat, CompactOverflowControl.Shuffle,
+                CompactOverflowControl.Timer
+            }),
+            "The narrow Standard layout did not move Playlists/Repeat/Shuffle/Timer into the More menu in priority order.");
+        var strip = CompactPlayerView.PlanLayout(360, 56, 1, statusVisible: false);
+        Require(strip.Title is not null && strip.Progress is null && strip.Artwork is null && strip.Minimize is null
+            && strip.Overflow.Contains(CompactOverflowControl.Minimize),
+            "The minimum Strip layout did not keep a title drag handle with Minimize in the More menu.");
+        var wideStrip = CompactPlayerView.PlanLayout(1400, 80, 1, statusVisible: false);
+        Require(wideStrip.Artwork is not null && wideStrip.Progress is not null && wideStrip.ProgressShowsTimes
+            && wideStrip.Like is not null && wideStrip.Timer is not null,
+            "A wide Strip did not reveal artwork, timestamps and secondary actions.");
+        var wide = CompactPlayerView.PlanLayout(1600, 240, 1, statusVisible: false);
+        Require(wide.Timer is { } wideTimer && Math.Abs(wideTimer.Right - (1600 - 12)) < 0.001
+            && wide.Like is { } wideLike && wideLike.X > wide.Next.Right + 100,
+            "The Wide layout did not right-align the secondary actions.");
+        var tall = CompactPlayerView.PlanLayout(400, 400, 1, statusVisible: false);
+        Require(tall.Artwork is { Width: >= 120 } tallArtwork && Math.Abs(tallArtwork.X + tallArtwork.Width / 2 - 200) < 1
+            && tall.Title is { } tallTitle && tallTitle.Y > tallArtwork.Bottom
+            && tall.PlayPause.Y > tallTitle.Bottom && tall.Progress is { } tallProgress && tallProgress.Y > tall.PlayPause.Bottom,
+            "The Tall layout did not stack centered artwork above title, controls and seek.");
+    }
+
+    private static void RequireSnapped(LayoutRect rect, double scale, string label)
+    {
+        foreach (var edge in new[] { rect.X, rect.Y, rect.Right, rect.Bottom })
+            Require(Math.Abs(edge * scale - Math.Round(edge * scale)) < 0.001,
+                $"Compact {label} edge {edge} is not on the {scale:0.00}x pixel grid.");
+    }
+
     /// <summary>
     /// Exercises the actual WinUI Compact surface hosted by the browser-free native shell.
     /// The host owns the application lifetime; this method never starts a second XAML loop.
@@ -176,7 +333,7 @@ internal static class CompactViewChecks
         Prepare(view);
         Require(view.ActualWidth >= CompactPlayerView.LogicalMinimumWidthValue
             && view.ActualHeight >= CompactPlayerView.LogicalMinimumHeightValue,
-            "Compact presenter did not honor its 800 by 180 DIP minimum.");
+            "Compact presenter did not honor its 360 by 56 DIP minimum.");
 
         phase = "queued-output-without-session";
         var updateOutput = FindMethod(host, "UpdateOutputAudioControls")
@@ -212,43 +369,39 @@ internal static class CompactViewChecks
         phase = "compact-native-frame";
         CheckCompactNativeFrame(host, view);
 
-        phase = "progress-row-spacing";
+        phase = "size-classes";
+        CheckNativeSizeClasses(view, parts);
+        Prepare(view);
 
-        foreach (var (width, height) in new[] { (800d, 180d), (814d, 253d), (1200d, 800d) })
-        {
-            Prepare(view, width, height);
-            view.SetPreferences(reduceMotion: true, topmost: false);
-            view.UpdateLayout();
-            Require(Math.Abs(view.ActualWidth - width) <= 1
-                && Math.Abs(view.ActualHeight - height) <= 1,
-                "Compact spacing check did not receive the requested viewport.");
-            var controlsBottom = Canvas.GetTop(parts["PlayPause"]) + parts["PlayPause"].Height;
-            var progressRow = FindPart(view, "ProgressRow");
-            var progressTop = Canvas.GetTop(progressRow);
-            Require(progressTop - controlsBottom is >= 8 and <= 12,
-                "Compact progress row drifted away from the playback controls when resized.");
-            Require(progressTop + progressRow.ActualHeight <= view.ActualHeight,
-                "Compact progress row was clipped at the minimum height.");
-            var thumb = FindDescendant<Thumb>(parts["Seek"])
-                ?? throw new SelfCheckException("Compact seek slider did not expose its native thumb.");
-            var thumbBounds = thumb.TransformToVisual(parts["Seek"]).TransformBounds(
-                new FoundationRect(0, 0, thumb.ActualWidth, thumb.ActualHeight));
-            Require(thumbBounds.Top >= 2 && thumbBounds.Bottom + 2 <= parts["Seek"].ActualHeight,
-                "Compact seek slider clipped its native thumb or outer border.");
-            foreach (var name in new[] { "Elapsed", "Duration" })
-            {
-                var label = parts[name];
-                var labelBounds = label.TransformToVisual(progressRow).TransformBounds(
-                    new FoundationRect(0, 0, label.ActualWidth, label.ActualHeight));
-                // Text metrics can be fractional while DesiredSize rounds up to a DIP.
-                Require(Math.Ceiling(label.ActualHeight) >= label.DesiredSize.Height
-                    && labelBounds.Top >= 0 && labelBounds.Bottom <= progressRow.ActualHeight,
-                    $"Compact progress timestamp {name} was clipped: actual={label.ActualHeight}, desired={label.DesiredSize.Height}, top={labelBounds.Top}, bottom={labelBounds.Bottom}, row={progressRow.ActualHeight}.");
-                Require(Math.Abs(labelBounds.Top + labelBounds.Height / 2
-                    - progressRow.ActualHeight / 2) <= 1,
-                    "Compact progress timestamp was not vertically centered.");
-            }
-        }
+        phase = "marquee-narrow";
+        view.SetPlayback(new CompactPlaybackState(
+            "Synthetic marquee title that is definitely wider than a narrow Compact title slot", null,
+            Paused: true, Position: 0, Duration: 100, Liked: false, Disliked: false, Repeat: "off",
+            CanSeek: true, CanLike: true, CanDislike: true, CanRepeat: true, CanShuffle: true, Shuffle: false,
+            VideoId: "AbCdEfGhI01", ClockConfirmed: true));
+        view.SetPreferences(reduceMotion: false, topmost: false);
+        PrepareViewSize(view, 400, 180);
+        var marquee = parts["Title"];
+        var primaryCopy = ReadField(marquee, "_primary") as TextBlock
+            ?? throw new SelfCheckException("Compact title marquee did not expose its primary copy.");
+        var secondaryCopy = ReadField(marquee, "_secondary") as TextBlock
+            ?? throw new SelfCheckException("Compact title marquee did not expose its secondary copy.");
+        var textWidth = Convert.ToDouble(ReadField(marquee, "_textWidth"));
+        Require(ReadField(marquee, "_overflow") is true && textWidth > marquee.ActualWidth,
+            $"A long title did not overflow the narrow 400-DIP title slot (text={textWidth}, slot={marquee.ActualWidth}).");
+        var primaryBounds = primaryCopy.TransformToVisual(marquee).TransformBounds(
+            new FoundationRect(0, 0, primaryCopy.ActualWidth, primaryCopy.ActualHeight));
+        Require(Math.Abs(primaryBounds.Left) <= 0.5 && primaryBounds.Width >= textWidth - 2
+            && primaryCopy.TextTrimming == TextTrimming.None && secondaryCopy.Visibility == Visibility.Visible,
+            $"The scrolling title copy was centered or trimmed by its slot instead of laid out from the left at its natural width (left={primaryBounds.Left}, width={primaryBounds.Width}, text={textWidth}).");
+        view.SetPreferences(reduceMotion: true, topmost: false);
+        view.UpdateLayout();
+        Require(primaryCopy.TextTrimming == TextTrimming.CharacterEllipsis
+            && primaryCopy.ActualWidth <= marquee.ActualWidth + 0.5 && secondaryCopy.Visibility == Visibility.Collapsed,
+            "The reduced-motion title did not fall back to an ellipsis within its slot.");
+        view.SetPreferences(reduceMotion: false, topmost: false);
+        view.SetPlayback(null);
+        ReleaseViewSize(view);
         Prepare(view);
 
         phase = "playback-state";
@@ -686,6 +839,56 @@ internal static class CompactViewChecks
         await AwaitFlyoutClosedAsync(moreMenu!, () => view.SetActive(false), "More");
         view.SetActive(true);
 
+        phase = "overflow-menu";
+        view.SetStatus(string.Empty, isError: false);
+        view.SetPlayback(state);
+        PrepareViewSize(view, 360, 180);
+        var narrowPlan = view.CurrentLayoutPlan
+            ?? throw new SelfCheckException("Narrow Compact layout did not publish a plan.");
+        Require(narrowPlan.SizeClass == CompactSizeClass.Standard
+            && narrowPlan.Overflow.Contains(CompactOverflowControl.Repeat)
+            && narrowPlan.Overflow.Contains(CompactOverflowControl.Timer)
+            && !narrowPlan.Overflow.Contains(CompactOverflowControl.Like)
+            && parts["Repeat"].Visibility == Visibility.Collapsed
+            && parts["Timer"].Visibility == Visibility.Collapsed
+            && parts["Like"].Visibility == Visibility.Visible,
+            $"The 360-DIP Standard layout did not move Repeat and the pause timer into the More menu (class={narrowPlan.SizeClass}, size={narrowPlan.Width}x{narrowPlan.Height}, overflow=[{string.Join(",", narrowPlan.Overflow)}], repeat={parts["Repeat"].Visibility}, timer={parts["Timer"].Visibility}, like={parts["Like"].Visibility}, view={view.ActualWidth}x{view.ActualHeight}).");
+        var overflowItems = (ReadField(view, "_overflowItems")
+                as IEnumerable<(CompactOverflowControl Control, MenuFlyoutItem Item)>)?.ToList()
+            ?? throw new SelfCheckException("Compact overflow menu items were not created.");
+        await AwaitFlyoutOpenedAsync(moreMenu!, view.ShowMoreMenu, "More with overflow");
+        var repeatItem = overflowItems.First(entry => entry.Control == CompactOverflowControl.Repeat).Item;
+        var likeItem = overflowItems.First(entry => entry.Control == CompactOverflowControl.Like).Item;
+        var timerItem = overflowItems.First(entry => entry.Control == CompactOverflowControl.Timer).Item;
+        Require(repeatItem.Visibility == Visibility.Visible && repeatItem.IsEnabled
+            && repeatItem.Text == AutomationProperties.GetName(parts["Repeat"])
+            && AutomationProperties.GetHelpText(repeatItem) == AutomationProperties.GetHelpText(parts["Repeat"])
+            && timerItem.Visibility == Visibility.Visible
+            && timerItem.Text == AutomationProperties.GetName(parts["Timer"])
+            && likeItem.Visibility == Visibility.Collapsed
+            && moreMenu is MenuFlyout menuWithOverflow
+            && menuWithOverflow.Items.IndexOf(repeatItem) < menuWithOverflow.Items.IndexOf(ReadField(view, "_settingsItem") as MenuFlyoutItem),
+            "More-menu overflow entries did not mirror the hidden controls' names, help text and state.");
+        commands.Clear();
+        var invokeOverflow = FindMethod(view, "InvokeOverflowTarget")
+            ?? throw new SelfCheckException("Compact overflow invocation hook was not retained.");
+        invokeOverflow.Invoke(view, [CompactOverflowControl.Repeat]);
+        Require(commands.Count(command => command.Command == "repeat") == 1,
+            $"Invoking the hidden Repeat button through its automation pattern did not raise its command (commands=[{string.Join(",", commands.Select(c => c.Command))}]).");
+        commands.Clear();
+        InvokeControl(repeatItem, "More-menu Repeat");
+        for (var attempt = 0; attempt < 25 && !commands.Any(command => command.Command == "repeat"); attempt++)
+            await Task.Delay(20);
+        Require(commands.Count(command => command.Command == "repeat") == 1,
+            "Activating the More-menu Repeat entry did not run the hidden Repeat button's command path.");
+        await AwaitFlyoutClosedAsync(moreMenu!, () => moreMenu!.Hide(), "More with overflow");
+        commands.Clear();
+        ReleaseViewSize(view);
+        Prepare(view);
+        Require(parts["Repeat"].Visibility == Visibility.Visible && parts["Timer"].Visibility == Visibility.Visible
+            && repeatItem.Visibility == Visibility.Collapsed,
+            "Restoring room did not move Repeat and the pause timer back out of the More menu.");
+
         phase = "shuffle-during-compact-read";
         Require(ReadProperty(host, "CompactActive") is true,
             "Compact command overlap fixture did not enter the active native presenter.");
@@ -809,22 +1012,33 @@ internal static class CompactViewChecks
             "Windows did not provide the Compact client bounds.");
         var clientWidth = client.Right - client.Left;
         var clientHeight = client.Bottom - client.Top;
-        Require(clientWidth >= Math.Round(CompactPlayerView.LogicalMinimumWidthValue * scale) - 1
-            && Math.Abs(clientHeight - CompactPlayerView.LogicalMinimumHeightValue * scale) <= 1,
-            "Compact native client stopped honoring its minimum width or fixed 180-DIP height.");
+        Require(Math.Abs(clientWidth - ShellSettings.Default.CompactWidth * scale) <= 1
+            && Math.Abs(clientHeight - ShellSettings.Default.CompactHeight * scale) <= 1,
+            "Compact native client did not open at the saved/default 800 by 180 DIP client size.");
         Prepare(view, clientWidth / scale, clientHeight / scale);
+        var plan = view.CurrentLayoutPlan
+            ?? throw new SelfCheckException("Compact view did not publish its layout plan.");
+        Require(plan.SizeClass == CompactSizeClass.Standard,
+            $"Compact native client at 800x180 resolved to {plan.SizeClass} instead of Standard.");
 
         var source = InputNonClientPointerSource.GetForWindowId(
             Win32Interop.GetWindowIdFromWindow(host.NativeHandle));
         var caption = source.GetRegionRects(NonClientRegionKind.Caption);
         Require(caption.Length > 0,
             "Compact native Caption drag region was missing.");
-        Require(CaptionContainsDip(caption, 320, 32, scale)
-            && CaptionContainsDip(caption, 80, 154, scale),
-            "Compact Caption did not cover its safe header and left-side drag points.");
-        Require(!CaptionContainsDip(caption, 660, 30, scale)
-            && !CaptionContainsDip(caption, 320, 140, scale),
-            "Compact Caption intercepted Return to full or the seek control.");
+        foreach (var region in plan.CaptionRegions)
+            Require(CaptionContainsDip(caption, region.X + region.Width / 2, region.Y + region.Height / 2, scale),
+                $"Compact Caption did not cover the planned drag region {region}.");
+        Require(plan.Title is { } titleRect && CaptionContainsDip(caption, titleRect.X + titleRect.Width / 2, titleRect.Y + titleRect.Height / 2, scale)
+            && plan.Artwork is { } artworkRect && CaptionContainsDip(caption, artworkRect.X + artworkRect.Width / 2, artworkRect.Y + artworkRect.Height / 2, scale),
+            "Compact Caption did not cover the title and artwork drag areas.");
+        foreach (var (name, rect) in plan.InteractiveRects())
+        {
+            Require(!CaptionContainsDip(caption, rect.X + rect.Width / 2, rect.Y + rect.Height / 2, scale)
+                && !CaptionContainsDip(caption, rect.X + 1, rect.Y + 1, scale)
+                && !CaptionContainsDip(caption, rect.Right - 1, rect.Bottom - 1, scale),
+                $"Compact Caption intercepted {name}.");
+        }
 
         foreach (var border in new[]
         {
@@ -853,6 +1067,128 @@ internal static class CompactViewChecks
                 host.NativeHandle, WmNcHitTest, 0, resizePoint, out var resizeHit)
             && resizeHit.ToInt32() == HtLeft,
             "Compact left resize border did not retain native resize hit testing.");
+    }
+
+    private static readonly (double Width, double Height, CompactSizeClass SizeClass)[] NativeSizeSamples =
+    {
+        (360, 56, CompactSizeClass.Strip), (800, 64, CompactSizeClass.Strip),
+        (800, 120, CompactSizeClass.Compact), (360, 180, CompactSizeClass.Standard),
+        (800, 180, CompactSizeClass.Standard), (1200, 200, CompactSizeClass.Wide),
+        (480, 420, CompactSizeClass.Tall)
+    };
+
+    /// <summary>
+    /// Lays the real XAML surface out at one sample per size class and verifies the arranged controls
+    /// match the plan: hidden controls are collapsed, visible ones sit at their planned bounds without
+    /// overlap, InlineStatus stays under the title, and the seek row keeps its thumb and timestamps.
+    /// </summary>
+    private static void CheckNativeSizeClasses(CompactPlayerView view, IReadOnlyDictionary<string, FrameworkElement> parts)
+    {
+        var scale = view.XamlRoot?.RasterizationScale is > 0 and double rasterization ? rasterization : 1;
+        foreach (var (width, height, expectedClass) in NativeSizeSamples)
+        {
+            var label = $"{width}x{height}";
+            PrepareViewSize(view, width, height);
+            view.SetPreferences(reduceMotion: true, topmost: false);
+            view.UpdateLayout();
+            Require(Math.Abs(view.ActualWidth - width) <= 1 && Math.Abs(view.ActualHeight - height) <= 1,
+                $"Compact {label} check did not receive the requested viewport.");
+            var plan = view.CurrentLayoutPlan
+                ?? throw new SelfCheckException($"Compact {label} did not publish a layout plan.");
+            Require(plan.SizeClass == expectedClass && Math.Abs(plan.Width - width) <= 1
+                && Math.Abs(plan.Height - height) <= 1 && Math.Abs(plan.Scale - scale) < 0.001,
+                $"Compact {label} applied {plan.SizeClass} at {plan.Width}x{plan.Height}@{plan.Scale} instead of {expectedClass}.");
+
+            var arranged = new List<(string Name, FoundationRect Bounds)>();
+            foreach (var (name, rect) in plan.InteractiveRects())
+            {
+                var element = FindOptionalPart(view, name);
+                if (element is null && name == "Playlists") continue;
+                if (element is null) throw new SelfCheckException($"Compact XAML part was not found: {name}.");
+                Require(element.Visibility == Visibility.Visible
+                    && Math.Abs(Canvas.GetLeft(element) - rect.X) < 0.01 && Math.Abs(Canvas.GetTop(element) - rect.Y) < 0.01
+                    && Math.Abs(element.ActualWidth - rect.Width) < 0.01 && Math.Abs(element.ActualHeight - rect.Height) < 0.01,
+                    $"Compact {label}: {name} was not arranged at its planned bounds {rect}.");
+                var bounds = element.TransformToVisual(view).TransformBounds(
+                    new FoundationRect(0, 0, element.ActualWidth, element.ActualHeight));
+                Require(bounds.Left >= -0.01 && bounds.Top >= -0.01
+                    && bounds.Right <= width + 0.01 && bounds.Bottom <= height + 0.01,
+                    $"Compact {label}: {name} was arranged outside the client area.");
+                Require(bounds.Width >= 32 && bounds.Height >= 32,
+                    $"Compact {label}: {name} lost its 32-DIP hit target.");
+                arranged.Add((name, bounds));
+            }
+            for (var first = 0; first < arranged.Count; first++)
+                for (var second = first + 1; second < arranged.Count; second++)
+                {
+                    var a = arranged[first].Bounds;
+                    var b = arranged[second].Bounds;
+                    Require(!(a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top),
+                        $"Compact {label}: {arranged[first].Name} overlaps {arranged[second].Name} on screen.");
+                }
+            foreach (var control in Enum.GetValues<CompactOverflowControl>())
+            {
+                // Playlists is an optional surface part (added by the host tree); the plan reserves its slot regardless.
+                var element = parts.TryGetValue(control.ToString(), out var known) ? known
+                    : FindOptionalPart(view, control.ToString());
+                if (element is null) continue;
+                Require((element.Visibility == Visibility.Collapsed) == plan.Overflow.Contains(control),
+                    $"Compact {label}: {control} visibility disagrees with the More-menu overflow list.");
+            }
+            Require(parts["Artwork"].Visibility == (plan.Artwork is null ? Visibility.Collapsed : Visibility.Visible)
+                && parts["Title"].Visibility == (plan.Title is null ? Visibility.Collapsed : Visibility.Visible),
+                $"Compact {label}: artwork/title visibility disagrees with the plan.");
+
+            if (plan.Title is { } titleRect && parts["InlineStatus"].Visibility == Visibility.Visible)
+            {
+                var status = parts["InlineStatus"];
+                // TextBlock.ActualWidth/ActualHeight report rendered text metrics; the layout slot is Width/Height.
+                Require(Math.Abs(Canvas.GetLeft(status) - titleRect.X) < 0.01
+                    && Math.Abs(status.Width - titleRect.Width) < 0.01
+                    && Math.Abs(Canvas.GetTop(status) - (titleRect.Y + titleRect.Height)) < 0.01
+                    && Math.Abs(status.Height - 16) < 0.01 && status.ActualHeight <= 16.01,
+                    $"Compact {label}: InlineStatus is not one line directly under the title (status left={Canvas.GetLeft(status)}, top={Canvas.GetTop(status)}, slot={status.Width}x{status.Height}; title={titleRect}).");
+            }
+
+            var timerText = FindPart(view, "TimerText");
+            Require(plan.Timer is null || timerText.Visibility == (plan.TimerShowsText ? Visibility.Visible : Visibility.Collapsed),
+                $"Compact {label}: pause-timer label visibility disagrees with the plan.");
+
+            var progressRow = FindPart(view, "ProgressRow");
+            if (plan.Progress is null)
+            {
+                Require(progressRow.Visibility == Visibility.Collapsed,
+                    $"Compact {label}: seek row was not collapsed although the plan hides it.");
+                continue;
+            }
+            Require(progressRow.Visibility == Visibility.Visible
+                && Canvas.GetTop(progressRow) + progressRow.ActualHeight <= height + 0.01,
+                $"Compact {label}: seek row was clipped.");
+            var thumb = FindDescendant<Thumb>(parts["Seek"])
+                ?? throw new SelfCheckException("Compact seek slider did not expose its native thumb.");
+            var thumbBounds = thumb.TransformToVisual(parts["Seek"]).TransformBounds(
+                new FoundationRect(0, 0, thumb.ActualWidth, thumb.ActualHeight));
+            Require(thumbBounds.Top >= 2 && thumbBounds.Bottom + 2 <= parts["Seek"].ActualHeight,
+                $"Compact {label}: seek slider clipped its native thumb or outer border.");
+            Require(parts["Seek"].ActualWidth >= 80,
+                $"Compact {label}: seek slider narrower than 80 DIP.");
+            foreach (var name in new[] { "Elapsed", "Duration" })
+            {
+                var timeLabel = parts[name];
+                Require(timeLabel.Visibility == (plan.ProgressShowsTimes ? Visibility.Visible : Visibility.Collapsed),
+                    $"Compact {label}: timestamp {name} visibility disagrees with the plan.");
+                if (!plan.ProgressShowsTimes) continue;
+                var labelBounds = timeLabel.TransformToVisual(progressRow).TransformBounds(
+                    new FoundationRect(0, 0, timeLabel.ActualWidth, timeLabel.ActualHeight));
+                // Text metrics can be fractional while DesiredSize rounds up to a DIP.
+                Require(Math.Ceiling(timeLabel.ActualHeight) >= timeLabel.DesiredSize.Height
+                    && labelBounds.Top >= 0 && labelBounds.Bottom <= progressRow.ActualHeight,
+                    $"Compact {label}: timestamp {name} was clipped.");
+                Require(Math.Abs(labelBounds.Top + labelBounds.Height / 2 - progressRow.ActualHeight / 2) <= 1,
+                    $"Compact {label}: timestamp {name} was not vertically centered.");
+            }
+        }
+        ReleaseViewSize(view);
     }
 
     private static bool CaptionContainsDip(
@@ -945,6 +1281,26 @@ internal static class CompactViewChecks
         element.UpdateLayout();
         Require(element.ActualWidth > 0 && element.ActualHeight > 0,
             "Compact XAML element did not receive a usable layout.");
+    }
+
+    /// <summary>
+    /// Pins the view to an explicit size so later parent layout passes cannot re-arrange it while a
+    /// size-class assertion runs; <see cref="ReleaseViewSize"/> hands sizing back to the host.
+    /// </summary>
+    private static void PrepareViewSize(CompactPlayerView view, double width, double height)
+    {
+        view.Width = width;
+        view.Height = height;
+        view.UpdateLayout();
+        Require(Math.Abs(view.ActualWidth - width) <= 1 && Math.Abs(view.ActualHeight - height) <= 1,
+            $"Compact view did not take the requested {width}x{height} viewport (got {view.ActualWidth}x{view.ActualHeight}).");
+    }
+
+    private static void ReleaseViewSize(CompactPlayerView view)
+    {
+        view.ClearValue(FrameworkElement.WidthProperty);
+        view.ClearValue(FrameworkElement.HeightProperty);
+        view.UpdateLayout();
     }
 
     private static FrameworkElement FindPart(FrameworkElement root, string name)

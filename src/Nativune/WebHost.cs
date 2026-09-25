@@ -1844,8 +1844,11 @@ public sealed partial class WebHostWindow : Window
         var restored = ShellSettings.RestoreCompactBounds(_settings,
             ToDrawingRectangle(GetWorkArea()), CurrentDpi());
         if (restored.Width <= 0 || restored.Height <= 0) return;
-        var height = Dip(CompactPlayerView.LogicalMinimumHeightValue) + GetNonClientDelta().Y;
-        _appWindow.Resize(new SizeInt32(restored.Width, height));
+        // Saved Compact geometry is the client size; the window may be resized in both directions.
+        var delta = GetNonClientDelta();
+        var width = Math.Max(restored.Width, Dip(CompactPlayerView.LogicalMinimumWidthValue) + delta.X);
+        var height = Math.Max(restored.Height, Dip(CompactPlayerView.LogicalMinimumHeightValue)) + delta.Y;
+        _appWindow.Resize(new SizeInt32(width, height));
         _appWindow.Move(new PointInt32(restored.X, restored.Y));
     }
 
@@ -2048,7 +2051,6 @@ public sealed partial class WebHostWindow : Window
             info.MinTrackSize = new PointI(
                 Dip(CompactPlayerView.LogicalMinimumSize.Width) + delta.X,
                 Dip(CompactPlayerView.LogicalMinimumSize.Height) + delta.Y);
-            info.MaxTrackSize.Y = info.MinTrackSize.Y;
             Marshal.StructureToPtr(info, lParam, false);
             return true;
         }
