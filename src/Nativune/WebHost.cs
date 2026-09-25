@@ -208,6 +208,9 @@ public sealed partial class WebHostWindow : Window
     private bool _statusIsError;
     private int _activationPending;
     private CancellationTokenSource? _updateDownloadCancellation;
+    private readonly UiDispatcherQueueTimer _gcOnHideTimer;
+    private readonly UiDispatcherQueueTimer _trimOnHideTimer;
+    private bool? _windowWasVisible;
     private UiDispatcherQueueTimer? _setupCleanupTimer;
     private long _updateProgressLastBytes;
     private long _updateProgressLastTicks;
@@ -303,6 +306,24 @@ public sealed partial class WebHostWindow : Window
         _releaseUpdateTimer.Interval = ReleaseUpdateCheckInterval;
         _releaseUpdateTimer.IsRepeating = true;
         _releaseUpdateTimer.Tick += (_, _) => _ = CheckForReleaseUpdateAsync(manual: false);
+        _gcOnHideTimer = _dispatcherQueue.CreateTimer();
+        _gcOnHideTimer.Interval = TimeSpan.FromSeconds(3);
+        _gcOnHideTimer.IsRepeating = false;
+        _gcOnHideTimer.Tick += (_, _) =>
+        {
+            if (WindowIsVisible || _closing || _disposed) return;
+            GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        };
+        _trimOnHideTimer = _dispatcherQueue.CreateTimer();
+        _trimOnHideTimer.Interval = TimeSpan.FromSeconds(5);
+        _trimOnHideTimer.IsRepeating = false;
+        _trimOnHideTimer.Tick += (_, _) =>
+        {
+            if (WindowIsVisible || _closing || _disposed) return;
+            if (!SetProcessWorkingSetSizeEx(GetCurrentProcess(), (nint)(-1), (nint)(-1), 0))
+                Console.Error.WriteLine($"Hidden host working-set trim failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
+        };
+        BenchInitialize();
 
         TryInitializeNativeWindow();
         BuildMenus();
@@ -325,6 +346,8 @@ public sealed partial class WebHostWindow : Window
         if (_loaded) return;
         _loaded = true;
         TryInitializeNativeWindow();
+        UpdateWindowVisibilityPolicy();
+        BenchWindowShown();
         if (_settings.TrayEnabled)
             SetTrayEnabled(true);
         ApplyCompactSurface();
@@ -1151,6 +1174,8 @@ public sealed partial class WebHostWindow : Window
     private void OnAppWindowChanged(object? sender, EventArgs args)
     {
         if (_disposed || _closing) return;
+        UpdateWindowVisibilityPolicy();
+        BenchWindowShown();
         _windowMaximized = _presenter?.State == OverlappedPresenterState.Maximized;
         if (!_fullscreen)
             ScheduleSettings();
@@ -1363,6 +1388,23 @@ public sealed partial class WebHostWindow : Window
         try { _browserHost.SetVisible(BrowserShouldBeVisible); }
         catch (Exception) when (_closing || _disposed) { }
     }
+    private bool WindowIsVisible
+        => _appWindow?.IsVisible == true && _presenter?.State != OverlappedPresenterState.Minimized;
+
+    // After a genuine hide (tray or minimize) the host runs one aggressive GC and one working-set trim;
+    // showing the window again stops both. Visible Compact is a visible window and never qualifies.
+    private void UpdateWindowVisibilityPolicy()
+    {
+        var visible = WindowIsVisible;
+        var wasVisible = _windowWasVisible;
+        _windowWasVisible = visible;
+        if (wasVisible == visible) return;
+        _gcOnHideTimer.Stop();
+        _trimOnHideTimer.Stop();
+        if (visible || wasVisible != true) return;
+        _gcOnHideTimer.Start();
+        _trimOnHideTimer.Start();
+    }
 
     private void UpdateNavigation()
     {
@@ -1414,10 +1456,12 @@ public sealed partial class WebHostWindow : Window
         try
         {
             var runtimeDirectory = ResolveRuntimeDirectory(_root);
+            var browserArguments = BrowserArguments(_settings.SleepInBackground);
+            BenchStart(ref browserArguments);
             var options = new CoreWebView2EnvironmentOptions
             {
                 AreBrowserExtensionsEnabled = true,
-                AdditionalBrowserArguments = BrowserArguments(_settings.SleepInBackground)
+                AdditionalBrowserArguments = browserArguments
             };
             if (runtimeDirectory is null)
                 options.ReleaseChannels = CoreWebView2ReleaseChannels.Stable;
@@ -1434,6 +1478,7 @@ public sealed partial class WebHostWindow : Window
                 : CoreWebView2Environment.CreateWithOptionsAsync(runtimeDirectory, profileDirectory, options).AsTask();
             var environment = await AwaitBoundedAsync(
                 environmentCreation, TimeSpan.FromSeconds(30), lifetimeToken);
+            BenchEnvironmentCreated();
             if (!CanContinueInitialization(lifetimeToken))
                 return;
 
@@ -1444,6 +1489,7 @@ public sealed partial class WebHostWindow : Window
             var host = await NativeBrowserHost.CreateAsync(
                 environment, NativeHandle, WebViewSlot, lifetimeToken,
                 cleanup => _lateBrowserCleanupTask = cleanup);
+            BenchControllerCreated();
             if (!CanContinueInitialization(lifetimeToken))
             {
                 host.Dispose();
@@ -1463,6 +1509,7 @@ public sealed partial class WebHostWindow : Window
             core.Settings.IsWebMessageEnabled = false;
             host.ZoomFactor = _settings.Zoom;
             environment.ProcessInfosChanged += (_, _) => OnProcessInfosChanged();
+            BenchMuteOutput();
             StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
@@ -1520,7 +1567,9 @@ public sealed partial class WebHostWindow : Window
             UpdateBrowserVisibility();
             if (!CanContinueInitialization(lifetimeToken))
                 return;
-            core.Navigate(_settings.StartupUri);
+            var startupUri = _settings.StartupUri;
+            BenchStartUri(ref startupUri);
+            core.Navigate(startupUri);
             UpdateNavigation();
         }
         catch (OperationCanceledException) when (lifetimeToken.IsCancellationRequested || _closing || _disposed) { }
@@ -1666,8 +1715,23 @@ public sealed partial class WebHostWindow : Window
             SetStatus("Navigation completed. Account and playback remain website-owned.");
             ObserveSection();
             Console.WriteLine("Embedded web page ready.");
+            BenchNavigationCompleted();
         }
     }
+
+    // Perf bench seam: WebHost.Bench.cs implements these only under NATIVUNE_PERF_BENCH_HOOKS.
+    // Without an implementation the compiler removes the declarations and every call site.
+    partial void BenchInitialize();
+    partial void BenchStart(ref string browserArguments);
+    partial void BenchEnvironmentCreated();
+    partial void BenchControllerCreated();
+    partial void BenchMuteOutput();
+    partial void BenchStartUri(ref string uri);
+    partial void BenchWindowShown();
+    partial void BenchNavigationCompleted();
+    partial void BenchCompactRequested(bool compact);
+    partial void BenchPresentationChanged();
+    partial void BenchStopTimers();
 
     private void OnNewWindowRequested(CoreWebView2NewWindowRequestedEventArgs args)
     {
@@ -2183,6 +2247,7 @@ public sealed partial class WebHostWindow : Window
         {
             CaptureSettings();
             _appWindow.Hide();
+            UpdateWindowVisibilityPolicy();
             UpdateBrowserVisibility();
             return !_appWindow.IsVisible;
         }
@@ -2209,6 +2274,7 @@ public sealed partial class WebHostWindow : Window
             TryInitializeNativeWindow();
             _appWindow?.Show();
             Activate();
+            BenchWindowShown();
             UpdateBrowserVisibility();
             if (NativeHandle != 0) FlashWindow(NativeHandle, true);
         });
@@ -2219,6 +2285,7 @@ public sealed partial class WebHostWindow : Window
     private void SetCompact(bool compact, bool preserveStartupIntent)
     {
         if (_closing || _disposed) return;
+        BenchCompactRequested(compact);
         if (!compact)
         {
             _compactWhenReady = false;
@@ -2286,6 +2353,7 @@ public sealed partial class WebHostWindow : Window
         _compactModeGeneration++;
         UpdateWindowPresentation();
         CaptureSettings();
+        BenchPresentationChanged();
     }
 
     private void ToggleFullscreen()
@@ -2677,6 +2745,9 @@ public sealed partial class WebHostWindow : Window
         try { _compactUpdateNoticeTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _taskbarErrorTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _setupCleanupTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        BenchStopTimers();
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
         try { await WaitForInitializationAsync(); }
         catch (Exception ex) { RememberFailure(ex); }
@@ -3026,5 +3097,8 @@ public sealed partial class WebHostWindow : Window
     [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, bool inheritHandle, int processId);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetProcessInformation(SafeProcessHandle process, int informationClass, ref PowerThrottlingState information, int informationSize);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetPriorityClass(SafeProcessHandle process, uint priorityClass);
+    [DllImport("kernel32.dll")] private static extern nint GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessWorkingSetSizeEx(nint process, nint minimumWorkingSetSize, nint maximumWorkingSetSize, uint flags);
 
 }

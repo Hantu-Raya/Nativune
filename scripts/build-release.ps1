@@ -2,7 +2,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidatePattern('^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$')]
-    [string] $Version = '0.1.17',
+    [string] $Version = '0.1.18',
     [ValidateSet('Debug', 'Release')]
     [string] $Configuration = 'Release',
     [ValidatePattern('^artifacts[/\\][A-Za-z0-9._-]+$')]
@@ -382,7 +382,7 @@ try {
     Assert-RegularFile $webView2Notice 'The WebView2 notice'
     Push-Location $repository
     try {
-        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -o $appPublishRoot
+        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -p:PerfBenchHooks=false -o $appPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
         Assert-NoBundledAppRuntime $appPublishRoot 'The published Nativune app'
         & $dotnetExecutable publish $installerProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -p:InstallerTestHooks=false -o $setupPublishRoot
@@ -398,9 +398,9 @@ try {
     Assert-RegularFile $appExecutable 'The published Nativune executable'
     $stubPath = Join-Path $setupPublishRoot 'Nativune.Setup.exe'
     Assert-RegularFile $stubPath 'The published setup stub'
-    # Test seams must be compiled out of public builds (UpdaterTestHooks/InstallerTestHooks=false above).
+    # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/InstallerTestHooks=false above).
     $seamChecks = @(
-        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL') },
+        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_') },
         @{ Path = $stubPath; Markers = @('--test-prerequisites') }
     )
     foreach ($check in $seamChecks) {

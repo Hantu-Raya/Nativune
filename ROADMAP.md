@@ -6,7 +6,7 @@ This roadmap names areas for future work; it is not a release schedule or a prom
 
 - Add Authenticode signing for the installer.
 - Validate installation on clean Windows systems and establish a supported installation matrix.
-- Measure long-session stability and complete-process resource use.
+- Measure long-session stability and complete-process resource use. A short benchmark (`scripts/bench-perf.ps1`) exists; long sessions and signed-in use are not yet measured.
 - Review accessibility, keyboard and screen-reader use, and high-contrast appearance.
 
 ## Known limitations
