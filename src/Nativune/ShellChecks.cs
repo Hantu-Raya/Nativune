@@ -139,6 +139,7 @@ internal static class ShellChecks
         }
         catch (ArgumentOutOfRangeException) { }
 
+        CheckReleaseUpdateButtonPresentations();
         ShortcutChecks.Run();
         CompactViewChecks.Run();
         CompactPlaybackChecks.Run();
@@ -146,6 +147,87 @@ internal static class ShellChecks
         Console.WriteLine("Shell checks passed: persisted settings, DPI/off-screen repair, corrupt/oversized input, cancelled writes, timer cancellation and WinUI native lifecycle.");
     }
 
+
+    private static void CheckReleaseUpdateButtonPresentations()
+    {
+        var version = "v0.1.17";
+        var expected = new Dictionary<ReleaseUpdateButtonState, (string Icon, bool Enabled)>
+        {
+            [ReleaseUpdateButtonState.NotChecked] = ("update", true),
+            [ReleaseUpdateButtonState.NotInstalled] = ("update", true),
+            [ReleaseUpdateButtonState.Checking] = ("update", false),
+            [ReleaseUpdateButtonState.Available] = ("update-available", true),
+            [ReleaseUpdateButtonState.UpToDate] = ("update", true),
+            [ReleaseUpdateButtonState.Failed] = ("update", true),
+            [ReleaseUpdateButtonState.Downloading] = ("update-available", true),
+            [ReleaseUpdateButtonState.Verifying] = ("update", false),
+            [ReleaseUpdateButtonState.Launching] = ("update", false),
+        };
+        foreach (var (state, values) in expected)
+        {
+            var presentation = WebHostWindow.GetReleaseUpdateButtonPresentation(state, version);
+            Require(presentation.IconName == values.Icon && presentation.IsEnabled == values.Enabled
+                && !string.IsNullOrWhiteSpace(presentation.Tooltip),
+                $"Update button presentation was incomplete for {state}.");
+        }
+
+        using var icons = new NativeIconCache();
+        using var taskbar = new TaskbarControls(0, _ => { }, icons, 96, Color.White);
+        taskbar.SetProgress(42, 100);
+        taskbar.SetProgressState(TaskbarControls.TaskbarProgressState.Normal);
+    }
+
+    private static void CheckUpdateFeedback(WebHostWindow host)
+    {
+        const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+        const string notice = "Downloading update · 42 % · 4.1 MB/s";
+        var update = new ReleaseUpdateResult(ReleaseUpdateStatus.Available, "v0.1.17",
+            "https://github.com/example/Nativune-Setup.exe", null, 100, new string('0', 64), null);
+        var apply = typeof(WebHostWindow).GetMethod("ApplyUpdateFeedback", privateInstance)
+            ?? throw new SelfCheckException("Update feedback owner was unavailable.");
+        apply.Invoke(host,
+        [
+            ReleaseUpdateButtonState.Downloading,
+            update,
+            new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, 42, 100),
+            null,
+            true,
+            notice,
+            false
+        ]);
+
+        var bar = FindElement((DependencyObject)host.Content!, "UpdateInfoBar") as InfoBar;
+        ((FrameworkElement)host.Content!).UpdateLayout();
+        bar?.UpdateLayout();
+        var progress = (bar?.Content as StackPanel)?.Children.OfType<ProgressBar>().FirstOrDefault();
+        Require(bar is { IsOpen: true } && bar.Title.Contains("v0.1.17", StringComparison.Ordinal)
+            && bar.Message.Contains("42", StringComparison.Ordinal)
+            && progress is { IsIndeterminate: false } && Math.Abs(progress.Value - 42) < 0.01,
+            "Download feedback did not update the InfoBar title, message, and progress.");
+        var compact = FindElement((DependencyObject)host.Content!, "CompactView") as CompactPlayerView;
+        var compactNotice = typeof(CompactPlayerView).GetField("_updateNotice", privateInstance)
+            ?.GetValue(compact) as string;
+        Require(compactNotice == notice, "Compact did not receive the persistent update notice.");
+
+        bar!.IsOpen = false;
+        compact!.SetUpdateProgress(null, false);
+        var taskbar = typeof(WebHostWindow).GetField("_taskbarControls", privateInstance)
+            ?.GetValue(host) as TaskbarControls;
+        taskbar?.SetProgressState(TaskbarControls.TaskbarProgressState.NoProgress);
+        var tray = typeof(WebHostWindow).GetField("_tray", privateInstance)
+            ?.GetValue(host) as NativeTrayIcon;
+        tray?.SetTooltip("Nativune");
+        apply.Invoke(host,
+        [
+            ReleaseUpdateButtonState.NotChecked,
+            null,
+            null,
+            null,
+            false,
+            null,
+            false
+        ]);
+    }
 
     private static void CheckNativeIconSafety()
     {
@@ -321,6 +403,8 @@ internal static class ShellChecks
             host.SetCompact(false);
             await PrepareHostAsync(host);
             Require(!host.IsCompact, "Compact startup fixture did not return to full mode.");
+            phase = "update-feedback";
+            CheckUpdateFeedback(host);
             const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
             foreach (var field in new[] { "_previousItem", "_playPauseItem", "_nextItem" })
             {

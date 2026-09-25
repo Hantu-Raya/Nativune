@@ -398,6 +398,23 @@ try {
     Assert-RegularFile $appExecutable 'The published Nativune executable'
     $stubPath = Join-Path $setupPublishRoot 'Nativune.Setup.exe'
     Assert-RegularFile $stubPath 'The published setup stub'
+    # Test seams must be compiled out of public builds (UpdaterTestHooks/InstallerTestHooks=false above).
+    $seamChecks = @(
+        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL') },
+        @{ Path = $stubPath; Markers = @('--test-prerequisites') }
+    )
+    foreach ($check in $seamChecks) {
+        $bytes = [IO.File]::ReadAllBytes($check.Path)
+        foreach ($marker in $check.Markers) {
+            foreach ($encoding in @([Text.Encoding]::UTF8, [Text.Encoding]::Unicode)) {
+                $needle = $encoding.GetBytes($marker)
+                $text = [Text.Encoding]::Latin1.GetString($bytes)
+                if ($text.Contains([Text.Encoding]::Latin1.GetString($needle), [StringComparison]::Ordinal)) {
+                    throw "A test seam ($marker) is present in $($check.Path)."
+                }
+            }
+        }
+    }
 
     $ubolDestination = Join-Path $stageRoot ".tools/ubol/$ubolVersion"
     Copy-TreeContent $ubolSource $ubolDestination

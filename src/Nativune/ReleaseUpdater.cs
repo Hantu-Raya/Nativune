@@ -1,7 +1,9 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -16,6 +18,89 @@ internal enum ReleaseUpdateStatus
     Cancelled,
     Error,
 }
+
+internal enum ReleaseUpdateFailure
+{
+    None,
+    Offline,
+    Timeout,
+    RateLimited,
+    ServerError,
+    InvalidMetadata,
+    SizeMismatch,
+    DigestMismatch,
+    DiskFull,
+    AccessDenied,
+    LaunchFailed,
+    Cancelled,
+}
+
+internal enum ReleaseUpdatePhase
+{
+    Connecting,
+    Downloading,
+    Verifying,
+}
+
+internal readonly record struct ReleaseUpdateProgress(ReleaseUpdatePhase Phase, long Bytes, long Total);
+internal sealed class ReleaseUpdateProgressThrottle
+{
+    private const long MinimumByteDelta = 1024 * 1024;
+    private static readonly long MinimumIntervalTicks = Math.Max(1, Stopwatch.Frequency / 10);
+    private readonly IProgress<ReleaseUpdateProgress>? _progress;
+    private ReleaseUpdateProgress? _lastReported;
+    private ReleaseUpdateProgress? _pending;
+    private long _lastReportTimestamp;
+
+    internal ReleaseUpdateProgressThrottle(IProgress<ReleaseUpdateProgress>? progress)
+        => _progress = progress;
+
+    internal void Report(ReleaseUpdateProgress value, bool force = false)
+    {
+        _pending = value;
+        if (_progress is null)
+            return;
+
+        var now = Stopwatch.GetTimestamp();
+        var phaseChanged = _lastReported is null || _lastReported.Value.Phase != value.Phase;
+        var bytesAdvanced = _lastReported is { } previous
+            && value.Bytes >= previous.Bytes
+            && value.Bytes - previous.Bytes >= MinimumByteDelta;
+        var intervalElapsed = _lastReported is not null
+            && now - _lastReportTimestamp >= MinimumIntervalTicks;
+        if (force || phaseChanged || bytesAdvanced || intervalElapsed)
+            Send(value, now);
+    }
+
+    internal void Flush()
+    {
+        if (_progress is not null && _pending is { } pending)
+            Send(pending, Stopwatch.GetTimestamp());
+    }
+
+    private void Send(ReleaseUpdateProgress value, long timestamp)
+    {
+        _lastReported = value;
+        _lastReportTimestamp = timestamp;
+        try
+        {
+            _progress?.Report(value);
+        }
+        catch (Exception)
+        {
+        }
+    }
+}
+
+internal readonly record struct ReleaseLaunchResult(bool Started, int? Win32Error);
+internal sealed record ReleaseUpdateOutcome(
+    string? FromVersion,
+    string ToVersion,
+    string Status,
+    int ExitCode,
+    string? Message,
+    DateTimeOffset CompletedUtc);
+
 internal sealed record ReleaseUpdateResult(
     ReleaseUpdateStatus Status,
     string? Version,
@@ -31,6 +116,10 @@ internal sealed record ReleaseUpdateResult(
         && Size > 0
         && Sha256 is not null;
 
+    internal ReleaseUpdateFailure Failure { get; init; }
+    internal int? HttpStatus { get; init; }
+    internal DateTimeOffset? RateLimitResetUtc { get; init; }
+
     // Offered release's own notes (fallback) and the installed version, for the change summary.
     internal string? ReleaseNotes { get; init; }
     internal string? InstalledVersion { get; init; }
@@ -42,10 +131,38 @@ internal sealed record ReleaseUpdateResult(
         => new(ReleaseUpdateStatus.NotInstalled, null, null, null, 0, null, null);
 
     internal static ReleaseUpdateResult Cancelled()
-        => new(ReleaseUpdateStatus.Cancelled, null, null, null, 0, null, null);
+        => new(ReleaseUpdateStatus.Cancelled, null, null, null, 0, null, null)
+        {
+            Failure = ReleaseUpdateFailure.Cancelled,
+        };
 
-    internal static ReleaseUpdateResult ErrorResult()
-        => new(ReleaseUpdateStatus.Error, null, null, null, 0, null, "Update check unavailable.");
+    internal static ReleaseUpdateResult ErrorResult(
+        ReleaseUpdateFailure failure = ReleaseUpdateFailure.InvalidMetadata,
+        int? httpStatus = null,
+        DateTimeOffset? rateLimitResetUtc = null)
+    {
+        if (failure is ReleaseUpdateFailure.None or ReleaseUpdateFailure.Cancelled)
+            failure = ReleaseUpdateFailure.InvalidMetadata;
+        var error = failure switch
+        {
+            ReleaseUpdateFailure.Offline => "Update service is offline.",
+            ReleaseUpdateFailure.Timeout => "Update request timed out.",
+            ReleaseUpdateFailure.RateLimited => "Update service is rate limited.",
+            ReleaseUpdateFailure.ServerError => "Update service returned a server error.",
+            ReleaseUpdateFailure.SizeMismatch => "Update download size did not match.",
+            ReleaseUpdateFailure.DigestMismatch => "Update download checksum did not match.",
+            ReleaseUpdateFailure.DiskFull => "Not enough disk space for the update.",
+            ReleaseUpdateFailure.AccessDenied => "Nativune cannot write to its updates folder.",
+            ReleaseUpdateFailure.LaunchFailed => "Nativune Setup could not be started.",
+            _ => "Update check unavailable.",
+        };
+        return new ReleaseUpdateResult(ReleaseUpdateStatus.Error, null, null, null, 0, null, error)
+        {
+            Failure = failure,
+            HttpStatus = httpStatus,
+            RateLimitResetUtc = rateLimitResetUtc,
+        };
+    }
 }
 
 internal enum ReleaseSelectionDisposition
@@ -237,6 +354,8 @@ internal static class ReleaseUpdater
     private static string UserAgent => $"{Product}/{AppVersion.Number}";
     private const long MaxReleaseMetadataBytes = 1 * 1024 * 1024;
     private const long MaxAssetBytes = 1024L * 1024 * 1024;
+    private const long MaxUpdateOutcomeBytes = 16 * 1024;
+    private const int MaxUpdateOutcomeMessageCharacters = 4096;
     private static readonly Uri LatestReleaseUri = new("https://api.github.com/repos/Hantu-Raya/Nativune/releases/latest");
     private static readonly TimeSpan MetadataTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(30);
@@ -258,7 +377,13 @@ internal static class ReleaseUpdater
             using var request = new HttpRequestMessage(HttpMethod.Get, metadataUri);
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
-                return ReleaseUpdateResult.ErrorResult();
+            {
+                var classification = ClassifyHttpResponse((int)response.StatusCode, ReadResponseHeaders(response));
+                return ReleaseUpdateResult.ErrorResult(
+                    classification.Failure,
+                    (int)response.StatusCode,
+                    classification.RateLimitResetUtc);
+            }
 
             var body = await ReadBoundedAsync(
                 await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false),
@@ -288,9 +413,194 @@ internal static class ReleaseUpdater
         {
             return ReleaseUpdateResult.Cancelled();
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            return ReleaseUpdateResult.ErrorResult();
+            return ReleaseUpdateResult.ErrorResult(ClassifyException(error));
+        }
+    }
+
+    internal static ReleaseUpdateFailure ClassifyException(Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        for (Exception? current = error; current is not null; current = current.InnerException)
+        {
+            if (current is SocketException or HttpRequestException)
+                return ReleaseUpdateFailure.Offline;
+            if (current is UnauthorizedAccessException)
+                return ReleaseUpdateFailure.AccessDenied;
+            if (current is IOException io
+                && (io.HResult == unchecked((int)0x80070070)
+                    || io.HResult == unchecked((int)0x80070027)))
+                return ReleaseUpdateFailure.DiskFull;
+        }
+        if (error is OperationCanceledException)
+            return ReleaseUpdateFailure.Timeout;
+        return ReleaseUpdateFailure.InvalidMetadata;
+    }
+
+    internal static ReleaseUpdateFailure ClassifyDownloadBodyException(Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        for (Exception? current = error; current is not null; current = current.InnerException)
+        {
+            if (current is UnauthorizedAccessException)
+                return ReleaseUpdateFailure.AccessDenied;
+            if (current is IOException io
+                && (io.HResult == unchecked((int)0x80070070)
+                    || io.HResult == unchecked((int)0x80070027)))
+                return ReleaseUpdateFailure.DiskFull;
+        }
+        for (Exception? current = error; current is not null; current = current.InnerException)
+        {
+            if (current is IOException)
+                return ReleaseUpdateFailure.Offline;
+        }
+        return ClassifyException(error);
+    }
+
+    internal static (ReleaseUpdateFailure Failure, DateTimeOffset? RateLimitResetUtc) ClassifyHttpResponse(
+        int statusCode,
+        IReadOnlyDictionary<string, string?> headers)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+        if (statusCode == 429
+            || (statusCode == 403
+                && TryGetHeader(headers, "X-RateLimit-Remaining", out var remaining)
+                && remaining.Trim().Equals("0", StringComparison.Ordinal)))
+        {
+            DateTimeOffset? resetUtc = null;
+            if (TryGetHeader(headers, "X-RateLimit-Reset", out var resetText)
+                && long.TryParse(resetText.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var resetSeconds))
+            {
+                try { resetUtc = DateTimeOffset.FromUnixTimeSeconds(resetSeconds); }
+                catch (ArgumentOutOfRangeException) { }
+            }
+            return (ReleaseUpdateFailure.RateLimited, resetUtc);
+        }
+        if (statusCode is >= 500 and <= 599)
+            return (ReleaseUpdateFailure.ServerError, null);
+        return (ReleaseUpdateFailure.InvalidMetadata, null);
+    }
+
+    private static IReadOnlyDictionary<string, string?> ReadResponseHeaders(HttpResponseMessage response)
+    {
+        var headers = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in response.Headers)
+            headers[header.Key] = string.Join(",", header.Value);
+        return headers;
+    }
+
+    private static bool TryGetHeader(IReadOnlyDictionary<string, string?> headers, string name, out string value)
+    {
+        foreach (var header in headers)
+        {
+            if (!header.Key.Equals(name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            value = header.Value ?? string.Empty;
+            return true;
+        }
+        value = string.Empty;
+        return false;
+    }
+
+    internal static string FormatBytes(long bytes)
+    {
+        var value = Math.Max(0, bytes);
+        if (value >= 100_000_000)
+            return (value / 1_000_000d).ToString("0", CultureInfo.InvariantCulture) + " MB";
+        if (value >= 1_000_000)
+            return (value / 1_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + " MB";
+        if (value >= 1_000)
+            return (value / 1_000d).ToString("0", CultureInfo.InvariantCulture) + " KB";
+        return value.ToString(CultureInfo.InvariantCulture) + " B";
+    }
+
+    internal static string FormatSpeed(double bytesPerSecond)
+    {
+        if (double.IsNaN(bytesPerSecond) || double.IsInfinity(bytesPerSecond) || bytesPerSecond <= 0)
+            return "0.0 MB/s";
+        return (bytesPerSecond / 1_000_000d).ToString("0.0", CultureInfo.InvariantCulture) + " MB/s";
+    }
+
+    internal static string? FormatEta(TimeSpan? remaining)
+    {
+        if (remaining is null || remaining.Value < TimeSpan.Zero)
+            return null;
+        var seconds = Math.Ceiling(remaining.Value.TotalSeconds);
+        if (seconds < 60)
+            return $"about {Math.Max(1, (long)seconds).ToString(CultureInfo.InvariantCulture)} s left";
+        var minutes = Math.Ceiling(seconds / 60d);
+        if (minutes < 60)
+            return $"about {minutes.ToString(CultureInfo.InvariantCulture)} min left";
+        var hours = Math.Ceiling(minutes / 60d);
+        return $"about {hours.ToString(CultureInfo.InvariantCulture)} h left";
+    }
+
+    internal static (string Title, string Message) DescribeFailure(
+        ReleaseUpdateFailure failure,
+        bool duringDownload,
+        string? version,
+        int? httpStatus,
+        DateTimeOffset? rateLimitResetUtc,
+        TimeZoneInfo? zone = null,
+        long? downloadBytes = null,
+        string? updatesPath = null)
+    {
+        var checkTitle = "Couldn't check for updates";
+        var downloadTitle = "Update download failed";
+        var hasVersion = ReleaseVersion.TryParse(version, requireVPrefix: true, out var parsedVersion);
+        var versionText = hasVersion ? parsedVersion.ToTagString() : null;
+        var title = failure switch
+        {
+            ReleaseUpdateFailure.Offline or ReleaseUpdateFailure.Timeout
+                or ReleaseUpdateFailure.ServerError or ReleaseUpdateFailure.InvalidMetadata
+                => duringDownload ? downloadTitle : checkTitle,
+            ReleaseUpdateFailure.RateLimited => checkTitle,
+            ReleaseUpdateFailure.SizeMismatch or ReleaseUpdateFailure.DiskFull or ReleaseUpdateFailure.AccessDenied
+                => downloadTitle,
+            ReleaseUpdateFailure.DigestMismatch => "Update download rejected",
+            ReleaseUpdateFailure.LaunchFailed => "Setup couldn't start",
+            ReleaseUpdateFailure.Cancelled => "Update download cancelled",
+            _ => downloadTitle,
+        };
+        var message = failure switch
+        {
+            ReleaseUpdateFailure.Offline when duringDownload => "The download was interrupted. Check your connection and try again.",
+            ReleaseUpdateFailure.Offline => "No internet connection. Check your connection and try again.",
+            ReleaseUpdateFailure.Timeout => "GitHub didn't answer in time. Try again in a few minutes.",
+            ReleaseUpdateFailure.RateLimited => RateLimitMessage(rateLimitResetUtc, zone),
+            ReleaseUpdateFailure.ServerError => httpStatus is { } status
+                ? $"GitHub is having trouble right now (HTTP {status.ToString(CultureInfo.InvariantCulture)}). Try again later."
+                : "GitHub is having trouble right now. Try again later.",
+            ReleaseUpdateFailure.InvalidMetadata => "The release information couldn't be read. Nothing was changed.",
+            ReleaseUpdateFailure.SizeMismatch => "The download was the wrong size and was discarded. Nothing was installed. Try again.",
+            ReleaseUpdateFailure.DigestMismatch => versionText is null
+                ? "The downloaded Setup didn't match the checksum published for this release, so it was deleted. Nothing was installed. Try again later; if this keeps happening, download Setup from the GitHub Releases page."
+                : $"The downloaded Setup didn't match the checksum published for {versionText}, so it was deleted. Nothing was installed. Try again later; if this keeps happening, download Setup from the GitHub Releases page.",
+            ReleaseUpdateFailure.DiskFull => downloadBytes is { } bytes
+                ? $"Not enough free space for the {FormatBytes(bytes)} download. Free some space and try again."
+                : "Not enough free space for the download. Free some space and try again.",
+            ReleaseUpdateFailure.AccessDenied => updatesPath is { Length: > 0 } path
+                ? $"Nativune can't write to its updates folder ({path}). Check the folder's permissions."
+                : "Nativune can't write to its updates folder. Check the folder's permissions.",
+            ReleaseUpdateFailure.Cancelled => "Nothing was changed.",
+            _ => "The update couldn't be completed. Nothing was changed.",
+        };
+        return (title, message);
+    }
+
+    private static string RateLimitMessage(DateTimeOffset? resetUtc, TimeZoneInfo? zone)
+    {
+        if (resetUtc is null)
+            return "GitHub is limiting update checks from this network.";
+        try
+        {
+            var resetLocal = TimeZoneInfo.ConvertTime(resetUtc.Value, zone ?? TimeZoneInfo.Local);
+            return $"GitHub is limiting update checks from this network. Try again after {resetLocal.ToString("HH:mm", CultureInfo.InvariantCulture)}.";
+        }
+        catch (ArgumentException)
+        {
+            return "GitHub is limiting update checks from this network.";
         }
     }
 
@@ -446,8 +756,12 @@ internal static class ReleaseUpdater
     internal static async Task<ReleaseUpdateResult> DownloadAsync(
         string root,
         ReleaseUpdateResult update,
+        IProgress<ReleaseUpdateProgress>? progress,
         CancellationToken cancellationToken)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return ReleaseUpdateResult.Cancelled();
+
         if (!update.IsAvailable
             || update.Version is null
             || update.DownloadUrl is null
@@ -460,22 +774,25 @@ internal static class ReleaseUpdater
             || update.Size > MaxAssetBytes)
             return ReleaseUpdateResult.ErrorResult();
 
+        var progressThrottle = new ReleaseUpdateProgressThrottle(progress);
         try
         {
             using var client = CreateHttpClient();
             var selection = new ReleaseSelection(version, update.DownloadUrl, update.Size, update.Sha256);
-            var setupPath = await DownloadVerifiedAsync(root, selection, client, cancellationToken).ConfigureAwait(false);
-            return setupPath is null
-                ? ReleaseUpdateResult.ErrorResult()
-                : update with { SetupPath = setupPath };
+            return await DownloadVerifiedAsync(root, update, selection, client, progressThrottle, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return ReleaseUpdateResult.None();
+            return ReleaseUpdateResult.Cancelled();
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            return ReleaseUpdateResult.ErrorResult();
+            return ReleaseUpdateResult.ErrorResult(ClassifyException(error));
+        }
+        finally
+        {
+            progressThrottle.Flush();
         }
     }
 
@@ -576,14 +893,14 @@ internal static class ReleaseUpdater
         ];
     }
 
-    internal static async Task<bool> LaunchVerifiedSetupAsync(
+    internal static async Task<ReleaseLaunchResult> LaunchVerifiedSetupAsync(
         ReleaseUpdateResult update,
         string root,
         int waitPid,
         CancellationToken cancellationToken)
     {
         if (!update.IsAvailable || update.SetupPath is null || update.Sha256 is null || update.Size <= 0 || waitPid <= 0)
-            return false;
+            return new ReleaseLaunchResult(false, null);
 
         try
         {
@@ -592,15 +909,15 @@ internal static class ReleaseUpdater
                 || !ReleaseVersion.TryParse(update.Version, requireVPrefix: true, out var selectedVersion)
                 || selectedVersion.IsPrerelease
                 || selectedVersion.CompareTo(installed.Version) <= 0)
-                return false;
+                return new ReleaseLaunchResult(false, null);
             var updatesPath = Path.Combine(rootPath, "updates");
             if (!Directory.Exists(updatesPath) || HasReparsePointInChain(updatesPath))
-                return false;
+                return new ReleaseLaunchResult(false, null);
             var expectedPath = Path.Combine(updatesPath, SetupName);
             if (!PathsEqual(update.SetupPath, expectedPath) || !IsRegularFile(expectedPath))
-                return false;
+                return new ReleaseLaunchResult(false, null);
             if (!await VerifyFileAsync(expectedPath, update.Size, update.Sha256, cancellationToken).ConfigureAwait(false))
-                return false;
+                return new ReleaseLaunchResult(false, null);
 
             var startInfo = new ProcessStartInfo
             {
@@ -612,16 +929,28 @@ internal static class ReleaseUpdater
             foreach (var argument in BuildUpdateArguments(rootPath, waitPid, update.Version!))
                 startInfo.ArgumentList.Add(argument);
             using var process = Process.Start(startInfo);
-            return process is not null;
+            return new ReleaseLaunchResult(process is not null, null);
+        }
+        catch (Win32Exception error)
+        {
+            return new ReleaseLaunchResult(false, error.NativeErrorCode);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return false;
+            return new ReleaseLaunchResult(false, null);
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            return false;
+            return new ReleaseLaunchResult(false, FindWin32Error(error));
         }
+    }
+
+    private static int? FindWin32Error(Exception error)
+    {
+        for (Exception? current = error; current is not null; current = current.InnerException)
+            if (current is Win32Exception win32)
+                return win32.NativeErrorCode;
+        return null;
     }
 
     private static ReleaseSelectionDisposition SelectRelease(
@@ -696,29 +1025,41 @@ internal static class ReleaseUpdater
         return client;
     }
 
-    private static async Task<string?> DownloadVerifiedAsync(
+    private static async Task<ReleaseUpdateResult> DownloadVerifiedAsync(
         string root,
+        ReleaseUpdateResult update,
         ReleaseSelection selection,
         HttpClient client,
+        ReleaseUpdateProgressThrottle progress,
         CancellationToken cancellationToken)
     {
         string? stagingPath = null;
         try
         {
-            if (!TryPrepareUpdateDirectory(root, out var updatesDirectory, out var finalPath))
-                return null;
+            if (!TryPrepareUpdateDirectory(root, out var updatesDirectory, out var finalPath, out var prepareFailure))
+                return ReleaseUpdateResult.ErrorResult(prepareFailure);
             stagingPath = Path.Combine(updatesDirectory, $".{SetupName}.{Guid.NewGuid():N}.tmp");
-            if (!IsContained(updatesDirectory, stagingPath)) return null;
+            if (!IsContained(updatesDirectory, stagingPath))
+                return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.AccessDenied);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(DownloadTimeout);
             using var request = new HttpRequestMessage(HttpMethod.Get, selection.DownloadUrl);
+            progress.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Connecting, 0, selection.Size), force: true);
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return null;
+            {
+                var classification = ClassifyHttpResponse((int)response.StatusCode, ReadResponseHeaders(response));
+                return ReleaseUpdateResult.ErrorResult(
+                    classification.Failure,
+                    (int)response.StatusCode,
+                    classification.RateLimitResetUtc);
+            }
             if (response.Content.Headers.ContentLength is { } contentLength && contentLength != selection.Size)
-                return null;
+                return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.SizeMismatch);
 
+            try
+            {
             await using (var input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false))
             await using (var output = new FileStream(
                 stagingPath,
@@ -731,42 +1072,41 @@ internal static class ReleaseUpdater
             {
                 var buffer = new byte[64 * 1024];
                 long total = 0;
+                progress.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, 0, selection.Size), force: true);
                 while (true)
                 {
                     var read = await input.ReadAsync(buffer.AsMemory(), timeout.Token).ConfigureAwait(false);
                     if (read == 0) break;
                     if (read > selection.Size - total)
-                        return null;
+                        return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.SizeMismatch);
                     await output.WriteAsync(buffer.AsMemory(0, read), timeout.Token).ConfigureAwait(false);
                     hash.AppendData(buffer, 0, read);
                     total += read;
+                    progress.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, total, selection.Size));
                 }
 
                 if (total != selection.Size)
-                    return null;
+                    return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.SizeMismatch);
+                timeout.Token.ThrowIfCancellationRequested();
+                progress.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Verifying, total, selection.Size), force: true);
                 var actual = Convert.ToHexString(hash.GetHashAndReset());
                 if (!CryptographicOperations.FixedTimeEquals(
                         Encoding.ASCII.GetBytes(actual),
                         Encoding.ASCII.GetBytes(selection.Sha256["sha256:".Length..].ToUpperInvariant())))
-                    return null;
-                await output.FlushAsync(timeout.Token).ConfigureAwait(false);
+                    return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.DigestMismatch);
+                await output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
                 output.Flush(flushToDisk: true);
+            }
+            }
+            catch (IOException error)
+            {
+                return ReleaseUpdateResult.ErrorResult(ClassifyDownloadBodyException(error));
             }
 
             if (!AtomicInstall(stagingPath, finalPath))
-                return null;
+                return ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.AccessDenied);
             stagingPath = null;
-            return await VerifyFileAsync(finalPath, selection.Size, selection.Sha256, timeout.Token).ConfigureAwait(false)
-                ? finalPath
-                : null;
-        }
-        catch (Exception) when (cancellationToken.IsCancellationRequested)
-        {
-            return null;
-        }
-        catch (Exception)
-        {
-            return null;
+            return update with { SetupPath = finalPath };
         }
         finally
         {
@@ -782,10 +1122,15 @@ internal static class ReleaseUpdater
         }
     }
 
-    private static bool TryPrepareUpdateDirectory(string root, out string updatesDirectory, out string finalPath)
+    private static bool TryPrepareUpdateDirectory(
+        string root,
+        out string updatesDirectory,
+        out string finalPath,
+        out ReleaseUpdateFailure failure)
     {
         updatesDirectory = string.Empty;
         finalPath = string.Empty;
+        failure = ReleaseUpdateFailure.AccessDenied;
         try
         {
             var rootPath = Path.GetFullPath(root);
@@ -805,51 +1150,41 @@ internal static class ReleaseUpdater
             RemoveStaleDownloadFiles(updatesDirectory);
             finalPath = Path.GetFullPath(Path.Combine(updatesDirectory, SetupName));
             if (!IsContained(updatesDirectory, finalPath) || HasReparsePointInChain(finalPath)) return false;
-            if (TryGetAttributes(finalPath, out var attributes))
-            {
-                if ((attributes & FileAttributes.ReparsePoint) != 0
-                    || (attributes & FileAttributes.Directory) != 0)
-                    return false;
-            }
+            if (TryGetAttributes(finalPath, out var attributes)
+                && (attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                return false;
+            failure = ReleaseUpdateFailure.None;
             return true;
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            failure = ClassifyException(error);
             return false;
         }
     }
 
     private static bool AtomicInstall(string stagingPath, string finalPath)
     {
-        try
+        if (!IsRegularFile(stagingPath)) return false;
+        if (TryGetAttributes(finalPath, out var attributes))
         {
-            if (!IsRegularFile(stagingPath)) return false;
-            if (TryGetAttributes(finalPath, out var attributes))
+            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                return false;
+            try
             {
-                if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
-                    return false;
                 File.Replace(stagingPath, finalPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
             }
-            else
-            {
-                File.Move(stagingPath, finalPath);
-            }
-            return IsRegularFile(finalPath);
-        }
-        catch (PlatformNotSupportedException)
-        {
-            try
+            catch (PlatformNotSupportedException)
             {
                 if (!IsRegularFile(stagingPath)) return false;
                 File.Move(stagingPath, finalPath, overwrite: true);
-                return IsRegularFile(finalPath);
             }
-            catch (Exception) { return false; }
         }
-        catch (Exception)
+        else
         {
-            return false;
+            File.Move(stagingPath, finalPath);
         }
+        return IsRegularFile(finalPath);
     }
 
     private static async Task<bool> VerifyFileAsync(
@@ -887,6 +1222,147 @@ internal static class ReleaseUpdater
         catch (Exception) when (cancellationToken.IsCancellationRequested)
         {
             return false;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    internal static ReleaseUpdateOutcome? TryReadUpdateOutcome(string root)
+    {
+        string? rootPath = null;
+        string? updatesDirectory = null;
+        string? outcomePath = null;
+        try
+        {
+            rootPath = Path.GetFullPath(root);
+            if (!Directory.Exists(rootPath) || HasReparsePointInChain(rootPath))
+                return null;
+            updatesDirectory = Path.Combine(rootPath, "updates");
+            if (!Directory.Exists(updatesDirectory) || HasReparsePointInChain(updatesDirectory))
+                return null;
+            outcomePath = Path.Combine(updatesDirectory, "last-update.json");
+            if (!IsRegularFile(outcomePath))
+                return null;
+            return ParseUpdateOutcome(ReadBoundedFile(outcomePath, MaxUpdateOutcomeBytes));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            if (rootPath is not null && updatesDirectory is not null && outcomePath is not null)
+                TryDeleteUpdateOutcomeEntry(rootPath, updatesDirectory, outcomePath);
+        }
+    }
+
+    private static ReleaseUpdateOutcome? ParseUpdateOutcome(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 8 });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            return null;
+        var fields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var property in root.EnumerateObject())
+            if (!fields.TryAdd(property.Name, property.Value))
+                return null;
+        if (fields.Count != 7
+            || !fields.ContainsKey("schemaVersion")
+            || !fields.ContainsKey("fromVersion")
+            || !fields.ContainsKey("toVersion")
+            || !fields.ContainsKey("status")
+            || !fields.ContainsKey("exitCode")
+            || !fields.ContainsKey("message")
+            || !fields.ContainsKey("completedUtc")
+            || !TryGetInt32(root, "schemaVersion", out var schemaVersion)
+            || schemaVersion != 1
+            || !TryGetString(root, "toVersion", out var toVersionText)
+            || !ReleaseVersion.TryParse(toVersionText, requireVPrefix: false, out var toVersion)
+            || toVersion.IsPrerelease
+            || !TryGetString(root, "status", out var status)
+            || status is not ("success" or "installed" or "cancelled" or "failed")
+            || !TryGetInt32(root, "exitCode", out var exitCode)
+            || fields["completedUtc"].ValueKind != JsonValueKind.String
+            || !fields["completedUtc"].TryGetDateTimeOffset(out var completedUtc)
+            || completedUtc.Offset != TimeSpan.Zero)
+            return null;
+
+        string? fromVersion = null;
+        var fromVersionElement = fields["fromVersion"];
+        if (fromVersionElement.ValueKind != JsonValueKind.Null)
+        {
+            if (fromVersionElement.ValueKind != JsonValueKind.String
+                || !ReleaseVersion.TryParse(fromVersionElement.GetString(), requireVPrefix: false, out var parsedFromVersion)
+                || parsedFromVersion.IsPrerelease)
+                return null;
+            fromVersion = parsedFromVersion.ToManifestString();
+        }
+
+        string? message = null;
+        var messageElement = fields["message"];
+        if (messageElement.ValueKind != JsonValueKind.Null)
+        {
+            if (messageElement.ValueKind != JsonValueKind.String)
+                return null;
+            message = messageElement.GetString();
+            if (message is null || message.Length > MaxUpdateOutcomeMessageCharacters)
+                return null;
+        }
+
+        return new ReleaseUpdateOutcome(
+            fromVersion,
+            toVersion.ToManifestString(),
+            status,
+            exitCode,
+            message,
+            completedUtc);
+    }
+
+    private static void TryDeleteUpdateOutcomeEntry(string rootPath, string updatesDirectory, string outcomePath)
+    {
+        try
+        {
+            if (!Directory.Exists(rootPath)
+                || HasReparsePointInChain(rootPath)
+                || !Directory.Exists(updatesDirectory)
+                || HasReparsePointInChain(updatesDirectory)
+                || !IsContained(rootPath, updatesDirectory)
+                || !IsContained(updatesDirectory, outcomePath))
+                return;
+            if (TryGetAttributes(outcomePath, out var attributes)
+                && (attributes & FileAttributes.Directory) == 0)
+                File.Delete(outcomePath);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Deletes a leftover downloaded Setup. Returns true when no Setup file remains; false while it
+    /// can't be deleted yet (for example Setup is still running after starting Nativune).
+    /// </summary>
+    internal static bool CleanupDownloadedSetup(string root)
+    {
+        try
+        {
+            var rootPath = Path.GetFullPath(root);
+            if (!Directory.Exists(rootPath) || HasReparsePointInChain(rootPath))
+                return true;
+            var updatesDirectory = Path.Combine(rootPath, "updates");
+            if (!Directory.Exists(updatesDirectory) || HasReparsePointInChain(updatesDirectory))
+                return true;
+            var setupPath = Path.Combine(updatesDirectory, SetupName);
+            if (!IsContained(rootPath, updatesDirectory) || !IsContained(updatesDirectory, setupPath))
+                return true;
+            if (!File.Exists(setupPath))
+                return true;
+            if (!IsRegularFile(setupPath))
+                return true;
+            File.Delete(setupPath);
+            return !File.Exists(setupPath);
         }
         catch (Exception)
         {
@@ -969,13 +1445,20 @@ internal static class ReleaseUpdater
     private static bool IsTrustedDownloadUri(string value)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps
-            || !uri.IsDefaultPort
             || uri.UserInfo.Length != 0
-            || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrEmpty(uri.AbsolutePath))
             return false;
-        return true;
+#if NATIVUNE_UPDATER_TEST_HOOKS
+        var testMetadataUri = ResolveTestReleaseMetadataUri();
+        if (testMetadataUri != LatestReleaseUri
+            && uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && uri.Host.Equals("127.0.0.1", StringComparison.Ordinal)
+            && uri.Port == testMetadataUri.Port)
+            return true;
+#endif
+        return uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            && uri.IsDefaultPort
+            && uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryGetString(JsonElement element, string property, out string value)
@@ -1031,10 +1514,24 @@ internal static class ReleaseUpdater
 
     private static byte[] ReadBoundedFile(string path, long maxBytes)
     {
-        var info = new FileInfo(path);
-        if (info.Length < 0 || info.Length > maxBytes || info.Length > int.MaxValue)
-            throw new InvalidDataException("Manifest exceeded the bounded size.");
-        return File.ReadAllBytes(path);
+        if (maxBytes < 0 || maxBytes >= int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(maxBytes));
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length < 0 || stream.Length > maxBytes)
+            throw new InvalidDataException("File exceeded the bounded size.");
+        using var output = new MemoryStream((int)stream.Length);
+        var buffer = new byte[(int)Math.Min(16 * 1024L, maxBytes + 1)];
+        long total = 0;
+        while (true)
+        {
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if (read == 0) break;
+            total += read;
+            if (total > maxBytes)
+                throw new InvalidDataException("File exceeded the bounded size.");
+            output.Write(buffer, 0, read);
+        }
+        return output.ToArray();
     }
 
     private static bool IsRegularFile(string path)
@@ -1162,6 +1659,82 @@ internal static class ReleaseUpdaterChecks
             || ReleaseUpdater.HashMatches("offline-check"u8, "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"))
             throw new SelfCheckException("Release digest or hash rejection failed.");
 
+        if (ReleaseUpdateResult.Cancelled().Failure != ReleaseUpdateFailure.Cancelled
+            || ReleaseUpdateResult.ErrorResult().Failure != ReleaseUpdateFailure.InvalidMetadata)
+            throw new SelfCheckException("Update result failure defaults failed.");
+
+        var progressReports = new List<ReleaseUpdateProgress>();
+        var throttle = new ReleaseUpdateProgressThrottle(new InlineProgress(progressReports.Add));
+        throttle.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Connecting, 0, 100));
+        throttle.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, 0, 100));
+        throttle.Report(new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, 1, 100));
+        throttle.Flush();
+        if (progressReports.Count < 3
+            || progressReports[^1] != new ReleaseUpdateProgress(ReleaseUpdatePhase.Downloading, 1, 100))
+            throw new SelfCheckException("Update progress throttling did not emit the final report.");
+
+        if (ReleaseUpdater.FormatBytes(74_200_000) != "74.2 MB"
+            || ReleaseUpdater.FormatBytes(177_100_000) != "177 MB"
+            || ReleaseUpdater.FormatBytes(512_000) != "512 KB"
+            || ReleaseUpdater.FormatSpeed(4_100_000) != "4.1 MB/s"
+            || ReleaseUpdater.FormatEta(TimeSpan.FromSeconds(39.2)) != "about 40 s left"
+            || ReleaseUpdater.FormatEta(TimeSpan.FromMinutes(2.1)) != "about 3 min left"
+            || ReleaseUpdater.FormatEta(null) is not null)
+            throw new SelfCheckException("Update byte, speed or ETA formatting failed.");
+
+        var resetUtc = new DateTimeOffset(2026, 9, 25, 14, 32, 0, TimeSpan.Zero);
+        var rateHeaders = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["x-ratelimit-remaining"] = "0",
+            ["x-ratelimit-reset"] = resetUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
+        };
+        var rateClassification = ReleaseUpdater.ClassifyHttpResponse(403, rateHeaders);
+        var tooManyRequests = ReleaseUpdater.ClassifyHttpResponse(429, new Dictionary<string, string?>());
+        var serverError = ReleaseUpdater.ClassifyHttpResponse(503, new Dictionary<string, string?>());
+        var missingRelease = ReleaseUpdater.ClassifyHttpResponse(404, new Dictionary<string, string?>());
+        var rateDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.RateLimited, false, null, 403, resetUtc, TimeZoneInfo.Utc);
+        var digestDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.DigestMismatch, true, "v0.1.17", null, null);
+        var offlineDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.Offline, false, null, null, null);
+        var downloadOfflineDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.Offline, true, null, null, null);
+        var diskFullDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.DiskFull, true, null, null, null, downloadBytes: 177_100_000);
+        var diskFullWithoutSize = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.DiskFull, true, null, null, null);
+        var accessDeniedDescription = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.AccessDenied, true, null, null, null, updatesPath: @"D:\Nativune\updates");
+        var accessDeniedWithoutPath = ReleaseUpdater.DescribeFailure(
+            ReleaseUpdateFailure.AccessDenied, true, null, null, null);
+        if (rateClassification.Failure != ReleaseUpdateFailure.RateLimited
+            || rateClassification.RateLimitResetUtc != resetUtc
+            || tooManyRequests.Failure != ReleaseUpdateFailure.RateLimited
+            || serverError.Failure != ReleaseUpdateFailure.ServerError
+            || missingRelease.Failure != ReleaseUpdateFailure.InvalidMetadata
+            || ReleaseUpdater.ClassifyException(new HttpRequestException()) != ReleaseUpdateFailure.Offline
+            || ReleaseUpdater.ClassifyException(new SocketException((int)SocketError.HostNotFound)) != ReleaseUpdateFailure.Offline
+            || ReleaseUpdater.ClassifyException(new DiskFullIOException(unchecked((int)0x80070070))) != ReleaseUpdateFailure.DiskFull
+            || ReleaseUpdater.ClassifyException(new DiskFullIOException(unchecked((int)0x80070027))) != ReleaseUpdateFailure.DiskFull
+            || ReleaseUpdater.ClassifyException(new UnauthorizedAccessException()) != ReleaseUpdateFailure.AccessDenied
+            || ReleaseUpdater.ClassifyDownloadBodyException(new IOException("interrupted")) != ReleaseUpdateFailure.Offline
+            || ReleaseUpdater.ClassifyDownloadBodyException(new DiskFullIOException(unchecked((int)0x80070070))) != ReleaseUpdateFailure.DiskFull
+            || ReleaseUpdater.ClassifyDownloadBodyException(new UnauthorizedAccessException()) != ReleaseUpdateFailure.AccessDenied
+            || rateDescription.Title != "Couldn't check for updates"
+            || rateDescription.Message != "GitHub is limiting update checks from this network. Try again after 14:32."
+            || digestDescription.Title != "Update download rejected"
+            || !digestDescription.Message.Contains("checksum published for v0.1.17", StringComparison.Ordinal)
+            || offlineDescription.Title != "Couldn't check for updates"
+            || offlineDescription.Message != "No internet connection. Check your connection and try again."
+            || downloadOfflineDescription.Title != "Update download failed"
+            || downloadOfflineDescription.Message != "The download was interrupted. Check your connection and try again."
+            || diskFullDescription.Message != "Not enough free space for the 177 MB download. Free some space and try again."
+            || diskFullWithoutSize.Message != "Not enough free space for the download. Free some space and try again."
+            || accessDeniedDescription.Message != @"Nativune can't write to its updates folder (D:\Nativune\updates). Check the folder's permissions."
+            || accessDeniedWithoutPath.Message != "Nativune can't write to its updates folder. Check the folder's permissions.")
+            throw new SelfCheckException("Update failure classification or descriptions failed.");
+
         var releaseJson = $$"""
             {
               "tag_name": "v0.1.1",
@@ -1204,6 +1777,46 @@ internal static class ReleaseUpdaterChecks
                 }
                 """;
             File.WriteAllText(Path.Combine(directory, "release-manifest.json"), manifest);
+            var updates = Path.Combine(directory, "updates");
+            Directory.CreateDirectory(updates);
+            var outcomePath = Path.Combine(updates, "last-update.json");
+            const string validOutcomeJson = """
+                {"schemaVersion":1,"fromVersion":"0.1.16","toVersion":"0.1.17","status":"success","exitCode":0,"message":"Nativune was updated.","completedUtc":"2026-09-25T10:00:00Z"}
+                """;
+            File.WriteAllText(outcomePath, validOutcomeJson);
+            var outcome = ReleaseUpdater.TryReadUpdateOutcome(directory);
+            if (outcome is null
+                || outcome.FromVersion != "0.1.16"
+                || outcome.ToVersion != "0.1.17"
+                || outcome.Status != "success"
+                || outcome.ExitCode != 0
+                || File.Exists(outcomePath))
+                throw new SelfCheckException("Valid update outcome was not read and deleted.");
+
+            File.WriteAllBytes(outcomePath, new byte[16 * 1024 + 1]);
+            if (ReleaseUpdater.TryReadUpdateOutcome(directory) is not null || File.Exists(outcomePath))
+                throw new SelfCheckException("Oversized update outcome was not rejected and deleted.");
+
+            File.WriteAllText(outcomePath, "{ not json");
+            if (ReleaseUpdater.TryReadUpdateOutcome(directory) is not null || File.Exists(outcomePath))
+                throw new SelfCheckException("Malformed update outcome was not rejected and deleted.");
+
+            File.WriteAllText(outcomePath, validOutcomeJson.Replace("\"schemaVersion\":1", "\"schemaVersion\":2", StringComparison.Ordinal));
+            if (ReleaseUpdater.TryReadUpdateOutcome(directory) is not null || File.Exists(outcomePath))
+                throw new SelfCheckException("Wrong-schema update outcome was not rejected and deleted.");
+
+            var setupPath = Path.Combine(updates, "Nativune-Setup.exe");
+            File.WriteAllText(setupPath, "verified setup");
+            // A Setup that is still running (file in use) is kept and reported for a later retry.
+            using (new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (ReleaseUpdater.CleanupDownloadedSetup(directory) || !File.Exists(setupPath))
+                    throw new SelfCheckException("Downloaded Setup cleanup did not report an in-use file for retry.");
+            }
+            if (!ReleaseUpdater.CleanupDownloadedSetup(directory) || File.Exists(setupPath))
+                throw new SelfCheckException("Downloaded Setup cleanup failed.");
+            if (!ReleaseUpdater.CleanupDownloadedSetup(directory))
+                throw new SelfCheckException("Downloaded Setup cleanup did not report an absent file as done.");
             var nonInstalledResult = ReleaseUpdater.CheckAsync(directory, CancellationToken.None)
                 .GetAwaiter().GetResult();
             if (!ReleaseUpdater.IsInstalledBuild(directory, app)
@@ -1226,5 +1839,18 @@ internal static class ReleaseUpdaterChecks
         };
         if (!arguments.SequenceEqual(expectedArguments, StringComparer.Ordinal))
             throw new SelfCheckException("Update command arguments failed.");
+    }
+
+    private sealed class InlineProgress(Action<ReleaseUpdateProgress> report) : IProgress<ReleaseUpdateProgress>
+    {
+        public void Report(ReleaseUpdateProgress value) => report(value);
+    }
+
+    private sealed class DiskFullIOException : IOException
+    {
+        internal DiskFullIOException(int hresult)
+        {
+            HResult = hresult;
+        }
     }
 }

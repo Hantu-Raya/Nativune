@@ -338,8 +338,86 @@ internal static class PayloadReader
     private const int FooterSize = 32;
     private const uint FooterVersion = 1;
     private static readonly byte[] FooterMagic = "NATIVN01"u8.ToArray();
+    internal static Manifest ReadPackagedManifest(string setupPath)
+    {
+        try
+        {
+            PathSafety.EnsureRegularFile(setupPath);
+            using var file = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
+            if (file.Length < FooterSize)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The setup executable has no release payload footer.");
+            }
 
-    internal static Manifest ExtractVerified(string setupPath, string stage)
+            file.Position = file.Length - FooterSize;
+            Span<byte> footer = stackalloc byte[FooterSize];
+            ReadExactly(file, footer);
+            if (!footer[..FooterMagic.Length].SequenceEqual(FooterMagic))
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is invalid.");
+            }
+            var version = BinaryPrimitives.ReadUInt32LittleEndian(footer[8..12]);
+            var offset = BinaryPrimitives.ReadInt64LittleEndian(footer[12..20]);
+            var length = BinaryPrimitives.ReadInt64LittleEndian(footer[20..28]);
+            var reserved = BinaryPrimitives.ReadUInt32LittleEndian(footer[28..32]);
+            if (version != FooterVersion || reserved != 0 || offset < 0 || length <= 0
+                || length > Manifest.MaxArchiveBytes
+                || offset > file.Length - FooterSize
+                || length > file.Length - FooterSize - offset
+                || offset + length != file.Length - FooterSize)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer bounds are invalid.");
+            }
+
+            using var bounded = new BoundedReadStream(file, offset, length);
+            using var archive = new ZipArchive(bounded, ZipArchiveMode.Read, leaveOpen: false, entryNameEncoding: Encoding.UTF8);
+            if (archive.Entries.Count == 0 || archive.Entries.Count > Manifest.MaxFileCount + 1)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The release archive has an invalid entry count.");
+            }
+            ZipArchiveEntry? manifestEntry = null;
+            foreach (var entry in archive.Entries)
+            {
+                if (!string.Equals(entry.FullName, Program.ManifestFileName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (manifestEntry is not null)
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, "The release archive contains duplicate manifests.");
+                }
+                var mode = (entry.ExternalAttributes >> 16) & 0xF000;
+                if (mode == 0xA000 || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, "The release manifest is a link or reparse-point entry.");
+                }
+                manifestEntry = entry;
+            }
+            if (manifestEntry is null)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The release archive has no release manifest.");
+            }
+            return Manifest.Parse(ReadEntry(manifestEntry, Manifest.MaxManifestBytes));
+        }
+        catch (SetupException)
+        {
+            throw;
+        }
+        catch (InvalidDataException error)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The release archive is not a valid ZIP payload.", error);
+        }
+        catch (Exception error)
+        {
+            throw new SetupException(ExitCode.IoFailure, "The release payload could not be read.", error);
+        }
+    }
+
+    internal static Manifest ExtractVerified(
+        string setupPath,
+        string stage,
+        ISetupReporter? reporter = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -413,38 +491,37 @@ internal static class PayloadReader
             {
                 throw new SetupException(ExitCode.InvalidPayload, "The release archive contains unexpected entries.");
             }
-            foreach (var payloadFile in manifest.Files)
-            {
-                if (!entries.TryGetValue(payloadFile.Path, out var entry))
-                {
-                    throw new SetupException(ExitCode.InvalidPayload, $"The release archive is missing {payloadFile.Path}.");
-                }
-                if (entry.Length != payloadFile.Length)
-                {
-                    throw new SetupException(ExitCode.InvalidPayload, $"The archive length for {payloadFile.Path} does not match its manifest.");
-                }
-            }
-            if (entries.Keys.Any(path => !string.Equals(path, Program.ManifestFileName, StringComparison.Ordinal) &&
-                !manifest.Files.Any(file => string.Equals(file.Path, path, StringComparison.Ordinal))))
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The release archive contains an unlisted entry.");
-            }
-
             InstallRoot.CreateSafeDirectory(stage);
             EnsureFreeSpace(stage, manifest.Files.Sum(payloadFile => payloadFile.Length));
             var stagedManifestPath = Path.Combine(stage, Program.ManifestFileName);
             File.WriteAllBytes(stagedManifestPath, manifestBytes);
+            var completedFiles = 0;
+            reporter?.Step($"Unpacking Nativune v{manifest.Version} (0 of {manifest.Files.Count:N0} files)", cancellable: true);
+            reporter?.Progress(0, manifest.Files.Count);
             foreach (var payloadFile in manifest.Files)
             {
-                var entry = entries[payloadFile.Path];
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!entries.TryGetValue(payloadFile.Path, out var entry))
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, "The release archive is missing a file listed in its manifest.");
+                }
                 var destination = PathSafety.ResolvePayloadPath(stage, payloadFile.Path);
                 PathSafety.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
                 ExtractAndHash(entry, destination, payloadFile);
+                completedFiles++;
+                reporter?.Step($"Unpacking Nativune v{manifest.Version} ({completedFiles:N0} of {manifest.Files.Count:N0} files)", cancellable: true);
+                reporter?.Progress(completedFiles, manifest.Files.Count);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             Manifest.ValidateExtractedTools(stage);
             return manifest;
         }
         catch (SetupException)
+        {
+            InstallRoot.TryDeleteDirectory(stage);
+            throw;
+        }
+        catch (OperationCanceledException)
         {
             InstallRoot.TryDeleteDirectory(stage);
             throw;
