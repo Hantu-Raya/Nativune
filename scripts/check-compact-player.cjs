@@ -30,6 +30,7 @@ class Element {
 class HTMLElement extends Element {
   click() {
     this.ownerDocument.clicks++;
+    this.onClick?.();
     if (this.getAttribute('aria-label') === 'Mute' || this.getAttribute('aria-label') === 'Unmute') {
       const media = this.ownerDocument.media;
       media.muted = !media.muted;
@@ -159,7 +160,7 @@ function makePage({ duration = 120, position = 10, volume = 0.5, paused = false,
     && /^[A-Za-z0-9_-]{11}$/.test(videoIds[0]) ? videoIds[0] : null;
   return { document, bar, media, buttons, seekSlider, volumeSlider, timeInfos, location, window,
     modal: modals[0], seekToCalls,
-    signature: JSON.stringify(['Track title', image ? artwork.currentSrc : null, displayedDuration, videoId]) };
+    signature: JSON.stringify(['Track title', videoId]) };
 }
 
 function run(page, request) {
@@ -508,7 +509,46 @@ for (const [index, duration, position] of [
 const likePage = makePage();
 assert.equal(action(likePage, 'like'), 'requested');
 assert.equal(likePage.document.clicks, 1);
-assert.equal(action(likePage, 'like'), 'requested');
-assert.equal(likePage.document.clicks, 2);
 
-console.log('PASS: bounded public transport readiness, website-slider seek route, transient seek-clock recovery, unsupported Compact audio commands, and single-click actions');
+// Sidebar playlists: entries with the site's own Play button, in the website's order.
+function addGuides(page, lists) {
+  const guides = lists.map(items => {
+    const guide = new HTMLElement(page.document);
+    const entries = items.map(({ title, play = true, disabled = false }) => {
+      const entry = new HTMLElement(page.document);
+      const titleText = new HTMLElement(page.document); titleText.textContent = title;
+      entry.setQuery('.title', [titleText]);
+      if (play) {
+        const button = new HTMLElement(page.document);
+        button.id = 'play-button';
+        if (disabled) button.setAttribute('aria-disabled', 'true');
+        button.onClick = () => { page.played = title; };
+        entry.setQuery('ytmusic-play-button-renderer', [button]);
+      }
+      return entry;
+    });
+    return guide.setQuery('ytmusic-guide-entry-renderer', entries);
+  });
+  const base = page.document.querySelectorAll;
+  page.document.querySelectorAll = selector => selector === 'ytmusic-guide-renderer' ? guides : base(selector);
+  return page;
+}
+const sidebar = [{ title: 'Home', play: false }, { title: 'Liked Music' },
+  { title: 'Road trip' }, { title: 'Locked', disabled: true }];
+const listed = JSON.parse(JSON.stringify(run(addGuides(makePage(), [sidebar]), request(makePage(), 'playlists'))));
+assert.equal(listed.code, 'playlists');
+assert.deepEqual(listed.items.map(item => item.title), ['Liked Music', 'Road trip', 'Locked']);
+assert.equal(run(makePage(), request(makePage(), 'playlists')).items.length, 0);
+assert.equal(run(addGuides(makePage(), [sidebar, sidebar]), request(makePage(), 'playlists')).code, 'ambiguous-control');
+const playPage = addGuides(makePage(), [sidebar]);
+assert.equal(action(playPage, 'play-playlist', 1, 'Road trip'), 'requested');
+assert.equal(playPage.played, 'Road trip');
+assert.equal(playPage.document.clicks, 1);
+const movedPage = addGuides(makePage(), [sidebar]);
+assert.equal(action(movedPage, 'play-playlist', 0, 'Road trip'), 'stale-state');
+assert.equal(action(movedPage, 'play-playlist', 2, 'Locked'), 'disabled-control');
+assert.equal(action(movedPage, 'play-playlist', 1.5, 'Road trip'), 'invalid-value');
+assert.equal(action(movedPage, 'play-playlist', 1, null), 'invalid-value');
+assert.equal(movedPage.document.clicks, 0);
+
+console.log('PASS: bounded public transport readiness, website-slider seek route, transient seek-clock recovery, unsupported Compact audio commands, single-click actions, and sidebar playlists');

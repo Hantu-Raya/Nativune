@@ -224,7 +224,10 @@ internal sealed class NativeTrayIcon : IDisposable
     {
         if (_icon != 0)
             return;
-        _icon = _icons.CreateOwnedIcon("app-mark", 32, Color.White);
+        // The colour app icon; the white glyph remains a fallback if the icon file is missing.
+        _icon = AppIcon.LoadSmallIcon();
+        if (_icon == 0)
+            _icon = _icons.CreateOwnedIcon("app-mark", 32, Color.White);
         if (_icon == 0)
             throw new InvalidOperationException("Native tray icon creation failed.");
     }

@@ -40,6 +40,7 @@
     "pin",
     "play-pause",
     "play",
+    "playlist",
     "previous",
     "quit-timer",
     "quit",
@@ -201,6 +202,13 @@
       "width": 16,
       "height": 16,
       "sha256": "8eacd18e4fe20150ea8077e9352d239019aa998a2be0ed00321ee8cd121169cb"
+    },
+    {
+      "path": "16/playlist.png",
+      "logicalName": "Nativune.NativeIcons.16.playlist.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "d03293b343bb8ef539431cb07eee1aae5cf43576b29b55638a69c0ce89cca1a4"
     },
     {
       "path": "16/previous.png",
@@ -483,6 +491,13 @@
       "sha256": "179e68b75316228d81c65a714fae3f5def34ed7f16140ff725cebac4777884bb"
     },
     {
+      "path": "20/playlist.png",
+      "logicalName": "Nativune.NativeIcons.20.playlist.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "b49827128e49cce7bd62a4d302460e282934bce84e501ea5679fcd74e51231a0"
+    },
+    {
       "path": "20/previous.png",
       "logicalName": "Nativune.NativeIcons.20.previous.png",
       "width": 20,
@@ -761,6 +776,13 @@
       "width": 24,
       "height": 24,
       "sha256": "7d03eb4fe728eacf8a3e0edcddb84ff1f959c08ff3cee567363bc72955cb397d"
+    },
+    {
+      "path": "24/playlist.png",
+      "logicalName": "Nativune.NativeIcons.24.playlist.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "8f252e577b7a31729d00d249c688ef56588af5d6685b028622fc05d16165e782"
     },
     {
       "path": "24/previous.png",
@@ -1043,6 +1065,13 @@
       "sha256": "076c9a72eadca8fa20ffc2f7b2fd3aae1536f97fb41cab10ec9de47e836fe04f"
     },
     {
+      "path": "25/playlist.png",
+      "logicalName": "Nativune.NativeIcons.25.playlist.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "f8193447e7c05e6145a742c959078f5c43bfa7cf2c94b943fdc9f1faeb980dac"
+    },
+    {
       "path": "25/previous.png",
       "logicalName": "Nativune.NativeIcons.25.previous.png",
       "width": 25,
@@ -1321,6 +1350,13 @@
       "width": 30,
       "height": 30,
       "sha256": "de42af7853f54835bf1b92679788a0d15fcf65ab312a0422f30d59700bb42cc4"
+    },
+    {
+      "path": "30/playlist.png",
+      "logicalName": "Nativune.NativeIcons.30.playlist.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "214d309e663542d30c3d4877ccc74018962a8b8d9fac634efba0e882730ed8cb"
     },
     {
       "path": "30/previous.png",
@@ -1603,6 +1639,13 @@
       "sha256": "38208d0a895775f235868a4ce8fb8e57a548a0975654a44ab60dd8aefea79cd7"
     },
     {
+      "path": "32/playlist.png",
+      "logicalName": "Nativune.NativeIcons.32.playlist.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "a09d533f57d6a28ef9ee3c1eb392ef35e61a5a97bebfcc754e41984d0f90f24b"
+    },
+    {
       "path": "32/previous.png",
       "logicalName": "Nativune.NativeIcons.32.previous.png",
       "width": 32,
@@ -1881,6 +1924,13 @@
       "width": 40,
       "height": 40,
       "sha256": "48f22c6094c77c1514d3ccd41b4d2b8d6f7f3c5d4e012b842a52b3e107b15947"
+    },
+    {
+      "path": "40/playlist.png",
+      "logicalName": "Nativune.NativeIcons.40.playlist.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "16bf16b258f17ad83d5d218c75dfb5b1590646b0beccd24da4e5ce6950958c2e"
     },
     {
       "path": "40/previous.png",
@@ -2163,6 +2213,13 @@
       "sha256": "18214264d4857e93a7ec06f56c9fcb7b5110c0e236e854755b437e12ced87d4d"
     },
     {
+      "path": "48/playlist.png",
+      "logicalName": "Nativune.NativeIcons.48.playlist.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "1e3892773da1891e0eb523c19f1cc4161707b605a48d48bc8302312cb690887f"
+    },
+    {
       "path": "48/previous.png",
       "logicalName": "Nativune.NativeIcons.48.previous.png",
       "width": 48,
@@ -2441,6 +2498,13 @@
       "width": 64,
       "height": 64,
       "sha256": "4528f587cc9a83fc7d286b4ba42d5f04e2ceebfcb46f8e277bf61521f0b477b4"
+    },
+    {
+      "path": "64/playlist.png",
+      "logicalName": "Nativune.NativeIcons.64.playlist.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "098864310af49ef4c5c88e686f149e1adf88e399a729aa3b5a7adb270b88e434"
     },
     {
       "path": "64/previous.png",

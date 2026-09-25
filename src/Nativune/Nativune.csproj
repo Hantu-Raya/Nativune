@@ -20,6 +20,7 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <DebugType>portable</DebugType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\app-icon\nativune.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Nativune</AssemblyName>
@@ -72,6 +73,13 @@
              Exclude="../../assets/native-icons/raster/**/notifications*.png">
       <Link>Assets\NativeIcons\raster\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <TargetPath>Assets\NativeIcons\raster\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+
+    <Content Include="../../assets/app-icon/nativune.ico">
+      <Link>Assets\nativune.ico</Link>
+      <TargetPath>Assets\nativune.ico</TargetPath>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

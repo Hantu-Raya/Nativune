@@ -70,15 +70,15 @@ internal static class CompactPlaybackChecks
         Require(CompactPlayback.TryParseState(Json(), out state)
             && state is { WebsiteClock: true, Position: 94, Duration: 193, MediaDuration: 389.2,
                 ClockMismatch: false, ClockConfirmed: true, CanSeek: true }
-            && CompactPlayback.ComputeSignature(state) == "[\"Synthetic title\",null,193,\"AbCdEfGhI01\"]",
+            && CompactPlayback.ComputeSignature(state) == "[\"Synthetic title\",\"AbCdEfGhI01\"]",
             "A coherent website clock over a cumulative media timeline lost interactive seek or item identity.");
         Require(CompactPlayback.ComputeSignature(state! with { MediaDuration = 462.4, MediaPosition = 441.2 })
                 == CompactPlayback.ComputeSignature(state!)
             && CompactPlayback.ComputeSignature(state! with { VideoId = "abcdefghijk" })
                 != CompactPlayback.ComputeSignature(state!)
             && CompactPlayback.ComputeSignature(state! with { Duration = 194 })
-                != CompactPlayback.ComputeSignature(state!),
-            "Growing media duration invalidated a same-item seek, or an item change kept its signature.");
+                == CompactPlayback.ComputeSignature(state!),
+            "Growing duration invalidated a same-item action, or an item change kept its signature.");
         payload["mediaPosition"] = 400d;
         Require(CompactPlayback.TryParseState(Json(), out state) && state is { CanSeek: true },
             "A display-only media overrun disabled the website-clock seek route.");
@@ -148,11 +148,14 @@ internal static class CompactPlaybackChecks
         Require(CompactPlayback.TryParseOutcome("{\"code\":\"script-error\",\"dispatched\":true}", out var result)
             && result.Dispatched, "Dispatched failure lost its uncertain-action status.");
         Require(CompactPlayback.TryParseOutcome("{\"code\":\"unavailable\",\"dispatched\":true}", out var dispatchedUnavailable)
-            && PlayerControls.FormatCompactOutcome(dispatchedUnavailable) == "Player action outcome unknown; no retry."
+            && PlayerControls.FormatCompactOutcome(dispatchedUnavailable).Outcome == PlayerCommandOutcome.Unknown
             && CompactPlayback.TryParseOutcome("{\"code\":\"requested\",\"dispatched\":true}", out var requestedOutcome)
-            && PlayerControls.FormatCompactOutcome(requestedOutcome) == PlayerControls.CompactRequestedStatus
+            && PlayerControls.FormatCompactOutcome(requestedOutcome) == new PlayerCommandResult(PlayerCommandOutcome.Sent, PlayerControls.CompactRequestedStatus)
+            && CompactPlayback.TryParseOutcome("{\"code\":\"stale-state\"}", out var staleOutcome)
+            && PlayerControls.FormatCompactOutcome(staleOutcome).Outcome == PlayerCommandOutcome.Changed
             && CompactPlayback.TryParseOutcome("{\"code\":\"unavailable\"}", out var unavailable)
-            && PlayerControls.FormatCompactOutcome(unavailable).Contains("no action was sent", StringComparison.Ordinal)
+            && PlayerControls.FormatCompactOutcome(unavailable) is { Outcome: PlayerCommandOutcome.NotSent } notSent
+            && notSent.Message.Contains("no action was sent", StringComparison.Ordinal)
             && !CompactPlayback.TryParseOutcome("{\"code\":\"unseekable-target\"}", out _),
             "Compact dispatch status confused an uncertain side effect with a confirmed no-op.");
         Require(CompactPlayback.IsTransportReadyResponse("{\"code\":\"ready\"}")
@@ -160,7 +163,43 @@ internal static class CompactPlaybackChecks
             && !CompactPlayback.IsTransportReadyResponse("{broken")
             && !CompactPlayback.IsTransportReadyResponse(new string(' ', CompactPlayback.MaxScriptResultLength + 1)),
             "Compact transport readiness parser accepted a malformed or unconfirmed result.");
-        Console.WriteLine("Compact playback checks passed: bounded state without audio volume controls, seek recovery, transport readiness, and artwork-origin restrictions.");
+        var sample = new CompactPlaybackState("Synthetic title", null, false, 10, 120, false, false, "off",
+            true, true, true, true, true, VideoId: "AbCdEfGhI01", ClockConfirmed: true);
+        Require(CompactPlayback.ComputeSignature(sample)
+                == CompactPlayback.ComputeSignature(sample with { ArtworkUrl = "https://i.ytimg.com/a.jpg", Duration = 121 })
+            && CompactPlayback.ComputeSignature(sample) != CompactPlayback.ComputeSignature(sample with { VideoId = "ZyXwVuTsR02" }),
+            "Compact item identity changed with artwork or duration, or ignored a different video.");
+
+        var gate = new CompactRatingGate();
+        gate.Observe("A", false, false, 0);
+        var arming = !gate.Allows(500) && gate.Allows(CompactRatingGate.ArmDelayMs);
+        gate.Sent(false, false, 1300);
+        gate.Observe("A", false, false, 1500);
+        var waits = !gate.Allows(1500);
+        gate.Observe("A", false, true, 2000);
+        var confirmed = gate.Allows(2000);
+        gate.Sent(false, false, 3000);
+        gate.Observe("B", false, false, 3500);
+        var skipped = !gate.Allows(3600) && gate.Allows(3500 + CompactRatingGate.ArmDelayMs);
+        gate.Sent(false, false, 5000);
+        gate.Observe("B", false, false, 5000 + CompactRatingGate.ResultWaitMs);
+        var expired = gate.Allows(5000 + CompactRatingGate.ResultWaitMs);
+        gate.Sent(false, false, 10000);
+        gate.NotSent();
+        Require(arming && waits && confirmed && skipped && expired && gate.Allows(10000),
+            "Compact rating gate let a rating reach an unseen or following song, or never released.");
+
+        Require(CompactPlayback.TryParsePlaylists(
+                "{\"code\":\"playlists\",\"items\":[{\"title\":\"Road trip\",\"subtitle\":\"Owner\"}]}", out var parsedPlaylists)
+            && parsedPlaylists.Count == 1 && parsedPlaylists[0] == new CompactPlayback.PlaylistEntry("Road trip", "Owner")
+            && CompactPlayback.TryParsePlaylists("{\"code\":\"playlists\",\"items\":[]}", out var noPlaylists) && noPlaylists.Count == 0
+            && !CompactPlayback.TryParsePlaylists("{\"code\":\"playlists\",\"items\":[{\"title\":\"\",\"subtitle\":\"\"}]}", out _)
+            && !CompactPlayback.TryParsePlaylists("{\"code\":\"playlists\",\"items\":[{\"title\":\"" + new string('x', 121) + "\",\"subtitle\":\"\"}]}", out _)
+            && !CompactPlayback.TryParsePlaylists("{\"code\":\"state\",\"items\":[]}", out _)
+            && !CompactPlayback.TryParsePlaylists("{\"code\":\"playlists\",\"items\":["
+                + string.Join(",", Enumerable.Repeat("{\"title\":\"a\",\"subtitle\":\"\"}", CompactPlayback.MaxPlaylists + 1)) + "]}", out _),
+            "The playlist parser accepted an empty, oversized or unbounded list.");
+        Console.WriteLine("Compact playback checks passed: bounded state without audio volume controls, seek recovery, transport readiness, item identity, rating gate, playlist parsing, and artwork-origin restrictions.");
     }
 
     private static void Require(bool value, string message)

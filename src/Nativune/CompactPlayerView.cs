@@ -32,6 +32,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private IconElement? _nextIconElement;
     private IconElement? _likeIconElement;
     private IconElement? _dislikeIconElement;
+    private IconElement? _playlistsIconElement;
     private IconElement? _volumeIconElement;
     private IconElement? _repeatIconElement;
     private IconElement? _shuffleIconElement;
@@ -56,6 +57,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _animationTimer;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _volumeCommitTimer;
     private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _volumeHoverCloseTimer;
+    // A short notice under the title (e.g. "Disliked … · skipping to the next song").
+    private const double NoticeSeconds = 5;
+    private readonly Microsoft.UI.Dispatching.DispatcherQueueTimer _noticeTimer;
+    private string _notice = string.Empty;
+    private string? _pendingDislikeTitle;
     private readonly CompactArtworkCanvas _artwork;
     private readonly CompactMarqueeText _title;
     private readonly TextBlock _inlineStatus;
@@ -94,7 +100,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly Canvas _layoutCanvas;
 
     private CompactPlaybackState? _state;
-    private bool _playerBusy;
+    private readonly CompactRatingGate _ratingGate = new();
     private bool _reduceMotion;
     private bool _active = true;
     private bool _disposed;
@@ -124,6 +130,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private bool _volumeFocusSliderOnOpen;
     private bool _restoreVolumeFocusOnClose;
     private ShortcutBindings _shortcutBindings = ShortcutBindings.Default;
+    // Playlists: the website's own sidebar playlists, read on demand and never logged.
+    private readonly Button _playlists;
+    private readonly MenuFlyout _playlistMenu;
+    private string? _pendingPlaylistTitle;
 
     internal event Action<string, double?>? CommandRequested;
     internal event Action? ReturnToFullRequested;
@@ -134,6 +144,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal event Action? ToggleTopmostRequested;
     internal event Action? MinimizeRequested;
     internal event Action? CloseRequested;
+    internal event Action? PlaylistsRequested;
+    internal event Action<int, string>? PlaylistChosen;
 
     public CompactPlayerView()
     {
@@ -164,6 +176,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _more = More;
         _minimize = Minimize;
         _close = Close;
+        _playlists = Playlists;
+        _playlistMenu = PlaylistMenu;
         _moreMenu = MoreMenu;
         _settingsItem = SettingsItem;
         _statusItem = StatusItem;
@@ -198,6 +212,10 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeHoverCloseTimer.Interval = TimeSpan.FromMilliseconds(550);
         _volumeHoverCloseTimer.IsRepeating = false;
         _volumeHoverCloseTimer.Tick += (_, _) => CloseHoverVolumePopup();
+        _noticeTimer = dispatcher.CreateTimer();
+        _noticeTimer.Interval = TimeSpan.FromSeconds(NoticeSeconds);
+        _noticeTimer.IsRepeating = false;
+        _noticeTimer.Tick += (_, _) => ClearNotice();
 
         ConfigureControls();
         SetOutputVolume(0, false, false);
@@ -260,6 +278,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _seek.CancelDrag();
 
         _state = state;
+        _ratingGate.Observe(state is null ? null : CompactPlayback.ComputeSignature(state),
+            state?.Liked, state?.Disliked, Environment.TickCount64);
         if (_pendingSeek.HasValue && (state is null || _seekPendingState is null
             || CompactPlayback.ComputeSignature(state) != CompactPlayback.ComputeSignature(_seekPendingState)
             || state.WebsiteClock != _seekPendingState.WebsiteClock))
@@ -379,6 +399,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (_disposed) return;
         _statusMessage = message ?? string.Empty;
         _statusIsError = isError;
+        // A newer error takes the line under the title over from a notice.
+        if (isError && _statusMessage.Length != 0) ClearNotice(update: false);
         SetAccessible(_more, "More", _statusMessage.Length == 0
             ? "More settings and application status."
             : $"More settings and application status. Current status: {_statusMessage}");
@@ -428,18 +450,109 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _pendingOutputVolume = null;
             _volumeSlider.CancelDrag();
             _moreMenu.Hide();
+            _playlistMenu.Hide();
             _volumePopup.Hide();
             _seek.CancelDrag();
             _animationTimer.Stop();
+            ClearNotice();
         }
         else
             UpdateAnimationTimer();
     }
-    internal void SetPlayerBusy(bool busy)
+    // The host reports how a Compact command ended. Nothing reached the website for NotSent/Changed,
+    // so a pending rating or seek preview is released instead of waiting for a result that won't come.
+    internal void CommandFinished(string command, PlayerCommandOutcome outcome)
     {
-        if (_disposed || _playerBusy == busy) return;
-        _playerBusy = busy;
+        if (_disposed) return;
+        if (command == "dislike" && outcome == PlayerCommandOutcome.Sent && _pendingDislikeTitle is { } disliked)
+            ShowNotice($"Disliked \u201C{disliked}\u201D \u00B7 skipping to the next song");
+        if (command == "dislike") _pendingDislikeTitle = null;
+        if (command == "play-playlist" && outcome == PlayerCommandOutcome.Sent && _pendingPlaylistTitle is { } playlist)
+            ShowNotice($"Playing \u201C{playlist}\u201D");
+        if (outcome is not (PlayerCommandOutcome.NotSent or PlayerCommandOutcome.Changed)) return;
+        if (command is "like" or "dislike") _ratingGate.NotSent();
+        else if (command == "seek") ClearPendingSeek();
+        else if (command == "play-playlist")
+        {
+            _pendingPlaylistTitle = null;
+            return;
+        }
+        else return;
         SetPlayback(_state);
+    }
+
+    // Opens the playlist menu with what the host read from the website (null = could not read).
+    internal void ShowPlaylists(IReadOnlyList<CompactPlayback.PlaylistEntry>? playlists)
+    {
+        if (_disposed || !_active || Visibility != Visibility.Visible) return;
+        _playlistMenu.Items.Clear();
+        if (playlists is null || playlists.Count == 0)
+        {
+            _playlistMenu.Items.Add(new MenuFlyoutItem
+            {
+                IsEnabled = false,
+                Text = playlists is null
+                    ? "Couldn't read playlists from the website. Try again."
+                    : "No playlists found. Sign in to YouTube Music to see yours."
+            });
+        }
+        else
+        {
+            _playlistMenu.Items.Add(new MenuFlyoutItem { IsEnabled = false, Text = "Play a playlist" });
+            _playlistMenu.Items.Add(new MenuFlyoutSeparator());
+            for (var index = 0; index < playlists.Count; index++)
+            {
+                var (title, subtitle) = (playlists[index].Title, playlists[index].Subtitle);
+                var position = index;
+                var item = new MenuFlyoutItem { Text = title };
+                var help = subtitle.Length == 0 ? $"Play {title}." : $"Play {title}, {subtitle}.";
+                AutomationProperties.SetHelpText(item, help);
+                if (subtitle.Length != 0) ToolTipService.SetToolTip(item, subtitle);
+                item.Click += (_, _) =>
+                {
+                    _pendingPlaylistTitle = title;
+                    PlaylistChosen?.Invoke(position, title);
+                };
+                _playlistMenu.Items.Add(item);
+            }
+        }
+        // When the layout has moved Playlists into More, anchor the menu at More instead.
+        var anchor = _playlists.Visibility == Visibility.Visible ? (FrameworkElement)_playlists : _more;
+        _popupInvoker = anchor;
+        // ShowAt instead of letting a click open it: the list is read from the website first.
+        _playlistMenu.ShowAt(anchor);
+    }
+
+    private void RequestRating(ToggleButton button, string command)
+    {
+        var state = _state;
+        RestoreRatingState(button, command == "like" ? state?.Liked : state?.Disliked);
+        var now = Environment.TickCount64;
+        if (state is null || !_ratingGate.Allows(now)) return;
+        _ratingGate.Sent(state.Liked, state.Disliked, now);
+        // Only a new dislike makes YouTube Music skip; removing one does not.
+        _pendingDislikeTitle = command == "dislike" && state.Disliked == false ? state.Title : null;
+        SetPlayback(state);
+        RaiseCommand(command);
+    }
+
+    private void ShowNotice(string notice)
+    {
+        _notice = notice;
+        _noticeTimer.Stop();
+        _noticeTimer.Start();
+        UpdateInlineStatus();
+        // Screen readers hear the notice without focus moving.
+        Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(_inlineStatus)
+            ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
+    }
+
+    private void ClearNotice(bool update = true)
+    {
+        _noticeTimer.Stop();
+        if (_notice.Length == 0) return;
+        _notice = string.Empty;
+        if (update) UpdateInlineStatus();
     }
 
     public void Dispose()
@@ -449,9 +562,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _animationTimer.Stop();
         _volumeCommitTimer.Stop();
         _volumeHoverCloseTimer.Stop();
+        _noticeTimer.Stop();
         _pendingOutputVolume = null;
         ClearPendingSeek();
         _moreMenu.Hide();
+        _playlistMenu.Hide();
         _volumePopup.Hide();
         _seek.CancelDrag();
         _volumeSlider.CancelDrag();
@@ -466,6 +581,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ToggleTopmostRequested = null;
         MinimizeRequested = null;
         CloseRequested = null;
+        PlaylistsRequested = null;
+        PlaylistChosen = null;
     }
 
 
@@ -477,6 +594,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ConfigureButton(_volume, "App output mute", "Activate to mute or unmute app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider.");
         ConfigureButton(_repeat, "Repeat unavailable", "Repeat state is unavailable until playback controls recover.");
         ConfigureButton(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
+        ConfigureButton(_playlists, "Playlists", "Show your YouTube Music playlists and play one.");
         ConfigureButton(_returnToFull, "Return to full", "Return to the full app.");
         ConfigureButton(_more, "More", "More settings and application status.");
         ConfigureButton(_minimize, "Minimize", "Minimize window.");
@@ -489,6 +607,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_title, "Track title", "Track title.");
         SetAccessible(_artwork, "Album artwork", "Circular album artwork. Artwork is decorative.");
         SetAccessible(_inlineStatus, "Application status", "Application status.");
+        AutomationProperties.SetLiveSetting(_inlineStatus, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         SetAccessible(_elapsed, "Elapsed time", "Elapsed playback time.");
         SetAccessible(_duration, "Total duration", "Total duration.");
         SetAccessible(_seek, "Playback position unavailable", "Playback position unavailable.");
@@ -540,16 +659,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _playPause.BorderBrush = ShellTheme.Brush("FocusStrokeBrush", Colors.White);
         _playPause.LostFocus += (_, _) =>
             _playPause.BorderBrush = ShellTheme.Brush("RaisedBrush", Colors.Transparent);
-        _like.Click += (_, _) =>
-        {
-            RestoreRatingState(_like, _state?.Liked);
-            RaiseCommand("like");
-        };
-        _dislike.Click += (_, _) =>
-        {
-            RestoreRatingState(_dislike, _state?.Disliked);
-            RaiseCommand("dislike");
-        };
+        _like.Click += (_, _) => RequestRating(_like, "like");
+        _dislike.Click += (_, _) => RequestRating(_dislike, "dislike");
         _volume.Click += (_, _) =>
         {
             _volumeHoverCloseTimer.Stop();
@@ -586,9 +697,20 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _more.Click += (_, _) => ShowMoreMenu();
         _minimize.Click += (_, _) => MinimizeRequested?.Invoke();
         _close.Click += (_, _) => CloseRequested?.Invoke();
+        _playlists.Click += (_, _) =>
+        {
+            if (_active) PlaylistsRequested?.Invoke();
+        };
+        // Right-click and touch-hold also read a fresh list rather than showing the previous one.
+        _playlists.ContextRequested += (_, e) =>
+        {
+            e.Handled = true;
+            if (_active) PlaylistsRequested?.Invoke();
+        };
+        _playlistMenu.Closed += (_, _) => RestorePopupFocus();
         foreach (var button in new ButtonBase[]
         {
-            _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
+            _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
             _returnToFull, _more, _minimize, _close, _playPause
         })
             button.IsEnabledChanged += (_, _) => ApplySecondaryVisuals();
@@ -647,7 +769,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var displayPosition = mediaClock ? Math.Min(state.Position, state.Duration) : state.Position;
         var clockMismatch = state.ClockMismatch;
         SetAccessible(_title, title, title);
-        var canSeek = !_playerBusy && !clockMismatch && state.CanSeek
+        var canSeek = !clockMismatch && state.CanSeek
             && state.Duration > 0 && double.IsFinite(state.Duration);
         if (!canSeek) ClearPendingSeek();
         if (_seek.Dragging && !canSeek) _seek.CancelDrag();
@@ -686,24 +808,25 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_seek, canSeek ? "Playback position" : "Playback position unavailable",
             clockMismatch
                 ? "Playback timing is updating; seeking is unavailable until the website seek slider and playback clock agree."
-                : _playerBusy
-                    ? "Playback command in progress; seeking is temporarily unavailable."
-                    : canSeek
-                        ? $"Playback position {FormatTime(state.Position)} of {FormatTime(state.Duration)}. Use Left and Right for five-second steps, Page Up and Page Down for thirty-second steps, Home for the beginning and End for the end."
-                        : "Seeking unavailable; track duration or public seek control is unknown.");
+                : canSeek
+                    ? $"Playback position {FormatTime(state.Position)} of {FormatTime(state.Duration)}. Use Left and Right for five-second steps, Page Up and Page Down for thirty-second steps, Home for the beginning and End for the end."
+                    : "Seeking unavailable; track duration or public seek control is unknown.");
 
-        SetEnabled(_previous, !_playerBusy, "Previous item", "Previous item.");
-        SetEnabled(_playPause, !_playerBusy, state.Paused ? "Play" : "Pause",
+        // Transport never depends on metadata freshness or another command being in flight;
+        // the host sends one website command at a time and ignores extra clicks meanwhile.
+        SetEnabled(_previous, true, "Previous item", "Previous item.");
+        SetEnabled(_playPause, true, state.Paused ? "Play" : "Pause",
             state.Paused ? "Play website playback." : "Pause website playback.");
-        SetEnabled(_next, !_playerBusy, "Next item", "Next item.");
+        SetEnabled(_next, true, "Next item", "Next item.");
 
+        var ratingReady = _ratingGate.Allows(Environment.TickCount64);
         var liked = state.CanLike ? state.Liked : null;
-        var likeEnabled = !_playerBusy && state.CanLike && liked.HasValue;
+        var likeEnabled = ratingReady && state.CanLike && liked.HasValue;
         if (_like.IsEnabled != likeEnabled) _like.IsEnabled = likeEnabled;
         if (_like.IsChecked != liked) _like.IsChecked = liked;
         SetRatingAccessibility(_like, "Like", liked, state.CanLike);
         var disliked = state.CanDislike ? state.Disliked : null;
-        var dislikeEnabled = !_playerBusy && state.CanDislike && disliked.HasValue;
+        var dislikeEnabled = ratingReady && state.CanDislike && disliked.HasValue;
         if (_dislike.IsEnabled != dislikeEnabled) _dislike.IsEnabled = dislikeEnabled;
         if (_dislike.IsChecked != disliked) _dislike.IsChecked = disliked;
         SetRatingAccessibility(_dislike, "Dislike", disliked, state.CanDislike);
@@ -711,11 +834,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         // Output volume is synchronized separately through SetOutputVolume.
 
         var repeat = state.Repeat is null ? null : FormatRepeat(state.Repeat);
-        if (_repeat.IsEnabled != (!_playerBusy && state.CanRepeat && repeat is not null))
-            _repeat.IsEnabled = !_playerBusy && state.CanRepeat && repeat is not null;
+        if (_repeat.IsEnabled != (state.CanRepeat && repeat is not null))
+            _repeat.IsEnabled = state.CanRepeat && repeat is not null;
         SetRepeatAccessibility(repeat, state.CanRepeat);
-        if (_shuffle.IsEnabled != (!_playerBusy && state.CanShuffle))
-            _shuffle.IsEnabled = !_playerBusy && state.CanShuffle;
+        if (_shuffle.IsEnabled != state.CanShuffle)
+            _shuffle.IsEnabled = state.CanShuffle;
         SetShuffleAccessibility(state.Shuffle, state.CanShuffle);
     }
     private void UpdateVolumeAvailability()
@@ -756,10 +879,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetBounds(_next, 256, 68, 40, 40);
         SetBounds(_like, 312, 68, 40, 40);
         SetBounds(_dislike, 356, 68, 40, 40);
-        SetBounds(_repeat, 424, 68, 40, 40);
-        SetBounds(_shuffle, 468, 68, 40, 40);
-        SetBounds(_volume, 512, 68, 40, 40);
-        SetBounds(_timer, 568, 68, 148, 40);
+        SetBounds(_playlists, 400, 68, 40, 40);
+        SetBounds(_repeat, 444, 68, 40, 40);
+        SetBounds(_shuffle, 488, 68, 40, 40);
+        SetBounds(_volume, 532, 68, 40, 40);
+        SetBounds(_timer, 588, 68, 148, 40);
         SetBounds(ProgressRow, 152, seekY, 632 + horizontalExtra, 40);
     }
 
@@ -913,12 +1037,17 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var fallback = _state is null
             ? "Player unavailable — no current playback state is confirmed. More → Application status for details."
             : string.Empty;
-        var text = _statusIsError && _statusMessage.Length != 0 ? _statusMessage : fallback;
+        var error = _statusIsError && _statusMessage.Length != 0;
+        var notice = !error && _notice.Length != 0;
+        var text = error ? _statusMessage : notice ? _notice : fallback;
         SetTextIfChanged(_inlineStatus, text);
         var visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_inlineStatus.Visibility != visibility) _inlineStatus.Visibility = visibility;
-        SetAccessible(_inlineStatus, "Application status", _statusMessage.Length == 0
-            ? BuildStatusMenuDescription(string.Empty, _state is not null)
+        _inlineStatus.Foreground = notice
+            ? ShellTheme.Brush("PrimaryTextBrush", Colors.White)
+            : ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
+        SetAccessible(_inlineStatus, notice ? "Notice" : "Application status", notice
+            ? _notice
             : BuildStatusMenuDescription(_statusMessage, _state is not null));
         UpdateStatusMenuItem();
     }
@@ -945,7 +1074,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var secondary = ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
         foreach (var button in new ButtonBase[]
         {
-            _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
+            _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
             _returnToFull, _more, _minimize, _close
         })
         {
@@ -971,7 +1100,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var secondary = ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
         foreach (var button in new ButtonBase[]
         {
-            _previous, _next, _like, _dislike, _repeat, _shuffle, _volume, _timer,
+            _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
             _returnToFull, _more, _minimize, _close
         })
             button.Foreground = button.IsEnabled ? primary : secondary;
@@ -1031,6 +1160,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindFixedIcon(_shuffleIcon, ref _shuffleIconElement, "shuffle", 20);
             BindFixedIcon(_returnToFull, ref _returnToFullIconElement, "restore-window", 16);
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
+            BindFixedIcon(_playlists, ref _playlistsIconElement, "playlist", 20);
             BindFixedIcon(_minimize, ref _minimizeIconElement, "minimize", 16);
             BindFixedIcon(_close, ref _closeIconElement, "close", 16);
             BindStatefulIcon(_timerIcon, ref _timerIconElement, ref _timerIconName,
@@ -1266,10 +1396,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             SetAccessible(button, $"{action} unavailable", $"{action} state is unavailable until playback controls recover.");
             return;
         }
-        var verb = confirmed.Value ? $"Remove {lower}" : action;
+        var verb = confirmed.Value ? $"Remove {lower}" : action == "Dislike" ? "Dislike and skip" : action;
         SetAccessible(button, verb, confirmed.Value
             ? $"Confirmed {lower} state. Activate to remove {lower}."
-            : $"Not {lower}d. Activate to {lower} the current track.");
+            : action == "Dislike"
+                ? "Dislike the current song. YouTube Music then skips to the next song."
+                : $"Not {lower}d. Activate to {lower} the current track.");
     }
 
     private void SetRepeatAccessibility(string? repeat, bool available)

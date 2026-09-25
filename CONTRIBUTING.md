@@ -38,6 +38,8 @@ pwsh -NoProfile -File scripts/probe.ps1 native-fixture
 
 UI changes also need a check in the running app.
 
+Before adding a test, read the testing rules in [agents.md](agents.md#test): prefer end-to-end tests that leave a repeatable artifact, and don't add unit tests after the code is written.
+
 ### Testing the updater
 
 Start the local metadata server with `python scripts/updater-test-server.py --scenario available`. Build the app with `-p:UpdaterTestHooks=true`, then set `NATIVUNE_TEST_RELEASE_METADATA_URL` to the URL the server prints. The test hook accepts only loopback `http://127.0.0.1` addresses and is not compiled into release builds.

@@ -12,9 +12,17 @@ For substantive work, define the result, affected behavior and completion eviden
 
 Within an authorized task, continue through implementation, focused verification and fixes without stopping for approval at each local step. Delegate only independent work with clear file ownership and shared interfaces; one integration owner checks the combined result. A failed feasibility gate stops dependent work, not unrelated authorized work. Report the missing decision rather than substitute a weaker feature.
 
-Choose evidence for the change. Documentation needs consistency/link checks, not an app launch. Code needs the affected checks; UI/runtime changes need the actual native app. Account or playback checks require the appropriate authorized session. Keep regression tests for plausible behavioral failures, not to prove activity. Owner-reported outcomes stand as reported evidence; distinguish them from independently observed results.
+Choose evidence for the change. Documentation needs consistency/link checks, not an app launch. Code follows [Test](#test); UI/runtime changes need the actual native app. Account or playback checks require the appropriate authorized session. Owner-reported outcomes stand as reported evidence; distinguish them from independently observed results.
 
 Finish with changed files, checks actually run and remaining blockers. Remove temporary instrumentation, preserve user work and update the current-state index plus relevant decision record when an outcome changes. A partial run is not a passed gate.
+
+## Test
+
+- Never write unit tests after you write code.
+- Highly prefer E2E tests as the sole testing mechanism. Use them to verify complex features work. At the end of an E2E test, produce a verifiable and repeatable artifact (for example a JSON report or screenshots under `artifacts/`, plus the exact command that regenerates it).
+- If you must test a system in isolation, first write down all the ways it could fail, then write the code.
+
+E2E here means driving the actual native app: `scripts/probe.ps1 native-fixture`, `output-audio-fixture`, or a scripted run on a disposable profile under `.cache/`. Tests exist to catch plausible behavioral failures, not to prove that code ran.
 
 ## Keep project state local
 

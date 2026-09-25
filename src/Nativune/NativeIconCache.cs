@@ -55,6 +55,7 @@ internal sealed class NativeIconCache : IDisposable
             ["pin"] = "pin",
             ["play-pause"] = "play-pause",
             ["play"] = "play",
+            ["playlist"] = "playlist",
             ["previous"] = "previous",
             ["quit-timer"] = "quit-timer",
             ["quit"] = "quit",

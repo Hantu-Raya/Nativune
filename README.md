@@ -6,7 +6,7 @@ Nativune is for Windows users who want YouTube Music in its own desktop window w
 
 ![Nativune full window showing the YouTube Music Home page (signed out) below the native Nativune toolbar](assets/screenshots/nativune-full-view.png)
 
-![Nativune Compact mini player with artwork, track title, playback, rating, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
+![Nativune Compact mini player with artwork, track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
 
 ## Notice
 
@@ -34,7 +34,8 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
 ## Features
 
-- **Full and Compact views in one window.** The Compact view is a native horizontal mini player, 800 × 180 by default, with a fixed height and adjustable width. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, repeat, shuffle, volume and a pause timer.
+- **Full and Compact views in one window.** The Compact view is a native horizontal mini player, 800 × 180 by default, with a fixed height and adjustable width. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. A short notice under the title confirms actions such as a dislike or a started playlist.
+- **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
 - **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles. While it is enabled, Close hides the window and playback keeps running. Quit always exits.
@@ -53,7 +54,7 @@ Nativune has three parts:
 
 1. **App host (`Nativune.exe`).** A WinUI 3 window that owns exactly one WebView2 control and draws the native toolbar, Compact player, dialogs, tray icon and taskbar buttons.
 2. **Embedded website.** The WebView2 control loads `https://music.youtube.com/` from an isolated browser profile stored in the installation's `data/` directory. You sign in on Google's own pages inside this view. Nativune never handles your password.
-3. **Control dispatcher.** Native buttons act by operating the website's own visible controls in that single owned view. For example, Compact seeking drives Music's own progress slider. Each command checks the page origin and the target control first. If a check fails, the command does nothing and reports why. Commands are never retried and never sent to another player.
+3. **Control dispatcher.** Native buttons act by operating the website's own visible controls in that single owned view. For example, Compact seeking drives Music's own progress slider, and the Playlists menu presses the Play button of a playlist in the website's sidebar. Each command checks the page origin and the target control first. Ratings and seeks also check that the website still shows the song you clicked on, and a playlist choice checks that the sidebar still lists that playlist in the same place. If a check fails, the command does nothing and reports why. Commands are never retried and never sent to another player. While one command is running, extra clicks are ignored rather than queued.
 
 Because controls go through the public website interface, they can stop working when YouTube Music changes its page. This is not a documented Google API.
 
@@ -65,6 +66,7 @@ The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It instal
 - **Blocked by default:** file downloads, website permission requests (camera, microphone, location and others) and launches of external URI schemes.
 - **No native bridge.** WebView2 host objects and web messaging are disabled, so page scripts cannot call into the native app.
 - **Isolated profile.** Cookies and site data stay in Nativune's own WebView2 profile. Nativune does not import cookies from other browsers and does not collect passwords.
+- **Library data stays on screen.** The Compact Playlists menu reads playlist names from the page only when you open it. They are shown in the menu and not stored, sent anywhere or written to the log.
 - **Tracker filtering only.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are not blocked.
 - **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Opening the update dialog makes one more anonymous request, for the release notes. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
 
@@ -137,7 +139,8 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 2. Select **Sign in** on the YouTube Music page and complete Google sign-in in the embedded view. You can also use it signed out.
 3. Play music as you would on the website. The website's player bar, the taskbar buttons, the More menu and the Compact player all control the same player.
 4. Select the **Compact window** button at the left of the toolbar to switch to the mini player, and **Return to full** to switch back.
-5. Open **More commands and settings** (`…`) for playback commands, tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
+5. In Compact, select **Playlists** (the list-and-play icon next to Dislike) to choose one of your playlists. The menu shows what YouTube Music lists in its sidebar, so you need to be signed in.
+6. Open **More commands and settings** (`…`) for playback commands, tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
 
 ## Updates
 
@@ -187,6 +190,7 @@ Development builds keep their WebView2 profile in the repository's `data/` direc
 - Windows x64 only; no macOS, Linux or Arm64 builds.
 - The installer is unsigned; SmartScreen warnings may continue until it is signed and has built reputation.
 - Controls depend on YouTube Music's public web interface and can break when the site changes.
+- The Compact Playlists menu lists only what the website's sidebar shows, and it is empty while signed out.
 - Nativune has no native audio engine; playback always runs in the embedded official website.
 - Not yet verified: a clean-Windows installation matrix, Premium features, full parity with the saved library, and resource use over long sessions.
 - Resource figures are informal maintainer observations, not benchmarks.
@@ -202,6 +206,9 @@ No. It is an independent open-source project that displays the official website.
 
 **Is Nativune a native app?**
 The window, toolbar, Compact player, dialogs, tray and taskbar integration are native WinUI 3 and Win32 code. The music library, search and playback are the official YouTube Music website running in WebView2.
+
+**Why does Dislike skip to the next song?**
+YouTube Music's website skips a song as soon as you dislike it, and Nativune presses the website's own button. Compact's Dislike therefore reads "Dislike and skip". One click gives one dislike and one skip, and extra clicks can't dislike the songs that follow.
 
 **Does Nativune block ads or download music?**
 No. It enables only the EasyPrivacy tracker list, and it cancels website downloads.

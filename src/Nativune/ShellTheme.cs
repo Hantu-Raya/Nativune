@@ -99,6 +99,7 @@ internal static class ShellTheme
                 return;
 
             var appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
+            AppIcon.Apply(appWindow);
             if (!AppWindowTitleBar.IsCustomizationSupported())
                 return;
 

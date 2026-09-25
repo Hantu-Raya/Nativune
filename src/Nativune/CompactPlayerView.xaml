@@ -194,6 +194,12 @@
                           Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
             <ToggleButton x:Name="Dislike" Width="40" Height="40" IsThreeState="True"
                           Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
+            <Button x:Name="Playlists" Width="40" Height="40"
+                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
+                <Button.ContextFlyout>
+                    <MenuFlyout x:Name="PlaylistMenu" Placement="Bottom" ShouldConstrainToRootBounds="False" />
+                </Button.ContextFlyout>
+            </Button>
             <Button x:Name="Repeat" Width="40" Height="40"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
                 <Grid Width="24" Height="24">

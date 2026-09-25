@@ -8,7 +8,7 @@ namespace Nativune;
 internal sealed class PlayerControls : IDisposable
 {
     private const int MaxScriptResultLength = 4096;
-    internal const string CompactRequestedStatus = "Player control click sent; website result not confirmed.";
+    internal const string CompactRequestedStatus = "Player control click sent.";
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan DispatchWindow = TimeSpan.FromMilliseconds(1200);
 
@@ -27,9 +27,6 @@ internal sealed class PlayerControls : IDisposable
     private bool _busy;
     private bool _poisoned;
     private bool _disposed;
-    private CompactPlaybackState? _lastCompactState;
-    private string? _lastCompactHref;
-    private long _lastCompactReadAt = -1000, _lastCompactStateAt;
 
     public PlayerControls(CoreWebView2 core, Func<bool> hostReady, CancellationToken lifetime)
     {
@@ -45,6 +42,8 @@ internal sealed class PlayerControls : IDisposable
         _lifetimeRegistration = lifetime.Register(static state => ((PlayerControls)state!).Invalidate(), this);
     }
 
+    // Whether the owned page can accept commands at all. A running script does not make the
+    // controls unavailable; commands wait for it (see WaitForIdleAsync) instead of flickering.
     public bool IsAvailable
     {
         get
@@ -66,14 +65,26 @@ internal sealed class PlayerControls : IDisposable
 
     public event EventHandler? StateChanged;
 
-    public async Task<string> ExecuteAsync(string command)
+    // A user command waits (bounded) for the periodic state read that currently owns the page,
+    // rather than being refused because a read happened to be running.
+    private async Task WaitForIdleAsync()
     {
-        if (!IsSupportedCommand(command)) return "Unsupported control command.";
-        if (!TryStart(command, out var request, out var failure)) return failure;
+        Task<string>? pending;
+        lock (_gate) pending = _pendingScript is { IsCompleted: false } script ? script : null;
+        if (pending is null) return;
+        try { await pending.WaitAsync(ScriptTimeout, _lifetime); }
+        catch (Exception) { }
+    }
+
+    public async Task<PlayerCommandResult> ExecuteAsync(string command)
+    {
+        if (!IsSupportedCommand(command)) return new(PlayerCommandOutcome.NotSent, "Unsupported control command.");
+        await WaitForIdleAsync();
+        if (!TryStart(command, out var request, out var failure)) return new(PlayerCommandOutcome.NotSent, failure);
 
         try
         {
-            if (!Owns(request)) return "Control request invalidated; no action was sent.";
+            if (!Owns(request)) return new(PlayerCommandOutcome.NotSent, "Control request invalidated; no action was sent.");
 
             var notAfterUnixMs = DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds();
             var script = BuildScript(request.Command, request.Href, notAfterUnixMs);
@@ -84,7 +95,7 @@ internal sealed class PlayerControls : IDisposable
             }
             catch (Exception ex) when (ex is InvalidOperationException or COMException)
             {
-                return "Player control action failed; no retry.";
+                return new(PlayerCommandOutcome.NotSent, "Player control action failed; no action was sent.");
             }
 
             SetPendingScript(pending);
@@ -97,22 +108,22 @@ internal sealed class PlayerControls : IDisposable
             catch (TimeoutException) when (!request.Cancellation.IsCancellationRequested)
             {
                 Stall();
-                return "Control script timed out; no retry. Controls return once the page responds.";
+                return new(PlayerCommandOutcome.Unknown, "Control script timed out; no retry. Controls return once the page responds.");
             }
             catch (OperationCanceledException) when (request.Cancellation.IsCancellationRequested)
             {
                 // Cancellation stops our wait, not a DOM click already dispatched by WebView2.
-                return "Control request invalidated; action may have occurred; no retry.";
+                return new(PlayerCommandOutcome.Unknown, "Control request invalidated; action may have occurred; no retry.");
             }
             catch (Exception)
             {
-                return "Player control action failed; no retry.";
+                return new(PlayerCommandOutcome.Unknown, "Player control action failed; no retry.");
             }
 
-            if (!Owns(request))
-                return "Control request invalidated; action may have occurred; no retry.";
+            if (!OwnsDocument(request))
+                return new(PlayerCommandOutcome.Unknown, "Control request invalidated; action may have occurred; no retry.");
             if (!TryParseOutcome(json, out var outcome))
-                return "Player control action failed; no retry.";
+                return new(PlayerCommandOutcome.Unknown, "Player control action failed; no retry.");
             return FormatOutcome(command, outcome);
         }
         finally
@@ -134,84 +145,78 @@ internal sealed class PlayerControls : IDisposable
         finally { CompleteRequest(request); }
     }
 
-    internal async Task<CompactPlaybackState?> ReadCompactStateAsync()
+    // Sampled is false when no read ran (the page was busy or unavailable to scripts); callers keep
+    // what they already show. Sampled with a null state means the website had no coherent player.
+    internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
+
+    internal async Task<CompactRead> ReadCompactStateAsync()
     {
-        if (!IsAvailable || !TryGetSource(out var source)) return null;
-        lock (_gate)
-        {
-            if (_lastCompactHref is not null && !string.Equals(_lastCompactHref, source, StringComparison.Ordinal))
-            {
-                _lastCompactState = null;
-                _lastCompactHref = null;
-            }
-            if (Environment.TickCount64 - _lastCompactReadAt < 1000)
-                return _lastCompactHref == source ? _lastCompactState : null;
-        }
-        if (!TryStart("compact-state", out var request, out _)) return null;
+        if (!IsAvailable) return default;
+        if (!TryStart("compact-state", out var request, out _)) return default;
         try
         {
-            lock (_gate)
-            {
-                _lastCompactReadAt = Environment.TickCount64;
-                _lastCompactState = null;
-                _lastCompactHref = null;
-            }
             var script = CompactPlayback.BuildScript("state", null, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
             var json = await RunCompactScriptAsync(request, script);
-            if (json is null || !Owns(request) || !CompactPlayback.TryParseState(json, out var state))
-                return null;
-            var sampledAt = Environment.TickCount64;
-            lock (_gate)
-            {
-                if (_generation != request.Generation) return null;
-                _lastCompactState = state;
-                _lastCompactHref = request.Href;
-                _lastCompactStateAt = sampledAt;
-            }
-            return state;
+            if (json is null || !OwnsDocument(request)) return default;
+            return new CompactRead(true, CompactPlayback.TryParseState(json, out var state) ? state : null);
         }
         finally { CompleteRequest(request); }
     }
 
-    internal async Task<string> ExecuteCompactAsync(string command, double? value = null)
+    // Null when the page could not be read; an empty list when the website shows no playlists
+    // (for example when signed out). Playlist names are shown in the menu only, never logged.
+    internal async Task<IReadOnlyList<CompactPlayback.PlaylistEntry>?> ReadPlaylistsAsync()
     {
-        if (command is not ("like" or "dislike" or "repeat" or "shuffle" or "seek"))
-            return "Unsupported compact command.";
-        if (command == "seek"
-            && (value is null || !double.IsFinite(value.Value) || value < 0))
-            return "Invalid control value; no action was sent.";
-        if (!TryStart(command, out var request, out var failure)) return failure;
+        if (!IsAvailable) return null;
+        await WaitForIdleAsync();
+        if (!TryStart("compact-playlists", out var request, out _)) return null;
         try
         {
-            string? signature = null;
-            lock (_gate)
-            {
-                if (_lastCompactState is { } state && _lastCompactHref == request.Href
-                    && Environment.TickCount64 - _lastCompactStateAt <= 2500)
-                    signature = CompactPlayback.ComputeSignature(state);
-            }
-            if (command is "seek" or "like" or "dislike" && signature is null)
-                return "Playback state is stale; no action was sent.";
+            var script = CompactPlayback.BuildScript("playlists", null, request.Href,
+                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
+            var json = await RunCompactScriptAsync(request, script);
+            return json is not null && OwnsDocument(request)
+                && CompactPlayback.TryParsePlaylists(json, out var playlists) ? playlists : null;
+        }
+        finally { CompleteRequest(request); }
+    }
+
+    // expectedSignature is the item the user saw when clicking; item-bound commands (ratings and
+    // seek) are refused by the page script when the website has moved to another item. For
+    // play-playlist it is the chosen playlist's title and value is its position in the sidebar.
+    internal async Task<PlayerCommandResult> ExecuteCompactAsync(string command, double? value, string? expectedSignature)
+    {
+        if (command is not ("like" or "dislike" or "repeat" or "shuffle" or "seek" or "play-playlist"))
+            return new(PlayerCommandOutcome.NotSent, "Unsupported compact command.");
+        if (command is "seek" or "play-playlist"
+            && (value is null || !double.IsFinite(value.Value) || value < 0))
+            return new(PlayerCommandOutcome.NotSent, "Invalid control value; no action was sent.");
+        if (command is "seek" or "like" or "dislike" or "play-playlist" && expectedSignature is null)
+            return new(PlayerCommandOutcome.NotSent, "Playback state unavailable; no action was sent.");
+        await WaitForIdleAsync();
+        if (!TryStart(command, out var request, out var failure)) return new(PlayerCommandOutcome.NotSent, failure);
+        try
+        {
             var script = CompactPlayback.BuildScript("action", command, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds(),
-                value, signature);
+                value, expectedSignature);
             var json = await RunCompactScriptAsync(request, script);
-            if (json is null || !Owns(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
-                return "Player action outcome unknown; no retry. Check the website before trying again.";
+            if (json is null || !OwnsDocument(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
+                return new(PlayerCommandOutcome.Unknown, "Player action outcome unknown; no retry. Check the website before trying again.");
             return FormatCompactOutcome(outcome);
         }
         finally { CompleteRequest(request); }
     }
-    internal static string FormatCompactOutcome(CompactPlayback.CompactPlaybackOutcome outcome)
+    internal static PlayerCommandResult FormatCompactOutcome(CompactPlayback.CompactPlaybackOutcome outcome)
     {
         if (outcome.Code == "requested" && outcome.Dispatched)
-            return CompactRequestedStatus;
-        if (outcome.Code == "stale-state" && !outcome.Dispatched)
-            return "Playback changed; no action was sent.";
+            return new(PlayerCommandOutcome.Sent, CompactRequestedStatus);
+        if (outcome.Code is "stale-state" or "stale-document" && !outcome.Dispatched)
+            return new(PlayerCommandOutcome.Changed, "Song changed; no action was sent.");
         return outcome.Dispatched
-            ? "Player action outcome unknown; no retry."
-            : "Player control unavailable or ambiguous; no action was sent.";
+            ? new(PlayerCommandOutcome.Unknown, "Player action outcome unknown; no retry.")
+            : new(PlayerCommandOutcome.NotSent, "Player control unavailable or ambiguous; no action was sent.");
     }
 
     private async Task<string?> RunCompactScriptAsync(Request request, string script)
@@ -248,8 +253,6 @@ internal sealed class PlayerControls : IDisposable
         {
             if (_disposed) return;
             _generation++;
-            _lastCompactState = null;
-            _lastCompactHref = null;
             operation = _operation;
         }
         operation?.Cancel();
@@ -264,8 +267,6 @@ internal sealed class PlayerControls : IDisposable
             if (_disposed) return;
             _disposed = true;
             _generation++;
-            _lastCompactState = null;
-            _lastCompactHref = null;
             operation = _operation;
             _operation = null;
         }
@@ -279,9 +280,9 @@ internal sealed class PlayerControls : IDisposable
         StateChanged = null;
     }
 
+    // Busy is deliberately not part of availability: TryStart enforces one script at a time.
     private bool CanAttemptLocked()
-        => !_disposed && !_poisoned && !_lifetime.IsCancellationRequested && !_busy
-            && _pendingScript is not { IsCompleted: false };
+        => !_disposed && !_poisoned && !_lifetime.IsCancellationRequested;
 
     private bool TryStart(string command, out Request request, out string failure)
     {
@@ -347,7 +348,14 @@ internal sealed class PlayerControls : IDisposable
         return true;
     }
 
+    // Before dispatch: the page must still be exactly the one the request was built for.
     private bool Owns(Request request)
+        => OwnsDocument(request) && TryGetSource(out var source) && source == request.Href;
+
+    // After a script returned: its result describes the page at the moment it ran, which the script
+    // itself validated against request.Href. Next/Previous/Dislike make YouTube Music change its
+    // watch URL within the same document, so only a new document or invalidation voids the result.
+    private bool OwnsDocument(Request request)
     {
         lock (_gate)
         {
@@ -357,7 +365,7 @@ internal sealed class PlayerControls : IDisposable
                 return false;
         }
 
-        return TryGetSource(out var source) && source == request.Href && IsReady(source);
+        return TryGetSource(out var source) && IsReady(source);
     }
 
     private bool IsReady(string source)
@@ -424,9 +432,9 @@ internal sealed class PlayerControls : IDisposable
         Stall();
     }
 
-    // A slow page is not a broken page. Drop the current request and cached state without a retry;
-    // CanAttemptLocked keeps new commands blocked while the late script is still pending, and the
-    // script itself refuses to click after its dispatch deadline, so nothing can fire twice.
+    // A slow page is not a broken page. Drop the current request without a retry; TryStart keeps
+    // new scripts blocked while the late script is still pending, and the script itself refuses to
+    // click after its dispatch deadline, so nothing can fire twice.
     private void Stall()
     {
         CancellationTokenSource? operation;
@@ -435,8 +443,6 @@ internal sealed class PlayerControls : IDisposable
             if (_disposed) return;
             _generation++;
             operation = _operation;
-            _lastCompactState = null;
-            _lastCompactHref = null;
         }
         operation?.Cancel();
         RaiseStateChanged();
@@ -589,7 +595,7 @@ internal sealed class PlayerControls : IDisposable
         => root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
             && value.GetBoolean();
 
-    private static string FormatOutcome(string requestedCommand, ScriptOutcome outcome)
+    private static PlayerCommandResult FormatOutcome(string requestedCommand, ScriptOutcome outcome)
     {
         var label = requestedCommand switch
         {
@@ -601,24 +607,21 @@ internal sealed class PlayerControls : IDisposable
         };
 
         if (outcome.Code == "observed")
-            return outcome.NoOp ? $"{label} already active." : $"{label} observed.";
+            return new(PlayerCommandOutcome.Sent, outcome.NoOp ? $"{label} already active." : $"{label} observed.");
         if (outcome.Code == "requested")
-            return $"{label} requested; result not observed.";
-        if (outcome.Code == "expired") return "Control request expired; no action was sent.";
-        if (outcome.Code is "invalidated" or "stale-document")
-            return outcome.Dispatched
-                ? "Control request invalidated; action may have occurred; no retry."
-                : "Control request invalidated; no action was sent.";
-        if (outcome.Code == "unavailable")
-            return outcome.Dispatched
-                ? "Control action outcome unknown; no retry."
-                : "Player controls unavailable; no action was sent.";
-        if (outcome.Code == "wrong-origin") return "Player controls unavailable; origin check failed.";
-        if (outcome.Code == "unsupported-locale") return "Player controls unavailable in this locale.";
-        if (outcome.Code == "disabled-control") return "Player control unavailable or disabled; no action was sent.";
-        return outcome.Dispatched
-            ? "Player control action outcome unknown; no retry."
-            : "Player control action failed; no retry.";
+            return new(PlayerCommandOutcome.Sent, $"{label} sent.");
+        if (!outcome.Dispatched && outcome.Code is "invalidated" or "stale-document")
+            return new(PlayerCommandOutcome.Changed, "Page changed; no action was sent.");
+        if (outcome.Dispatched)
+            return new(PlayerCommandOutcome.Unknown, "Player control action outcome unknown; no retry.");
+        return new(PlayerCommandOutcome.NotSent, outcome.Code switch
+        {
+            "expired" => "Control request expired; no action was sent.",
+            "wrong-origin" => "Player controls unavailable; origin check failed.",
+            "unsupported-locale" => "Player controls unavailable in this locale.",
+            "disabled-control" => "Player control unavailable or disabled; no action was sent.",
+            _ => "Player controls unavailable; no action was sent."
+        });
     }
 
     private readonly record struct Request(string Command, string Href, ulong? NavigationId,
@@ -713,3 +716,8 @@ try {
 }
 """;
 }
+
+// NotSent and Changed guarantee nothing reached the website; Unknown means a click may have occurred.
+internal enum PlayerCommandOutcome { Sent, NotSent, Changed, Unknown }
+
+internal readonly record struct PlayerCommandResult(PlayerCommandOutcome Outcome, string Message);

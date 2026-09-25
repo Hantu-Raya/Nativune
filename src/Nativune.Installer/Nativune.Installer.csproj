@@ -13,6 +13,7 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <DebugType>none</DebugType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\app-icon\nativune.ico</ApplicationIcon>
     <AssemblyName>Nativune.Setup</AssemblyName>
     <RootNamespace>Nativune.Installer</RootNamespace>
     <Version>0.1.12</Version>

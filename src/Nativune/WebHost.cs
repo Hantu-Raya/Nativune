@@ -612,6 +612,7 @@ public sealed partial class WebHostWindow : Window
             _windowId = Win32Interop.GetWindowIdFromWindow(NativeHandle);
             _appWindow = AppWindow.GetFromWindowId(_windowId)
                 ?? throw new InvalidOperationException("The Web host AppWindow could not be resolved.");
+            AppIcon.Apply(_appWindow);
             _presenter = _appWindow.Presenter as OverlappedPresenter;
             if (_presenter is null)
             {
@@ -818,13 +819,14 @@ public sealed partial class WebHostWindow : Window
         _topmostItem.IsChecked = value;
     }
 
-    private bool PlayerAvailable => !_playerSuspended && !_playerBusy && !_closing && !_disposed
+    // Busy is not part of availability: controls stay enabled while one command runs, and clicks
+    // meanwhile are ignored, so taskbar/tray/menu/Compact buttons don't flicker every poll.
+    private bool PlayerAvailable => !_playerSuspended && !_closing && !_disposed
         && _playerControls?.IsAvailable == true;
 
     private void UpdatePlayerControls()
     {
         var enabled = PlayerAvailable;
-        CompactView.SetPlayerBusy(_playerBusy);
         _playPauseItem.IsEnabled = enabled;
         _playItem.IsEnabled = enabled;
         _pauseItem.IsEnabled = enabled;
@@ -872,38 +874,23 @@ public sealed partial class WebHostWindow : Window
             UpdatePlayerControls();
             return;
         }
-        if (_playerBusy)
-        {
-            SetStatus("A playback command is already in progress.", isError: true);
-            return;
-        }
+        if (_playerBusy) return;
 
         _playerBusy = true;
-        UpdatePlayerControls();
+        var result = new PlayerCommandResult(PlayerCommandOutcome.Unknown, "Playback command failed; playback outcome is unknown.");
         try
         {
-            var status = await controls.ExecuteAsync(command);
-            if (!_closing && !_disposed)
-                SetStatus(string.IsNullOrWhiteSpace(status) ? "Playback command completed." : status);
+            result = await controls.ExecuteAsync(command);
         }
-        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { }
-        catch (OperationCanceledException)
-        {
-            SetStatus("Playback command cancelled because the page changed.", isError: true);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or TimeoutException or COMException)
-        {
-            SetStatus("Playback command unavailable; no retry was requested.", isError: true);
-        }
-        catch (Exception)
-        {
-            SetStatus("Playback command failed; playback outcome is unknown.", isError: true);
-        }
+        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
+        catch (Exception) { }
         finally
         {
             _playerBusy = false;
-            UpdatePlayerControls();
         }
+        if (_closing || _disposed) return;
+        _lastCompactReadAt = 0;
+        ReportPlayerResult(result);
     }
 
     private async Task InitializeAsync()

@@ -30,10 +30,10 @@ internal static class CompactPlayback
         return "(() => { const request = " + request + ";\n" + CompactJavaScript + "\n})()";
     }
 
-    // Item identity only: signed-in media duration can grow while the same item plays.
+    // Item identity only: artwork loads late and signed-in duration can change while the same item
+    // plays, so neither may make a click on the item the user sees look stale.
     internal static string ComputeSignature(CompactPlaybackState state)
-        => JsonSerializer.Serialize(new object?[]
-            { state.Title, state.ArtworkUrl, state.Duration, state.VideoId }, SignatureOptions);
+        => JsonSerializer.Serialize(new object?[] { state.Title, state.VideoId }, SignatureOptions);
 
     internal static bool TryParseState(string? json, out CompactPlaybackState? state)
     {
@@ -130,6 +130,38 @@ internal static class CompactPlayback
         {
             return false;
         }
+    }
+
+    internal readonly record struct PlaylistEntry(string Title, string Subtitle);
+    internal const int MaxPlaylists = 100;
+    private const int MaxPlaylistResultLength = 64 * 1024;
+
+    // The playlists the website shows in its sidebar, in order. Titles are the identity the play
+    // action re-checks, so an empty or oversized entry rejects the whole list rather than guessing.
+    internal static bool TryParsePlaylists(string? json, out IReadOnlyList<PlaylistEntry> playlists)
+    {
+        playlists = [];
+        if (json is null || json.Length == 0 || json.Length > MaxPlaylistResultLength) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 4 });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !RequiredString(root, "code", "playlists", out _)
+                || !root.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array
+                || items.GetArrayLength() > MaxPlaylists) return false;
+            var result = new List<PlaylistEntry>(items.GetArrayLength());
+            foreach (var item in items.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object
+                    || !RequiredString(item, "title", null, out var title) || title.Length is 0 or > 120
+                    || !RequiredString(item, "subtitle", null, out var subtitle) || subtitle.Length > 80)
+                    return false;
+                result.Add(new PlaylistEntry(title, subtitle));
+            }
+            playlists = result;
+            return true;
+        }
+        catch (JsonException) { return false; }
     }
     internal static bool IsTransportReadyResponse(string? json)
     {
@@ -396,7 +428,7 @@ try {
     });
     const artworkUrl = shown.length === 1 ? shown[0].currentSrc : null;
     const videoId = videoIdFor();
-    return {title, artworkUrl, signature:JSON.stringify([title, artworkUrl, duration, videoId])};
+    return {title, artworkUrl, signature:JSON.stringify([title, videoId])};
   };
   const stateMediaFor = acquired => {
     const element = acquired.element;
@@ -505,8 +537,62 @@ try {
       || !enabled(current.playPause)) return result('unavailable');
     return result('ready');
   };
+  // The user's playlists as the website itself lists them in its sidebar ("guide"). Each entry has
+  // the site's own Play button; nothing is fetched from an API. The sidebar may be collapsed and the
+  // page hidden while Compact is shown, so entries are identified by position and title, not visibility.
+  const playlistEntries = () => {
+    let found = null;
+    for (const guide of Array.from(requestDocument.querySelectorAll('ytmusic-guide-renderer'))) {
+      if (!isPresent(guide)) continue;
+      const entries = Array.from(guide.querySelectorAll('ytmusic-guide-entry-renderer'));
+      if (entries.length > 400) return null;
+      const items = [];
+      for (const entry of entries) {
+        const plays = Array.from(entry.querySelectorAll('ytmusic-play-button-renderer'))
+          .filter(play => play.id === 'play-button');
+        const titles = entry.querySelectorAll('.title');
+        if (plays.length !== 1 || titles.length !== 1) continue;
+        const title = (titles[0].textContent || '').trim();
+        if (title.length === 0 || title.length > 120) continue;
+        const subtitles = entry.querySelectorAll('.subtitle');
+        const subtitle = subtitles.length === 1 ? (subtitles[0].textContent || '').trim().slice(0, 80) : '';
+        items.push({play:plays[0], title, subtitle});
+      }
+      if (items.length === 0) continue;
+      if (found) return null;
+      found = items;
+    }
+    return (found ?? []).slice(0, 100);
+  };
+  const playlists = () => {
+    const items = playlistEntries();
+    if (!items) return result('ambiguous-control');
+    return {code:'playlists', items:items.map(({title, subtitle}) => ({title, subtitle}))};
+  };
+  // Presses the chosen sidebar entry's own Play button once, if it is still the same playlist.
+  const playPlaylist = () => {
+    const index = request.value;
+    if (!Number.isInteger(index) || index < 0 || index >= 100
+      || typeof request.expectedStateSignature !== 'string') return result('invalid-value');
+    const first = playlistEntries();
+    if (!first) return result('ambiguous-control');
+    const target = first[index];
+    if (!target || target.title !== request.expectedStateSignature) return result('stale-state');
+    const button = target.play;
+    if (!isPresent(button) || button.hasAttribute('disabled')
+      || button.getAttribute('aria-disabled') === 'true') return result('disabled-control');
+    if (Date.now() > request.notAfterUnixMs) return result('expired');
+    const again = playlistEntries();
+    if (!again || !again[index] || again[index].play !== button) return result('stale-document');
+    dispatched = true;
+    try { HTMLElement.prototype.click.call(button); }
+    catch { return result('script-error'); }
+    return result('requested');
+  };
   if (request.mode === 'ready') return transportReady();
   if (request.mode === 'state') return state();
+  if (request.mode === 'playlists') return playlists();
+  if (request.mode === 'action' && request.command === 'play-playlist') return playPlaylist();
   if (request.mode !== 'action' || !['like','dislike','repeat','shuffle','seek'].includes(request.command))
     return result('unsupported-command');
   const initial = acquire();

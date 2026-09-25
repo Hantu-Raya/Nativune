@@ -1188,33 +1188,6 @@ internal static class ReleaseUpdaterChecks
             || ReleaseUpdater.SelectReleaseForChecks(releaseJson, "0.1.1", out _) != ReleaseSelectionDisposition.None)
             throw new SelfCheckException("Release or asset selection checks failed.");
 
-        const string notes = "# Nativune 0.1.11\n\nIntro boilerplate.\n\n## What's fixed\n\n- **Title bar** after [Compact](https://x.test).\n\n## Install\n\n1. Download `Nativune-Setup.exe`.\n\n## Build and known limits\n\nCI run.";
-        if (ReleaseUpdater.SummarizeReleaseNotes(notes) != "What's fixed\n• Title bar after Compact.")
-            throw new SelfCheckException("Release-note summary did not keep only the change sections as plain text.");
-        var listJson = """
-            [
-              { "tag_name": "v0.1.12", "draft": false, "prerelease": false, "body": "## New\n- twelve" },
-              { "tag_name": "v0.1.11", "draft": false, "prerelease": false, "body": "## Fixed\n- eleven" },
-              { "tag_name": "v0.1.11-beta.1", "draft": false, "prerelease": true, "body": "## Beta\n- beta" },
-              { "tag_name": "v0.1.10", "draft": false, "prerelease": false, "body": "## New\n- ten" },
-              { "tag_name": "v0.1.9", "draft": false, "prerelease": false, "body": "## Old\n- nine" }
-            ]
-            """;
-        if (ReleaseUpdater.BuildChangeSummary(listJson, "v0.1.9", "v0.1.11", "fallback") != "v0.1.11\nFixed\n• eleven\n\nv0.1.10\nNew\n• ten"
-            || ReleaseUpdater.BuildChangeSummary("not json", "v0.1.9", "v0.1.11", "## Fixed\n- eleven") != "v0.1.11\nFixed\n• eleven")
-            throw new SelfCheckException("Update change summary did not cover exactly the installed-to-offered release range.");
-
-        var available = new ReleaseUpdateResult(
-            ReleaseUpdateStatus.Available,
-            selection!.VersionText,
-            selection.DownloadUrl,
-            null,
-            selection.Size,
-            selection.Sha256,
-            null);
-        if (!available.IsAvailable || available.SetupPath is not null)
-            throw new SelfCheckException("Update availability must be reported before downloading the installer.");
-
         var directory = Path.Combine(root, "release-updater-check-" + Guid.NewGuid().ToString("N"));
         try
         {

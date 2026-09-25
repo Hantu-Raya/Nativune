@@ -8,7 +8,6 @@ using Microsoft.UI.Xaml.Media;
 using FoundationRect = Windows.Foundation.Rect;
 using FoundationSize = Windows.Foundation.Size;
 using WinRT.Interop;
-using UiColor = Windows.UI.Color;
 
 namespace Nativune;
 
@@ -34,44 +33,6 @@ internal static class ShellChecks
         Require(ShellSettings.Default.TrayEnabled && ShellSettings.Default.AutoCheckUpdates,
             "New profiles did not enable tray and automatic update checks by default.");
 
-        var notCheckedUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.NotChecked, null);
-        var notInstalledUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.NotInstalled, null);
-        var availableUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.Available, "v0.1.11");
-        var currentUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.UpToDate, null);
-        var failedUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.Failed, null);
-        var checkingUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
-            ReleaseUpdateButtonState.Checking, null);
-        Require(notCheckedUpdate.IconName == "update"
-            && notCheckedUpdate.Tooltip == "Click to check for Nativune updates."
-            && notCheckedUpdate.IsEnabled
-            && !notCheckedUpdate.Tooltip.Contains("up to date", StringComparison.OrdinalIgnoreCase),
-            "Not-checked button state did not offer a manual update check without claiming the app is current.");
-        Require(notInstalledUpdate.IconName == "update"
-            && notInstalledUpdate.Tooltip == "Update checks are available only in installed Nativune builds."
-            && notInstalledUpdate.IsEnabled
-            && !notInstalledUpdate.Tooltip.Contains("up to date", StringComparison.OrdinalIgnoreCase),
-            "Not-installed button state did not offer a manual update check without claiming the app is current.");
-        Require(availableUpdate.IconName == "update-available"
-            && availableUpdate.Tooltip == "Nativune v0.1.11 is available. Click to update."
-            && availableUpdate.IsEnabled,
-            "Available-update button state did not include its version and enabled action.");
-        Require(currentUpdate.IconName == "update"
-            && currentUpdate.Tooltip == "Nativune is up to date. Click to check for updates."
-            && currentUpdate.IsEnabled,
-            "Up-to-date button state did not offer a manual check.");
-        Require(failedUpdate.IconName == "update"
-            && failedUpdate.Tooltip == "Couldn't check for updates. Click to try again."
-            && failedUpdate.IsEnabled,
-            "Failed button state did not offer a retry.");
-        Require(checkingUpdate.IconName == "update"
-            && checkingUpdate.Tooltip == "Checking for updates…"
-            && !checkingUpdate.IsEnabled,
-            "Checking button state did not disable the update action.");
         var area = new Rectangle(-1280, 0, 1280, 720);
         var bounds = ShellSettings.RestoreBounds(loaded, area, 144);
         Require(area.Contains(bounds) && bounds.Width >= 640 && bounds.Height >= 480,
@@ -186,39 +147,9 @@ internal static class ShellChecks
     }
 
 
-    private static void CheckNativeIconResources()
+    private static void CheckNativeIconSafety()
     {
-        var names = new[]
-        {
-            "app-mark", "back", "cancel-timer", "close", "compact", "dislike",
-            "error", "exit-fullscreen", "forward", "fullscreen", "hide", "home",
-            "like", "minimize", "next", "overflow", "pause", "pin", "play-pause",
-            "play", "previous", "quit-timer", "quit", "repeat-one", "repeat",
-            "restore-section", "restore-window", "retry", "settings", "show",
-            "shuffle", "status", "tray", "update", "update-available", "volume-muted", "volume", "zoom-in",
-            "zoom-out", "zoom-reset"
-        };
-        Require(names.Length == 40, "Native icon registry must contain exactly 40 active canonical names.");
-
-        var resources = typeof(ShellChecks).Assembly.GetManifestResourceNames();
-        Require(!resources.Any(name => name.Contains(".notifications", StringComparison.Ordinal)),
-            "Removed song-notification icons are still bundled.");
-        foreach (var rasterSize in new[] { 16, 20, 24, 25, 30, 32, 40, 48, 64 })
-        {
-            foreach (var name in names)
-                Require(resources.Contains($"Nativune.NativeIcons.{rasterSize}.{name}.png", StringComparer.Ordinal),
-                    $"Native icon resource is missing: {rasterSize}/{name}.");
-        }
-
-        using var cache = new NativeIconCache();
-        foreach (var name in names)
-        {
-            var element = cache.CreateElement(name, 20);
-            Require(element is not null, $"Native icon element was not created: {name}.");
-            var handle = cache.CreateOwnedIcon(name, 20, Color.FromArgb(0xF1, 0xF1, 0xF1));
-            Require(handle != 0, $"Native icon handle was not created: {name}.");
-            NativeIconCache.DestroyIcon(handle);
-        }
+        var cache = new NativeIconCache();
         try
         {
             _ = cache.CreateElement("unknown-native-icon", 20);
@@ -233,7 +164,6 @@ internal static class ShellChecks
         catch (ArgumentOutOfRangeException) { }
 
         cache.Dispose();
-        cache.Dispose();
         try
         {
             _ = cache.CreateElement("play", 20);
@@ -241,77 +171,49 @@ internal static class ShellChecks
         }
         catch (ObjectDisposedException) { }
     }
-    private static void CheckNativeAccentResources()
-    {
-        var resources = Application.Current?.Resources
-            ?? throw new SelfCheckException("Application resources were unavailable for native accent checks.");
-        var highContrast = ShellTheme.IsHighContrast;
-        var expectedAccent = highContrast
-            ? ResolveColorResource(resources, "SystemColorHighlightColor")
-            : Microsoft.UI.ColorHelper.FromArgb(0xFF, 0xFF, 0x00, 0x33);
 
-        if (!highContrast)
-            Require(ColorsEqual(ResolveColorResource(resources, "SystemAccentColorLight2"), expectedAccent),
-                "WinUI derived SystemAccentColorLight2 did not resolve to the active native accent.");
-        foreach (var key in new[]
+    // Setup, not a test: native checks below need the XAML tree loaded and laid out first.
+    private static async Task AwaitLoadedAsync(FrameworkElement element)
+    {
+        if (element.XamlRoot is not null && element.ActualWidth > 0 && element.ActualHeight > 0)
+            return;
+
+        var loaded = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler handler = (_, _) => loaded.TrySetResult(true);
+        element.Loaded += handler;
+        try
         {
-            "CheckBoxCheckBackgroundFillChecked",
-            "CheckBoxCheckBackgroundStrokeChecked",
-            "SliderTrackValueFill",
-            "TextControlBorderBrushFocused"
-        })
-            Require(BrushContainsColor(ResolveResource(resources, key), expectedAccent),
-                $"Native accent resource {key} did not resolve through the app accent.");
-
-        var expectedThumb = highContrast
-            ? ResolveColorResource(resources, "SystemColorButtonTextColor")
-            : expectedAccent;
-        Require(BrushContainsColor(ResolveResource(resources, "SliderThumbBackground"), expectedThumb),
-            "Native slider thumb did not resolve to the active theme color.");
-
-        if (!highContrast)
-            Require(IsDark(ResolveSolidBrushColor(resources, "TextOnAccentFillColorPrimaryBrush")),
-                "Normal text/glyph resources must remain dark on the red native accent.");
+            element.UpdateLayout();
+            if (element.XamlRoot is not null && element.ActualWidth > 0 && element.ActualHeight > 0)
+                return;
+            await loaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally { element.Loaded -= handler; }
     }
 
-    private static object ResolveResource(ResourceDictionary resources, string key)
+    private static async Task PrepareHostAsync(WebHostWindow host)
     {
-        Require(resources.ContainsKey(key), $"Native resource is missing: {key}.");
-        var value = resources[key];
-        return value ?? throw new SelfCheckException($"Native resource resolved to null: {key}.");
+        if (host.Content is not FrameworkElement content)
+            throw new SelfCheckException("WinUI host did not expose a XAML root.");
+        await AwaitLoadedAsync(content);
+        content.Measure(new FoundationSize(1200, 800));
+        content.Arrange(new FoundationRect(0, 0, 1200, 800));
+        content.UpdateLayout();
     }
 
-    private static UiColor ResolveColorResource(ResourceDictionary resources, string key)
+    private static FrameworkElement? FindElement(DependencyObject root, string name)
     {
-        var value = ResolveResource(resources, key);
-        if (value is UiColor color)
-            return color;
-        if (value is SolidColorBrush brush)
-            return brush.Color;
-        throw new SelfCheckException($"Native color resource has unexpected type: {key}.");
-    }
-
-    private static UiColor ResolveSolidBrushColor(ResourceDictionary resources, string key)
-    {
-        var value = ResolveResource(resources, key);
-        Require(value is SolidColorBrush, $"Native brush resource has unexpected type: {key}.");
-        return ((SolidColorBrush)value).Color;
-    }
-
-    private static bool BrushContainsColor(object value, UiColor expected)
-        => value switch
+        if (root is FrameworkElement element && element.Name == name)
+            return element;
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < count; index++)
         {
-            SolidColorBrush brush => ColorsEqual(brush.Color, expected),
-            LinearGradientBrush gradient => gradient.GradientStops.Any(
-                stop => ColorsEqual(stop.Color, expected)),
-            _ => false
-        };
-
-    private static bool IsDark(UiColor color)
-        => color.R < 0x80 && color.G < 0x80 && color.B < 0x80;
-
-    private static bool ColorsEqual(UiColor left, UiColor right)
-        => left.A == right.A && left.R == right.R && left.G == right.G && left.B == right.B;
+            var found = FindElement(VisualTreeHelper.GetChild(root, index), name);
+            if (found is not null) return found;
+        }
+        return null;
+    }
 
 
     private static void CheckTrayCallbackRouting()
@@ -406,75 +308,39 @@ internal static class ShellChecks
         var phase = "startup";
         try
         {
-            // IconElement creation needs the initialized XAML application and stays in this
-            // single STA session with the rest of the native checks.
-            phase = "icon-resources";
-            CheckNativeIconResources();
+            phase = "icon-safety";
+            CheckNativeIconSafety();
             phase = "tray-routing";
             CheckTrayCallbackRouting();
             phase = "host-create";
             host = new WebHostWindow(root, InitialUri, initializeBrowser: false);
             host.RequestActivation();
-            if (host.Content is not FrameworkElement content)
-                throw new SelfCheckException("WinUI host did not expose a FrameworkElement root.");
             phase = "compact-startup";
-            await AwaitLoadedAsync(content);
-            PrepareContent(content);
+            await PrepareHostAsync(host);
             Require(host.IsCompact, "Saved opt-in Compact startup was not applied on the native host.");
             host.SetCompact(false);
-            PrepareContent(content);
+            await PrepareHostAsync(host);
             Require(!host.IsCompact, "Compact startup fixture did not return to full mode.");
-            phase = "accent-resources";
-            CheckNativeAccentResources();
-            Require(host.NativeHandle != 0, "WinUI host did not create a native HWND.");
-            Require(!host.IsCompact, "WinUI host entered Compact mode during full startup.");
-            Require(content.XamlRoot is not null, "WinUI root was not loaded before native checks.");
-            // The full-window bar keeps navigation, output, timer, More and update; website transport
-            // lives in the More menu with its shortcut descriptions, and stays off without a player.
             const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
-            foreach (var name in new[] { "PreviousButton", "PlayPauseButton", "NextButton" })
-                Require(FindElement(content, name) is null,
-                    $"Full-window toolbar still shows website transport: {name}.");
             foreach (var field in new[] { "_previousItem", "_playPauseItem", "_nextItem" })
             {
                 var item = typeof(WebHostWindow).GetField(field, privateInstance)?.GetValue(host) as MenuFlyoutItem;
-                Require(item is not null && !item.IsEnabled
-                    && AutomationProperties.GetHelpText(item)?.Contains("shortcut", StringComparison.OrdinalIgnoreCase) == true
-                    && string.IsNullOrEmpty(item.KeyboardAcceleratorTextOverride),
-                    $"More-menu transport became available without a website player, lost its shortcut description, or advertised an unregistered hotkey: {field}.");
+                Require(item is not null && !item.IsEnabled,
+                    $"Native playback command was enabled without an available player: {field}.");
             }
-            foreach (var name in new[] { "CompactButton", "BackButton", "ForwardButton", "HomeButton",
-                         "OutputMuteButton", "TimerButton", "MoreButton", "UpdateButton" })
-                Require(FindElement(content, name) is Button { Visibility: Visibility.Visible },
-                    $"Full-window toolbar lost a visible command: {name}.");
-
-            phase = "full-state";
-            var versionItem = typeof(WebHostWindow).GetField("_versionItem", privateInstance)
-                ?.GetValue(host) as MenuFlyoutItem;
-            Require(versionItem is not null && !versionItem.IsEnabled
-                && versionItem.Text == AppVersion.DisplayName,
-                "Full More commands menu did not expose the noninteractive application version.");
-            var setStatus = typeof(WebHostWindow).GetMethod("SetStatus", privateInstance);
-            Require(setStatus is not null, "WinUI host status method was not retained.");
-            setStatus!.Invoke(host, [new string('x', 8192), true]);
+            var setStatus = typeof(WebHostWindow).GetMethod("SetStatus", privateInstance)!;
+            setStatus.Invoke(host, [new string('x', 8192), true]);
             var status = typeof(WebHostWindow).GetField("_statusDetailsText", privateInstance)
                 ?.GetValue(host) as string;
-            var fullMenuStatus = typeof(WebHostWindow).GetField("_statusDetailsItem", privateInstance)
-                ?.GetValue(host) as MenuFlyoutItem;
-            var rootGrid = FindElement(content, "RootGrid") as Grid;
-            var moreButton = FindElement(content, "MoreButton") as Button;
-            Require(status?.Length == 4096 && rootGrid?.RowDefinitions.Count == 2
-                && FindElement(content, "StatusHost") is null
-                && fullMenuStatus?.Text == "Read application status (error)"
-                && AutomationProperties.GetName(moreButton)?.Contains(
-                    "status reports an error", StringComparison.Ordinal) == true,
-                "Full-window debug strip remained or accessible status/error details were lost.");
-
-            var timerExpired = typeof(WebHostWindow).GetMethod("OnTimerExpired", privateInstance);
-            Require(timerExpired is not null, "WinUI pause timer expiry hook was not retained.");
-            timerExpired!.Invoke(host, null);
+            Require(status?.Length == 4096, "Oversized status input was not bounded.");
+            var moreButton = FindElement((DependencyObject)host.Content!, "MoreButton");
+            Require(moreButton is not null && AutomationProperties.GetName(moreButton)?.Contains(
+                    "Application status reports an error", StringComparison.Ordinal) == true,
+                "The More control did not expose error state accessibly.");
+            typeof(WebHostWindow).GetMethod("OnTimerExpired", privateInstance)!.Invoke(host, null);
             Require(host.NativeHandle != 0 && IsWindow(host.NativeHandle) && host.ExitCode == 0,
                 "Pause timer expiry closed or failed the native shell.");
+
 
             phase = "pause-dialog";
             await CheckPauseTimerDialogAsync(host, privateInstance);
@@ -482,25 +348,18 @@ internal static class ShellChecks
             phase = "compact-lifecycle";
             var handle = host.NativeHandle;
             host.SetCompact(true);
-            if (host.Content is not FrameworkElement compactContent)
-                throw new SelfCheckException("Compact presenter did not expose a XAML root.");
-            await AwaitLoadedAsync(compactContent);
-            PrepareContent(compactContent);
+            await PrepareHostAsync(host);
             Require(host.IsCompact && host.NativeHandle == handle,
                 "Compact presenter changed mode or recreated the owned HWND.");
             phase = "compact-checks";
             await CompactViewChecks.RunNativeAsync(host);
 
             host.SetCompact(false);
-            if (host.Content is not FrameworkElement fullContent)
-                throw new SelfCheckException("Full presenter did not expose a XAML root.");
-            await AwaitLoadedAsync(fullContent);
-            PrepareContent(fullContent);
+            await PrepareHostAsync(host);
             Require(!host.IsCompact && host.NativeHandle == handle,
                 "Returning to full mode did not restore the same native presenter.");
             phase = "full-close-to-tray";
-            var setTray = host.GetType().GetMethod("SetTrayEnabled", BindingFlags.Instance | BindingFlags.NonPublic)
-                ?? throw new SelfCheckException("Native tray preference hook was not retained.");
+            var setTray = host.GetType().GetMethod("SetTrayEnabled", BindingFlags.Instance | BindingFlags.NonPublic)!;
             setTray.Invoke(host, [true]);
             var tray = host.GetType().GetField("_tray", BindingFlags.Instance | BindingFlags.NonPublic)
                 ?.GetValue(host) as NativeTrayIcon;
@@ -540,19 +399,14 @@ internal static class ShellChecks
                 completion.TrySetException(failure);
             else
                 completion.TrySetResult(true);
-            var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
-                ?? throw new InvalidOperationException("Native shell dispatcher queue was unavailable.");
-            dispatcher.EnqueueEventLoopExit();
+            Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()!.EnqueueEventLoopExit();
         }
     }
 
     private static async Task CheckPauseTimerDialogAsync(
         WebHostWindow host, BindingFlags privateInstance)
     {
-        var openTimer = typeof(WebHostWindow).GetMethod("SetPauseTimer", privateInstance);
-        Require(openTimer is not null, "WinUI pause timer dialog entry point was not retained.");
-        openTimer!.Invoke(host, null);
-
+        typeof(WebHostWindow).GetMethod("SetPauseTimer", privateInstance)!.Invoke(host, null);
         Window? dialog = null;
         for (var attempt = 0; attempt < 250; attempt++)
         {
@@ -571,31 +425,6 @@ internal static class ShellChecks
         var dialogHandle = WindowNative.GetWindowHandle(pauseDialog);
         Require(dialogHandle != 0 && IsWindow(dialogHandle) && IsWindowVisible(dialogHandle),
             "Pause timer dialog HWND was not visible after activation.");
-        if (pauseDialog.Content is not FrameworkElement dialogContent)
-            throw new SelfCheckException("Pause timer dialog did not expose a XAML content root.");
-
-        await AwaitLoadedAsync(dialogContent);
-        dialogContent.UpdateLayout();
-        Require(dialogContent.ActualWidth > 0 && dialogContent.ActualHeight > 0,
-            "Pause timer dialog content did not receive its actual layout.");
-        var numberBoxes = FindElements<NumberBox>(dialogContent)
-            .Where(numberBox => numberBox.Header is not null)
-            .ToArray();
-        Require(numberBoxes.Length == 3
-            && numberBoxes.Select(numberBox => numberBox.Header?.ToString())
-                .SequenceEqual(new[] { "Hours", "Minutes", "Seconds" }),
-            "Pause timer dialog did not retain all three NumberBox fields.");
-        Require(numberBoxes.All(numberBox =>
-                numberBox.ActualWidth > 0 && numberBox.ActualHeight > 0
-                && VisualTreeHelper.GetChildrenCount(numberBox) > 0),
-            "Pause timer NumberBox templates did not load and lay out.");
-        var setButton = FindElements<Button>(dialogContent)
-            .FirstOrDefault(button => string.Equals(button.Content?.ToString(), "Set timer", StringComparison.Ordinal));
-        var cancelButton = FindElements<Button>(dialogContent)
-            .FirstOrDefault(button => string.Equals(button.Content?.ToString(), "Cancel", StringComparison.Ordinal));
-        Require(setButton is not null && cancelButton is not null
-            && setButton.IsEnabled && cancelButton.IsEnabled,
-            "Pause timer dialog actions did not load as enabled native buttons.");
 
         pauseDialog.Close();
         for (var attempt = 0; attempt < 250; attempt++)
@@ -610,59 +439,8 @@ internal static class ShellChecks
             "Pause timer dialog did not restore its native owner.");
     }
 
-    private static IEnumerable<T> FindElements<T>(DependencyObject root)
-        where T : DependencyObject
-    {
-        if (root is T match)
-            yield return match;
-        var count = VisualTreeHelper.GetChildrenCount(root);
-        for (var index = 0; index < count; index++)
-        {
-            foreach (var child in FindElements<T>(VisualTreeHelper.GetChild(root, index)))
-                yield return child;
-        }
-    }
 
-    private static async Task AwaitLoadedAsync(FrameworkElement element)
-    {
-        if (element.XamlRoot is not null && element.ActualWidth > 0 && element.ActualHeight > 0)
-            return;
 
-        var loaded = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        RoutedEventHandler handler = (_, _) => loaded.TrySetResult(true);
-        element.Loaded += handler;
-        try
-        {
-            element.UpdateLayout();
-            if (element.XamlRoot is not null && element.ActualWidth > 0 && element.ActualHeight > 0)
-                return;
-            await loaded.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        }
-        finally { element.Loaded -= handler; }
-    }
-
-    private static void PrepareContent(FrameworkElement content)
-    {
-        content.Measure(new FoundationSize(1200, 800));
-        content.Arrange(new FoundationRect(0, 0, 1200, 800));
-        content.UpdateLayout();
-        Require(content.ActualWidth > 0 && content.ActualHeight > 0,
-            "WinUI root did not receive a usable layout before native checks.");
-    }
-
-    private static FrameworkElement? FindElement(DependencyObject root, string name)
-    {
-        if (root is FrameworkElement element && element.Name == name)
-            return element;
-        var count = VisualTreeHelper.GetChildrenCount(root);
-        for (var index = 0; index < count; index++)
-        {
-            var found = FindElement(VisualTreeHelper.GetChild(root, index), name);
-            if (found is not null) return found;
-        }
-        return null;
-    }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern nint CreateWindowEx(

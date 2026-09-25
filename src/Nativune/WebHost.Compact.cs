@@ -14,14 +14,17 @@ public sealed partial class WebHostWindow
     private DispatcherQueueTimer _compactReadTimer = null!;
     private bool _compactActivity;
     private bool _compactReadPending;
-    private TaskCompletionSource<bool>? _compactReadCompleted;
     private int _compactGeneration;
     private long _lastCompactReadAt = -1000;
-    private long _lastCompactStateAt;
     private CompactPlaybackState? _compactState;
     private bool _compactReadinessProbePending;
     private CancellationTokenSource? _compactArtworkCancellation;
     private string? _compactArtworkUrl;
+    // Song changes briefly leave the website without a coherent player (title, clock or buttons
+    // missing). Keep showing the last confirmed item for this long before reporting it unavailable;
+    // item-bound actions stay safe meanwhile because the page script re-checks the item identity.
+    private const long CompactHoldMs = 8000;
+    private long _compactUnavailableSince = -1;
 
     private bool CompactActive => _compact && _appWindow?.IsVisible == true
         && _presenter?.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized
@@ -47,6 +50,8 @@ public sealed partial class WebHostWindow
         CompactView.MinimizeRequested += () => _presenter?.Minimize();
         CompactView.CloseRequested += CloseOrHideToTray;
         CompactView.ToggleTopmostRequested += () => SetTopmost(!(_presenter?.IsAlwaysOnTop == true));
+        CompactView.PlaylistsRequested += () => _ = ShowCompactPlaylistsAsync();
+        CompactView.PlaylistChosen += (index, title) => _ = PlayCompactPlaylistAsync(index, title);
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
     }
 
@@ -137,6 +142,7 @@ public sealed partial class WebHostWindow
     {
         _compactGeneration++;
         _compactState = null;
+        _compactUnavailableSince = -1;
         _compactArtworkUrl = null;
         _compactArtworkCancellation?.Cancel();
         _compactArtworkCancellation?.Dispose();
@@ -148,51 +154,55 @@ public sealed partial class WebHostWindow
         }
     }
 
+    private void HoldOrDropCompactState()
+    {
+        if (_compactState is null) return;
+        var now = Environment.TickCount64;
+        if (_compactUnavailableSince < 0) _compactUnavailableSince = now;
+        else if (now - _compactUnavailableSince >= CompactHoldMs) InvalidateCompactState();
+    }
+
     private async Task ReadCompactStateAsync()
     {
         if (!CompactActive) return;
-        if (_compactState is not null && Environment.TickCount64 - _lastCompactStateAt > 2500)
-            InvalidateCompactState();
-        if (_compactReadPending || Environment.TickCount64 - _lastCompactReadAt < 1000) return;
+        // A user command owns the page; the next tick reads its result.
+        if (_compactReadPending || _playerBusy || Environment.TickCount64 - _lastCompactReadAt < 1000) return;
         var controls = _playerControls;
-        if (_playerBusy || controls?.IsAvailable != true)
+        if (controls?.IsAvailable != true)
         {
-            if (_compactState is not null && Environment.TickCount64 - _lastCompactStateAt > 2500)
-                InvalidateCompactState();
+            HoldOrDropCompactState();
             return;
         }
         _compactReadPending = true;
-        _compactReadCompleted = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
         _lastCompactReadAt = Environment.TickCount64;
         var generation = _compactGeneration;
         try
         {
-            var state = await controls.ReadCompactStateAsync();
+            var read = await controls.ReadCompactStateAsync();
             if (!CompactActive || generation != _compactGeneration) return;
-            _compactState = state;
-            if (state is not null)
+            if (read.State is not { } state)
             {
-                _compactStartupPending = false;
-                _compactResumeAfterAccount = false;
+                HoldOrDropCompactState();
+                return;
             }
-            _lastCompactStateAt = Environment.TickCount64;
+            _compactUnavailableSince = -1;
+            _compactState = state;
+            _compactStartupPending = false;
+            _compactResumeAfterAccount = false;
             CompactView.SetPlayback(state);
-            UpdateCompactArtwork(state?.ArtworkUrl);
-            if (state is not null
-                && _statusDetailsText.StartsWith("[!] Error: " + CompactReadinessFallbackStatus,
+            UpdateCompactArtwork(state.ArtworkUrl);
+            if (_statusDetailsText.StartsWith("[!] Error: " + CompactReadinessFallbackStatus,
                     StringComparison.Ordinal))
                 SetStatus(string.Empty);
         }
         catch (Exception)
         {
             if (CompactActive && generation == _compactGeneration)
-                InvalidateCompactState();
+                HoldOrDropCompactState();
         }
         finally
         {
             _compactReadPending = false;
-            _compactReadCompleted?.TrySetResult(true);
         }
     }
 
@@ -245,59 +255,88 @@ public sealed partial class WebHostWindow
             await ExecutePlayerCommandAsync(command);
             return;
         }
-        if (_compactState is null)
-        {
-            SetStatus("Playback state unavailable; no action was sent.", isError: true);
-            return;
-        }
+        // One website command at a time. A click arriving meanwhile is dropped, never queued,
+        // so repeated clicks cannot land on whatever the website shows next.
         if (_playerBusy)
         {
-            SetStatus("A playback command is already in progress; no action was sent.", isError: true);
+            CompactView.CommandFinished(command, PlayerCommandOutcome.NotSent);
             return;
         }
-        var stateBeforeRead = _compactState;
-        var generation = _compactGeneration;
-        var pendingRead = _compactReadPending ? _compactReadCompleted?.Task : null;
+        var shown = _compactState;
+        var controls = _playerControls;
+        if (shown is null || controls?.IsAvailable != true)
+        {
+            SetStatus("Playback controls unavailable; no action was sent.", isError: true);
+            CompactView.CommandFinished(command, PlayerCommandOutcome.NotSent);
+            return;
+        }
         _playerBusy = true;
-        UpdatePlayerControls();
+        var result = new PlayerCommandResult(PlayerCommandOutcome.Unknown, "Player action outcome unknown; no retry.");
         try
         {
-            // A user's single click may arrive while the periodic state script owns the dispatcher.
-            // Await only that existing read; never replay an already-dispatched browser action.
-            if (pendingRead is not null)
-                await pendingRead.WaitAsync(TimeSpan.FromMilliseconds(2500), _lifetime.Token);
-            if (!CompactActive || generation != _compactGeneration || _compactState is null
-                || CompactPlayback.ComputeSignature(stateBeforeRead) != CompactPlayback.ComputeSignature(_compactState))
-            {
-                if (!_closing && !_disposed) SetStatus("Playback changed; no action was sent.", isError: true);
-                return;
-            }
-            var controls = _playerControls;
-            if (controls?.IsAvailable != true)
-            {
-                SetStatus("Playback controls unavailable; no action was sent.", isError: true);
-                return;
-            }
-            var status = await controls.ExecuteCompactAsync(command, value);
-            if (!_closing && !_disposed)
-                SetStatus(status, isError: status != PlayerControls.CompactRequestedStatus);
+            // Ratings and seek are bound to the item the user saw, not to whatever plays by dispatch time.
+            var item = command is "like" or "dislike" or "seek" ? CompactPlayback.ComputeSignature(shown) : null;
+            result = await controls.ExecuteCompactAsync(command, value, item);
         }
-        catch (TimeoutException)
-        {
-            if (!_closing && !_disposed)
-                SetStatus("Playback state read timed out; no action was sent.", isError: true);
-        }
-        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { }
-        catch (Exception)
-        {
-            if (!_closing && !_disposed) SetStatus("Player action outcome unknown; no retry.", isError: true);
-        }
-        finally
-        {
-            _playerBusy = false;
-            if (!_closing && !_disposed) UpdatePlayerControls();
-        }
+        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
+        catch (Exception) { }
+        finally { _playerBusy = false; }
+        if (_closing || _disposed) return;
+        _lastCompactReadAt = 0;
+        CompactView.CommandFinished(command, result.Outcome);
+        ReportPlayerResult(result);
     }
+
+    // Reads the playlists the website lists in its own sidebar and opens the Compact menu.
+    private async Task ShowCompactPlaylistsAsync()
+    {
+        if (!CompactActive || _playerBusy) return;
+        var controls = _playerControls;
+        if (controls?.IsAvailable != true)
+        {
+            SetStatus("Playback controls unavailable; playlists can't be read.", isError: true);
+            return;
+        }
+        _playerBusy = true;
+        IReadOnlyList<CompactPlayback.PlaylistEntry>? playlists = null;
+        try { playlists = await controls.ReadPlaylistsAsync(); }
+        catch (Exception) { }
+        finally { _playerBusy = false; }
+        if (CompactActive) CompactView.ShowPlaylists(playlists);
+    }
+
+    // Presses the chosen sidebar playlist's own Play button once. Status text never names the
+    // playlist, so library contents stay out of the error log; the view's notice shows the name.
+    private async Task PlayCompactPlaylistAsync(int index, string title)
+    {
+        if (!CompactActive) return;
+        var controls = _playerControls;
+        if (_playerBusy || controls?.IsAvailable != true)
+        {
+            if (!_playerBusy) SetStatus("Playback controls unavailable; no action was sent.", isError: true);
+            CompactView.CommandFinished("play-playlist", PlayerCommandOutcome.NotSent);
+            return;
+        }
+        _playerBusy = true;
+        var result = new PlayerCommandResult(PlayerCommandOutcome.Unknown, "Player action outcome unknown; no retry.");
+        try { result = await controls.ExecuteCompactAsync("play-playlist", index, title); }
+        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
+        catch (Exception) { }
+        finally { _playerBusy = false; }
+        if (_closing || _disposed) return;
+        result = result.Outcome switch
+        {
+            PlayerCommandOutcome.Sent => result with { Message = "Playlist play sent." },
+            PlayerCommandOutcome.Changed => result with { Message = "Your playlists changed; nothing was played. Open Playlists again." },
+            _ => result
+        };
+        _lastCompactReadAt = 0;
+        CompactView.CommandFinished("play-playlist", result.Outcome);
+        ReportPlayerResult(result);
+    }
+
+    private void ReportPlayerResult(PlayerCommandResult result)
+        => SetStatus(result.Message, isError: result.Outcome is PlayerCommandOutcome.NotSent or PlayerCommandOutcome.Unknown);
 
     private void UpdateCompactTimer()
     {
