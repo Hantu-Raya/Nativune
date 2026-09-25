@@ -51,7 +51,6 @@ internal static class BrowserPrivacy
                 extension = await AwaitBoundedAsync(
                     extensionCreation, ExtensionOperationTimeout, operationToken);
                 operationToken.ThrowIfCancellationRequested();
-                RecordInstalledExtensionId(projectRoot, extension.Id);
             }
 
             if (!reused || !extension.IsEnabled)
@@ -109,11 +108,15 @@ internal static class BrowserPrivacy
                     ? "uBO Lite ad-filter configuration could not be verified; Music was not loaded."
                     : "uBO Lite privacy-only configuration could not be verified; Music was not loaded.");
             }
+            // Record only a verified install, so a broken extension is never reused on later launches.
+            if (!reused) RecordInstalledExtensionId(projectRoot, extension.Id);
             // The trusted setup URI stays in force on failure so WebHost keeps Music navigation blocked.
             setTrustedSetupUri(null);
         }
         catch
         {
+            // A failed extension must not be reused: the next launch installs it again.
+            ForgetRecordedExtension(projectRoot);
             try
             {
                 core.Stop();
@@ -270,6 +273,13 @@ internal static class BrowserPrivacy
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
+    }
+
+    private static void ForgetRecordedExtension(string root)
+    {
+        try { File.Delete(RecordedExtensionIdPath(root)); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     // Chromium extension Ids are 32 characters from the a-p alphabet.
