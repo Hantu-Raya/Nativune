@@ -134,6 +134,8 @@ public sealed partial class CompactPlayerView
     private readonly List<(CompactOverflowControl Control, MenuFlyoutItem Item)> _overflowItems = new();
     private MenuFlyoutSeparator? _overflowSeparator;
     private CompactLayoutPlan? _layoutPlan;
+    // Volume's own click only mutes; the slider needs its own entry while Volume sits in More.
+    private MenuFlyoutItem? _overflowVolumeLevelItem;
 
     internal static int LogicalMinimumWidthValue => LogicalMinimumWidth;
     internal static int LogicalMinimumHeightValue => LogicalMinimumHeight;
@@ -199,9 +201,8 @@ public sealed partial class CompactPlayerView
             seekWidth = StripSeekMinWidth;
             available -= StripSeekMinWidth + ItemGap;
         }
-        var artwork = Math.Clamp(b.Height - 16, 32, 80);
-        var showArtwork = available >= artwork + ItemGap;
-        if (showArtwork) available -= artwork + ItemGap;
+        // Actions before decoration: Like/Dislike, Volume, the Playlists/Repeat/Shuffle group, the timer
+        // and the progress times all claim space first; artwork only uses what is left.
         var extras = FitExtras(ref available);
         var showTimes = false;
         if (seekWidth > 0 && available >= ProgressTimesWidth)
@@ -214,6 +215,9 @@ public sealed partial class CompactPlayerView
             extras.TimerText = true;
             available -= TimerTextWidth - SmallButton;
         }
+        var artwork = Math.Clamp(b.Height - 16, 32, 80);
+        var showArtwork = available >= artwork + ItemGap;
+        if (showArtwork) available -= artwork + ItemGap;
         if (titleWidth > 0 && seekWidth > 0)
         {
             var titleExtra = Math.Min(available * 0.4, TitleMaxWidth - titleWidth);
@@ -617,6 +621,13 @@ public sealed partial class CompactPlayerView
             item.Click += (_, _) => DispatcherQueue.TryEnqueue(() => InvokeOverflowTarget(captured));
             _overflowItems.Add((control, item));
             _moreMenu.Items.Insert(index++, item);
+            if (control == CompactOverflowControl.Volume)
+            {
+                var level = new MenuFlyoutItem { Visibility = Visibility.Collapsed, Text = "App volume…" };
+                level.Click += (_, _) => DispatcherQueue.TryEnqueue(OpenVolumePopupForInteraction);
+                _overflowVolumeLevelItem = level;
+                _moreMenu.Items.Insert(index++, level);
+            }
         }
         _overflowSeparator = new MenuFlyoutSeparator { Visibility = Visibility.Collapsed };
         _moreMenu.Items.Insert(index, _overflowSeparator);
@@ -700,8 +711,8 @@ public sealed partial class CompactPlayerView
 
     private string OverflowIconName(CompactOverflowControl control) => control switch
     {
-        CompactOverflowControl.Like => "like",
-        CompactOverflowControl.Dislike => "dislike",
+        CompactOverflowControl.Like => _likeIconName ?? "like",
+        CompactOverflowControl.Dislike => _dislikeIconName ?? "dislike",
         CompactOverflowControl.Playlists => "playlist",
         CompactOverflowControl.Repeat => _repeatIconName ?? "repeat",
         CompactOverflowControl.Shuffle => "shuffle",
@@ -731,7 +742,11 @@ public sealed partial class CompactPlayerView
             if (control == CompactOverflowControl.Playlists && !text.EndsWith('…')) text += "…";
             if (!string.Equals(item.Text, text, StringComparison.Ordinal)) item.Text = text;
             if (item.IsEnabled != target!.IsEnabled) item.IsEnabled = target.IsEnabled;
-            SetAccessible(item, text, AutomationProperties.GetHelpText(target) ?? text);
+            // The Volume button's help describes hover and Down-key gestures a menu entry can't offer.
+            var help = control == CompactOverflowControl.Volume
+                ? $"{text}. Use App volume… to change the level."
+                : AutomationProperties.GetHelpText(target) ?? text;
+            SetAccessible(item, text, help);
             try
             {
                 var icon = OverflowIconName(control);
@@ -745,6 +760,20 @@ public sealed partial class CompactPlayerView
             {
                 item.Icon = null;
                 item.Tag = null;
+            }
+        }
+        if (_overflowVolumeLevelItem is { } levelItem)
+        {
+            var levelVisible = plan.Overflow.Contains(CompactOverflowControl.Volume);
+            var levelVisibility = levelVisible ? Visibility.Visible : Visibility.Collapsed;
+            if (levelItem.Visibility != levelVisibility) levelItem.Visibility = levelVisibility;
+            var levelEnabled = _volume.IsEnabled && _volumeSlider.IsEnabled;
+            if (levelItem.IsEnabled != levelEnabled) levelItem.IsEnabled = levelEnabled;
+            SetAccessible(levelItem, "App volume…", "Open the app output volume slider.");
+            if (levelItem.Tag as string != "volume")
+            {
+                try { levelItem.Icon = _iconCache.CreateElement("volume", 16); levelItem.Tag = "volume"; }
+                catch (Exception) { levelItem.Icon = null; }
             }
         }
         if (_overflowSeparator is { } separator)

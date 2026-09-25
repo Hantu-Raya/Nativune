@@ -12,8 +12,8 @@ pwsh = shutil.which('pwsh')
 assert pwsh, 'PowerShell 7 is required for the raster wrapper'
 active_names = {
     'app-mark', 'back', 'cancel-timer', 'close', 'compact', 'dislike',
-    'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
-    'like', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
+    'dislike-filled', 'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
+    'like', 'like-filled', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
     'play', 'playlist', 'previous', 'quit-timer', 'quit', 'repeat-one', 'repeat',
     'restore-section', 'restore-window', 'retry', 'settings', 'show',
     'shuffle', 'status', 'tray', 'update', 'update-available',
@@ -21,7 +21,7 @@ active_names = {
 }
 mask_root = root / 'assets' / 'native-icons' / 'states' / 'mask'
 assert {path.stem for path in mask_root.glob('*.svg')} == active_names, (
-    'active mask registry must contain exactly the 41 canonical SVG names'
+    'active mask registry must contain exactly the 43 canonical SVG names'
 )
 historical_root = root / 'assets' / 'native-icons' / 'states' / 'historical' / 'mask'
 assert {path.name for path in historical_root.glob('*.svg')} == {

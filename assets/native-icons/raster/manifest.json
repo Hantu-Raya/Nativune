@@ -26,6 +26,7 @@
     "close",
     "compact",
     "dislike",
+    "dislike-filled",
     "error",
     "exit-fullscreen",
     "forward",
@@ -33,6 +34,7 @@
     "hide",
     "home",
     "like",
+    "like-filled",
     "minimize",
     "next",
     "overflow",
@@ -106,6 +108,13 @@
       "sha256": "d8a73d4e11de9d264b0b56400b44a79461de6f07c26eb52d7371612b2270ff23"
     },
     {
+      "path": "16/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.16.dislike-filled.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "74ed362ed95552bbcc06b96080083b7a18dafbeb99b02517e347f1f54af39428"
+    },
+    {
       "path": "16/error.png",
       "logicalName": "Nativune.NativeIcons.16.error.png",
       "width": 16,
@@ -153,6 +162,13 @@
       "width": 16,
       "height": 16,
       "sha256": "8330178b7efd0310fe999624dbe46252afc8298299dca093dc3cb1bf48e61cf3"
+    },
+    {
+      "path": "16/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.16.like-filled.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "cd17ad8ca3877d2eaa87924055e955fcddaf03553ca13104d7d5931a02b8c71e"
     },
     {
       "path": "16/minimize.png",
@@ -393,6 +409,13 @@
       "sha256": "d3a8646fa557a2490599527df7934c380d8c5b6bcaf1d83fbf04ce903eb62b31"
     },
     {
+      "path": "20/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.20.dislike-filled.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "15125b961d23fa3e757d239c95c10fb84e90da23369211d8ba0822187ff87cf1"
+    },
+    {
       "path": "20/error.png",
       "logicalName": "Nativune.NativeIcons.20.error.png",
       "width": 20,
@@ -440,6 +463,13 @@
       "width": 20,
       "height": 20,
       "sha256": "8ac8e6309b174c4bd1fddafef0c53f4a73aa56a6738d0a7b950bfedfff0ea8f1"
+    },
+    {
+      "path": "20/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.20.like-filled.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "c2d7d0c791daa869caf28ca839eca1da7e81cecc2a13bb4d7edcbab9de2562c2"
     },
     {
       "path": "20/minimize.png",
@@ -680,6 +710,13 @@
       "sha256": "6874c0ce6de217b338eaed021b82ba7bb038714800fdca39700a32505bbf79aa"
     },
     {
+      "path": "24/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.24.dislike-filled.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "3322620fdec4ac9981fdaa0b902cb367fb10934a12c62f34d1e6bb7b706dde02"
+    },
+    {
       "path": "24/error.png",
       "logicalName": "Nativune.NativeIcons.24.error.png",
       "width": 24,
@@ -727,6 +764,13 @@
       "width": 24,
       "height": 24,
       "sha256": "d9121da0520b9614e397b2d5426d96aafed119e7269ed35d06a260c31e6fa678"
+    },
+    {
+      "path": "24/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.24.like-filled.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "7dd79b0b20f09db1530fadfcd8ac62e488587c3408ee3db12f395d959b5c3ed1"
     },
     {
       "path": "24/minimize.png",
@@ -967,6 +1011,13 @@
       "sha256": "d413d279a0c655414f7e8fd423665f07c2becc838d91bd237abaf89976433364"
     },
     {
+      "path": "25/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.25.dislike-filled.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "4db7da70022a7e15cbc4007289036552dab485e326d5fc7d01951c9b19687e9c"
+    },
+    {
       "path": "25/error.png",
       "logicalName": "Nativune.NativeIcons.25.error.png",
       "width": 25,
@@ -1014,6 +1065,13 @@
       "width": 25,
       "height": 25,
       "sha256": "6ffa574ca32fd28dc79ee7d277974cc725953b1742cbb2ce46034502f63a97c9"
+    },
+    {
+      "path": "25/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.25.like-filled.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "6ce15464bce715c514799056d94c0a34efda7c094b06460540f8a4e902d237cc"
     },
     {
       "path": "25/minimize.png",
@@ -1254,6 +1312,13 @@
       "sha256": "81ecbba8754a5d0595b2b9f75e4e3bbe9cb6c496e2096f218dd0c9e5748a7f11"
     },
     {
+      "path": "30/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.30.dislike-filled.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "1377a0dba75b686b0ad44724facf24a46509599245005d0147861c88abb86b07"
+    },
+    {
       "path": "30/error.png",
       "logicalName": "Nativune.NativeIcons.30.error.png",
       "width": 30,
@@ -1301,6 +1366,13 @@
       "width": 30,
       "height": 30,
       "sha256": "7d739dab58ba35088f390bfbc8eb518907fa726692ebcaf2ffb8ca57880bdddb"
+    },
+    {
+      "path": "30/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.30.like-filled.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "d43f6ebf95224b95733c453e401dbb52cc7b3bf82d68a0617a1c19a9e711bef7"
     },
     {
       "path": "30/minimize.png",
@@ -1541,6 +1613,13 @@
       "sha256": "e75e75bd2b86d63fbc50a66edb262806b6b6f9999a45a3c2bc0bc1094ed1b9f0"
     },
     {
+      "path": "32/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.32.dislike-filled.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "13c56d59fe8bcb8bf775134b9d3dfa6623dccfd4ebd4c0c143fd99f33e7b062a"
+    },
+    {
       "path": "32/error.png",
       "logicalName": "Nativune.NativeIcons.32.error.png",
       "width": 32,
@@ -1588,6 +1667,13 @@
       "width": 32,
       "height": 32,
       "sha256": "f71661241072ae99d9383a76487569dff15e74e58aba10719fc80835669d143a"
+    },
+    {
+      "path": "32/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.32.like-filled.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "4dce85c5b48609421a86e1253de2b421bb76d7e21718b56e4b706123ddf71959"
     },
     {
       "path": "32/minimize.png",
@@ -1828,6 +1914,13 @@
       "sha256": "d37e8821d8f6a6eb8f4dcc02848e14b235e64f21c46767e7a4b995b153a82002"
     },
     {
+      "path": "40/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.40.dislike-filled.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "51f7dbb6e7b606e489e266a6b1205ce8662f9d6c85cfb64603309b5ad347de6e"
+    },
+    {
       "path": "40/error.png",
       "logicalName": "Nativune.NativeIcons.40.error.png",
       "width": 40,
@@ -1875,6 +1968,13 @@
       "width": 40,
       "height": 40,
       "sha256": "29170dc75b1d9207245492f6c6216c93582ea1938adcb5bc2c0651b6c1ea6c28"
+    },
+    {
+      "path": "40/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.40.like-filled.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "9d14856994e3c17ec2bcb099b2815c2f06c46eb62b46cc7edc9ad18666eb68a5"
     },
     {
       "path": "40/minimize.png",
@@ -2115,6 +2215,13 @@
       "sha256": "f8b34f94420537f7cd6179e682f7d6f84e6d3bc79d53d75e6e5cac0493366763"
     },
     {
+      "path": "48/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.48.dislike-filled.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "bd85f97156befdd2086db6366ec1be465f11cf8a791e1afb1c78da66cc498680"
+    },
+    {
       "path": "48/error.png",
       "logicalName": "Nativune.NativeIcons.48.error.png",
       "width": 48,
@@ -2162,6 +2269,13 @@
       "width": 48,
       "height": 48,
       "sha256": "471d27a60ef064a5146cdc0b25b65db66bfa6b1669615991dd96a0679390d879"
+    },
+    {
+      "path": "48/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.48.like-filled.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "bac3ae05c5ac482644dc780ec6e94a3b439f25b4847b10938c4f64c5090be73f"
     },
     {
       "path": "48/minimize.png",
@@ -2402,6 +2516,13 @@
       "sha256": "36c8abaf443c871547df349da891de43f610e3dbee69e4bf2a6ba62c68f16e4a"
     },
     {
+      "path": "64/dislike-filled.png",
+      "logicalName": "Nativune.NativeIcons.64.dislike-filled.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1ed762c1c61f33d178242be5a26ba4aa0b6a6285056bbbd167bc3338b12b25ec"
+    },
+    {
       "path": "64/error.png",
       "logicalName": "Nativune.NativeIcons.64.error.png",
       "width": 64,
@@ -2449,6 +2570,13 @@
       "width": 64,
       "height": 64,
       "sha256": "5e48925789fb5015992ee1b9b969aa6e11c398fc96f9afa3a4dd201d311ed276"
+    },
+    {
+      "path": "64/like-filled.png",
+      "logicalName": "Nativune.NativeIcons.64.like-filled.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "9569b1238824bcc48177a34eeef6e36c4cba12b67e9b4da2263711bd59fc6b29"
     },
     {
       "path": "64/minimize.png",

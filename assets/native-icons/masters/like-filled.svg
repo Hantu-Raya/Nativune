@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-labelledby="title" color="#F1F1F1">
+  <title id="title">Liked</title>
+  <g fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="10" width="3" height="11" rx="1"/>
+    <path d="M9 11L12 3H12.5C13.6 3 14.5 3.9 14.5 5V9H19C21 9 22 10 21.5 12L20 19C19.7 20.3 19 21 17.5 21H9Z"/>
+  </g>
+</svg>

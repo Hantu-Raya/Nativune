@@ -46,6 +46,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private string? _volumeIconName;
     private string? _repeatIconName;
     private string? _timerIconName;
+    private string? _likeIconName;
+    private string? _dislikeIconName;
     private bool _playVisualInitialized;
     private bool _lastPlayVisualEnabled;
     private bool _lastPlayPointerOver;
@@ -870,14 +872,16 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         {
             _updatingControls = false;
         }
+        // When the layout has moved Volume into More, the popup opens from More instead.
+        var anchor = _volume.Visibility == Visibility.Visible ? (FrameworkElement)_volume : _more;
         if (!_volumeOpeningFromHover)
-            _popupInvoker = _volume;
+            _popupInvoker = anchor;
         _volumePinnedOpen = !_volumeOpeningFromHover;
         _volumeFocusSliderOnOpen = !_volumeOpeningFromHover;
         _restoreVolumeFocusOnClose = !_volumeOpeningFromHover;
         _volumePopup.ShowMode = _volumeOpeningFromHover
             ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
-        _volumePopup.ShowAt(_volume);
+        _volumePopup.ShowAt(anchor);
     }
 
     private void ShowVolumePopupFromHover()
@@ -1110,8 +1114,11 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindStatefulIcon(_playPause, ref _playPauseIconElement, ref _playPauseIconName,
                 _state is null ? "play-pause" : _state.Paused ? "play" : "pause", 24);
             BindFixedIcon(_next, ref _nextIconElement, "next", 20);
-            BindFixedIcon(_like, ref _likeIconElement, "like", 20);
-            BindFixedIcon(_dislike, ref _dislikeIconElement, "dislike", 20);
+            // A liked or disliked song shows the solid thumb; the button itself keeps its plain look.
+            BindStatefulIcon(_like, ref _likeIconElement, ref _likeIconName,
+                _like.IsChecked == true ? "like-filled" : "like", 20);
+            BindStatefulIcon(_dislike, ref _dislikeIconElement, ref _dislikeIconName,
+                _dislike.IsChecked == true ? "dislike-filled" : "dislike", 20);
             var volumeIcon = _outputMuted || _outputVolume <= 0 ? "volume-muted" : "volume";
             BindStatefulIcon(_volume, ref _volumeIconElement, ref _volumeIconName, volumeIcon, 20);
             BindStatefulIcon(_repeatIcon, ref _repeatIconElement, ref _repeatIconName,
