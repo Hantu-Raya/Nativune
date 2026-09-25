@@ -34,7 +34,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
 ## Features
 
-- **Full and Compact views in one window.** The Compact view is a native horizontal mini player, 800 × 180 by default, with a fixed height and adjustable width. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. A short notice under the title confirms actions such as a dislike or a started playlist.
+- **Full and Compact views in one window.** The Compact view is a native mini player, 800 × 180 by default. You can resize it freely, from a 360 × 56 strip to a tall view with large artwork; the layout adapts, and controls that don't fit move into its More menu. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. A short notice under the title confirms actions such as a dislike or a started playlist.
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
 - **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
