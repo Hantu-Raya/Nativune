@@ -208,6 +208,7 @@ public sealed partial class WebHostWindow : Window
     private bool _statusIsError;
     private int _activationPending;
     private CancellationTokenSource? _updateDownloadCancellation;
+    private UiDispatcherQueueTimer? _setupCleanupTimer;
     private long _updateProgressLastBytes;
     private long _updateProgressLastTicks;
     private long _updateStartedTicks;
@@ -336,7 +337,33 @@ public sealed partial class WebHostWindow : Window
             _initializationTask = InitializeAsync();
         ConfigureAutomaticReleaseUpdateChecks();
         if (ReleaseUpdater.IsInstalledBuild(_root))
+        {
             ShowUpdateOutcomeOnStartup();
+            StartDownloadedSetupCleanup();
+        }
+    }
+
+    // A downloaded Setup is never reused by a later session (a retry downloads again), so any
+    // leftover is removed at startup. After an update, Setup starts Nativune before it exits and
+    // its file is still in use, so deletion is retried until it succeeds or a new download starts.
+    private void StartDownloadedSetupCleanup()
+    {
+        if (ReleaseUpdater.CleanupDownloadedSetup(_root)) return;
+        var attempts = 0;
+        _setupCleanupTimer = _dispatcherQueue.CreateTimer();
+        _setupCleanupTimer.Interval = TimeSpan.FromSeconds(5);
+        _setupCleanupTimer.IsRepeating = true;
+        _setupCleanupTimer.Tick += (timer, _) =>
+        {
+            attempts++;
+            var downloading = _updateDownloadCancellation is not null
+                || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
+                    or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching;
+            if (_closing || _disposed || downloading
+                || ReleaseUpdater.CleanupDownloadedSetup(_root) || attempts >= 36)
+                timer.Stop();
+        };
+        _setupCleanupTimer.Start();
     }
 
     private void SetDesiredTrayTooltip(
@@ -1010,7 +1037,6 @@ public sealed partial class WebHostWindow : Window
             SetDesiredTrayTooltip(_releaseUpdateButtonState, _availableReleaseUpdate?.Version, null);
             AppLog.Write("update",
                 $"updated {outcome.FromVersion ?? "unknown"} → {outcome.ToVersion} (setup exit {outcome.ExitCode})");
-            ReleaseUpdater.CleanupDownloadedSetup(_root);
         }
         else if (outcome.Status is "failed" or "cancelled")
         {
@@ -2650,6 +2676,7 @@ public sealed partial class WebHostWindow : Window
         try { _updateInfoCloseTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _compactUpdateNoticeTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _taskbarErrorTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { _setupCleanupTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
         try { await WaitForInitializationAsync(); }
         catch (Exception ex) { RememberFailure(ex); }

@@ -1340,24 +1340,33 @@ internal static class ReleaseUpdater
         }
     }
 
-    internal static void CleanupDownloadedSetup(string root)
+    /// <summary>
+    /// Deletes a leftover downloaded Setup. Returns true when no Setup file remains; false while it
+    /// can't be deleted yet (for example Setup is still running after starting Nativune).
+    /// </summary>
+    internal static bool CleanupDownloadedSetup(string root)
     {
         try
         {
             var rootPath = Path.GetFullPath(root);
             if (!Directory.Exists(rootPath) || HasReparsePointInChain(rootPath))
-                return;
+                return true;
             var updatesDirectory = Path.Combine(rootPath, "updates");
             if (!Directory.Exists(updatesDirectory) || HasReparsePointInChain(updatesDirectory))
-                return;
+                return true;
             var setupPath = Path.Combine(updatesDirectory, SetupName);
-            if (IsContained(rootPath, updatesDirectory)
-                && IsContained(updatesDirectory, setupPath)
-                && IsRegularFile(setupPath))
-                File.Delete(setupPath);
+            if (!IsContained(rootPath, updatesDirectory) || !IsContained(updatesDirectory, setupPath))
+                return true;
+            if (!File.Exists(setupPath))
+                return true;
+            if (!IsRegularFile(setupPath))
+                return true;
+            File.Delete(setupPath);
+            return !File.Exists(setupPath);
         }
         catch (Exception)
         {
+            return false;
         }
     }
 
@@ -1798,9 +1807,16 @@ internal static class ReleaseUpdaterChecks
 
             var setupPath = Path.Combine(updates, "Nativune-Setup.exe");
             File.WriteAllText(setupPath, "verified setup");
-            ReleaseUpdater.CleanupDownloadedSetup(directory);
-            if (File.Exists(setupPath))
+            // A Setup that is still running (file in use) is kept and reported for a later retry.
+            using (new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (ReleaseUpdater.CleanupDownloadedSetup(directory) || !File.Exists(setupPath))
+                    throw new SelfCheckException("Downloaded Setup cleanup did not report an in-use file for retry.");
+            }
+            if (!ReleaseUpdater.CleanupDownloadedSetup(directory) || File.Exists(setupPath))
                 throw new SelfCheckException("Downloaded Setup cleanup failed.");
+            if (!ReleaseUpdater.CleanupDownloadedSetup(directory))
+                throw new SelfCheckException("Downloaded Setup cleanup did not report an absent file as done.");
             var nonInstalledResult = ReleaseUpdater.CheckAsync(directory, CancellationToken.None)
                 .GetAwaiter().GetResult();
             if (!ReleaseUpdater.IsInstalledBuild(directory, app)
