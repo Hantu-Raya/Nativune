@@ -34,6 +34,10 @@ internal static class ShellChecks
         Require(ShellSettings.Default.TrayEnabled && ShellSettings.Default.AutoCheckUpdates,
             "New profiles did not enable tray and automatic update checks by default.");
 
+        var notCheckedUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.NotChecked, null);
+        var notInstalledUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
+            ReleaseUpdateButtonState.NotInstalled, null);
         var availableUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
             ReleaseUpdateButtonState.Available, "v0.1.11");
         var currentUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
@@ -42,6 +46,16 @@ internal static class ShellChecks
             ReleaseUpdateButtonState.Failed, null);
         var checkingUpdate = WebHostWindow.GetReleaseUpdateButtonPresentation(
             ReleaseUpdateButtonState.Checking, null);
+        Require(notCheckedUpdate.IconName == "update"
+            && notCheckedUpdate.Tooltip == "Click to check for Nativune updates."
+            && notCheckedUpdate.IsEnabled
+            && !notCheckedUpdate.Tooltip.Contains("up to date", StringComparison.OrdinalIgnoreCase),
+            "Not-checked button state did not offer a manual update check without claiming the app is current.");
+        Require(notInstalledUpdate.IconName == "update"
+            && notInstalledUpdate.Tooltip == "Update checks are available only in installed Nativune builds."
+            && notInstalledUpdate.IsEnabled
+            && !notInstalledUpdate.Tooltip.Contains("up to date", StringComparison.OrdinalIgnoreCase),
+            "Not-installed button state did not offer a manual update check without claiming the app is current.");
         Require(availableUpdate.IconName == "update-available"
             && availableUpdate.Tooltip == "Nativune v0.1.11 is available. Click to update."
             && availableUpdate.IsEnabled,
@@ -58,7 +72,6 @@ internal static class ShellChecks
             && checkingUpdate.Tooltip == "Checking for updates…"
             && !checkingUpdate.IsEnabled,
             "Checking button state did not disable the update action.");
-
         var area = new Rectangle(-1280, 0, 1280, 720);
         var bounds = ShellSettings.RestoreBounds(loaded, area, 144);
         Require(area.Contains(bounds) && bounds.Width >= 640 && bounds.Height >= 480,

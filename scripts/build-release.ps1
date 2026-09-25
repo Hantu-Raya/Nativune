@@ -382,7 +382,7 @@ try {
     Assert-RegularFile $webView2Notice 'The WebView2 notice'
     Push-Location $repository
     try {
-        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -o $appPublishRoot
+        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -o $appPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
         Assert-NoBundledAppRuntime $appPublishRoot 'The published Nativune app'
         & $dotnetExecutable publish $installerProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -p:InstallerTestHooks=false -o $setupPublishRoot

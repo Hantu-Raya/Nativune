@@ -88,6 +88,8 @@ internal static class WebHostPolicy
 
 internal enum ReleaseUpdateButtonState
 {
+    NotChecked,
+    NotInstalled,
     Checking,
     Available,
     UpToDate,
@@ -189,7 +191,7 @@ public sealed partial class WebHostWindow : Window
     private SessionShortcuts? _sessionShortcuts;
     private ReleaseUpdateResult? _availableReleaseUpdate;
     private DateTimeOffset? _lastReleaseUpdateCheckUtc;
-    private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.UpToDate;
+    private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.NotChecked;
     private bool _releaseUpdateCheckRunning;
     private bool _releaseUpdatePromptOpen;
     private readonly HashSet<Window> _ownedDialogs = new();
@@ -312,6 +314,10 @@ public sealed partial class WebHostWindow : Window
         ReleaseUpdateButtonState state, string? version)
         => state switch
         {
+            ReleaseUpdateButtonState.NotChecked => new(
+                "update", "Click to check for Nativune updates.", true),
+            ReleaseUpdateButtonState.NotInstalled => new(
+                "update", "Update checks are available only in installed Nativune builds.", true),
             ReleaseUpdateButtonState.Available => new(
                 "update-available",
                 $"Nativune {(string.IsNullOrWhiteSpace(version) ? "the latest version" : version)} is available. Click to update.",
@@ -347,11 +353,21 @@ public sealed partial class WebHostWindow : Window
             return;
 
         _releaseUpdateCheckRunning = true;
+        var previousCheckUtc = _lastReleaseUpdateCheckUtc;
         _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
+        var previousState = _releaseUpdateButtonState;
+        var previousVersion = _availableReleaseUpdate?.Version;
         SetReleaseUpdateButtonState(ReleaseUpdateButtonState.Checking);
         try
         {
             var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
+            if (update.Status == ReleaseUpdateStatus.Cancelled)
+            {
+                _lastReleaseUpdateCheckUtc = previousCheckUtc;
+                if (!_closing && !_disposed)
+                    SetReleaseUpdateButtonState(previousState, previousVersion);
+                return;
+            }
             if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
 
@@ -359,6 +375,7 @@ public sealed partial class WebHostWindow : Window
             var state = update.Status switch
             {
                 ReleaseUpdateStatus.Available when update.IsAvailable => ReleaseUpdateButtonState.Available,
+                ReleaseUpdateStatus.NotInstalled => ReleaseUpdateButtonState.NotInstalled,
                 ReleaseUpdateStatus.None => ReleaseUpdateButtonState.UpToDate,
                 _ => ReleaseUpdateButtonState.Failed
             };
@@ -368,6 +385,9 @@ public sealed partial class WebHostWindow : Window
                 SetStatus($"Nativune {update.Version} is available.");
             else if (manual && state == ReleaseUpdateButtonState.UpToDate)
                 SetStatus("Nativune is up to date.");
+            else if (manual && state == ReleaseUpdateButtonState.NotInstalled)
+                SetStatus("Update checks are available only in installed Nativune builds.");
+
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
         {
@@ -414,6 +434,7 @@ public sealed partial class WebHostWindow : Window
             ReleaseUpdateButtonState.Available => $"Update Nativune to {version ?? "the latest version"}",
             ReleaseUpdateButtonState.Checking => "Checking for Nativune updates",
             ReleaseUpdateButtonState.Failed => "Retry checking for Nativune updates",
+            ReleaseUpdateButtonState.NotChecked or ReleaseUpdateButtonState.NotInstalled => "Check for Nativune updates",
             _ => "Check for Nativune updates"
         });
         AutomationProperties.SetHelpText(UpdateButton, presentation.Tooltip);

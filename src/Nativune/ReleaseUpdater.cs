@@ -11,10 +11,11 @@ namespace Nativune;
 internal enum ReleaseUpdateStatus
 {
     None,
+    NotInstalled,
     Available,
+    Cancelled,
     Error,
 }
-
 internal sealed record ReleaseUpdateResult(
     ReleaseUpdateStatus Status,
     string? Version,
@@ -32,6 +33,12 @@ internal sealed record ReleaseUpdateResult(
 
     internal static ReleaseUpdateResult None()
         => new(ReleaseUpdateStatus.None, null, null, null, 0, null, null);
+
+    internal static ReleaseUpdateResult NotInstalled()
+        => new(ReleaseUpdateStatus.NotInstalled, null, null, null, 0, null, null);
+
+    internal static ReleaseUpdateResult Cancelled()
+        => new(ReleaseUpdateStatus.Cancelled, null, null, null, 0, null, null);
 
     internal static ReleaseUpdateResult ErrorResult()
         => new(ReleaseUpdateStatus.Error, null, null, null, 0, null, "Update check unavailable.");
@@ -233,14 +240,18 @@ internal static class ReleaseUpdater
     internal static async Task<ReleaseUpdateResult> CheckAsync(string root, CancellationToken cancellationToken)
     {
         if (!IsInstalledBuild(root, out var installed))
-            return ReleaseUpdateResult.None();
+            return ReleaseUpdateResult.NotInstalled();
 
         try
         {
             using var client = CreateHttpClient();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(MetadataTimeout);
-            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUri);
+            var metadataUri = LatestReleaseUri;
+#if NATIVUNE_UPDATER_TEST_HOOKS
+            metadataUri = ResolveTestReleaseMetadataUri();
+#endif
+            using var request = new HttpRequestMessage(HttpMethod.Get, metadataUri);
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
                 return ReleaseUpdateResult.ErrorResult();
@@ -267,13 +278,38 @@ internal static class ReleaseUpdater
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return ReleaseUpdateResult.None();
+            return ReleaseUpdateResult.Cancelled();
         }
         catch (Exception)
         {
             return ReleaseUpdateResult.ErrorResult();
         }
     }
+
+#if NATIVUNE_UPDATER_TEST_HOOKS
+    private static Uri ResolveTestReleaseMetadataUri()
+    {
+        const string uriPrefix = "http://127.0.0.1:";
+        var value = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RELEASE_METADATA_URL");
+        if (string.IsNullOrEmpty(value)
+            || !value.StartsWith(uriPrefix, StringComparison.OrdinalIgnoreCase)
+            || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            || !uri.Host.Equals("127.0.0.1", StringComparison.Ordinal)
+            || uri.UserInfo.Length != 0)
+            return LatestReleaseUri;
+
+        var authorityEnd = value.IndexOfAny(new[] { '/', '?', '#' }, uriPrefix.Length);
+        var portText = authorityEnd < 0
+            ? value[uriPrefix.Length..]
+            : value[uriPrefix.Length..authorityEnd];
+        if (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port)
+            || port is < 1 or > 65535
+            || uri.Port != port)
+            return LatestReleaseUri;
+        return uri;
+    }
+#endif
 
     internal static async Task<ReleaseUpdateResult> DownloadAsync(
         string root,
@@ -1047,9 +1083,12 @@ internal static class ReleaseUpdaterChecks
                 }
                 """;
             File.WriteAllText(Path.Combine(directory, "release-manifest.json"), manifest);
+            var nonInstalledResult = ReleaseUpdater.CheckAsync(directory, CancellationToken.None)
+                .GetAwaiter().GetResult();
             if (!ReleaseUpdater.IsInstalledBuild(directory, app)
                 || ReleaseUpdater.IsInstalledBuild(directory, Path.Combine(directory, "source"))
-                || ReleaseUpdater.IsInstalledBuild(directory, app + Path.DirectorySeparatorChar + "nested"))
+                || ReleaseUpdater.IsInstalledBuild(directory, app + Path.DirectorySeparatorChar + "nested")
+                || nonInstalledResult.Status != ReleaseUpdateStatus.NotInstalled)
                 throw new SelfCheckException("Installed-mode gating failed.");
         }
         finally

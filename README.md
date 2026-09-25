@@ -52,7 +52,11 @@ The installer is not yet Authenticode-signed. Windows may show an Unknown publis
 The app never opens an update dialog on its own and never downloads an update without a click. In the full-window top toolbar, the button at the far right shows:
 
 - `update-available` (accent-tinted) when a newer stable release is available
-- `update` otherwise, including when a check fails
+- `update` otherwise, including before the first check and when a check fails
+
+The button shows “Click to check for Nativune updates.” until a check runs, and reports “up to date” only after a successful check.
+
+Update checks run only in installed builds. Development runs show: “Update checks are available only in installed Nativune builds.”
 
 Compact mode has no update button. Click `update-available` to open the confirmation dialog; choose **Update now** to download, verify the SHA-256 digest and start Setup, or choose **Later** to defer. Setup asks again before upgrading.
 
@@ -60,7 +64,7 @@ Click `update` to run a manual check and show the result in its tooltip/status. 
 
 When **Check for updates automatically** is enabled in Settings, the app checks at startup and every 24 hours while it is running. Turn off that checkbox to disable automatic checks. Automatic checks only report availability; they do not open a dialog or download anything.
 
-Each check makes one anonymous GitHub API request. The updater considers only the latest stable, non-prerelease release from `Hantu-Raya/Nativune`, and only when it is newer than the installed version.
+Each regular check makes one anonymous GitHub API request; a maintainer test build explicitly configured for the loopback test server uses that metadata instead. The updater considers only the latest stable, non-prerelease release from `Hantu-Raya/Nativune`, and only when it is newer than the installed version.
 
 ## Uninstall
 
@@ -94,6 +98,8 @@ Setup and restore scripts keep downloaded tools, browser inputs, extension input
 - `SHA256SUMS.txt`
 
 ## Development checks
+
+Maintainers: run `python scripts/updater-test-server.py --scenario available`; set `NATIVUNE_TEST_RELEASE_METADATA_URL` to the printed URL in a build compiled with `-p:UpdaterTestHooks=true`.
 
 Run the focused source checks:
 

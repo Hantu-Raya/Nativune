@@ -12,8 +12,9 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <UseWinUI>true</UseWinUI>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
-    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <UpdaterTestHooks Condition="'$(UpdaterTestHooks)' == ''">false</UpdaterTestHooks>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <DefineConstants Condition="'$(UpdaterTestHooks)' == 'true'">$(DefineConstants);NATIVUNE_UPDATER_TEST_HOOKS</DefineConstants>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
