@@ -38,7 +38,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     private const int MinWidth = 320;
     private const int MinHeight = 240;
     private const int MinCompactWidth = 320;
-    private const int MinCompactHeight = 120;
+    private const int MinCompactHeight = 56;
     private const int MaxDimension = 16_384;
     private const double MinZoom = 0.75;
     private const double MaxZoom = 1.5;
