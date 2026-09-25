@@ -107,9 +107,10 @@ internal readonly record struct ReleaseUpdateButtonPresentation(
 
 public sealed partial class WebHostWindow : Window
 {
-    private const string MinimumWebView2RuntimeVersionText = "152.0.4191.62";
+    // Keep equal to Setup's floor (src/Nativune.Installer/Prerequisites.cs); scripts/installer-fixture.ps1 checks this.
+    private const string MinimumWebView2RuntimeVersionText = "152.0.4191.53";
     private const string WebView2RuntimeDownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
-    private static readonly Version MinimumWebView2RuntimeVersion = new(152, 0, 4191, 62);
+    private static readonly Version MinimumWebView2RuntimeVersion = new(152, 0, 4191, 53);
     private const uint WmClose = 0x0010;
     private const uint WmCommand = 0x0111;
     private const uint WmPowerBroadcast = 0x0218;

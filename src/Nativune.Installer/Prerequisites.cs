@@ -17,6 +17,8 @@ internal enum PrerequisiteTestScenario
     Missing,
     Declined,
     Offline,
+    WebView2Outdated,
+    WebView2AtFloor,
 }
 
 internal sealed record PrerequisiteDefinition(
@@ -71,7 +73,9 @@ internal static class PrerequisiteInstaller
     private static readonly TimeSpan InstallerTimeout = TimeSpan.FromMinutes(10);
     private static readonly Version RequiredDotNetMajorVersion = new(10, 0, 0);
     private static readonly Version MinimumVcRuntimeVersion = new(14, 0, 0, 0);
-    private static readonly Version MinimumWebView2Version = new(152, 0, 4191, 62);
+    // Keep equal to the app's floor (src/Nativune/WebHost.cs); scripts/installer-fixture.ps1 checks this.
+    // 152.0.4191.53 is the runtime that WebView2 SDK 1.0.4191.47 documents for full API compatibility.
+    private static readonly Version MinimumWebView2Version = new(152, 0, 4191, 53);
     private static readonly Guid WebView2RuntimeClientId = new("F3017226-FE2A-4295-8BDF-00C3A9A7E4C5");
     private static readonly Version WindowsAppSdkMinimumVersion = new(2, 5, 1, 0);
     private static readonly Version WindowsAppSdkSingletonMinimumVersion = new(8002, 5, 1, 0);
@@ -141,8 +145,10 @@ internal static class PrerequisiteInstaller
         }
 #endif
         IReadOnlyList<MissingPrerequisite> missing;
+        Version? outdatedWebView;
         try
         {
+            outdatedWebView = FindOutdatedWebView2(ReadWebView2Versions());
             missing = DetectMissing();
         }
         catch (SetupException)
@@ -157,6 +163,13 @@ internal static class PrerequisiteInstaller
                 "Check that Windows package information is available, then try again. Official sources:\n\n" +
                 FormatLinks(Definitions.Select(definition => new MissingPrerequisite(definition, "availability could not be verified"))),
                 error);
+        }
+
+        // The WebView2 bootstrapper cannot update an existing Evergreen runtime (it reports "already installed"),
+        // so stop before consent instead of downloading and installing other prerequisites only to fail at the end.
+        if (outdatedWebView is not null)
+        {
+            throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdatedWebView));
         }
 
         if (options.Silent && missing.Count > 0)
@@ -353,6 +366,13 @@ internal static class PrerequisiteInstaller
         return scenario switch
         {
             PrerequisiteTestScenario.Present => new PrerequisitePlan([], downloadDirectory: null, testScenario: scenario),
+            PrerequisiteTestScenario.WebView2Outdated or PrerequisiteTestScenario.WebView2AtFloor =>
+                FindOutdatedWebView2([scenario == PrerequisiteTestScenario.WebView2AtFloor
+                    ? MinimumWebView2Version
+                    : new Version(MinimumWebView2Version.Major, MinimumWebView2Version.Minor, MinimumWebView2Version.Build, MinimumWebView2Version.Revision - 1)])
+                is { } outdated
+                    ? throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdated))
+                    : new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present),
             PrerequisiteTestScenario.Missing => throw new SetupException(
                 ExitCode.PrerequisiteFailure,
                 BuildSilentFailure(injectedMissing)),
@@ -475,6 +495,17 @@ internal static class PrerequisiteInstaller
         }
         return versions;
     }
+
+    // Installed (any valid pv) but every registered version is below the floor; null when absent or supported.
+    private static Version? FindOutdatedWebView2(IReadOnlyCollection<Version> versions)
+        => versions.Count > 0 && versions.Max()! < MinimumWebView2Version ? versions.Max() : null;
+
+    private static string BuildOutdatedWebView2Failure(Version detected)
+        => $"Microsoft Edge WebView2 Runtime {detected} is installed, but Nativune needs {MinimumWebView2Version} or later. " +
+           "Nothing was installed and Nativune was not changed.\n\n" +
+           "Windows updates WebView2 automatically in the background through Microsoft Edge Update; its own installer cannot update an existing copy. " +
+           "Leave the PC online for a while (restarting Windows can help), then run Setup again.\n\n" +
+           "Information: https://developer.microsoft.com/microsoft-edge/webview2/";
 
     private static void AddWebView2Version(RegistryKey? key, ICollection<Version> versions)
     {

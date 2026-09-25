@@ -164,7 +164,7 @@ This compares architecture, not measured performance.
 - 64-bit Windows 10, version 2004 (build 19041) or later, including Windows 11
 - .NET 10 Runtime (not the Desktop Runtime)
 - Windows App SDK 2.5.1 runtime
-- Microsoft Edge WebView2 Evergreen Runtime 152.0.4191.62 or later
+- Microsoft Edge WebView2 Evergreen Runtime 152.0.4191.53 or later
 - x64 Visual C++ v14 Redistributable
 - Internet access for YouTube Music, update checks and downloading missing prerequisites
 

@@ -46,8 +46,11 @@ internal sealed record SetupOutcome(
     internal string InstallRootDisplay { get; init; } = "%LOCALAPPDATA%\\Nativune";
     internal bool CanOpen { get; init; } = true;
 
+    // Includes the messages so a pasted report names the failed step, component and installer exit code.
     internal string Details
-        => $"Exit code: {(int)ExitCode}\r\nException type: {Error?.InnerException?.GetType().Name ?? Error?.GetType().Name ?? "none"}";
+        => $"Exit code: {(int)ExitCode}\r\nException type: {Error?.InnerException?.GetType().Name ?? Error?.GetType().Name ?? "none"}"
+            + (Error is null ? "" : $"\r\nMessage: {Error.Message.Replace("\n", "\r\n")}")
+            + (Error?.InnerException is { } inner ? $"\r\nInner message: {inner.Message}" : "");
 
     internal static SetupOutcome Cancelled(string? fromVersion, string toVersion, bool fresh, bool canReopen, string? message = null)
         => new(ExitCode.Cancelled, "cancelled", fromVersion, toVersion,
@@ -75,7 +78,7 @@ internal sealed record SetupOutcome(
         ExitCode.RollbackFailure => "The upgrade failed and could not be rolled back safely.",
         ExitCode.LaunchFailure => "Nativune was installed, but it could not be started.",
         ExitCode.UnsupportedPlatform => "Nativune Setup runs on Windows only.",
-        ExitCode.PrerequisiteFailure => "A required Microsoft component could not be installed.",
+        ExitCode.PrerequisiteFailure => "A required Microsoft component is missing or out of date.",
         _ => "Nativune Setup could not complete.",
     };
 }
@@ -404,7 +407,7 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         }
         if (outcome.Status == "failed")
         {
-            content += "\n\nSelect Copy details for the exit code and exception type.";
+            content += "\n\nSelect Copy details to copy the exit code and full error text.";
         }
         return NativePage.Create(
             "Nativune Setup",

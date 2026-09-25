@@ -213,6 +213,16 @@ try {
     $payloadPath = Resolve-RepositoryPath $PayloadZip
     Assert-RegularFile $payloadPath 'The release payload ZIP'
 
+    # Setup must not accept a WebView2 runtime that the app then refuses (or the reverse).
+    $setupFloor = [regex]::Match((Get-Content -LiteralPath (Resolve-RepositoryPath 'src\Nativune.Installer\Prerequisites.cs') -Raw), 'MinimumWebView2Version = new\((\d+), (\d+), (\d+), (\d+)\)')
+    $appFloor = [regex]::Match((Get-Content -LiteralPath (Resolve-RepositoryPath 'src\Nativune\WebHost.cs') -Raw), 'MinimumWebView2RuntimeVersion = new\((\d+), (\d+), (\d+), (\d+)\)')
+    $appFloorText = [regex]::Match((Get-Content -LiteralPath (Resolve-RepositoryPath 'src\Nativune\WebHost.cs') -Raw), 'MinimumWebView2RuntimeVersionText = "([\d.]+)"')
+    $setupFloorText = ($setupFloor.Groups[1..4].Value -join '.')
+    if (-not $setupFloor.Success -or -not $appFloor.Success -or -not $appFloorText.Success -or
+        $setupFloorText -ne ($appFloor.Groups[1..4].Value -join '.') -or $setupFloorText -ne $appFloorText.Groups[1].Value) {
+        throw 'Setup and app WebView2 minimum versions differ or could not be read.'
+    }
+
     Remove-ProjectDirectory $fixtureRoot $fixtureRoot
     Remove-ProjectDirectory $workRoot $workRoot
     [IO.Directory]::CreateDirectory($workRoot) | Out-Null
@@ -240,7 +250,9 @@ try {
         [pscustomobject]@{ Name = 'present'; ExpectedExitCode = 0; ExpectedStatus = 'installed' },
         [pscustomobject]@{ Name = 'missing'; ExpectedExitCode = 19; ExpectedStatus = 'failed' },
         [pscustomobject]@{ Name = 'declined'; ExpectedExitCode = 3; ExpectedStatus = 'cancelled' },
-        [pscustomobject]@{ Name = 'offline'; ExpectedExitCode = 19; ExpectedStatus = 'failed' }
+        [pscustomobject]@{ Name = 'offline'; ExpectedExitCode = 19; ExpectedStatus = 'failed' },
+        [pscustomobject]@{ Name = 'webview2-outdated'; ExpectedExitCode = 19; ExpectedStatus = 'failed' },
+        [pscustomobject]@{ Name = 'webview2-at-floor'; ExpectedExitCode = 0; ExpectedStatus = 'installed' }
     )
     foreach ($scenario in $scenarios) {
         Remove-ProjectDirectory $fixtureRoot $fixtureRoot
@@ -258,7 +270,10 @@ try {
         if (-not ($stdoutLines | Where-Object { $_.Contains('Checking for required Microsoft components') })) {
             throw "$($scenario.Name) did not print its component-check step to stdout."
         }
-        if ($scenario.Name -eq 'present') {
+        if ($scenario.Name -eq 'webview2-outdated' -and -not $run.Stderr.Contains("is installed, but Nativune needs $setupFloorText or later")) {
+            throw "webview2-outdated did not report the installed-but-old WebView2 runtime. stderr: $($run.Stderr.Trim())"
+        }
+        if ($scenario.ExpectedExitCode -eq 0) {
             $requiredSteps = @('Unpacking Nativune', 'Checking free space', 'Installing files', 'shortcuts')
             $nextStep = 0
             foreach ($line in $stdoutLines) {
@@ -274,7 +289,7 @@ try {
 
         $resultPath = Join-Path $fixtureRoot 'updates\last-update.json'
         $result = $null
-        if ($scenario.Name -eq 'present') {
+        if ($scenario.ExpectedExitCode -eq 0) {
             if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
                 throw "$($scenario.Name) did not write last-update.json."
             }
@@ -361,7 +376,7 @@ try {
             expectedStatus = $reportedExpectedStatus
             stdout = $stdoutLines
             stderr = $stderrLines
-            stepOrderChecked = ($scenario.Name -eq 'present')
+            stepOrderChecked = ($scenario.ExpectedExitCode -eq 0)
         })
     }
     $report.status = 'passed'
