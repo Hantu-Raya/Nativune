@@ -13,11 +13,14 @@
     <UseWinUI>true</UseWinUI>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <UpdaterTestHooks Condition="'$(UpdaterTestHooks)' == ''">false</UpdaterTestHooks>
+    <PerfBenchHooks Condition="'$(PerfBenchHooks)' == ''">false</PerfBenchHooks>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <DefineConstants Condition="'$(UpdaterTestHooks)' == 'true'">$(DefineConstants);NATIVUNE_UPDATER_TEST_HOOKS</DefineConstants>
+    <DefineConstants Condition="'$(PerfBenchHooks)' == 'true'">$(DefineConstants);NATIVUNE_PERF_BENCH_HOOKS</DefineConstants>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
-    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredPGO>false</TieredPGO>
     <DebugType>portable</DebugType>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\..\assets\app-icon\nativune.ico</ApplicationIcon>

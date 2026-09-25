@@ -120,6 +120,8 @@ Nativune applies these resource settings by default:
 - Windows **EcoQoS** power throttling and Idle priority for the app host, browser and GPU processes. Page renderers are left to Chromium's own priority management, and the audio, network and storage services run at normal priority so playback isn't starved.
 - Chromium options that limit renderer processes to two, lower GPU power use, and cap the disk and graphics caches
 - **Sleep in background** (on by default), which lets Chromium throttle timers and rendering while the window is minimized, hidden or covered
+- Faster startup: the app code is precompiled (ReadyToRun), and the privacy extension is reused when it is already installed instead of being reinstalled on every launch. Its configuration is still checked on every launch.
+- About 3 seconds after the window is minimized or hidden to the tray, the app releases its own unused memory once
 
 **Maintainer-observed memory (informal).** Numbers from Windows Task Manager with v0.1.10, counting the Nativune process group including its WebView2 child processes:
 
@@ -129,7 +131,19 @@ Nativune applies these resource settings by default:
 | Typical use | ~250 MB |
 | Peak observed | under ~400 MB |
 
-These are informal observations on one machine, not a controlled benchmark. Memory varies with hardware, account, page content and session length. A repeatable measurement of the complete process tree is on the [roadmap](ROADMAP.md).
+These are informal observations on one machine, not a controlled benchmark. Memory varies with hardware, account, page content and session length.
+
+**Benchmark (25 September 2026).** `scripts/bench-perf.ps1` measures the complete process tree (the app and all WebView2 processes) in the full view, Compact and hidden to the tray while music plays, plus startup times. On one PC (Ryzen 7 5700X, Evergreen WebView2 152, signed out, **Block ads** on, short runs), the startup and memory changes above measured against the previous defaults:
+
+| Median | Before | After |
+| --- | ---: | ---: |
+| Music loaded after launch | 2.9 s | 1.4 s |
+| Window shown after launch | 477 ms | 338 ms |
+| Private working set, hidden to the tray | 197 MiB | 137 MiB |
+| Private working set, full view (first minute of playback) | 376 MiB | 348 MiB |
+| CPU | 0.1–0.5 % | no change beyond noise |
+
+Each condition ran one to five times, with phases of about 20 seconds; long sessions were not measured. Run `Get-Help scripts/bench-perf.ps1` to measure on your own PC.
 
 **Download size.** The v0.1.10 `Nativune-Setup.exe` is about 177 MB (177,072,567 bytes). This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
 
@@ -247,7 +261,7 @@ Development builds keep their WebView2 profile in the repository's `data/` direc
 - Nativune has no native audio engine; playback always runs in the embedded official website.
 - Not yet verified: a clean-Windows installation matrix, Premium features, full parity with the saved library, and resource use over long sessions.
 - Compact layouts have been checked on screen at 100% display scaling; 125%–200% are checked by the app's layout self-checks only.
-- Resource figures are informal maintainer observations, not benchmarks.
+- Resource figures come from informal observations and one short benchmark on one PC, not long sessions.
 
 ## Roadmap
 
