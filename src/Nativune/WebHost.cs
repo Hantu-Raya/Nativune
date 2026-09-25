@@ -30,6 +30,7 @@ internal static class WebHost
 
     public static int Run(string root)
     {
+        AppLog.Start(root);
         Exception? startupFailure = null;
         var exitCode = 0;
         var thread = new Thread(() =>
@@ -60,6 +61,7 @@ internal static class WebHost
 
         if (startupFailure is not null)
         {
+            AppLog.Write("crash", startupFailure.ToString());
             Console.Error.WriteLine("Web host could not start. Check the local runtime and whether this profile is already in use.");
             return 1;
         }
@@ -119,13 +121,12 @@ public sealed partial class WebHostWindow : Window
     private const int DefaultDpi = 96;
     private const string MemoryBrowserArguments =
         "--enable-low-end-device-mode " +
-        "--enable-low-res-tiling " +
         "--process-per-site " +
         "--renderer-process-limit=2 " +
         "--force_low_power_gpu " +
         "--disk-cache-size=67108864 " +
         "--skia-resource-cache-limit-mb=64 " +
-        "--enable-features=CalculateNativeWinOcclusion,TurnOffStreamingMediaCachingOnBattery";
+        "--enable-features=CalculateNativeWinOcclusion,msWebView2SimulateMemoryPressureWhenInactive";
     private const string KeepRunningInBackgroundArguments =
         "--disable-background-timer-throttling " +
         "--disable-renderer-backgrounding " +
@@ -145,7 +146,6 @@ public sealed partial class WebHostWindow : Window
     private readonly CancellationTokenSource _saveCancellation = new();
     private readonly UiDispatcherQueueTimer _saveTimer;
     private readonly UiDispatcherQueueTimer _releaseUpdateTimer;
-    private readonly List<Button> _playerButtons = new();
     private ShellSettings _settings;
     private ShellSettings? _pendingSettings;
     private Task _saveTask = Task.CompletedTask;
@@ -473,11 +473,70 @@ public sealed partial class WebHostWindow : Window
             buttons.Children.Add(updateNow);
             buttons.Children.Add(later);
 
-            var panel = new StackPanel { Padding = new Thickness(16), Spacing = 16 };
+            var changesHeading = new TextBlock
+            {
+                Text = update.InstalledVersion is { } installedVersion
+                    ? $"Changes from {installedVersion} to {version}"
+                    : $"Changes in {version}",
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            };
+            var changes = new TextBlock
+            {
+                Text = "Loading the changes in this update...",
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+            };
+            var changesScroller = new ScrollViewer
+            {
+                Content = changes,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                IsTabStop = true,
+                Padding = new Thickness(0, 0, 12, 0),
+            };
+            AutomationProperties.SetName(changesScroller, changesHeading.Text);
+
+            var panel = new Grid { Padding = new Thickness(16), RowSpacing = 12 };
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(changesHeading, 1);
+            Grid.SetRow(changesScroller, 2);
+            Grid.SetRow(buttons, 3);
             panel.Children.Add(message);
+            panel.Children.Add(changesHeading);
+            panel.Children.Add(changesScroller);
             panel.Children.Add(buttons);
-            var updateDialog = CreateDialogWindow($"Nativune update available ({version})", panel, 500, 220);
+            var updateDialog = CreateDialogWindow($"Nativune update available ({version})", panel, 560, 520);
             dialog = updateDialog;
+            _ = LoadChangesAsync();
+
+            async Task LoadChangesAsync()
+            {
+                var summary = await ReleaseUpdater.GetChangeSummaryAsync(update, _lifetime.Token);
+                if (choice.Task.IsCompleted || _closing || _disposed)
+                    return;
+                // Version tags and section headings (lines that follow a blank line or a version tag) stand out;
+                // bullets and paragraphs stay regular. The text is remote, so it is only ever shown as runs.
+                changes.Inlines.Clear();
+                var previous = "";
+                foreach (var line in summary.Split('\n'))
+                {
+                    if (changes.Inlines.Count > 0) changes.Inlines.Add(new Microsoft.UI.Xaml.Documents.LineBreak());
+                    var isVersion = line.Length > 1 && line[0] == 'v' && char.IsAsciiDigit(line[1]);
+                    var isHeading = !isVersion && line.Length > 0 && !line.StartsWith("• ", StringComparison.Ordinal)
+                        && (previous.Length == 0 || previous[0] == 'v' && previous.Length > 1 && char.IsAsciiDigit(previous[1]));
+                    changes.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
+                    {
+                        Text = line,
+                        FontWeight = isVersion ? Microsoft.UI.Text.FontWeights.Bold
+                            : isHeading ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+                        FontSize = isVersion ? 16 : changes.FontSize,
+                    });
+                    previous = line;
+                }
+            }
 
             updateNow.Click += (_, _) =>
             {
@@ -637,11 +696,13 @@ public sealed partial class WebHostWindow : Window
         };
         AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
 
-        AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(), _playPauseItem, _playItem, _pauseItem,
-            _previousItem, _nextItem, new MenuFlyoutSeparator(), _shortcutsItem, new MenuFlyoutSeparator(),
-            _zoomInItem, _zoomOutItem, _zoomResetItem, _fullscreenItem, _compactItem, _topmostItem,
-            new MenuFlyoutSeparator(), _trayItem, _restoreItem, new MenuFlyoutSeparator(),
-            _setTimerItem, _cancelTimerItem, _settingsItem, _statusDetailsItem,
+        // Grouped by importance: recovery, playback (now only here in the full window), window, timer, app.
+        AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(),
+            _playPauseItem, _playItem, _pauseItem, _previousItem, _nextItem, _shortcutsItem,
+            new MenuFlyoutSeparator(), _compactItem, _fullscreenItem, _topmostItem,
+            _zoomInItem, _zoomOutItem, _zoomResetItem, new MenuFlyoutSeparator(),
+            _setTimerItem, _cancelTimerItem, new MenuFlyoutSeparator(),
+            _trayItem, _restoreItem, _settingsItem, _statusDetailsItem,
             new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
@@ -685,16 +746,12 @@ public sealed partial class WebHostWindow : Window
         BackButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoBack == true) _browserHost.Core.GoBack(); };
         ForwardButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _browserHost.Core.GoForward(); };
         HomeButton.Click += (_, _) => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); };
-        PreviousButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("previous");
-        PlayPauseButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("toggle");
         UpdateButton.Click += (_, _) => OnUpdateButtonClick();
-        NextButton.Click += (_, _) => _ = ExecutePlayerCommandAsync("next");
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
         {
             if (BrowserShouldBeVisible) _browserHost?.Focus();
         };
-        _playerButtons.AddRange([PreviousButton, PlayPauseButton, NextButton]);
         _shortcutsItem.IsChecked = false;
         _restoreItem.IsChecked = _settings.RestoreSection;
         _trayItem.IsChecked = _settings.TrayEnabled;
@@ -722,11 +779,8 @@ public sealed partial class WebHostWindow : Window
         BackButton.Content = _iconCache.CreateElement("back", 20);
         ForwardButton.Content = _iconCache.CreateElement("forward", 20);
         HomeButton.Content = _iconCache.CreateElement("home", 20);
-        PreviousButton.Content = _iconCache.CreateElement("previous", 20);
-        PlayPauseButton.Content = _iconCache.CreateElement("play-pause", 20);
-        NextButton.Content = _iconCache.CreateElement("next", 20);
         MoreButton.Content = _iconCache.CreateElement("overflow", 20);
-        TimerButton.Content = _iconCache.CreateElement("quit-timer", 20);
+        SetTimerButtonContent(TimerBadge);
         CompactButton.Content = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 20);
         SetReleaseUpdateButtonState(
             _releaseUpdateButtonState, _availableReleaseUpdate?.Version);
@@ -771,8 +825,6 @@ public sealed partial class WebHostWindow : Window
     {
         var enabled = PlayerAvailable;
         CompactView.SetPlayerBusy(_playerBusy);
-        foreach (var button in _playerButtons)
-            button.IsEnabled = enabled;
         _playPauseItem.IsEnabled = enabled;
         _playItem.IsEnabled = enabled;
         _pauseItem.IsEnabled = enabled;
@@ -921,7 +973,7 @@ public sealed partial class WebHostWindow : Window
             core.PermissionRequested += (_, args) => OnPermissionRequested(args);
             core.DownloadStarting += (_, args) => OnDownloadStarting(args);
             core.LaunchingExternalUriScheme += (_, args) => OnLaunchingExternalUriScheme(args);
-            core.ProcessFailed += (_, _) => OnProcessFailed();
+            core.ProcessFailed += (_, args) => OnProcessFailed(args);
 
             await BrowserPrivacy.ConfigureAsync(core, _root, setupUri =>
             {
@@ -1149,17 +1201,50 @@ public sealed partial class WebHostWindow : Window
         SetStatus("External URI launch blocked.", isError: true);
     }
 
-    private void OnProcessFailed()
+    private void OnProcessFailed(CoreWebView2ProcessFailedEventArgs args)
     {
-        try { _browserHost?.SetVisible(false); } catch (Exception) { }
+        string description;
+        try
+        {
+            description = $"{args.ProcessFailedKind}, reason {args.Reason}, exit code {args.ExitCode}";
+            if (!string.IsNullOrEmpty(args.ProcessDescription)) description += $", {args.ProcessDescription}";
+        }
+        catch (Exception) { description = args.ProcessFailedKind.ToString(); }
+        AppLog.Write("process-failed", description);
         if (_closing || _disposed) return;
-        _playerControls?.Invalidate();
-        InvalidateCompactState();
-        _browserFailed = true;
-        ExitCode = 1;
-        UpdateNavigation();
-        SetStatus("Browser process failed. Close and relaunch the app.", isError: true);
+
+        switch (args.ProcessFailedKind)
+        {
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                try { _browserHost?.SetVisible(false); } catch (Exception) { }
+                _playerControls?.Invalidate();
+                InvalidateCompactState();
+                _browserFailed = true;
+                ExitCode = 1;
+                UpdateNavigation();
+                SetStatus("Browser process failed. Close and relaunch the app.", isError: true);
+                break;
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
+                InvalidateCompactState();
+                if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
+                {
+                    SetStatus("The page stopped again. Use Retry, or close and relaunch the app.", isError: true);
+                    break;
+                }
+                _lastRendererReloadAt = Environment.TickCount64;
+                SetStatus("The page stopped unexpectedly and is reloading. Playback stopped with it.", isError: true);
+                try { _browserHost?.Core.Reload(); }
+                catch (Exception ex) when (ex is COMException or InvalidOperationException) { }
+                break;
+            case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                SetStatus("The page is not responding right now; waiting for it to recover.", isError: true);
+                break;
+            // GPU, utility, subframe and helper exits are recovered automatically by WebView2; logged only.
+        }
     }
+
+    private long _lastRendererReloadAt = -60_000;
 
     private void ObserveSection()
     {
@@ -1197,6 +1282,7 @@ public sealed partial class WebHostWindow : Window
         var warning = _settingsWarning is not null && text != _settingsWarning ? " " + _settingsWarning : string.Empty;
         _statusIsError = isError;
         _statusDetailsText = (isError ? "[!] Error: " : string.Empty) + text + warning;
+        if (isError) AppLog.Write("status", text);
         if (_statusDetailsText.Length > 4096)
             _statusDetailsText = _statusDetailsText[..4096];
         _statusDetailsItem.Text = isError ? "Read application status (error)" : "Read application status";
@@ -1361,13 +1447,30 @@ public sealed partial class WebHostWindow : Window
         SetStatus("Pause timer cancelled.");
     }
 
+    private string TimerBadge
+        => _sleep?.IsArmed == true && _sleep.DisplayDeadline is { } deadline
+            ? deadline.ToLocalTime().ToString("T") : string.Empty;
+
+    // Idle: the timer icon at the shared toolbar button size. Armed: the deadline text as a wider chip.
+    private void SetTimerButtonContent(string badge)
+    {
+        if (badge.Length == 0)
+        {
+            TimerButton.Content = _iconCache.CreateElement("quit-timer", 20);
+            TimerButton.ClearValue(FrameworkElement.WidthProperty);
+        }
+        else
+        {
+            TimerButton.Content = badge;
+            TimerButton.Width = Math.Max(80, 36 + badge.Length * 8);
+        }
+    }
+
     private void UpdateTimerPresentation()
     {
         var armed = _sleep?.IsArmed == true;
-        var deadline = _sleep?.DisplayDeadline;
-        var badge = armed && deadline is { } value ? value.ToLocalTime().ToString("T") : string.Empty;
-        TimerButton.Content = badge.Length == 0 ? _iconCache.CreateElement("quit-timer", 20) : badge;
-        TimerButton.Width = badge.Length == 0 ? double.NaN : Math.Max(80, 36 + badge.Length * 8);
+        var badge = TimerBadge;
+        SetTimerButtonContent(badge);
         ToolTipService.SetToolTip(TimerButton, badge.Length == 0
             ? "Set pause timer. The app stays open." : $"Pause timer deadline {badge}. The app stays open.");
         TimerButton.SetValue(AutomationProperties.NameProperty, badge.Length == 0
@@ -1446,14 +1549,26 @@ public sealed partial class WebHostWindow : Window
         => binding == 0 ? action + ". No shortcut assigned."
             : $"{action}. Shortcut: {ShortcutBindings.Format(binding)} when session shortcuts are enabled.";
 
+    // Website transport lives in the More menu in the full window (the site has its own player bar),
+    // so the custom shortcut descriptions go there: help text and tooltip always, and the
+    // accelerator column only while the session hotkeys are actually registered.
     private void RefreshShortcutDescriptions()
     {
-        ToolTipService.SetToolTip(PlayPauseButton, ShortcutDescription("Play or pause website playback", _settings.Shortcuts.Toggle));
-        ToolTipService.SetToolTip(PreviousButton, ShortcutDescription("Previous item", _settings.Shortcuts.Previous));
-        ToolTipService.SetToolTip(NextButton, ShortcutDescription("Next item", _settings.Shortcuts.Next));
+        SetPlayerItemShortcut(_playPauseItem, "Play or pause website playback", _settings.Shortcuts.Toggle);
+        SetPlayerItemShortcut(_previousItem, "Previous item", _settings.Shortcuts.Previous);
+        SetPlayerItemShortcut(_nextItem, "Next item", _settings.Shortcuts.Next);
         ToolTipService.SetToolTip(CompactButton, ShortcutDescription("Switch compact and full window", _settings.Shortcuts.Compact));
         CompactView.SetShortcutDescriptions(_settings.Shortcuts.Toggle, _settings.Shortcuts.Previous,
             _settings.Shortcuts.Next, _settings.Shortcuts.Compact);
+    }
+
+    private void SetPlayerItemShortcut(MenuFlyoutItem item, string action, int binding)
+    {
+        var description = ShortcutDescription(action, binding);
+        ToolTipService.SetToolTip(item, description);
+        AutomationProperties.SetHelpText(item, description);
+        item.KeyboardAcceleratorTextOverride = binding != 0 && _shortcutsEnabled
+            ? ShortcutBindings.Format(binding) : string.Empty;
     }
 
     private void SetShortcutsEnabled(bool enabled)
@@ -1485,6 +1600,7 @@ public sealed partial class WebHostWindow : Window
         }
         _shortcutsEnabled = true;
         _shortcutsItem.IsChecked = true;
+        RefreshShortcutDescriptions();
         SetStatus("Saved global shortcuts enabled for this session. Disable them here or close the app to release them.");
     }
 
@@ -1502,6 +1618,8 @@ public sealed partial class WebHostWindow : Window
             _shortcutsEnabled = false;
         }
         _shortcutsItem.IsChecked = false;
+        if (!_closing && !_disposed)
+            RefreshShortcutDescriptions();
     }
 
     private void SetTrayEnabled(bool enabled)
@@ -1561,8 +1679,8 @@ public sealed partial class WebHostWindow : Window
         try
         {
             CaptureSettings();
-            _browserHost?.SetVisible(false);
             _appWindow.Hide();
+            UpdateBrowserVisibility();
             return !_appWindow.IsVisible;
         }
         catch (Exception)
@@ -2267,24 +2385,37 @@ public sealed partial class WebHostWindow : Window
                 foreach (var process in processes)
                     if (owned.Contains(process.Parent) && owned.Add(process.Id)) added = true;
             } while (added);
-            foreach (var id in owned) ApplyEfficiencyMode(id);
+            // Children inherit the Idle class of the WebView2 browser process. Chromium re-prioritises renderers
+            // itself (Normal while visible, Idle+EcoQoS when hidden) but never utility services, so the network
+            // and audio services would stay Idle and could starve audio fetch/output under system load.
+            // Leave renderers to Chromium and give utility services normal, system-managed scheduling.
+            var renderers = new HashSet<int>();
+            var utilities = new HashSet<int>();
+            foreach (var info in _environment.GetProcessInfos())
+                if (info.Kind == CoreWebView2ProcessKind.Renderer) renderers.Add(info.ProcessId);
+                else if (info.Kind == CoreWebView2ProcessKind.Utility) utilities.Add(info.ProcessId);
+            foreach (var id in owned)
+                if (utilities.Contains(id)) ApplyEfficiencyMode(id, efficient: false);
+                else if (!renderers.Contains(id)) ApplyEfficiencyMode(id, efficient: true);
         }
-        catch (Win32Exception ex)
+        catch (Exception ex) when (ex is Win32Exception or COMException)
         {
             Console.Error.WriteLine($"Efficiency process discovery failed: {ex.Message}");
             SetStatus("Could not apply efficiency mode to the full process tree.", isError: true);
         }
     }
 
-    private static void ApplyEfficiencyMode(int processId)
+    private static void ApplyEfficiencyMode(int processId, bool efficient)
     {
         const uint processSetInformation = 0x0200;
         const uint idlePriorityClass = 0x0040;
+        const uint normalPriorityClass = 0x0020;
         const int processPowerThrottling = 4;
         using var handle = OpenProcess(processSetInformation, false, processId);
-        var state = new PowerThrottlingState { Version = 1, ControlMask = 1, StateMask = 1 };
+        // ControlMask 0 hands execution-speed throttling back to Windows' own audible/visible classification.
+        var state = new PowerThrottlingState { Version = 1, ControlMask = efficient ? 1u : 0u, StateMask = efficient ? 1u : 0u };
         if (handle.IsInvalid || !SetProcessInformation(handle, processPowerThrottling, ref state, Marshal.SizeOf<PowerThrottlingState>())
-            || !SetPriorityClass(handle, idlePriorityClass))
+            || !SetPriorityClass(handle, efficient ? idlePriorityClass : normalPriorityClass))
         {
             var error = Marshal.GetLastWin32Error();
             if (error == 87 && handle.IsInvalid) return;

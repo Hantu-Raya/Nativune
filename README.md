@@ -23,7 +23,7 @@ YouTube and YouTube Music are trademarks of Google LLC.
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.11](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.11) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.12](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.12) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -35,7 +35,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 ## Features
 
 - **Full and Compact views in one window.** The Compact view is a native horizontal mini player, 800 × 180 by default, with a fixed height and adjustable width. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, repeat, shuffle, volume and a pause timer.
-- **Native toolbar** in the full view: back, forward, Home, previous, play/pause, next, app volume, pause timer, Compact toggle and an update indicator.
+- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles. While it is enabled, Close hides the window and playback keeps running. Quit always exits.
 - **Pause timer** from one second to four hours. When it expires, playback pauses and the window stays open.
@@ -66,14 +66,14 @@ The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It instal
 - **No native bridge.** WebView2 host objects and web messaging are disabled, so page scripts cannot call into the native app.
 - **Isolated profile.** Cookies and site data stay in Nativune's own WebView2 profile. Nativune does not import cookies from other browsers and does not collect passwords.
 - **Tracker filtering only.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are not blocked.
-- **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
+- **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Opening the update dialog makes one more anonymous request, for the release notes. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
 
 ## Performance
 
 Nativune applies these resource settings by default:
 
-- WebView2 memory usage target set to **Low**
-- Windows **EcoQoS** power throttling and Idle priority for the app and its WebView2 processes
+- WebView2 memory usage target set to **Low**, and pages drop their caches while the website is hidden (Compact, minimized or in the tray)
+- Windows **EcoQoS** power throttling and Idle priority for the app host, browser and GPU processes. Page renderers are left to Chromium's own priority management, and the audio, network and storage services run at normal priority so playback isn't starved.
 - Chromium options that limit renderer processes to two, lower GPU power use, and cap the disk and graphics caches
 - **Sleep in background** (on by default), which lets Chromium throttle timers and rendering while the window is minimized, hidden or covered
 
@@ -135,9 +135,9 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 
 1. Open **Nativune** from the Start menu.
 2. Select **Sign in** on the YouTube Music page and complete Google sign-in in the embedded view. You can also use it signed out.
-3. Play music as you would on the website. The native toolbar and taskbar buttons control the same player.
-4. Select the **Compact window** toolbar button to switch to the mini player, and **Return to full** to switch back.
-5. Open **More commands and settings** (`…`) for tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
+3. Play music as you would on the website. The website's player bar, the taskbar buttons, the More menu and the Compact player all control the same player.
+4. Select the **Compact window** button at the left of the toolbar to switch to the mini player, and **Return to full** to switch back.
+5. Open **More commands and settings** (`…`) for playback commands, tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
 
 ## Updates
 
@@ -148,7 +148,7 @@ The app never opens an update dialog on its own and never downloads an update wi
 
 The button shows "Click to check for Nativune updates." until a check runs, and reports "up to date" only after a successful check. Update checks run only in installed builds. Development runs show "Update checks are available only in installed Nativune builds."
 
-Compact mode has no update button. Click `update-available` to open the confirmation dialog. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Setup asks again before upgrading. Click `update` to run a manual check. If checking fails, the tooltip reads "Couldn't check for updates. Click to try again."
+Compact mode has no update button. Click `update-available` to open the confirmation dialog. It lists what changed between your installed version and the new one, covering every release in between, newest first, in a scrollable area. Choose **Update now** to download, verify the SHA-256 digest and start Setup, or **Later** to defer. Setup asks again before upgrading. Click `update` to run a manual check. If checking fails, the tooltip reads "Couldn't check for updates. Click to try again."
 
 When **Check for updates automatically** is enabled in Settings (the default), the app checks at startup and every 24 hours while running. Automatic checks only report availability; they never open a dialog or download anything.
 
@@ -168,7 +168,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.11 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.12 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json` and `SHA256SUMS.txt` to `artifacts/release/`.
@@ -213,7 +213,10 @@ No. Nativune works signed out or with any account the website accepts. What you 
 No. You sign in on Google's own pages inside the embedded view. Nativune does not collect passwords or import browser cookies.
 
 **Where does Nativune store its data?**
-In the installation's `data/` directory, `%LOCALAPPDATA%\Nativune\data` by default. It holds the isolated WebView2 profile and `settings.json`.
+In the installation's `data/` directory, `%LOCALAPPDATA%\Nativune\data` by default. It holds the isolated WebView2 profile, `settings.json` and `nativune.log`.
+
+**Where can I find error and crash details?**
+In `data\nativune.log`. It records error messages, WebView2 process failures (for example a GPU process restart) and unhandled exceptions, with timestamps. It does not record page content, cookies or what you play. Once it passes 1 MB, it moves to `nativune.old.log` and a new file starts.
 
 **Which Windows versions are supported?**
 64-bit Windows 10 version 2004 (build 19041) or later, including Windows 11.

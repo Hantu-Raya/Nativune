@@ -96,8 +96,8 @@ internal sealed class PlayerControls : IDisposable
             }
             catch (TimeoutException) when (!request.Cancellation.IsCancellationRequested)
             {
-                Poison();
-                return "Control script timed out; controls disabled until restart.";
+                Stall();
+                return "Control script timed out; no retry. Controls return once the page responds.";
             }
             catch (OperationCanceledException) when (request.Cancellation.IsCancellationRequested)
             {
@@ -198,7 +198,7 @@ internal sealed class PlayerControls : IDisposable
                 value, signature);
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !Owns(request) || !CompactPlayback.TryParseOutcome(json, out var outcome))
-                return "Player action outcome unknown; no retry. If controls remain unavailable, restart the app.";
+                return "Player action outcome unknown; no retry. Check the website before trying again.";
             return FormatCompactOutcome(outcome);
         }
         finally { CompleteRequest(request); }
@@ -225,7 +225,7 @@ internal sealed class PlayerControls : IDisposable
         }
         catch (TimeoutException) when (!request.Cancellation.IsCancellationRequested)
         {
-            Poison();
+            Stall();
             return null;
         }
         catch (Exception) { return null; }
@@ -413,13 +413,26 @@ internal sealed class PlayerControls : IDisposable
         if (changed) RaiseStateChanged();
     }
 
+    // Permanent: only for failures that end the browser. Controls stay disabled until restart.
     private void Poison()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _poisoned = true;
+        }
+        Stall();
+    }
+
+    // A slow page is not a broken page. Drop the current request and cached state without a retry;
+    // CanAttemptLocked keeps new commands blocked while the late script is still pending, and the
+    // script itself refuses to click after its dispatch deadline, so nothing can fire twice.
+    private void Stall()
     {
         CancellationTokenSource? operation;
         lock (_gate)
         {
             if (_disposed) return;
-            _poisoned = true;
             _generation++;
             operation = _operation;
             _lastCompactState = null;
@@ -481,13 +494,30 @@ internal sealed class PlayerControls : IDisposable
 
     private void ProcessFailed(CoreWebView2 sender, CoreWebView2ProcessFailedEventArgs e)
     {
-        lock (_gate)
+        switch (e.ProcessFailedKind)
         {
-            if (_disposed) return;
-            _navigationReady = false;
-            _navigating = true;
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _navigationReady = false;
+                    _navigating = true;
+                }
+                Poison();
+                break;
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+                // The page is replaced by an error page and reloaded by the host; the reload's navigation
+                // events make the controls ready again.
+                lock (_gate)
+                {
+                    if (_disposed) return;
+                    _navigationReady = false;
+                    _navigating = true;
+                }
+                Stall();
+                break;
+            // GPU, utility, subframe and unresponsive events are recovered by WebView2 itself.
         }
-        Poison();
     }
 
     private void RaiseStateChanged()

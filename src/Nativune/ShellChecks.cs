@@ -429,15 +429,26 @@ internal static class ShellChecks
             Require(host.NativeHandle != 0, "WinUI host did not create a native HWND.");
             Require(!host.IsCompact, "WinUI host entered Compact mode during full startup.");
             Require(content.XamlRoot is not null, "WinUI root was not loaded before native checks.");
+            // The full-window bar keeps navigation, output, timer, More and update; website transport
+            // lives in the More menu with its shortcut descriptions, and stays off without a player.
+            const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
             foreach (var name in new[] { "PreviousButton", "PlayPauseButton", "NextButton" })
+                Require(FindElement(content, name) is null,
+                    $"Full-window toolbar still shows website transport: {name}.");
+            foreach (var field in new[] { "_previousItem", "_playPauseItem", "_nextItem" })
             {
-                var control = FindElement(content, name) as Control;
-                Require(control is not null && !control.IsEnabled,
-                    $"Native transport became available without a website player: {name}.");
+                var item = typeof(WebHostWindow).GetField(field, privateInstance)?.GetValue(host) as MenuFlyoutItem;
+                Require(item is not null && !item.IsEnabled
+                    && AutomationProperties.GetHelpText(item)?.Contains("shortcut", StringComparison.OrdinalIgnoreCase) == true
+                    && string.IsNullOrEmpty(item.KeyboardAcceleratorTextOverride),
+                    $"More-menu transport became available without a website player, lost its shortcut description, or advertised an unregistered hotkey: {field}.");
             }
+            foreach (var name in new[] { "CompactButton", "BackButton", "ForwardButton", "HomeButton",
+                         "OutputMuteButton", "TimerButton", "MoreButton", "UpdateButton" })
+                Require(FindElement(content, name) is Button { Visibility: Visibility.Visible },
+                    $"Full-window toolbar lost a visible command: {name}.");
 
             phase = "full-state";
-            const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
             var versionItem = typeof(WebHostWindow).GetField("_versionItem", privateInstance)
                 ?.GetValue(host) as MenuFlyoutItem;
             Require(versionItem is not null && !versionItem.IsEnabled

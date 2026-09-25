@@ -31,6 +31,10 @@ internal sealed record ReleaseUpdateResult(
         && Size > 0
         && Sha256 is not null;
 
+    // Offered release's own notes (fallback) and the installed version, for the change summary.
+    internal string? ReleaseNotes { get; init; }
+    internal string? InstalledVersion { get; init; }
+
     internal static ReleaseUpdateResult None()
         => new(ReleaseUpdateStatus.None, null, null, null, 0, null, null);
 
@@ -274,7 +278,11 @@ internal static class ReleaseUpdater
                 null,
                 selection.Size,
                 selection.Sha256,
-                null);
+                null)
+            {
+                ReleaseNotes = TryGetString(document.RootElement, "body", out var notes) ? notes : null,
+                InstalledVersion = installed.Version.ToTagString(),
+            };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -310,6 +318,130 @@ internal static class ReleaseUpdater
         return uri;
     }
 #endif
+
+    private static readonly Uri ReleaseListUri = new("https://api.github.com/repos/Hantu-Raya/Nativune/releases?per_page=30");
+    private const int MaxSummaryCharactersPerRelease = 6000;
+
+    // Notes for every stable release after the installed version up to the offered one, newest first.
+    // One extra anonymous request, made only when the update dialog opens; falls back to the offered
+    // release's own notes. The text is only displayed as plain text, never interpreted as markup.
+    internal static async Task<string> GetChangeSummaryAsync(ReleaseUpdateResult update, CancellationToken cancellationToken)
+    {
+        var fallback = BuildChangeSummary(null, update.InstalledVersion, update.Version, update.ReleaseNotes);
+        try
+        {
+            using var client = CreateHttpClient();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(MetadataTimeout);
+            var listUri = ReleaseListUri;
+#if NATIVUNE_UPDATER_TEST_HOOKS
+            listUri = ResolveTestReleaseMetadataUri() is var testUri && testUri != LatestReleaseUri ? testUri : ReleaseListUri;
+#endif
+            using var request = new HttpRequestMessage(HttpMethod.Get, listUri);
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.OK)
+                return fallback;
+            var body = await ReadBoundedAsync(
+                await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false),
+                MaxReleaseMetadataBytes,
+                timeout.Token).ConfigureAwait(false);
+            return BuildChangeSummary(Encoding.UTF8.GetString(body), update.InstalledVersion, update.Version, update.ReleaseNotes);
+        }
+        catch (Exception)
+        {
+            return fallback;
+        }
+    }
+
+    internal static string BuildChangeSummary(string? releasesJson, string? installedVersion, string? targetVersion, string? fallbackNotes)
+    {
+        var hasInstalled = ReleaseVersion.TryParse(installedVersion ?? "", requireVPrefix: true, out var installed);
+        var hasTarget = ReleaseVersion.TryParse(targetVersion ?? "", requireVPrefix: true, out var target);
+        var releases = new List<(ReleaseVersion Version, string Tag, string Notes)>();
+        if (releasesJson is not null && hasInstalled && hasTarget)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(releasesJson, new JsonDocumentOptions { MaxDepth = 32 });
+                var items = document.RootElement.ValueKind == JsonValueKind.Array
+                    ? document.RootElement.EnumerateArray().ToList()
+                    : new List<JsonElement> { document.RootElement };
+                foreach (var release in items)
+                {
+                    if (release.ValueKind != JsonValueKind.Object
+                        || !TryGetBoolean(release, "draft", out var draft) || draft
+                        || !TryGetBoolean(release, "prerelease", out var prerelease) || prerelease
+                        || !TryGetString(release, "tag_name", out var tag)
+                        || !ReleaseVersion.TryParse(tag, requireVPrefix: true, out var version)
+                        || version.IsPrerelease
+                        || version.CompareTo(installed) <= 0
+                        || version.CompareTo(target) > 0)
+                        continue;
+                    releases.Add((version, tag, TryGetString(release, "body", out var notes) ? notes : ""));
+                }
+            }
+            catch (JsonException)
+            {
+                releases.Clear();
+            }
+        }
+        if (releases.Count == 0)
+            releases.Add((target, targetVersion ?? "", fallbackNotes ?? ""));
+        releases.Sort((left, right) => right.Version.CompareTo(left.Version));
+
+        var text = new StringBuilder();
+        foreach (var release in releases)
+        {
+            if (text.Length > 0) text.Append("\n\n");
+            text.Append(release.Tag);
+            var summary = SummarizeReleaseNotes(release.Notes);
+            text.Append('\n').Append(summary.Length == 0 ? "No release notes were published for this version." : summary);
+        }
+        return text.ToString();
+    }
+
+    // Keeps the "What's new/fixed/changed" sections of a release body and drops the intro, install and
+    // build boilerplate. Markdown emphasis, code and links are reduced to plain text; bullets become "•".
+    internal static string SummarizeReleaseNotes(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown)) return "";
+        var lines = markdown.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var hasSections = lines.Any(static line => line.StartsWith("## ", StringComparison.Ordinal));
+        var keep = !hasSections;
+        var output = new StringBuilder();
+        foreach (var raw in lines)
+        {
+            var line = raw.TrimEnd();
+            if (line.StartsWith("# ", StringComparison.Ordinal)) continue;
+            if (line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                var heading = line[3..].Trim();
+                keep = !heading.StartsWith("Install", StringComparison.OrdinalIgnoreCase)
+                    && !heading.StartsWith("Build", StringComparison.OrdinalIgnoreCase);
+                if (keep) output.Append(output.Length > 0 ? "\n\n" : "").Append(PlainText(heading));
+                continue;
+            }
+            if (!keep || line.Length == 0) continue;
+            var trimmed = line.TrimStart();
+            var bullet = trimmed.StartsWith("- ", StringComparison.Ordinal) || trimmed.StartsWith("* ", StringComparison.Ordinal);
+            output.Append('\n').Append(bullet ? "• " + PlainText(trimmed[2..]) : PlainText(trimmed));
+            if (output.Length > MaxSummaryCharactersPerRelease)
+            {
+                output.Length = MaxSummaryCharactersPerRelease;
+                output.Append('…');
+                break;
+            }
+        }
+        return output.ToString().Trim('\n');
+    }
+
+    private static string PlainText(string markdown)
+    {
+        var text = System.Text.RegularExpressions.Regex.Replace(markdown, @"\[([^\]]*)\]\([^)]*\)", "$1");
+        return text.Replace("**", "", StringComparison.Ordinal)
+            .Replace("__", "", StringComparison.Ordinal)
+            .Replace("`", "", StringComparison.Ordinal);
+    }
 
     internal static async Task<ReleaseUpdateResult> DownloadAsync(
         string root,
@@ -1055,6 +1187,22 @@ internal static class ReleaseUpdaterChecks
             || ReleaseUpdater.SelectReleaseForChecks(releaseJson.Replace(digest, "sha256:bad", StringComparison.Ordinal), "0.1.0", out _) != ReleaseSelectionDisposition.Error
             || ReleaseUpdater.SelectReleaseForChecks(releaseJson, "0.1.1", out _) != ReleaseSelectionDisposition.None)
             throw new SelfCheckException("Release or asset selection checks failed.");
+
+        const string notes = "# Nativune 0.1.11\n\nIntro boilerplate.\n\n## What's fixed\n\n- **Title bar** after [Compact](https://x.test).\n\n## Install\n\n1. Download `Nativune-Setup.exe`.\n\n## Build and known limits\n\nCI run.";
+        if (ReleaseUpdater.SummarizeReleaseNotes(notes) != "What's fixed\n• Title bar after Compact.")
+            throw new SelfCheckException("Release-note summary did not keep only the change sections as plain text.");
+        var listJson = """
+            [
+              { "tag_name": "v0.1.12", "draft": false, "prerelease": false, "body": "## New\n- twelve" },
+              { "tag_name": "v0.1.11", "draft": false, "prerelease": false, "body": "## Fixed\n- eleven" },
+              { "tag_name": "v0.1.11-beta.1", "draft": false, "prerelease": true, "body": "## Beta\n- beta" },
+              { "tag_name": "v0.1.10", "draft": false, "prerelease": false, "body": "## New\n- ten" },
+              { "tag_name": "v0.1.9", "draft": false, "prerelease": false, "body": "## Old\n- nine" }
+            ]
+            """;
+        if (ReleaseUpdater.BuildChangeSummary(listJson, "v0.1.9", "v0.1.11", "fallback") != "v0.1.11\nFixed\n• eleven\n\nv0.1.10\nNew\n• ten"
+            || ReleaseUpdater.BuildChangeSummary("not json", "v0.1.9", "v0.1.11", "## Fixed\n- eleven") != "v0.1.11\nFixed\n• eleven")
+            throw new SelfCheckException("Update change summary did not cover exactly the installed-to-offered release range.");
 
         var available = new ReleaseUpdateResult(
             ReleaseUpdateStatus.Available,

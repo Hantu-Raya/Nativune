@@ -13,103 +13,161 @@
       <RowDefinition x:Name="ContentRow" Height="*" />
     </Grid.RowDefinitions>
 
+    <!-- Full-window command bar. The system caption above it keeps the app identity (icon and
+         title); this row keeps only commands. Left: window mode, then browser navigation.
+         Right: app output, pause timer and the More overflow, then the update indicator.
+         Website playback stays with the site's own player bar and the More menu. -->
     <Border x:Name="ToolbarHost"
             Grid.Row="0"
             Background="{ThemeResource SurfaceBrush}"
             BorderBrush="{ThemeResource RaisedBrush}"
             BorderThickness="0,0,0,1">
       <Grid x:Name="Toolbar"
-            Margin="12,4"
+            Margin="8,4"
             HorizontalAlignment="Stretch">
-        <StackPanel Orientation="Horizontal"
+        <Grid.Resources>
+          <ResourceDictionary>
+            <!-- Quiet icon buttons: transparent at rest, raised on hover, no persistent box.
+                 Scoped to this row so dialogs keep the default boxed buttons. -->
+            <SolidColorBrush x:Key="ButtonBackground" Color="#00000000" />
+            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#212121" />
+            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#2D2D2D" />
+            <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="#00000000" />
+            <SolidColorBrush x:Key="ButtonForeground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="#777777" />
+            <SolidColorBrush x:Key="ButtonBorderBrush" Color="#00000000" />
+            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#00000000" />
+            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#3A3A3A" />
+            <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="#00000000" />
+            <Style x:Key="ToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+              <Setter Property="Width" Value="40" />
+              <Setter Property="Height" Value="32" />
+              <Setter Property="Padding" Value="0" />
+              <Setter Property="HorizontalContentAlignment" Value="Center" />
+              <Setter Property="VerticalContentAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="ToolbarSeparatorStyle" TargetType="Rectangle">
+              <Setter Property="Width" Value="1" />
+              <Setter Property="Height" Value="16" />
+              <Setter Property="Margin" Value="4,0" />
+              <Setter Property="VerticalAlignment" Value="Center" />
+              <Setter Property="Fill" Value="{ThemeResource SeparatorBrush}" />
+            </Style>
+            <ResourceDictionary.ThemeDictionaries>
+              <ResourceDictionary x:Key="HighContrast">
+                <SolidColorBrush x:Key="ButtonBackground" Color="{ThemeResource SystemColorButtonFaceColor}" />
+                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
+                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="{ThemeResource SystemColorHighlightColor}" />
+                <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="{ThemeResource SystemColorWindowColor}" />
+                <SolidColorBrush x:Key="ButtonForeground" Color="{ThemeResource SystemColorButtonTextColor}" />
+                <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                <SolidColorBrush x:Key="ButtonForegroundPressed" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                <SolidColorBrush x:Key="ButtonForegroundDisabled" Color="{ThemeResource SystemColorGrayTextColor}" />
+                <SolidColorBrush x:Key="ButtonBorderBrush" Color="{ThemeResource SystemColorButtonTextColor}" />
+                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="{ThemeResource SystemColorGrayTextColor}" />
+              </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+          </ResourceDictionary>
+        </Grid.Resources>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Window mode, then browser navigation. Tab order follows the visual order. -->
+        <StackPanel Grid.Column="0"
+                    Orientation="Horizontal"
                     Spacing="4"
-                    HorizontalAlignment="Left">
-        <Button x:Name="BackButton"
-                AutomationProperties.Name="Back"
-                ToolTipService.ToolTip="Back (Alt+Left)"
-                Content="Back" />
-        <Button x:Name="ForwardButton"
-                AutomationProperties.Name="Forward"
-                ToolTipService.ToolTip="Forward (Alt+Right)"
-                Content="Forward" />
-        <Button x:Name="HomeButton"
-                AutomationProperties.Name="Open Music Home"
-                ToolTipService.ToolTip="Open Music Home"
-                Content="Home" />
-        <Rectangle Width="12" Fill="Transparent" />
-        <Button x:Name="PreviousButton"
-                AutomationProperties.Name="Previous item"
-                ToolTipService.ToolTip="Previous item"
-                Content="Previous" />
-        <Button x:Name="PlayPauseButton"
-                AutomationProperties.Name="Play or pause"
-                ToolTipService.ToolTip="Play or pause website playback"
-                Content="Play or pause" />
-        <Button x:Name="NextButton"
-                AutomationProperties.Name="Next item"
-                ToolTipService.ToolTip="Next item"
-                Content="Next" />
-        <Rectangle Width="8" Fill="Transparent" />
-        <Button x:Name="OutputMuteButton"
-                Width="40"
-                AutomationProperties.Name="Mute WebView audio"
-                AutomationProperties.HelpText="Click to mute or unmute app output. Hover, right-click, or press Down for the volume slider."
-                IsEnabled="False"
-                Content="Mute">
-          <Button.ContextFlyout>
-            <Flyout x:Name="OutputVolumeFlyout" Placement="Bottom" ShouldConstrainToRootBounds="False">
-              <Flyout.FlyoutPresenterStyle>
-                <Style TargetType="FlyoutPresenter">
-                  <Setter Property="Padding" Value="8,4" />
-                  <Setter Property="Background" Value="{ThemeResource SurfaceBrush}" />
-                  <Setter Property="BorderThickness" Value="0" />
-                  <Setter Property="CornerRadius" Value="0" />
-                </Style>
-              </Flyout.FlyoutPresenterStyle>
-              <Grid x:Name="OutputVolumeFlyoutSurface"
-                    Width="240" Height="48" ColumnSpacing="8"
-                    AutomationProperties.Name="WebView output volume control">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="180" />
-                  <ColumnDefinition Width="52" />
-                </Grid.ColumnDefinitions>
-                <local:CompactVolumeSlider x:Name="OutputVolumeSlider"
-                                           Grid.Column="0" Width="180" Height="40"
-                                           VerticalAlignment="Center"
-                                           Minimum="0" Maximum="1000" Value="1000" StepFrequency="1"
-                        IsEnabled="False"
-                        AutomationProperties.Name="WebView audio volume"
-                        AutomationProperties.HelpText="Adjust this app's audio output independently of YouTube Music volume." />
-                <TextBlock x:Name="OutputVolumeValue"
-                           Grid.Column="1" Width="52" Height="32"
-                           Text="100.0%" TextAlignment="Right" VerticalAlignment="Center"
-                           Foreground="{ThemeResource PrimaryTextBrush}" />
-              </Grid>
-            </Flyout>
-          </Button.ContextFlyout>
-        </Button>
-        <Rectangle Width="12" Fill="Transparent" />
-        <Button x:Name="MoreButton"
-                AutomationProperties.Name="More commands and settings"
-                ToolTipService.ToolTip="More commands and settings (F10 or Alt+M)"
-                Content="More" />
-        <Button x:Name="TimerButton"
-                AutomationProperties.Name="Set pause timer"
-                ToolTipService.ToolTip="Set pause timer. The app stays open."
-                Content="Timer" />
-        <Button x:Name="CompactButton"
-                AutomationProperties.Name="Compact window"
-                ToolTipService.ToolTip="Compact window"
-                Content="Compact" />
-      </StackPanel>
-        <Button x:Name="UpdateButton"
-                Width="40"
-                HorizontalAlignment="Right"
-                VerticalAlignment="Center"
-                AutomationProperties.Name="Check for Nativune updates"
-                AutomationProperties.HelpText="Nativune is up to date. Click to check for updates."
-                ToolTipService.ToolTip="Nativune is up to date. Click to check for updates."
-                Content="Update" />
+                    VerticalAlignment="Center">
+          <Button x:Name="CompactButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Compact window"
+                  ToolTipService.ToolTip="Compact window"
+                  Content="Compact" />
+          <Rectangle Style="{StaticResource ToolbarSeparatorStyle}" />
+          <Button x:Name="BackButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Back"
+                  ToolTipService.ToolTip="Back (Alt+Left)"
+                  Content="Back" />
+          <Button x:Name="ForwardButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Forward"
+                  ToolTipService.ToolTip="Forward (Alt+Right)"
+                  Content="Forward" />
+          <Button x:Name="HomeButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Open Music Home"
+                  ToolTipService.ToolTip="Open Music Home"
+                  Content="Home" />
+        </StackPanel>
+
+        <!-- App output, pause timer and the More overflow, then the update indicator at the far right. -->
+        <StackPanel Grid.Column="2"
+                    Orientation="Horizontal"
+                    Spacing="4"
+                    VerticalAlignment="Center">
+          <Button x:Name="OutputMuteButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Mute WebView audio"
+                  AutomationProperties.HelpText="Click to mute or unmute app output. Hover, right-click, or press Down for the volume slider."
+                  IsEnabled="False"
+                  Content="Mute">
+            <Button.ContextFlyout>
+              <Flyout x:Name="OutputVolumeFlyout" Placement="BottomEdgeAlignedRight" ShouldConstrainToRootBounds="False">
+                <Flyout.FlyoutPresenterStyle>
+                  <Style TargetType="FlyoutPresenter">
+                    <Setter Property="Padding" Value="8,4" />
+                    <Setter Property="Background" Value="{ThemeResource SurfaceBrush}" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="CornerRadius" Value="0" />
+                  </Style>
+                </Flyout.FlyoutPresenterStyle>
+                <Grid x:Name="OutputVolumeFlyoutSurface"
+                      Width="240" Height="48" ColumnSpacing="8"
+                      AutomationProperties.Name="WebView output volume control">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="180" />
+                    <ColumnDefinition Width="52" />
+                  </Grid.ColumnDefinitions>
+                  <local:CompactVolumeSlider x:Name="OutputVolumeSlider"
+                                             Grid.Column="0" Width="180" Height="40"
+                                             VerticalAlignment="Center"
+                                             Minimum="0" Maximum="1000" Value="1000" StepFrequency="1"
+                                             IsEnabled="False"
+                                             AutomationProperties.Name="WebView audio volume"
+                                             AutomationProperties.HelpText="Adjust this app's audio output independently of YouTube Music volume." />
+                  <TextBlock x:Name="OutputVolumeValue"
+                             Grid.Column="1" Width="52" Height="32"
+                             Text="100.0%" TextAlignment="Right" VerticalAlignment="Center"
+                             Foreground="{ThemeResource PrimaryTextBrush}" />
+                </Grid>
+              </Flyout>
+            </Button.ContextFlyout>
+          </Button>
+          <Button x:Name="TimerButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Set pause timer"
+                  ToolTipService.ToolTip="Set pause timer. The app stays open."
+                  Content="Timer" />
+          <Button x:Name="MoreButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="More commands and settings"
+                  ToolTipService.ToolTip="More commands and settings (F10 or Alt+M)"
+                  Content="More" />
+          <Rectangle Style="{StaticResource ToolbarSeparatorStyle}" />
+          <Button x:Name="UpdateButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Check for Nativune updates"
+                  AutomationProperties.HelpText="Nativune is up to date. Click to check for updates."
+                  ToolTipService.ToolTip="Nativune is up to date. Click to check for updates."
+                  Content="Update" />
+        </StackPanel>
       </Grid>
     </Border>
 

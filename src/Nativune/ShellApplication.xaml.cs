@@ -12,6 +12,8 @@ public partial class ShellApplication : Application
         ArgumentNullException.ThrowIfNull(onLaunched);
         _onLaunched = onLaunched;
         InitializeComponent();
+        // Logged only; WinUI's default handling (terminate) is unchanged.
+        UnhandledException += (_, e) => AppLog.Write("crash", e.Exception?.ToString() ?? e.Message);
     }
 
     internal static void Run(Action onLaunched)
