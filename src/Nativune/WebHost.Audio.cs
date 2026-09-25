@@ -62,6 +62,14 @@ public sealed partial class WebHostWindow
 
     private void InitializeOutputAudio()
     {
+        // Restore the saved app volume (and mute, if it was ever set). Revision 1 makes the worker apply
+        // it to the first verified WebView-owned audio session after startup.
+        lock (_outputAudioGate)
+        {
+            _desiredOutputVolume = _settings.OutputVolume;
+            _desiredOutputMute = _settings.OutputMuted;
+            _outputPreferenceRevision = 1;
+        }
         _outputAudioTimer = _dispatcherQueue.CreateTimer();
         _outputAudioTimer.Interval = TimeSpan.FromSeconds(1);
         _outputAudioTimer.IsRepeating = true;
@@ -285,6 +293,7 @@ public sealed partial class WebHostWindow
         _pendingOutputDisplayVolume = value;
         _pendingOutputDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
         QueueOutputAudioRequest(CaptureOutputAudioProcesses(), volume: value);
+        RememberOutputPreference(_settings with { OutputVolume = value });
         UpdateOutputAudioControls();
     }
 
@@ -305,7 +314,16 @@ public sealed partial class WebHostWindow
         var requested = !currentMute;
         _pendingOutputMuteDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
         QueueOutputAudioRequest(CaptureOutputAudioProcesses(), mute: requested);
+        RememberOutputPreference(_settings with { OutputMuted = requested });
         UpdateOutputAudioControls();
+    }
+
+    // Saved straight away (coalesced with other pending writes), including in fullscreen or Compact.
+    private void RememberOutputPreference(ShellSettings updated)
+    {
+        _settings = updated;
+        _pendingSettings = _settings;
+        if (_saveTask.IsCompleted) _saveTask = SaveSettingsAsync();
     }
 
     private void QueueOutputAudioRequest(HashSet<int> processIds, double? volume = null, bool? mute = null)

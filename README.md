@@ -23,7 +23,7 @@ YouTube and YouTube Music are trademarks of Google LLC.
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.14](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.14) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.15](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.15) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -40,7 +40,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles. While it is enabled, Close hides the window and playback keeps running. Quit always exits.
 - **Pause timer** from one second to four hours. When it expires, playback pauses and the window stays open.
-- **App volume and mute**, which control only Nativune's own audio, not the system volume or the website's slider.
+- **App volume and mute**, which control only Nativune's own audio, not the system volume or the website's slider. Nativune remembers them and restores them the next time it starts.
 - **Keyboard shortcuts you can customize.** They only work after you enable them for the current session from the menu.
 - **Window options:** keep on top, fullscreen, page zoom, start in Compact, and reopen on the last Home or Library section.
 - **Reduce motion** setting that stops the rotating artwork and scrolling titles in Compact.
@@ -171,7 +171,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.14 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.15 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json` and `SHA256SUMS.txt` to `artifacts/release/`.

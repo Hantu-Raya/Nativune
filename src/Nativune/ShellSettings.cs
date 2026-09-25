@@ -18,6 +18,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public int CompactWidth { get; init; } = 800;
     public int CompactHeight { get; init; } = 180;
     public int CompactDpi { get; init; } = 96;
+    // App output (WebView audio) level and mute, restored on the next start. Null mute = never set,
+    // so Nativune leaves the session's own mute state alone.
+    public double OutputVolume { get; init; } = 1;
+    public bool? OutputMuted { get; init; }
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -196,7 +200,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 ? settings.CompactWidth : Defaults.CompactWidth,
             CompactHeight = settings.CompactHeight is >= MinCompactHeight and <= MaxDimension
                 ? settings.CompactHeight : Defaults.CompactHeight,
-            CompactDpi = IsDpi(settings.CompactDpi) ? settings.CompactDpi : DefaultDpi
+            CompactDpi = IsDpi(settings.CompactDpi) ? settings.CompactDpi : DefaultDpi,
+            OutputVolume = double.IsFinite(settings.OutputVolume) && settings.OutputVolume is >= 0 and <= 1
+                ? settings.OutputVolume : 1,
+            OutputMuted = settings.OutputMuted
         };
     }
 
@@ -253,7 +260,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         double Zoom, bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home",
         bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
         int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi,
-        bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null)
+        bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
+        double OutputVolume = 1, bool? OutputMuted = null)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -269,7 +277,9 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             CompactY = CompactY,
             CompactWidth = CompactWidth,
             CompactHeight = CompactHeight,
-            CompactDpi = CompactDpi
+            CompactDpi = CompactDpi,
+            OutputVolume = OutputVolume,
+            OutputMuted = OutputMuted
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -277,6 +287,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection,
                 settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
-                settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates);
+                settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
+                settings.OutputVolume, settings.OutputMuted);
     }
 }
