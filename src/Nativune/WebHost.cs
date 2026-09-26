@@ -16,7 +16,6 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
-using System.Text.Json;
 using Windows.Graphics;
 using VirtualKey = Windows.System.VirtualKey;
 using Windows.UI.Core;
@@ -193,12 +192,6 @@ public sealed partial class WebHostWindow : Window
     private bool _settingsDialogOpen;
     private bool _shortcutsEnabled;
     private SessionShortcuts? _sessionShortcuts;
-    private ReleaseUpdateResult? _availableReleaseUpdate;
-    private DateTimeOffset? _lastReleaseUpdateCheckUtc;
-    private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.NotChecked;
-    private bool _releaseUpdateCheckRunning;
-    private bool _releaseUpdatePromptOpen;
-    private bool _skipUpdatePrompt;
     private readonly HashSet<Window> _ownedDialogs = new();
     private bool _timerDialogOpen;
     private ulong? _activeNavigation;
@@ -208,35 +201,11 @@ public sealed partial class WebHostWindow : Window
     private string _statusDetailsText = string.Empty;
     private bool _statusIsError;
     private int _activationPending;
-    private CancellationTokenSource? _updateDownloadCancellation;
     private readonly UiDispatcherQueueTimer _gcOnHideTimer;
     private readonly UiDispatcherQueueTimer _trimOnHideTimer;
     private bool? _windowWasVisible;
-    private UiDispatcherQueueTimer? _setupCleanupTimer;
-    private long _updateProgressLastBytes;
-    private long _updateProgressLastTicks;
-    private long _updateStartedTicks;
-    private double _updateSpeedEma;
-    private int _updateLastAnnouncedPercent;
-    private long _updateLastTextTicks;
-    private string? _sessionTrayTooltip;
-    private string? _updateButtonIconName;
-    private string? _infoBarActionLabel;
-    private Action? _infoBarActionHandler;
-    private Button? _infoBarActionButton;
-    private bool CompactUpdateSurfaceVisible => _compact && _appWindow?.IsVisible == true
-        && !_closing && !_disposed;
-    private string? _pendingWhatsNewVersion;
-    private string? _pendingWhatsNewFromVersion;
-    private UiDispatcherQueueTimer? _updateInfoCloseTimer;
-    private UiDispatcherQueueTimer? _compactUpdateNoticeTimer;
-    private bool _compactUpdateNoticeHandlerRegistered;
-    private UiDispatcherQueueTimer? _taskbarErrorTimer;
-    private bool _taskbarErrorHandlerRegistered;
-    private DrawingBounds _fullBounds;
-    private bool _updateCloseHandlerRegistered;
-    private ReleaseUpdatePhase? _updateCurrentPhase;
-    private DrawingBounds _windowBounds;
+    private Rectangle _fullBounds;
+    private Rectangle _windowBounds;
     private int _fullDpi = DefaultDpi;
     private bool _appearanceRefreshPending;
     private static readonly int TaskbarCreated = RegisterWindowMessage("TaskbarCreated");
@@ -272,22 +241,6 @@ public sealed partial class WebHostWindow : Window
     internal bool IsTimerDialogOpenForChecks => _timerDialogOpen;
     internal Window? TimerDialogForChecks
         => _ownedDialogs.FirstOrDefault(dialog => dialog.Title == "Pause playback in...");
-    private readonly struct DrawingBounds
-    {
-        internal DrawingBounds(int x, int y, int width, int height)
-        {
-            X = x;
-            Y = y;
-            Width = width;
-            Height = height;
-        }
-
-        internal int X { get; }
-        internal int Y { get; }
-        internal int Width { get; }
-        internal int Height { get; }
-        internal bool IsValid => Width > 0 && Height > 0;
-    }
 
     public WebHostWindow(string root, string initialUri, bool initializeBrowser = true)
     {
@@ -365,770 +318,6 @@ public sealed partial class WebHostWindow : Window
             ShowUpdateOutcomeOnStartup();
             StartDownloadedSetupCleanup();
         }
-    }
-
-    // A downloaded Setup is never reused by a later session (a retry downloads again), so any
-    // leftover is removed at startup. After an update, Setup starts Nativune before it exits and
-    // its file is still in use, so deletion is retried until it succeeds or a new download starts.
-    private void StartDownloadedSetupCleanup()
-    {
-        if (ReleaseUpdater.CleanupDownloadedSetup(_root)) return;
-        var attempts = 0;
-        _setupCleanupTimer = _dispatcherQueue.CreateTimer();
-        _setupCleanupTimer.Interval = TimeSpan.FromSeconds(5);
-        _setupCleanupTimer.IsRepeating = true;
-        _setupCleanupTimer.Tick += (timer, _) =>
-        {
-            attempts++;
-            var downloading = _updateDownloadCancellation is not null
-                || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
-                    or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching;
-            if (_closing || _disposed || downloading
-                || ReleaseUpdater.CleanupDownloadedSetup(_root) || attempts >= 36)
-                timer.Stop();
-        };
-        _setupCleanupTimer.Start();
-    }
-
-    private void SetDesiredTrayTooltip(
-        ReleaseUpdateButtonState state, string? version, ReleaseUpdateProgress? progress)
-    {
-        if (state == ReleaseUpdateButtonState.UpToDate)
-            _sessionTrayTooltip = null;
-        var tooltip = state switch
-        {
-            ReleaseUpdateButtonState.Available => $"Nativune — update {version} available",
-            ReleaseUpdateButtonState.Downloading => progress is { Total: > 0 } value
-                ? $"Nativune — downloading update {(int)(100d * value.Bytes / value.Total)} %"
-                : "Nativune — downloading update",
-            ReleaseUpdateButtonState.Verifying => "Nativune — checking update",
-            ReleaseUpdateButtonState.UpToDate => "Nativune",
-            _ => _sessionTrayTooltip ?? "Nativune"
-        };
-        _tray?.SetTooltip(tooltip);
-    }
-
-    internal static ReleaseUpdateButtonPresentation GetReleaseUpdateButtonPresentation(
-        ReleaseUpdateButtonState state, string? version)
-        => state switch
-        {
-            ReleaseUpdateButtonState.NotChecked => new("update", "Click to check for Nativune updates.", true),
-            ReleaseUpdateButtonState.NotInstalled => new("update", "Update checks are available only in installed Nativune builds.", true),
-            ReleaseUpdateButtonState.Available => new("update-available",
-                $"Nativune {version ?? "the latest version"} is available. Click to update.", true),
-            ReleaseUpdateButtonState.UpToDate => new("update", "Nativune is up to date. Click to check for updates.", true),
-            ReleaseUpdateButtonState.Failed => new("update", "Couldn't check for updates. Click to try again.", true),
-            ReleaseUpdateButtonState.Checking => new("update", "Checking for updates…", false),
-            ReleaseUpdateButtonState.Downloading => new("update-available", $"Downloading Nativune {version}…", true),
-            ReleaseUpdateButtonState.Verifying => new("update", "Checking the downloaded Setup…", false),
-            ReleaseUpdateButtonState.Launching => new("update", "Starting the verified Setup…", false),
-            _ => new("update", "Couldn't check for updates. Click to try again.", true)
-        };
-
-    private void ApplyUpdateFeedback(
-        ReleaseUpdateButtonState state,
-        ReleaseUpdateResult? update = null,
-        ReleaseUpdateProgress? progress = null,
-        ReleaseUpdateFailure? failure = null,
-        bool manual = false,
-        string? message = null,
-        bool announce = false)
-    {
-        _releaseUpdateButtonState = state;
-        var version = update?.Version ?? _availableReleaseUpdate?.Version;
-        var presentation = GetReleaseUpdateButtonPresentation(state, version);
-        var downloading = state == ReleaseUpdateButtonState.Downloading;
-        var updateAvailable = state is ReleaseUpdateButtonState.Available
-            or ReleaseUpdateButtonState.Downloading or ReleaseUpdateButtonState.Verifying;
-        var iconName = downloading ? "close" : presentation.IconName;
-        if (!string.Equals(_updateButtonIconName, iconName, StringComparison.Ordinal))
-        {
-            UpdateButton.Content = _iconCache.CreateElement(iconName, 20);
-            _updateButtonIconName = iconName;
-        }
-        SetDesiredTrayTooltip(state, version, progress);
-        UpdateButton.Foreground = state == ReleaseUpdateButtonState.Available
-            ? ShellTheme.Brush("AccentBrush", ShellTheme.ForegroundColor)
-            : ShellTheme.Brush("PrimaryTextBrush", ShellTheme.ForegroundColor);
-        var buttonName = downloading
-            ? "Cancel the Nativune update download"
-            : state switch
-            {
-                ReleaseUpdateButtonState.Available => $"Update Nativune to {version ?? "the latest version"}",
-                ReleaseUpdateButtonState.Checking => "Checking for Nativune updates",
-                ReleaseUpdateButtonState.Verifying => "Checking the downloaded Setup",
-                ReleaseUpdateButtonState.Launching => "Starting the verified Setup",
-                ReleaseUpdateButtonState.Failed => "Retry checking for Nativune updates",
-                _ => "Check for Nativune updates"
-            };
-        AutomationProperties.SetName(UpdateButton, buttonName);
-        AutomationProperties.SetHelpText(UpdateButton, presentation.Tooltip);
-        ToolTipService.SetToolTip(UpdateButton, presentation.Tooltip);
-        UpdateButton.IsEnabled = (downloading || presentation.IsEnabled) && !_closing && !_disposed;
-        var compactHelp = downloading ? "Cancel downloading the Nativune update." : presentation.Tooltip;
-        CompactView.SetUpdate(downloading ? "close" : presentation.IconName,
-            buttonName, compactHelp, UpdateButton.IsEnabled, updateAvailable);
-        _nativeWindowServices?.SetCompactUpdateVisible(updateAvailable);
-
-        if (!manual && state is not (ReleaseUpdateButtonState.Downloading
-            or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching))
-        {
-            if (state == ReleaseUpdateButtonState.Failed)
-                AppLog.Write("update", $"{failure ?? update?.Failure ?? ReleaseUpdateFailure.InvalidMetadata} (HTTP {update?.HttpStatus?.ToString() ?? "unknown"})");
-            return;
-        }
-        if (state == ReleaseUpdateButtonState.Checking)
-        {
-            CloseUpdateInfo();
-            StopCompactUpdateNoticeTimer();
-            CompactView.SetUpdateProgress("Checking for Nativune updates…", false);
-            return;
-        }
-        if (state is ReleaseUpdateButtonState.Downloading or ReleaseUpdateButtonState.Verifying)
-        {
-            StopCompactUpdateNoticeTimer();
-            _taskbarErrorTimer?.Stop();
-            UpdateInfoBar.Visibility = _compact || _fullscreen ? Visibility.Collapsed : Visibility.Visible;
-            UpdateInfoBar.Severity = InfoBarSeverity.Informational;
-            UpdateInfoBar.IconSource = new FontIconSource { Glyph = "\uE946" };
-            UpdateInfoBar.IsClosable = false;
-            UpdateInfoBar.IsOpen = true;
-            UpdateInfoBar.Title = state == ReleaseUpdateButtonState.Verifying
-                ? "Checking the download" : $"Downloading Nativune {version}";
-            UpdateInfoBar.Message = state == ReleaseUpdateButtonState.Verifying
-                ? $"Comparing with the checksum published for {version}…"
-                : progress?.Phase == ReleaseUpdatePhase.Connecting
-                    ? "Connecting to GitHub…"
-                    : progress is { Total: > 0 } p
-                        ? $"{ReleaseUpdater.FormatBytes(p.Bytes)} of {ReleaseUpdater.FormatBytes(p.Total)} · {(int)(100d * p.Bytes / p.Total)} %"
-                        : "Connecting to GitHub…";
-            UpdateProgressBar.Visibility = Visibility.Visible;
-            UpdateProgressBar.IsIndeterminate = state == ReleaseUpdateButtonState.Verifying
-                || progress?.Phase == ReleaseUpdatePhase.Connecting || progress is not { Total: > 0 };
-            if (progress is { Total: > 0 } measured)
-                UpdateProgressBar.Value = Math.Clamp(100d * measured.Bytes / measured.Total, 0, 100);
-            SetInfoBarAction(state == ReleaseUpdateButtonState.Downloading ? "Cancel" : null,
-                state == ReleaseUpdateButtonState.Downloading ? CancelUpdateDownload : null);
-            CompactView.SetUpdateProgress(state == ReleaseUpdateButtonState.Verifying
-                ? "Checking the downloaded Setup…" : message ?? "Downloading update · connecting…",
-                announce && CompactUpdateSurfaceVisible);
-            if (announce && !CompactUpdateSurfaceVisible)
-                UpdateLiveAnnouncement.Text = message ?? (state == ReleaseUpdateButtonState.Verifying
-                    ? "Checking the downloaded Setup." : "Downloading the Nativune update.");
-            _taskbarControls?.SetProgressState(state == ReleaseUpdateButtonState.Verifying
-                || progress?.Phase == ReleaseUpdatePhase.Connecting || progress is not { Total: > 0 }
-                    ? TaskbarControls.TaskbarProgressState.Indeterminate
-                    : TaskbarControls.TaskbarProgressState.Normal);
-            if (state == ReleaseUpdateButtonState.Downloading && progress is { Total: > 0 } value)
-                _taskbarControls?.SetProgress((ulong)Math.Max(0, value.Bytes), (ulong)value.Total);
-            return;
-        }
-
-        _taskbarControls?.SetProgressState(TaskbarControls.TaskbarProgressState.NoProgress);
-        CompactView.SetUpdateProgress(null, false);
-        if (state == ReleaseUpdateButtonState.Available && manual && update is not null)
-        {
-            ShowUpdateInfo(InfoBarSeverity.Informational, $"Nativune {version} is available.",
-                $"Download is {ReleaseUpdater.FormatBytes(update.Size)}.", "See what's new and update",
-                () => _ = ShowReleaseUpdatePromptAsync(update), true);
-            CompactView.SetUpdateProgress($"Nativune {version} is available · Update button",
-                CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(8));
-        }
-        else if (state == ReleaseUpdateButtonState.UpToDate && manual)
-        {
-            var text = $"Nativune v{AppVersion.Number} is up to date.";
-            ShowUpdateInfo(InfoBarSeverity.Informational, text, "Checked just now.", null, null, true);
-            CloseUpdateInfoAfter(TimeSpan.FromSeconds(6));
-            CompactView.SetUpdateProgress(text, CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(5));
-        }
-        else if (state == ReleaseUpdateButtonState.NotInstalled && manual)
-        {
-            const string text = "Update checks are available only in installed Nativune builds.";
-            ShowUpdateInfo(InfoBarSeverity.Informational, text, null, null, null, true);
-            CompactView.SetUpdateProgress(text, CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(5));
-        }
-        else if (state == ReleaseUpdateButtonState.Failed && manual)
-        {
-            var described = ReleaseUpdater.DescribeFailure(failure ?? update?.Failure
-                ?? ReleaseUpdateFailure.InvalidMetadata, false, version, update?.HttpStatus,
-                update?.RateLimitResetUtc);
-            ShowUpdateInfo(InfoBarSeverity.Warning, described.Title, described.Message, null, null, true);
-            CompactView.SetUpdateProgress($"{described.Title}: {described.Message}", CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(30));
-            AppLog.Write("update", $"{described.Title} (HTTP {update?.HttpStatus?.ToString() ?? "unknown"})");
-        }
-        else if (message is not null)
-            CompactView.SetUpdateProgress(message, announce && CompactUpdateSurfaceVisible);
-    }
-
-    private void ShowUpdateInfo(InfoBarSeverity severity, string title, string? message,
-        string? action, Action? actionHandler, bool closable)
-    {
-        _updateInfoCloseTimer?.Stop();
-        UpdateInfoBar.Severity = severity;
-        UpdateInfoBar.IconSource = severity == InfoBarSeverity.Informational
-            ? new FontIconSource { Glyph = "\uE946" }
-            : null;
-        UpdateInfoBar.Title = title;
-        UpdateInfoBar.Message = message;
-        UpdateInfoBar.IsClosable = closable;
-        UpdateInfoBar.IsOpen = true;
-        UpdateProgressBar.Visibility = Visibility.Collapsed;
-        SetInfoBarAction(action, actionHandler);
-        UpdateInfoBar.Visibility = _compact || _fullscreen ? Visibility.Collapsed : Visibility.Visible;
-        if (!CompactUpdateSurfaceVisible)
-            UpdateLiveAnnouncement.Text = message is null ? title : $"{title}. {message}";
-    }
-
-    private void SetInfoBarAction(string? label, Action? handler)
-    {
-        if (string.Equals(_infoBarActionLabel, label, StringComparison.Ordinal)
-            && _infoBarActionHandler == handler
-            && (label is null && handler is null
-                ? _infoBarActionButton is null
-                : _infoBarActionButton is not null
-                    && ReferenceEquals(UpdateInfoBar.ActionButton, _infoBarActionButton)))
-            return;
-        _infoBarActionLabel = label;
-        _infoBarActionHandler = handler;
-        if (label is null || handler is null)
-        {
-            _infoBarActionButton = null;
-            UpdateInfoBar.ActionButton = null;
-            return;
-        }
-        var button = new Button { Content = label };
-        AutomationProperties.SetName(button, label);
-        button.Click += (_, _) => _infoBarActionHandler?.Invoke();
-        _infoBarActionButton = button;
-        UpdateInfoBar.ActionButton = button;
-    }
-
-    private void CloseUpdateInfo()
-    {
-        _updateInfoCloseTimer?.Stop();
-        UpdateInfoBar.IsOpen = false;
-    }
-
-    private void CloseUpdateInfoAfter(TimeSpan delay)
-    {
-        _updateInfoCloseTimer ??= _dispatcherQueue.CreateTimer();
-        _updateInfoCloseTimer.Stop();
-        _updateInfoCloseTimer.Interval = delay;
-        _updateInfoCloseTimer.IsRepeating = false;
-        if (!_updateCloseHandlerRegistered)
-        {
-            _updateInfoCloseTimer.Tick += (_, _) => CloseUpdateInfo();
-            _updateCloseHandlerRegistered = true;
-        }
-        _updateInfoCloseTimer.Start();
-    }
-    private void ClearCompactUpdateNoticeAfter(TimeSpan delay)
-    {
-        _compactUpdateNoticeTimer ??= _dispatcherQueue.CreateTimer();
-        _compactUpdateNoticeTimer.Stop();
-        _compactUpdateNoticeTimer.Interval = delay;
-        _compactUpdateNoticeTimer.IsRepeating = false;
-        if (!_compactUpdateNoticeHandlerRegistered)
-        {
-            _compactUpdateNoticeTimer.Tick += (_, _) => CompactView.SetUpdateProgress(null, false);
-            _compactUpdateNoticeHandlerRegistered = true;
-        }
-        _compactUpdateNoticeTimer.Start();
-    }
-
-    private void StopCompactUpdateNoticeTimer() => _compactUpdateNoticeTimer?.Stop();
-
-    private void CancelUpdateDownload()
-    {
-        if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Downloading)
-            _updateDownloadCancellation?.Cancel();
-    }
-
-    private void ConfigureAutomaticReleaseUpdateChecks()
-    {
-        if (_settings.AutoCheckUpdates && !_closing && !_disposed)
-        {
-            if (!_releaseUpdateTimer.IsRunning)
-                _releaseUpdateTimer.Start();
-            if (_lastReleaseUpdateCheckUtc is not { } lastCheck
-                || DateTimeOffset.UtcNow - lastCheck >= ReleaseUpdateCheckInterval)
-                _ = CheckForReleaseUpdateAsync(manual: false);
-            return;
-        }
-
-        _releaseUpdateTimer.Stop();
-    }
-
-    private async Task CheckForReleaseUpdateAsync(bool manual)
-    {
-        if (_releaseUpdateCheckRunning || _closing || _disposed || _lifetime.IsCancellationRequested
-            || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
-                or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching
-            || (!manual && !_settings.AutoCheckUpdates))
-            return;
-
-        _releaseUpdateCheckRunning = true;
-        var previousCheckUtc = _lastReleaseUpdateCheckUtc;
-        _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
-        var previousState = _releaseUpdateButtonState;
-        ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: manual);
-        try
-        {
-            var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
-            if (update.Status == ReleaseUpdateStatus.Cancelled)
-            {
-                _lastReleaseUpdateCheckUtc = previousCheckUtc;
-                if (!_closing && !_disposed)
-                {
-                    ApplyUpdateFeedback(previousState);
-                    CompactView.SetUpdateProgress(null, false);
-                }
-                return;
-            }
-            if (_closing || _disposed || _lifetime.IsCancellationRequested)
-                return;
-
-            _availableReleaseUpdate = update.IsAvailable ? update : null;
-            var state = update.Status switch
-            {
-                ReleaseUpdateStatus.Available when update.IsAvailable => ReleaseUpdateButtonState.Available,
-                ReleaseUpdateStatus.NotInstalled => ReleaseUpdateButtonState.NotInstalled,
-                ReleaseUpdateStatus.None => ReleaseUpdateButtonState.UpToDate,
-                _ => ReleaseUpdateButtonState.Failed
-            };
-            ApplyUpdateFeedback(state, update, failure: update.Failure, manual: manual);
-
-        }
-        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
-        {
-        }
-        catch (Exception)
-        {
-            if (!_closing && !_disposed)
-            {
-                _availableReleaseUpdate = null;
-                ApplyUpdateFeedback(ReleaseUpdateButtonState.Failed,
-                    failure: ReleaseUpdateFailure.InvalidMetadata, manual: manual);
-            }
-        }
-        finally
-        {
-            _releaseUpdateCheckRunning = false;
-        }
-    }
-
-    private void OnUpdateButtonClick()
-    {
-        if (_closing || _disposed)
-            return;
-        if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Downloading)
-        {
-            CancelUpdateDownload();
-            return;
-        }
-        if (_releaseUpdateCheckRunning) return;
-        if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Available
-            && _availableReleaseUpdate is { IsAvailable: true } update)
-        {
-            _ = ShowReleaseUpdatePromptAsync(update);
-            return;
-        }
-
-        _ = CheckForReleaseUpdateAsync(manual: true);
-    }
-
-    private void SetReleaseUpdateButtonState(ReleaseUpdateButtonState state, string? version = null)
-        => ApplyUpdateFeedback(state, version is null ? null : _availableReleaseUpdate);
-
-    private async Task ShowReleaseUpdatePromptAsync(ReleaseUpdateResult update)
-    {
-        if (_releaseUpdatePromptOpen || _closing || _disposed || !update.IsAvailable)
-            return;
-
-        _releaseUpdatePromptOpen = true;
-        Window? dialog = null;
-        var choice = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        try
-        {
-            if (!_skipUpdatePrompt)
-            {
-            var version = update.Version ?? "the latest version";
-            var message = new TextBlock
-            {
-                Text = $"Nativune {version} is available ({ReleaseUpdater.FormatBytes(update.Size)}). Update now downloads and checks Setup, then closes Nativune and reopens it after the upgrade. Setup confirms the upgrade first; if you cancel, {update.InstalledVersion ?? "the current version"} stays installed and reopens.",
-                TextWrapping = TextWrapping.Wrap,
-            };
-            AutomationProperties.SetName(message, "Nativune update information");
-
-            var updateNow = new Button { Content = "Update now" };
-            AutomationProperties.SetName(updateNow, "Update Nativune now");
-            var later = new Button { Content = "Later" };
-            AutomationProperties.SetName(later, "Install Nativune update later");
-            var buttons = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Spacing = 8,
-            };
-            buttons.Children.Add(updateNow);
-            buttons.Children.Add(later);
-            var playingNote = new TextBlock
-            {
-                Text = "Nativune keeps playing while the update downloads.",
-                TextWrapping = TextWrapping.Wrap,
-                Foreground = ShellTheme.Brush("SecondaryTextBrush", ShellTheme.ForegroundColor)
-            };
-
-            var changesHeading = new TextBlock
-            {
-                Text = update.InstalledVersion is { } installedVersion
-                    ? $"Changes from {installedVersion} to {version}"
-                    : $"Changes in {version}",
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            };
-            var changes = new TextBlock
-            {
-                Text = "Loading the changes in this update...",
-                TextWrapping = TextWrapping.Wrap,
-                IsTextSelectionEnabled = true,
-            };
-            var changesScroller = new ScrollViewer
-            {
-                Content = changes,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                IsTabStop = true,
-                Padding = new Thickness(0, 0, 12, 0),
-            };
-            AutomationProperties.SetName(changesScroller, changesHeading.Text);
-
-            var panel = new Grid { Padding = new Thickness(16), RowSpacing = 12 };
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            Grid.SetRow(changesHeading, 1);
-            Grid.SetRow(changesScroller, 2);
-            Grid.SetRow(playingNote, 4);
-            Grid.SetRow(buttons, 3);
-            panel.Children.Add(message);
-            panel.Children.Add(changesHeading);
-            panel.Children.Add(changesScroller);
-            panel.Children.Add(buttons);
-            panel.Children.Add(playingNote);
-            var updateDialog = CreateDialogWindow($"Nativune update available ({version})", panel, 560, 520);
-            dialog = updateDialog;
-            _ = LoadChangesAsync();
-
-            async Task LoadChangesAsync()
-            {
-                var summary = await ReleaseUpdater.GetChangeSummaryAsync(update, _lifetime.Token);
-                if (choice.Task.IsCompleted || _closing || _disposed)
-                    return;
-                // Version tags and section headings (lines that follow a blank line or a version tag) stand out;
-                // bullets and paragraphs stay regular. The text is remote, so it is only ever shown as runs.
-                changes.Inlines.Clear();
-                var previous = "";
-                foreach (var line in summary.Split('\n'))
-                {
-                    if (changes.Inlines.Count > 0) changes.Inlines.Add(new Microsoft.UI.Xaml.Documents.LineBreak());
-                    var isVersion = line.Length > 1 && line[0] == 'v' && char.IsAsciiDigit(line[1]);
-                    var isHeading = !isVersion && line.Length > 0 && !line.StartsWith("• ", StringComparison.Ordinal)
-                        && (previous.Length == 0 || previous[0] == 'v' && previous.Length > 1 && char.IsAsciiDigit(previous[1]));
-                    changes.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
-                    {
-                        Text = line,
-                        FontWeight = isVersion ? Microsoft.UI.Text.FontWeights.Bold
-                            : isHeading ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
-                        FontSize = isVersion ? 16 : changes.FontSize,
-                    });
-                    previous = line;
-                }
-            }
-
-            updateNow.Click += (_, _) =>
-            {
-                choice.TrySetResult(true);
-                updateDialog.Close();
-            };
-            later.Click += (_, _) =>
-            {
-                choice.TrySetResult(false);
-                updateDialog.Close();
-            };
-            updateDialog.Closed += (_, _) => choice.TrySetResult(false);
-            updateDialog.Activate();
-            updateNow.Focus(FocusState.Programmatic);
-
-            if (!await choice.Task || _closing || _disposed || _lifetime.IsCancellationRequested)
-                return;
-            }
-            else
-                _skipUpdatePrompt = false;
-
-            _updateDownloadCancellation?.Dispose();
-            _updateDownloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-            _updateProgressLastBytes = 0;
-            _updateProgressLastTicks = Environment.TickCount64;
-            _updateStartedTicks = _updateProgressLastTicks;
-            _updateCurrentPhase = ReleaseUpdatePhase.Connecting;
-            _updateSpeedEma = 0;
-            _updateLastAnnouncedPercent = 0;
-            _updateLastTextTicks = 0;
-            ApplyUpdateFeedback(ReleaseUpdateButtonState.Downloading, update,
-                new ReleaseUpdateProgress(ReleaseUpdatePhase.Connecting, 0, update.Size),
-                message: "Downloading update · connecting…", announce: true);
-            var cancellation = _updateDownloadCancellation!;
-            var progress = new Progress<ReleaseUpdateProgress>(value =>
-            {
-                if (_closing || _disposed || cancellation.IsCancellationRequested) return;
-                if (value.Phase == ReleaseUpdatePhase.Verifying)
-                {
-                    var phaseChanged = _updateCurrentPhase != value.Phase;
-                    _updateCurrentPhase = value.Phase;
-                    ApplyUpdateFeedback(ReleaseUpdateButtonState.Verifying, update, value,
-                        message: "Checking the downloaded Setup…", announce: phaseChanged);
-                    return;
-                }
-                var now = Environment.TickCount64;
-                var elapsedMs = Math.Max(1, now - _updateProgressLastTicks);
-                if (value.Bytes > _updateProgressLastBytes)
-                {
-                    var instant = (value.Bytes - _updateProgressLastBytes) * 1000d / elapsedMs;
-                    _updateSpeedEma = _updateSpeedEma == 0 ? instant : _updateSpeedEma * 0.75 + instant * 0.25;
-                    _updateProgressLastBytes = value.Bytes;
-                    _updateProgressLastTicks = now;
-                }
-                var percent = value.Total > 0 ? (int)(100d * value.Bytes / value.Total) : 0;
-                var phaseChangedNow = _updateCurrentPhase != value.Phase;
-                _updateCurrentPhase = value.Phase;
-                var boundary = percent >= 25 && percent / 25 > _updateLastAnnouncedPercent / 25;
-                var announce = phaseChangedNow || boundary;
-                if (boundary) _updateLastAnnouncedPercent = percent / 25 * 25;
-                var compactProgress = _updateSpeedEma > 0
-                    ? $"Downloading update · {percent} % · {ReleaseUpdater.FormatSpeed(_updateSpeedEma)}"
-                    : $"Downloading update · {percent} %";
-                if (announce)
-                {
-                    if (!CompactUpdateSurfaceVisible)
-                        UpdateLiveAnnouncement.Text = compactProgress;
-                    CompactView.SetUpdateProgress(compactProgress, CompactUpdateSurfaceVisible);
-                }
-                if (now - _updateLastTextTicks < 250) return;
-                _updateLastTextTicks = now;
-                var parts = new List<string>
-                {
-                    $"{ReleaseUpdater.FormatBytes(value.Bytes)} of {ReleaseUpdater.FormatBytes(value.Total)}",
-                    $"{percent} %"
-                };
-                if (_updateSpeedEma > 0)
-                    parts.Add(ReleaseUpdater.FormatSpeed(_updateSpeedEma));
-                if (now - _updateStartedTicks >= 2000 && _updateSpeedEma > 0)
-                    parts.Add(ReleaseUpdater.FormatEta(TimeSpan.FromSeconds(
-                        Math.Max(0, value.Total - value.Bytes) / _updateSpeedEma)) ?? string.Empty);
-                ApplyUpdateFeedback(ReleaseUpdateButtonState.Downloading, update, value,
-                    message: compactProgress, announce: false);
-                UpdateInfoBar.Message = string.Join(" · ", parts.Where(part => part.Length > 0));
-            });
-            var downloaded = await ReleaseUpdater.DownloadAsync(
-                _root, update, progress, cancellation.Token);
-            if (_closing || _disposed || _lifetime.IsCancellationRequested) return;
-            if (downloaded.Status == ReleaseUpdateStatus.Cancelled
-                || cancellation.IsCancellationRequested && downloaded.IsAvailable)
-            {
-                ApplyUpdateFeedback(ReleaseUpdateButtonState.Available, update,
-                    message: "Update download cancelled.");
-                _taskbarControls?.SetProgressState(TaskbarControls.TaskbarProgressState.NoProgress);
-                ShowUpdateInfo(InfoBarSeverity.Informational, "Update download cancelled.",
-                    "Nothing was changed. Click Update when you want to try again.", null, null, true);
-                CloseUpdateInfoAfter(TimeSpan.FromSeconds(6));
-                CompactView.SetUpdateProgress("Update download cancelled.", CompactUpdateSurfaceVisible);
-                ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(5));
-                return;
-            }
-            if (!downloaded.IsAvailable || downloaded.SetupPath is null)
-            {
-                ShowUpdateDownloadFailure(downloaded, update);
-                return;
-            }
-
-            ApplyUpdateFeedback(ReleaseUpdateButtonState.Launching, update,
-                message: "Setup is starting. Nativune will close now and reopen after the upgrade.");
-            ShowUpdateInfo(InfoBarSeverity.Success, "Update verified",
-                $"Setup is starting. Nativune will close now and reopen as {update.Version} when the upgrade finishes.",
-                null, null, false);
-            CompactView.SetUpdateProgress(
-                $"Update verified. Setup is starting and Nativune will reopen as {update.Version}.",
-                CompactUpdateSurfaceVisible);
-            var launched = await ReleaseUpdater.LaunchVerifiedSetupAsync(
-                downloaded, _root, Environment.ProcessId, _lifetime.Token);
-            if (!launched.Started)
-            {
-                ShowUpdateDownloadFailure(ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.LaunchFailed),
-                    update, launched.Win32Error);
-                return;
-            }
-
-            await ShutdownAsync();
-        }
-        catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
-        {
-        }
-        catch (Exception)
-        {
-            if (!_closing && !_disposed)
-                ShowUpdateDownloadFailure(ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.LaunchFailed), update);
-            try { dialog?.Close(); }
-            catch (Exception) { }
-        }
-        finally
-        {
-            _updateDownloadCancellation?.Dispose();
-            _updateDownloadCancellation = null;
-            _skipUpdatePrompt = false;
-            _releaseUpdatePromptOpen = false;
-        }
-    }
-
-    private async Task RetryUpdateDownloadAsync(ReleaseUpdateResult update)
-    {
-        if (_releaseUpdatePromptOpen || _closing || _disposed) return;
-        _skipUpdatePrompt = true;
-        await ShowReleaseUpdatePromptAsync(update);
-    }
-
-    private void ShowUpdateDownloadFailure(
-        ReleaseUpdateResult result, ReleaseUpdateResult update, int? launchWin32Error = null)
-    {
-        var failure = result.Failure == ReleaseUpdateFailure.None
-            ? ReleaseUpdateFailure.InvalidMetadata : result.Failure;
-        var description = ReleaseUpdater.DescribeFailure(failure, true, update.Version,
-            result.HttpStatus, result.RateLimitResetUtc,
-            downloadBytes: update.Size, updatesPath: Path.Combine(_root, "updates"));
-        var setupPath = Path.Combine(_root, "updates", "Nativune-Setup.exe");
-        var message = failure == ReleaseUpdateFailure.LaunchFailed
-            ? launchWin32Error is { } win32Error
-                ? $"Windows refused to start Nativune Setup (error {win32Error}). The verified Setup is saved at {setupPath}."
-                : $"Nativune Setup could not be started. The verified Setup is saved at {setupPath}."
-            : description.Message;
-        ApplyUpdateFeedback(ReleaseUpdateButtonState.Available, update);
-        ShowUpdateInfo(InfoBarSeverity.Error, description.Title, message,
-            "Try again", () => _ = RetryUpdateDownloadAsync(update), true);
-        CompactView.SetUpdateProgress($"{description.Title}: {message}", CompactUpdateSurfaceVisible);
-        ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(30));
-        _taskbarControls?.SetProgressState(TaskbarControls.TaskbarProgressState.Error);
-        _taskbarErrorTimer ??= _dispatcherQueue.CreateTimer();
-        _taskbarErrorTimer.Stop();
-        _taskbarErrorTimer.Interval = TimeSpan.FromSeconds(5);
-        _taskbarErrorTimer.IsRepeating = false;
-        if (!_taskbarErrorHandlerRegistered)
-        {
-            _taskbarErrorTimer.Tick += (_, _) =>
-                _taskbarControls?.SetProgressState(TaskbarControls.TaskbarProgressState.NoProgress);
-            _taskbarErrorHandlerRegistered = true;
-        }
-        _taskbarErrorTimer.Start();
-        AppLog.Write("update", $"{failure} (HTTP {result.HttpStatus?.ToString() ?? "unknown"})");
-        if (_tray?.IsVisible == true && _appWindow?.IsVisible == false)
-            _tray.ShowBalloon("Nativune update failed", description.Title);
-    }
-
-
-    private void ShowUpdateOutcomeOnStartup()
-    {
-        var outcome = ReleaseUpdater.TryReadUpdateOutcome(_root);
-        if (outcome is null) return;
-        var version = $"v{outcome.ToVersion}";
-        if (outcome.Status == "success")
-        {
-            var from = outcome.FromVersion is { Length: > 0 } old ? $"v{old}" : null;
-            ShowUpdateInfo(InfoBarSeverity.Success,
-                $"Nativune was updated to {version}",
-                from is null ? null : $"Updated from {from}.", "What's new",
-                () => _ = ShowWhatsNewAsync(version, from), true);
-            CompactView.SetUpdateProgress(
-                $"Updated to Nativune {version} · What's new in More", CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(30));
-            _pendingWhatsNewVersion = version;
-            _pendingWhatsNewFromVersion = from;
-            CompactView.SetWhatsNew($"What's new in {version}");
-            _sessionTrayTooltip = $"Nativune {version}";
-            SetDesiredTrayTooltip(_releaseUpdateButtonState, _availableReleaseUpdate?.Version, null);
-            AppLog.Write("update",
-                $"updated {outcome.FromVersion ?? "unknown"} → {outcome.ToVersion} (setup exit {outcome.ExitCode})");
-        }
-        else if (outcome.Status is "failed" or "cancelled")
-        {
-            var message = string.IsNullOrWhiteSpace(outcome.Message)
-                ? "Setup did not complete the update."
-                : outcome.Message;
-            if (outcome.FromVersion is { Length: > 0 } installed)
-                message += $" Nativune v{installed} is unchanged.";
-            ShowUpdateInfo(InfoBarSeverity.Warning,
-                $"The update to {version} didn't finish", message,
-                "Try again", () => _ = CheckForReleaseUpdateAsync(manual: true), true);
-            CompactView.SetUpdateProgress(
-                $"The update to {version} didn't finish: {message}", CompactUpdateSurfaceVisible);
-            ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(30));
-            AppLog.Write("update",
-                $"{outcome.Status} {outcome.ToVersion} (setup exit {outcome.ExitCode})");
-        }
-        else if (outcome.Status == "installed")
-            AppLog.Write("update", $"installed {outcome.ToVersion} (setup exit {outcome.ExitCode})");
-    }
-
-    private async Task ShowWhatsNewAsync(string version, string? fromVersion)
-    {
-        if (_releaseUpdatePromptOpen || _closing || _disposed) return;
-        _releaseUpdatePromptOpen = true;
-        try
-        {
-            var update = new ReleaseUpdateResult(ReleaseUpdateStatus.Available, version,
-                null, null, 1, null, null) { InstalledVersion = fromVersion };
-            var heading = new TextBlock
-            {
-                Text = fromVersion is null ? $"Changes in {version}" : $"Changes from {fromVersion} to {version}",
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
-            };
-            var changes = new TextBlock
-            {
-                Text = await ReleaseUpdater.GetChangeSummaryAsync(update, _lifetime.Token),
-                TextWrapping = TextWrapping.Wrap,
-                IsTextSelectionEnabled = true
-            };
-            var close = new Button { Content = "Close" };
-            AutomationProperties.SetName(close, "Close What's new");
-            var panel = new Grid { Padding = new Thickness(16), RowSpacing = 12 };
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var scroller = new ScrollViewer
-            {
-                Content = changes,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                IsTabStop = true
-            };
-            Grid.SetRow(heading, 0);
-            Grid.SetRow(scroller, 1);
-            Grid.SetRow(close, 2);
-            close.HorizontalAlignment = HorizontalAlignment.Right;
-            panel.Children.Add(heading);
-            panel.Children.Add(scroller);
-            panel.Children.Add(close);
-            var dialog = CreateDialogWindow($"What's new in {version}", panel, 560, 460);
-            close.Click += (_, _) => dialog.Close();
-            dialog.Activate();
-            close.Focus(FocusState.Programmatic);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception) { }
-        finally { _releaseUpdatePromptOpen = false; }
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
@@ -1477,7 +666,7 @@ public sealed partial class WebHostWindow : Window
             var environmentCreation = runtimeDirectory is null
                 ? CoreWebView2Environment.CreateWithOptionsAsync(null, profileDirectory, options).AsTask()
                 : CoreWebView2Environment.CreateWithOptionsAsync(runtimeDirectory, profileDirectory, options).AsTask();
-            var environment = await AwaitBoundedAsync(
+            var environment = await BrowserPrivacy.AwaitBoundedAsync(
                 environmentCreation, TimeSpan.FromSeconds(30), lifetimeToken);
             BenchEnvironmentCreated();
             if (!CanContinueInitialization(lifetimeToken))
@@ -1600,28 +789,6 @@ public sealed partial class WebHostWindow : Window
 
     private bool CanContinueInitialization(CancellationToken lifetimeToken)
         => !_closing && !_disposed && !lifetimeToken.IsCancellationRequested;
-
-    private static async Task<T> AwaitBoundedAsync<T>(
-        Task<T> operation,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await operation.WaitAsync(timeout, cancellationToken);
-        }
-        catch
-        {
-            _ = ObserveCompletionAsync(operation);
-            throw;
-        }
-    }
-
-    private static async Task ObserveCompletionAsync(Task operation)
-    {
-        try { await operation.ConfigureAwait(false); }
-        catch (Exception) { }
-    }
 
     private async Task WaitForInitializationAsync()
     {
@@ -2347,7 +1514,7 @@ public sealed partial class WebHostWindow : Window
             if (_presenter is not null)
                 _presenter.IsMaximizable = true;
             RestoreSystemFrame();
-            MoveResize(_fullBounds.IsValid ? _fullBounds : GetDefaultBounds());
+            MoveResize(HasPositiveSize(_fullBounds) ? _fullBounds : GetDefaultBounds());
             if (_fullMaximized) _presenter?.Maximize();
         }
         ApplyCompactSurface();
@@ -2368,13 +1535,13 @@ public sealed partial class WebHostWindow : Window
             _fullscreen = true;
             _presenter?.SetBorderAndTitleBar(false, false);
             var area = GetWorkArea();
-            if (area.IsValid) MoveResize(area);
+            if (HasPositiveSize(area)) MoveResize(area);
         }
         else
         {
             _fullscreen = false;
             RestoreSystemFrame();
-            MoveResize(_windowBounds.IsValid ? _windowBounds : GetDefaultBounds());
+            MoveResize(HasPositiveSize(_windowBounds) ? _windowBounds : GetDefaultBounds());
             if (_windowMaximized) _presenter?.Maximize();
         }
         UpdateWindowPresentation();
@@ -2409,8 +1576,8 @@ public sealed partial class WebHostWindow : Window
     {
         if (_appWindow is null) return;
         var bounds = ShellSettings.RestoreBounds(_settings,
-            ToDrawingRectangle(GetWorkArea()), CurrentDpi());
-        MoveResize(ToDrawingBounds(bounds));
+            GetWorkArea(), CurrentDpi());
+        MoveResize(bounds);
         if (_settings.Maximized) _presenter?.Maximize();
         _lastMaximized = _settings.Maximized;
     }
@@ -2419,7 +1586,7 @@ public sealed partial class WebHostWindow : Window
     {
         if (_appWindow is null) return;
         var restored = ShellSettings.RestoreCompactBounds(_settings,
-            ToDrawingRectangle(GetWorkArea()), CurrentDpi());
+            GetWorkArea(), CurrentDpi());
         if (restored.Width <= 0 || restored.Height <= 0) return;
         // Saved Compact geometry is the client size; the window may be resized in both directions.
         var delta = GetNonClientDelta();
@@ -2429,12 +1596,12 @@ public sealed partial class WebHostWindow : Window
         _appWindow.Move(new PointInt32(restored.X, restored.Y));
     }
 
-    private DrawingBounds GetAppBounds()
+    private Rectangle GetAppBounds()
     {
         if (_appWindow is null) return default;
         var position = _appWindow.Position;
         var size = _appWindow.Size;
-        return new DrawingBounds(position.X, position.Y, size.Width, size.Height);
+        return new Rectangle(position.X, position.Y, size.Width, size.Height);
     }
     private SizeInt32 GetClientSize()
     {
@@ -2459,25 +1626,22 @@ public sealed partial class WebHostWindow : Window
             Math.Max(0, (window.Bottom - window.Top) - (client.Bottom - client.Top)));
     }
 
-    private DrawingBounds GetDefaultBounds()
+    private Rectangle GetDefaultBounds()
         => new(_settings.X, _settings.Y, _settings.Width, _settings.Height);
 
-    private DrawingBounds GetWorkArea()
+    private Rectangle GetWorkArea()
     {
-        if (!_nativeWindowReady) return new DrawingBounds(0, 0, 1920, 1080);
+        if (!_nativeWindowReady) return new Rectangle(0, 0, 1920, 1080);
         var area = DisplayArea.GetFromWindowId(_windowId, DisplayAreaFallback.Nearest).WorkArea;
-        return new DrawingBounds(area.X, area.Y, area.Width, area.Height);
+        return new Rectangle(area.X, area.Y, area.Width, area.Height);
     }
 
-    private static DrawingBounds ToDrawingBounds(Rectangle bounds)
-        => new(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+    // Rectangle.IsEmpty is not equivalent: only positive sizes are usable window geometry.
+    private static bool HasPositiveSize(Rectangle bounds) => bounds.Width > 0 && bounds.Height > 0;
 
-    private static Rectangle ToDrawingRectangle(DrawingBounds bounds)
-        => new(bounds.X, bounds.Y, bounds.Width, bounds.Height);
-
-    private void MoveResize(DrawingBounds bounds)
+    private void MoveResize(Rectangle bounds)
     {
-        if (_appWindow is null || !bounds.IsValid) return;
+        if (_appWindow is null || !HasPositiveSize(bounds)) return;
         _appWindow.MoveAndResize(new RectInt32 { X = bounds.X, Y = bounds.Y, Width = bounds.Width, Height = bounds.Height });
     }
 
@@ -2493,7 +1657,7 @@ public sealed partial class WebHostWindow : Window
         if (!_compact || _appWindow is null || !_appWindow.IsVisible) return;
         var bounds = GetAppBounds();
         var clientSize = GetClientSize();
-        if (!bounds.IsValid || clientSize.Width <= 0 || clientSize.Height <= 0) return;
+        if (!HasPositiveSize(bounds) || clientSize.Width <= 0 || clientSize.Height <= 0) return;
         _settings = _settings with
         {
             CompactX = bounds.X, CompactY = bounds.Y, CompactWidth = clientSize.Width,
@@ -2505,7 +1669,7 @@ public sealed partial class WebHostWindow : Window
     {
         CaptureCompactGeometry();
         var bounds = _compact ? _fullBounds : _fullscreen ? _windowBounds : GetAppBounds();
-        if (!bounds.IsValid) return;
+        if (!HasPositiveSize(bounds)) return;
         _settings = _settings with
         {
             X = bounds.X, Y = bounds.Y, Width = bounds.Width, Height = bounds.Height,
@@ -2956,35 +2120,20 @@ public sealed partial class WebHostWindow : Window
         RefreshOutputAudio();
         try
         {
-            using var snapshot = CreateToolhelp32Snapshot(2, 0);
-            var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
-            if (snapshot.IsInvalid || !Process32First(snapshot, ref entry))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            var processes = new List<(int Id, int Parent)>();
-            do { processes.Add(((int)entry.ProcessId, (int)entry.ParentProcessId)); }
-            while (Process32Next(snapshot, ref entry));
-            var owned = new HashSet<int> { Environment.ProcessId };
-            bool added;
-            do
-            {
-                added = false;
-                foreach (var process in processes)
-                    if (owned.Contains(process.Parent) && owned.Add(process.Id)) added = true;
-            } while (added);
+            // Only the host and the processes WebView2 reports for this environment. The former Toolhelp
+            // parent-PID walk also matched unrelated processes whose dead parent's PID had been reused by one
+            // of ours (seen: csrss.exe, "Access is denied" on every change), and would have changed their
+            // priority wherever Windows allowed it.
             // Children inherit the Idle class of the WebView2 browser process. Chromium re-prioritises renderers
             // itself (Normal while visible, Idle+EcoQoS when hidden) but never utility services, so the network
             // and audio services would stay Idle and could starve audio fetch/output under system load.
             // Leave renderers to Chromium and give utility services normal, system-managed scheduling.
-            var renderers = new HashSet<int>();
-            var utilities = new HashSet<int>();
+            ApplyEfficiencyMode(Environment.ProcessId, efficient: true);
             foreach (var info in _environment.GetProcessInfos())
-                if (info.Kind == CoreWebView2ProcessKind.Renderer) renderers.Add(info.ProcessId);
-                else if (info.Kind == CoreWebView2ProcessKind.Utility) utilities.Add(info.ProcessId);
-            foreach (var id in owned)
-                if (utilities.Contains(id)) ApplyEfficiencyMode(id, efficient: false);
-                else if (!renderers.Contains(id)) ApplyEfficiencyMode(id, efficient: true);
+                if (info.Kind == CoreWebView2ProcessKind.Utility) ApplyEfficiencyMode(info.ProcessId, efficient: false);
+                else if (info.Kind != CoreWebView2ProcessKind.Renderer) ApplyEfficiencyMode(info.ProcessId, efficient: true);
         }
-        catch (Exception ex) when (ex is Win32Exception or COMException)
+        catch (COMException ex)
         {
             Console.Error.WriteLine($"Efficiency process discovery failed: {ex.Message}");
             SetStatus("Could not apply efficiency mode to the full process tree.", isError: true);
@@ -3026,13 +2175,6 @@ public sealed partial class WebHostWindow : Window
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] private struct PowerThrottlingState { public uint Version, ControlMask, StateMask; }
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct ProcessEntry
-    {
-        public uint Size, Usage, ProcessId; public UIntPtr DefaultHeapId; public uint ModuleId, Threads, ParentProcessId;
-        public int BasePriority; public uint Flags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Executable;
-    }
 
     private Window CreateDialogWindow(string title, FrameworkElement content, int width, int height)
     {
@@ -3092,9 +2234,6 @@ public sealed partial class WebHostWindow : Window
     private static extern bool EnableWindow(nint window, bool enable);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern nint SetWindowLongPtr(nint window, int index, nint value);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeFileHandle CreateToolhelp32Snapshot(uint flags, uint processId);
-    [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", SetLastError = true)] private static extern bool Process32First(SafeFileHandle snapshot, ref ProcessEntry entry);
-    [DllImport("kernel32.dll", EntryPoint = "Process32NextW", SetLastError = true)] private static extern bool Process32Next(SafeFileHandle snapshot, ref ProcessEntry entry);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, bool inheritHandle, int processId);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetProcessInformation(SafeProcessHandle process, int informationClass, ref PowerThrottlingState information, int informationSize);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetPriorityClass(SafeProcessHandle process, uint priorityClass);

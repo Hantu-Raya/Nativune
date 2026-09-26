@@ -105,11 +105,6 @@ internal sealed record ShortcutBindings(int Toggle, int Previous, int Next, int 
             reason = "contains an unsupported modifier";
             return false;
         }
-        if ((modifierBits & ~AllowedModifiers) != 0)
-        {
-            reason = "Windows and other unsupported modifiers are not available";
-            return false;
-        }
         if ((modifierBits & RequiredModifiers) == 0)
         {
             reason = "use Ctrl or Alt, with optional Shift; naked keys are not registered";

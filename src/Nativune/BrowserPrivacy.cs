@@ -108,6 +108,7 @@ internal static class BrowserPrivacy
                     ? "uBO Lite ad-filter configuration could not be verified; Music was not loaded."
                     : "uBO Lite privacy-only configuration could not be verified; Music was not loaded.");
             }
+            await RemoveObsoleteExtensionsAsync(core, extension.Id, operationToken);
             // Record only a verified install, so a broken extension is never reused on later launches.
             if (!reused) RecordInstalledExtensionId(projectRoot, extension.Id);
             // The trusted setup URI stays in force on failure so WebHost keeps Music navigation blocked.
@@ -223,6 +224,34 @@ internal static class BrowserPrivacy
         }
     }
 
+    // An unpacked extension's Id derives from its install directory, so each bundled uBO Lite version is a
+    // new extension and the previous one stayed installed and enabled, still filtering with its own old
+    // configuration. Only Nativune adds extensions to its WebView2 profile, so any other instance with this
+    // name is an obsolete copy: remove it (or at least disable it) before Music loads, else fail closed.
+    private static async Task RemoveObsoleteExtensionsAsync(
+        CoreWebView2 core,
+        string currentId,
+        CancellationToken operationToken)
+    {
+        var installed = await AwaitBoundedAsync(
+            core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, operationToken);
+        foreach (var obsolete in installed.Where(candidate =>
+            string.Equals(candidate.Name, ExtensionName, StringComparison.Ordinal)
+            && !string.Equals(candidate.Id, currentId, StringComparison.Ordinal)))
+        {
+            try
+            {
+                await AwaitBoundedAsync(obsolete.RemoveAsync().AsTask(), ExtensionOperationTimeout, operationToken);
+            }
+            catch (Exception exception) when (!operationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"Could not remove an obsolete uBO Lite copy; disabling it instead: {exception.GetType().Name}");
+                await AwaitBoundedAsync(obsolete.EnableAsync(false).AsTask(), ExtensionOperationTimeout, operationToken);
+            }
+            operationToken.ThrowIfCancellationRequested();
+        }
+    }
+
     private static string RecordedExtensionIdPath(string root)
         => Path.Combine(RootLocator.WebViewProfilePath(root), InstalledExtensionIdFile);
 
@@ -286,7 +315,9 @@ internal static class BrowserPrivacy
     private static bool IsValidExtensionId(string extensionId)
         => extensionId.Length == 32 && extensionId.All(character => character is >= 'a' and <= 'p');
 
-    private static async Task<T> AwaitBoundedAsync<T>(
+    // Shared with WebHost. Awaits on the caller's context; a timed-out or cancelled operation is still
+    // observed so a late fault is never unobserved.
+    internal static async Task<T> AwaitBoundedAsync<T>(
         Task<T> operation,
         TimeSpan timeout,
         CancellationToken cancellationToken)
@@ -302,7 +333,7 @@ internal static class BrowserPrivacy
         }
     }
 
-    private static async Task AwaitBoundedAsync(
+    internal static async Task AwaitBoundedAsync(
         Task operation,
         TimeSpan timeout,
         CancellationToken cancellationToken)

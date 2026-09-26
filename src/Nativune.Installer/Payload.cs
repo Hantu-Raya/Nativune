@@ -344,30 +344,7 @@ internal static class PayloadReader
         {
             PathSafety.EnsureRegularFile(setupPath);
             using var file = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
-            if (file.Length < FooterSize)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup executable has no release payload footer.");
-            }
-
-            file.Position = file.Length - FooterSize;
-            Span<byte> footer = stackalloc byte[FooterSize];
-            ReadExactly(file, footer);
-            if (!footer[..FooterMagic.Length].SequenceEqual(FooterMagic))
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is invalid.");
-            }
-            var version = BinaryPrimitives.ReadUInt32LittleEndian(footer[8..12]);
-            var offset = BinaryPrimitives.ReadInt64LittleEndian(footer[12..20]);
-            var length = BinaryPrimitives.ReadInt64LittleEndian(footer[20..28]);
-            var reserved = BinaryPrimitives.ReadUInt32LittleEndian(footer[28..32]);
-            if (version != FooterVersion || reserved != 0 || offset < 0 || length <= 0
-                || length > Manifest.MaxArchiveBytes
-                || offset > file.Length - FooterSize
-                || length > file.Length - FooterSize - offset
-                || offset + length != file.Length - FooterSize)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer bounds are invalid.");
-            }
+            var (offset, length) = ReadFooter(file);
 
             using var bounded = new BoundedReadStream(file, offset, length);
             using var archive = new ZipArchive(bounded, ZipArchiveMode.Read, leaveOpen: false, entryNameEncoding: Encoding.UTF8);
@@ -423,29 +400,7 @@ internal static class PayloadReader
         {
             PathSafety.EnsureRegularFile(setupPath);
             using var file = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
-            if (file.Length < FooterSize)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup executable has no release payload footer.");
-            }
-
-            file.Position = file.Length - FooterSize;
-            Span<byte> footer = stackalloc byte[FooterSize];
-            ReadExactly(file, footer);
-            if (!footer[..FooterMagic.Length].SequenceEqual(FooterMagic))
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is invalid.");
-            }
-            var version = BinaryPrimitives.ReadUInt32LittleEndian(footer[8..12]);
-            var offset = BinaryPrimitives.ReadInt64LittleEndian(footer[12..20]);
-            var length = BinaryPrimitives.ReadInt64LittleEndian(footer[20..28]);
-            var reserved = BinaryPrimitives.ReadUInt32LittleEndian(footer[28..32]);
-            if (version != FooterVersion || reserved != 0 || offset < 0 || length <= 0 ||
-                length > Manifest.MaxArchiveBytes ||
-                offset > file.Length - FooterSize || length > file.Length - FooterSize - offset ||
-                offset + length != file.Length - FooterSize)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer bounds are invalid.");
-            }
+            var (offset, length) = ReadFooter(file);
 
             using var bounded = new BoundedReadStream(file, offset, length);
             using var archive = new ZipArchive(bounded, ZipArchiveMode.Read, leaveOpen: false, entryNameEncoding: Encoding.UTF8);
@@ -625,17 +580,41 @@ internal static class PayloadReader
         }
     }
 
-    private static void ReadExactly(Stream stream, Span<byte> destination)
+    // Leaves file positioned after the footer; callers own the stream and map exceptions.
+    private static (long Offset, long Length) ReadFooter(FileStream file)
     {
-        while (!destination.IsEmpty)
+        if (file.Length < FooterSize)
         {
-            var read = stream.Read(destination);
-            if (read <= 0)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is truncated.");
-            }
-            destination = destination[read..];
+            throw new SetupException(ExitCode.InvalidPayload, "The setup executable has no release payload footer.");
         }
+
+        file.Position = file.Length - FooterSize;
+        Span<byte> footer = stackalloc byte[FooterSize];
+        try
+        {
+            file.ReadExactly(footer);
+        }
+        catch (EndOfStreamException)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is truncated.");
+        }
+        if (!footer[..FooterMagic.Length].SequenceEqual(FooterMagic))
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer is invalid.");
+        }
+        var version = BinaryPrimitives.ReadUInt32LittleEndian(footer[8..12]);
+        var offset = BinaryPrimitives.ReadInt64LittleEndian(footer[12..20]);
+        var length = BinaryPrimitives.ReadInt64LittleEndian(footer[20..28]);
+        var reserved = BinaryPrimitives.ReadUInt32LittleEndian(footer[28..32]);
+        if (version != FooterVersion || reserved != 0 || offset < 0 || length <= 0
+            || length > Manifest.MaxArchiveBytes
+            || offset > file.Length - FooterSize
+            || length > file.Length - FooterSize - offset
+            || offset + length != file.Length - FooterSize)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The setup payload footer bounds are invalid.");
+        }
+        return (offset, length);
     }
 
     private sealed class BoundedReadStream : Stream

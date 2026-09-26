@@ -677,15 +677,7 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         {
             return;
         }
-        var textPointer = Marshal.StringToHGlobalUni(text);
-        try
-        {
-            _ = SendMessage(_dialog, TdmUpdateElementText, TdeContent, textPointer);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(textPointer);
-        }
+        UpdateContent(text);
     }
 
     private void UpdateContent(string text)

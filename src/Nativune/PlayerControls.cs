@@ -1,7 +1,6 @@
 using Microsoft.Web.WebView2.Core;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using Windows.Foundation;
 
 namespace Nativune;
 
@@ -435,18 +434,7 @@ internal sealed class PlayerControls : IDisposable
     // A slow page is not a broken page. Drop the current request without a retry; TryStart keeps
     // new scripts blocked while the late script is still pending, and the script itself refuses to
     // click after its dispatch deadline, so nothing can fire twice.
-    private void Stall()
-    {
-        CancellationTokenSource? operation;
-        lock (_gate)
-        {
-            if (_disposed) return;
-            _generation++;
-            operation = _operation;
-        }
-        operation?.Cancel();
-        RaiseStateChanged();
-    }
+    private void Stall() => Invalidate();
 
     private void NavigationStarting(CoreWebView2 sender, CoreWebView2NavigationStartingEventArgs e)
     {
