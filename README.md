@@ -23,7 +23,7 @@ YouTube and YouTube Music are trademarks of Google LLC.
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.27](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.27) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.28](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.28) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -122,7 +122,7 @@ Nativune applies these resource settings by default:
 - Chromium options that limit renderer processes to two, lower GPU power use, and cap the disk and graphics caches
 - **Sleep in background** (on by default), which lets Chromium throttle timers and rendering while the window is minimized, hidden or covered
 - Faster startup: the app code is precompiled (ReadyToRun), and the privacy extension is reused when it is already installed instead of being reinstalled on every launch. Its configuration is still checked on every launch.
-- About 3 seconds after the window is minimized or hidden to the tray, the app releases its own unused memory once
+- About 5 seconds after the window is minimized or hidden to the tray, the app releases unused memory once, from its own process and from the WebView2 browser and GPU processes. Page and audio processes are left alone so playback isn't interrupted.
 
 **Maintainer-observed memory (informal).** Numbers from Windows Task Manager with v0.1.10, counting the Nativune process group including its WebView2 child processes:
 
@@ -145,6 +145,8 @@ These are informal observations on one machine, not a controlled benchmark. Memo
 | CPU | 0.1–0.5 % | no change beyond noise |
 
 Each condition ran one to five times, with phases of about 20 seconds; long sessions were not measured. Run `Get-Help scripts/bench-perf.ps1` to measure on your own PC.
+
+**Hidden-window trim (26 September 2026, v0.1.28).** Also trimming the WebView2 browser and GPU processes lowered the median private working set while hidden to the tray from 148 MiB to 124 MiB (same PC, three runs). CPU, startup time and the time to show the window from the tray (about 51 ms) did not change beyond noise.
 
 **Download size.** The v0.1.10 `Nativune-Setup.exe` is about 177 MB (177,072,567 bytes). This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
 
@@ -251,7 +253,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.27 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.28 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json`, `delta-update.json` and `SHA256SUMS.txt` to `artifacts/release/`.
