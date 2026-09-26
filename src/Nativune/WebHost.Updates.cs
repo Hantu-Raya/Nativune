@@ -406,6 +406,13 @@ public sealed partial class WebHostWindow
         }
     }
 
+    // Automatic checks are skipped while an update dialog is open; run one that came due meanwhile.
+    private void EndReleaseUpdatePrompt()
+    {
+        _releaseUpdatePromptOpen = false;
+        ConfigureAutomaticReleaseUpdateChecks();
+    }
+
     private static void LogAutomaticUpdateFailure(ReleaseUpdateFailure failure, int? httpStatus)
         => AppLog.Write("update", $"{failure} (HTTP {httpStatus?.ToString() ?? "unknown"})");
 
@@ -697,7 +704,7 @@ public sealed partial class WebHostWindow
             _updateDownloadCancellation?.Dispose();
             _updateDownloadCancellation = null;
             _skipUpdatePrompt = false;
-            _releaseUpdatePromptOpen = false;
+            EndReleaseUpdatePrompt();
             if (deltaFallback is not null && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
                 _ = OfferFullSetupAfterQuickUpdateFailureAsync(deltaFallback);
         }
@@ -758,7 +765,7 @@ public sealed partial class WebHostWindow
         }
         finally
         {
-            _releaseUpdatePromptOpen = false;
+            EndReleaseUpdatePrompt();
         }
         if (accepted && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
             await RetryUpdateDownloadAsync(full);
@@ -897,6 +904,6 @@ public sealed partial class WebHostWindow
         }
         catch (OperationCanceledException) { }
         catch (Exception) { }
-        finally { _releaseUpdatePromptOpen = false; }
+        finally { EndReleaseUpdatePrompt(); }
     }
 }
