@@ -14,12 +14,18 @@
 
   Deterministic timeline, seconds after page load:
     0   track A playing: "Fixture Song A" / Fixture Artist / Fixture Album, 210 s, position 0,
-        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544, URL /watch?v=fixtureSngA
+        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544, URL /watch?v=fixtureSngA,
+        artist channel/UCfixtureArtist000000001, album browse/MPREb_fixtureAlbum01,
+        hidden ytmusic-player a.ytp-title-link -> https://music.youtube.com/watch?v=fixtureSngA
    25   seek track A to 100 s
    45   pause
    60   resume
+   65   ad window: .html5-video-player gains class ad-showing, ytp-title-link text "Advertisement"
+        (trackUrl must read null)
+   75   ad window ends: ad-showing removed, ytp-title-link text restored to the current title
    80   track B playing: "Fixture Song B" / Second Artist / Second Album, 185 s, position 0,
-        artwork https://lh3.googleusercontent.com/fixture-b=w544-h544, URL /watch?v=fixtureSngB
+        artwork https://lh3.googleusercontent.com/fixture-b=w544-h544, URL /watch?v=fixtureSngB,
+        artist channel/UCsecondArtist0000000001, album browse/MPREb_secondAlbum01, title link fixtureSngB
   100   repeat-one on (button label "Repeat one")
   120   stop: media ended (loop off, currentTime = duration, paused), clock at the end
   The fixture clock advances only by the media element's own currentTime progress.
@@ -45,7 +51,8 @@
 </head>
 <body>
 <ytmusic-app>
-  <ytmusic-player id="player"><div id="song-image"><img id="large-art" alt=""></div></ytmusic-player>
+  <ytmusic-player id="player"><div id="song-image"><img id="large-art" alt=""></div>
+    <div class="html5-video-player"><a class="ytp-title-link yt-uix-sessionlink" hidden></a></div></ytmusic-player>
   <ytmusic-player-bar class="style-scope ytmusic-app">
     <tp-yt-paper-slider id="progress-bar" role="slider" aria-label="Seek slider" aria-valuemin="0" aria-valuemax="210" aria-valuenow="0">
       <div id="sliderBar" aria-hidden="true"><div id="primaryProgress"></div></div>
@@ -59,7 +66,7 @@
     <img id="bar-art" class="thumbnail image" alt="">
     <div class="middle content-info-wrapper">
       <yt-formatted-string class="title style-scope ytmusic-player-bar"></yt-formatted-string>
-      <span class="subtitle"><yt-formatted-string class="byline style-scope ytmusic-player-bar"></yt-formatted-string></span>
+      <span class="byline-wrapper"><span class="subtitle"><yt-formatted-string class="byline complex-string style-scope ytmusic-player-bar"></yt-formatted-string></span></span>
     </div>
     <div id="right-controls">
       <button id="like" aria-label="Like" aria-pressed="false">&#128077;</button>
@@ -75,14 +82,15 @@
   const tracks = {
     A: { id: 'fixtureSngA', title: 'Fixture Song A', duration: 210,
       artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
-      byline: '<a href="channel/UCfixtureArtist0001">Fixture Artist</a> \u2022 <a href="browse/MPREbfixtureAlbum01">Fixture Album</a> \u2022 2026' },
+      byline: '<a class="yt-simple-endpoint" href="channel/UCfixtureArtist000000001">Fixture Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_fixtureAlbum01">Fixture Album</a> \u2022 2026' },
     B: { id: 'fixtureSngB', title: 'Fixture Song B', duration: 185,
       artwork: 'https://lh3.googleusercontent.com/fixture-b=w544-h544',
-      byline: '<a href="channel/UCsecondArtist00001">Second Artist</a> \u2022 <a href="browse/MPREbsecondAlbum001">Second Album</a> \u2022 2026' }
+      byline: '<a class="yt-simple-endpoint" href="channel/UCsecondArtist0000000001">Second Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_secondAlbum01">Second Album</a> \u2022 2026' }
   };
   const $ = selector => document.querySelector(selector);
   const media = $('#media'), slider = $('#progress-bar'), timeInfo = $('.time-info');
   const playButton = $('#play-pause-button');
+  const videoPlayer = $('ytmusic-player .html5-video-player'), titleLink = $('ytmusic-player a.ytp-title-link');
   let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
 
   // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
@@ -129,6 +137,8 @@
     $('.byline').innerHTML = track.byline;
     $('#bar-art').src = track.artwork;
     $('#large-art').src = track.artwork;
+    titleLink.href = 'https://music.youtube.com/watch?v=' + track.id;
+    titleLink.textContent = track.title;
     render();
   };
   const play = () => media.play().catch(() => {});
@@ -137,6 +147,8 @@
     [25, () => { position = 100; }],
     [45, () => media.pause()],
     [60, () => play()],
+    [65, () => { videoPlayer.classList.add('ad-showing'); titleLink.textContent = 'Advertisement'; }],
+    [75, () => { videoPlayer.classList.remove('ad-showing'); titleLink.textContent = track.title; }],
     [80, () => { load(tracks.B); play(); }],
     [100, () => $('#repeat').setAttribute('aria-label', 'Repeat one')],
     [120, () => {

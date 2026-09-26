@@ -486,6 +486,16 @@ public sealed partial class SettingsDialog : Window
         _ => string.Empty
     };
 
+    private static string DiscordStatusCopyName(DiscordPresenceStatus status) => status switch
+    {
+        DiscordPresenceStatus.Unavailable => "unavailable",
+        DiscordPresenceStatus.Connecting => "connecting",
+        DiscordPresenceStatus.Connected => "connected",
+        DiscordPresenceStatus.DiscordAbsent => "not running",
+        DiscordPresenceStatus.Error => "error",
+        _ => "off"
+    };
+
     private DiscordStatusLine SelectedDiscordStatusLine()
         => DiscordStatusLineComboBox.SelectedIndex is >= 0 and <= 2
             ? (DiscordStatusLine)DiscordStatusLineComboBox.SelectedIndex : DiscordStatusLine.Artist;
@@ -510,7 +520,7 @@ public sealed partial class SettingsDialog : Window
         try
         {
             var package = new DataPackage();
-            package.SetText(_statusText().TrimEnd() + Environment.NewLine + "Discord: " + _discordStatus);
+            package.SetText(_statusText().TrimEnd() + Environment.NewLine + "Discord: " + DiscordStatusCopyName(_discordStatus));
             Clipboard.SetContent(package);
             CopyStatusResult.Text = "Application status copied.";
         }

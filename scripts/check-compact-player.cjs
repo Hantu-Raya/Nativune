@@ -566,4 +566,46 @@ assert.equal(action(movedPage, 'play-playlist', 1.5, 'Road trip'), 'invalid-valu
 assert.equal(action(movedPage, 'play-playlist', 1, null), 'invalid-value');
 assert.equal(movedPage.document.clicks, 0);
 
+// Optional track details: byline artists/album and the player's own title link.
+function withDetails(page, { byline = [], titleLinks = [], adShowing = false, ended = false, playbackRate = 1 } = {}) {
+  const doc = page.document;
+  const anchors = byline.map(([href, text]) => {
+    const anchor = new HTMLElement(doc); anchor.setAttribute('href', href); anchor.textContent = text; return anchor;
+  });
+  const bylineElement = new HTMLElement(doc).setQuery('a', anchors);
+  page.bar.setQuery('.byline', [bylineElement]);
+  const links = titleLinks.map(([href, text]) => {
+    const link = new HTMLElement(doc); link.setAttribute('href', href); link.textContent = text; return link;
+  });
+  const base = doc.querySelectorAll;
+  doc.querySelectorAll = selector => selector === 'ytmusic-player a.ytp-title-link' ? links
+    : selector === 'ytmusic-player .html5-video-player.ad-showing' ? (adShowing ? [new HTMLElement(doc)] : [])
+    : base(selector);
+  Object.assign(page.media, { ended, playbackRate });
+  return page;
+}
+const artistA = 'channel/UCaaaaaaaaaaaaaaaaaaaaaa', artistB = 'channel/UCbbbbbbbbbbbbbbbbbbbbbb';
+const watchLink = 'https://music.youtube.com/watch?v=AbCdEfGhI01';
+const song = state(withDetails(makePage(), { byline: [[artistA, 'Artist A'], ['browse/MPREb_album01', 'Album A'], ['', '2024']],
+  titleLinks: [[watchLink, 'Track title']], playbackRate: 1.25 }));
+assert.equal(song.code, 'state');
+assert.equal(song.artist, 'Artist A'); assert.equal(song.artistUrl, 'https://music.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa');
+assert.equal(song.album, 'Album A'); assert.equal(song.albumUrl, 'https://music.youtube.com/browse/MPREb_album01');
+assert.equal(song.trackUrl, watchLink); assert.equal(song.ended, false); assert.equal(song.seeking, false);
+assert.equal(song.playbackRate, 1.25);
+assert.equal(song.signature, knownPage.signature);
+const duo = state(withDetails(makePage(), { byline: [[artistA, 'Artist A'], [artistB, 'Artist B'], ['browse/MPREb_album01', 'Album A']] }));
+assert.equal(duo.artist, 'Artist A, Artist B'); assert.equal(duo.artistUrl, 'https://music.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa');
+const video = state(withDetails(makePage(), { byline: [[artistA, 'Artist A'], ['', '1.2M views']], ended: true, playbackRate: 32 }));
+assert.equal(video.artist, 'Artist A'); assert.equal(video.album, null); assert.equal(video.albumUrl, null);
+assert.equal(video.ended, true); assert.equal(video.playbackRate, null); assert.equal(video.trackUrl, null);
+assert.equal(state(withDetails(makePage(), { titleLinks: [[watchLink, 'Other title']] })).trackUrl, null);
+assert.equal(state(withDetails(makePage(), { titleLinks: [[watchLink, 'Track title']], adShowing: true })).trackUrl, null);
+assert.equal(state(withDetails(makePage(), { titleLinks: [[watchLink, 'Track title'], [watchLink, 'Track title']] })).trackUrl, null);
+assert.equal(state(withDetails(makePage(), { titleLinks: [['https://example.com/watch?v=AbCdEfGhI01', 'Track title']] })).trackUrl, null);
+const malformed = state(withDetails(makePage(), { byline: [['channel/UCshort', 'Bad Artist'], ['browse/MPREb_album01', 'Album A']] }));
+assert.equal(malformed.code, 'state'); assert.equal(malformed.artist, null); assert.equal(malformed.artistUrl, null);
+assert.equal(malformed.album, 'Album A');
+assert.equal(known.artist, null); assert.equal(known.trackUrl, null);
+
 console.log('PASS: bounded public transport readiness, website-slider seek route, transient seek-clock recovery, unsupported Compact audio commands, single-click actions, and sidebar playlists');

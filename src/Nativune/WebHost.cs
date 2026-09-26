@@ -297,6 +297,7 @@ public sealed partial class WebHostWindow : Window
         WireSurface();
         InitializeOutputAudio();
         InitializeCompactSurface();
+        InitializeDiscordPresence();
         ApplyAppearance();
         CompactButton.Click += (_, _) => ToggleCompact();
         TitleDragRegion.SizeChanged += (_, _) => ApplyFullTitleBar();
@@ -822,6 +823,9 @@ public sealed partial class WebHostWindow : Window
             core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            InstallDiscordFixturePage(core);
+#endif
             host.ZoomFactor = _settings.Zoom;
             // WebView2 paints white before its first frame; match the canvas so revealing it never flashes.
             if (WebViewSlot.Background is SolidColorBrush canvas)
@@ -965,6 +969,8 @@ public sealed partial class WebHostWindow : Window
             return;
         }
         InvalidateCompactState();
+        // A main-frame navigation replaces the document (account pages included).
+        InvalidateDiscord();
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
@@ -1084,6 +1090,7 @@ public sealed partial class WebHostWindow : Window
                 try { _browserHost?.SetVisible(false); } catch (Exception) { }
                 _playerControls?.Invalidate();
                 InvalidateCompactState();
+                InvalidateDiscord();
                 _browserFailed = true;
                 ExitCode = 1;
                 UpdateNavigation();
@@ -1092,6 +1099,7 @@ public sealed partial class WebHostWindow : Window
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
                 InvalidateCompactState();
+                InvalidateDiscord();
                 if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
                 {
                     SetStatus("The page stopped again. Use Retry, or close and relaunch the app.", isError: true);
@@ -1374,6 +1382,7 @@ public sealed partial class WebHostWindow : Window
             _shortcutsItem.IsChecked = _shortcutsEnabled;
             return applied ? null : error;
         }, installed, startupState, () => _statusDetailsText, _root);
+        dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
         _settingsDialog = dialog;
         _ = ShowSettingsAsync(dialog);
     }
@@ -1397,8 +1406,10 @@ public sealed partial class WebHostWindow : Window
                     AutoCheckUpdates = dialog.Result.AutoCheckUpdates,
                     BlockAds = dialog.Result.BlockAds,
                     AutostartMode = dialog.Result.AutostartMode,
-                    RestoreSection = dialog.Result.RestoreSection
+                    RestoreSection = dialog.Result.RestoreSection,
+                    Discord = dialog.Result.Discord
                 };
+                ApplyDiscordOptions(_settings.Discord);
                 if (restoreChanged)
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
@@ -1942,7 +1953,11 @@ public sealed partial class WebHostWindow : Window
         if (message == WmPowerBroadcast)
         {
             var powerEvent = wParam.ToInt64();
-            if (powerEvent == PbtApmsuspend) _playerSuspended = true;
+            if (powerEvent == PbtApmsuspend)
+            {
+                _playerSuspended = true;
+                InvalidateDiscord();
+            }
             else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
             {
                 _playerSuspended = false;
@@ -2117,6 +2132,8 @@ public sealed partial class WebHostWindow : Window
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
+        // Clear presence while the module can still write (bounded to about 1 s internally).
+        try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
         try { await WaitForInitializationAsync(); }
         catch (Exception ex) { RememberFailure(ex); }

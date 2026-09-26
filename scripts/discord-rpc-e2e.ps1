@@ -31,7 +31,7 @@ Failure modes caught:
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('All', 'Timeline', 'Absent', 'Disable')] [string] $Scenario = 'All',
+    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -254,6 +254,31 @@ function Test-Timeline {
     Add-Check 'timeline.linksOnlyProvenTrack' (-not ($detailsUrls + $buttonUrls | Where-Object { $_ -notin $allowedTrackUrls }))
     Add-Check 'timeline.atMostOneButton' (-not ($nonNull | Where-Object { @(Get-Prop $_.Activity 'buttons').Where({ $_ }).Count -gt 1 }))
 
+    # Link ids come from the fixture page itself (byline anchors, in track order A then B).
+    $fixtureHtml = Get-Content -LiteralPath (Join-Path $repo 'src/Nativune/DiscordFixturePage.html') -Raw
+    $channelIds = @([regex]::Matches($fixtureHtml, 'channel/(UC[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
+    $albumIds = @([regex]::Matches($fixtureHtml, 'browse/(MPREb[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
+    $readyUtc = if ($readyIndex -ge 0) { ConvertTo-UtcTime $frames[$readyIndex].utc } else { $null }
+    $inAdWindow = { param($s) $readyUtc -and $s.Utc -ge $readyUtc.AddSeconds(66) -and $s.Utc -le $readyUtc.AddSeconds(76) }
+    $hasTrackLinks = { param($s, [string] $Url)
+        $btn = @(Get-Prop $s.Activity 'buttons' | Where-Object { $_ })
+        (Get-Prop $s.Activity 'details_url') -eq $Url -and $btn.Count -eq 1 -and
+            (Get-Prop $btn[0] 'label') -eq 'Open in YouTube Music' -and (Get-Prop $btn[0] 'url') -eq $Url }
+    $aOutsideAd = @($a | Where-Object { -not (& $inAdWindow $_) })
+    $urlA = 'https://music.youtube.com/watch?v=fixtureSngA'; $urlB = 'https://music.youtube.com/watch?v=fixtureSngB'
+    Add-Check 'timeline.trackADetailsUrlAndButton' ($aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object { -not (& $hasTrackLinks $_ $urlA) }))
+    Add-Check 'timeline.trackAStateUrl' ($channelIds.Count -ge 1 -and $aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object {
+        (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[0])" }))
+    Add-Check 'timeline.trackALargeUrl' ($albumIds.Count -ge 1 -and $aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object {
+        (Get-Prop (& $assets $_.Activity) 'large_url') -ne "https://music.youtube.com/browse/$($albumIds[0])" }))
+    $adSets = @($nonNull | Where-Object { & $inAdWindow $_ })
+    Add-Check 'timeline.adWindowNoLinks' ([bool] $readyUtc -and -not ($adSets | Where-Object {
+        (Get-Prop $_.Activity 'details_url') -or @(Get-Prop $_.Activity 'buttons' | Where-Object { $_ }).Count -gt 0 }))
+    Add-Check 'timeline.trackBDetailsUrlAndButton' ($b.Count -gt 0 -and -not ($b | Where-Object { -not (& $hasTrackLinks $_ $urlB) }))
+    Add-Check 'timeline.trackBStateAndLargeUrl' ($channelIds.Count -ge 2 -and $albumIds.Count -ge 2 -and $b.Count -gt 0 -and -not ($b | Where-Object {
+        (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[1])" -or
+        (Get-Prop (& $assets $_.Activity) 'large_url') -ne "https://music.youtube.com/browse/$($albumIds[1])" }))
+
     $minGapSeconds = [double]::PositiveInfinity
     for ($i = 1; $i -lt $nonNull.Count; $i++) { $minGapSeconds = [Math]::Min($minGapSeconds, ($nonNull[$i].Mono - $nonNull[$i - 1].Mono) / 1000) }
     Add-Check 'timeline.writeRate' ($minGapSeconds -ge ($minWriteSeconds - 0.5))
@@ -262,7 +287,7 @@ function Test-Timeline {
         appPid = $app.Id; connections = @($frames | Where-Object { $_.json -eq 'connected' }).Count
         setActivityCount = $sets.Count; nonNullCount = $nonNull.Count; clearCount = $sets.Count - $nonNull.Count
         minNonNullGapSeconds = if ([double]::IsInfinity($minGapSeconds)) { $null } else { [Math]::Round($minGapSeconds, 3) }
-        observedDetailsUrls = $detailsUrls; observedButtonCount = $buttons.Count
+        observedDetailsUrls = $detailsUrls; observedButtonCount = $buttons.Count; adWindowActivityCount = $adSets.Count
         timestampUnitAssumption = 'unix seconds (contract ToDiscordWireTimestamp; real-client check pending)'
     }
     $root
@@ -317,6 +342,37 @@ function Test-Disable([string] $ExistingRoot) {
     $scenarioResults['Disable'] = [ordered]@{ appPid = $app.Id; seconds = 30; connections = $connections; reusedTimelineRoot = [bool] $ExistingRoot }
 }
 
+function Test-Migration {
+    # A v6 profile that already had DiscordPresence=true must migrate to off (explicit opt-in in v7).
+    $root = New-Root 'migration'
+    $data = Join-Path $root 'data'
+    [IO.Directory]::CreateDirectory($data) | Out-Null
+    $settings = [ordered]@{
+        Version = 6; X = 100; Y = 100; Width = 1280; Height = 800; Dpi = 96; Maximized = $false; Zoom = 1.0
+        TrayEnabled = $true; RestoreSection = $false; LastSection = 'home'; ReduceMotion = $false
+        CompactX = 100; CompactY = 100; CompactWidth = 800; CompactHeight = 180; CompactDpi = 96
+        SleepInBackground = $false; StartCompact = $false; AutoCheckUpdates = $false
+        OutputVolume = 1.0; BlockAds = $false; DiscordPresence = $true
+    }
+    [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $server = Start-FakeServer 'migration'
+    $app = $null
+    try {
+        $app = Start-App $root
+        Start-Sleep -Seconds 30
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 1
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['Migration'] = $frames
+    Copy-AppLog $root 'migration'
+    $connections = @($frames | Where-Object { $_.json -eq 'connected' }).Count
+    Add-Check 'migration.appAlive' $alive
+    Add-Check 'migration.v6DiscordTrueZeroConnections' ($connections -eq 0)
+    $scenarioResults['Migration'] = [ordered]@{ appPid = $app.Id; seconds = 30; seededVersion = 6; connections = $connections }
+}
+
 [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
 $appVersion = $null
 try {
@@ -332,6 +388,7 @@ try {
     if ($Scenario -in 'All', 'Timeline') { $timelineRoot = Test-Timeline }
     if ($Scenario -in 'All', 'Absent') { Test-Absent }
     if ($Scenario -in 'All', 'Disable') { Test-Disable $timelineRoot }
+    if ($Scenario -in 'All', 'Migration') { Test-Migration }
 } catch {
     Add-Check 'runner.completed' $false
     $scenarioResults['error'] = $_.Exception.Message

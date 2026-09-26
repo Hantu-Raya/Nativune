@@ -91,7 +91,11 @@ internal static class CompactPlayback
             state = new CompactPlaybackState(title, artworkUrl, paused, position, duration,
                 liked, disliked, repeat, canSeek, canLike, canDislike, canRepeat, canShuffle,
                 shuffle, clockMismatch, videoId, clockConfirmed, mediaDuration, websiteClock,
-                mediaPosition);
+                mediaPosition, OptionalText(root, "artist"), OptionalText(root, "album"),
+                OptionalUrl(root, "artistUrl", ChannelPrefix, 24, "UC"),
+                OptionalUrl(root, "albumUrl", BrowsePrefix, 0, "MPREb_"),
+                OptionalUrl(root, "trackUrl", WatchPrefix, 11, null),
+                OptionalFlag(root, "ended"), OptionalFlag(root, "seeking"), OptionalRate(root));
             return true;
         }
         catch (JsonException)
@@ -178,6 +182,41 @@ internal static class CompactPlayback
             return false;
         }
     }
+
+    private const string ChannelPrefix = "https://music.youtube.com/channel/";
+    private const string BrowsePrefix = "https://music.youtube.com/browse/";
+    private const string WatchPrefix = "https://music.youtube.com/watch?v=";
+
+    private static string? OptionalText(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var element) || element.ValueKind != JsonValueKind.String)
+            return null;
+        var value = element.GetString()?.Trim();
+        return value is { Length: > 0 and <= 256 } ? value : null;
+    }
+
+    // exactLength 0 means any id length (bounded by the 512-char URL cap).
+    private static string? OptionalUrl(JsonElement root, string name, string prefix, int exactLength, string? idPrefix)
+    {
+        if (!root.TryGetProperty(name, out var element) || element.ValueKind != JsonValueKind.String)
+            return null;
+        var value = element.GetString();
+        if (value is null || value.Length > 512 || !value.StartsWith(prefix, StringComparison.Ordinal))
+            return null;
+        var id = value[prefix.Length..];
+        if (id.Length == 0 || exactLength > 0 && id.Length != exactLength
+            || idPrefix is not null && (!id.StartsWith(idPrefix, StringComparison.Ordinal) || id.Length == idPrefix.Length)
+            || id.Any(c => c is not (>= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_')))
+            return null;
+        return value;
+    }
+
+    private static bool OptionalFlag(JsonElement root, string name)
+        => root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.True;
+
+    private static double? OptionalRate(JsonElement root)
+        => root.TryGetProperty("playbackRate", out var element) && element.ValueKind == JsonValueKind.Number
+            && element.TryGetDouble(out var rate) && double.IsFinite(rate) && rate > 0 && rate <= 16 ? rate : null;
 
     private static bool RequiredString(JsonElement root, string name, string? expected, out string value)
     {
@@ -456,6 +495,51 @@ try {
     return {position, duration, paused:element.paused, seeking:element.seeking,
       clockWithinDuration:duration <= 0 || position <= duration};
   };
+  // Optional public track details; any malformed part is omitted without failing the state read.
+  const detailsFor = (acquired, title) => {
+    const details = {artist:null, album:null, artistUrl:null, albumUrl:null, trackUrl:null};
+    const text = element => {
+      const value = typeof element.textContent === 'string' ? element.textContent.trim() : '';
+      return value.length > 0 && value.length <= 256 ? value : null;
+    };
+    const bylines = acquired.bar.querySelectorAll('.byline');
+    if (bylines.length === 1) {
+      const anchors = Array.from(bylines[0].querySelectorAll('a'));
+      if (anchors.length <= 16) {
+        const artists = [], albums = [];
+        for (const anchor of anchors) {
+          const href = anchor.getAttribute('href') || '';
+          let match = /^channel\/(UC[A-Za-z0-9_-]{22})$/.exec(href);
+          if (match) { const name = text(anchor); if (name) artists.push({name, id:match[1]}); continue; }
+          match = /^browse\/(MPREb_[A-Za-z0-9_-]+)$/.exec(href);
+          if (match && match[1].length <= 64) albums.push({name:text(anchor), id:match[1]});
+        }
+        if (artists.length > 0) {
+          const joined = artists.map(a => a.name).join(', ');
+          if (joined.length <= 256) {
+            details.artist = joined;
+            details.artistUrl = 'https://music.youtube.com/channel/' + artists[0].id;
+          }
+        }
+        if (albums.length === 1 && albums[0].name) {
+          details.album = albums[0].name;
+          details.albumUrl = 'https://music.youtube.com/browse/' + albums[0].id;
+        }
+      }
+    }
+    const links = requestDocument.querySelectorAll('ytmusic-player a.ytp-title-link');
+    if (links.length === 1 && requestDocument.querySelectorAll('ytmusic-player .html5-video-player.ad-showing').length === 0
+      && typeof links[0].textContent === 'string' && links[0].textContent.trim() === title) {
+      try {
+        const uri = new URL(links[0].getAttribute('href') || '', 'https://music.youtube.com/');
+        const ids = uri.searchParams.getAll('v');
+        if (uri.origin === 'https://music.youtube.com' && uri.pathname === '/watch'
+          && ids.length === 1 && /^[A-Za-z0-9_-]{11}$/.test(ids[0]))
+          details.trackUrl = 'https://music.youtube.com/watch?v=' + ids[0];
+      } catch { }
+    }
+    return details;
+  };
   const signedStateFor = (acquired, media, seek = choose(acquired.seekSliders, true)) => {
     const clock = clockFor(acquired, media, seek);
     const metadata = metadataFor(acquired, clock.duration);
@@ -536,7 +620,10 @@ try {
       shuffle:shuffleActive, clockMismatch, clockConfirmed, videoId,
       canSeek, canLike:like.status === 'ok' && liked !== null, canDislike:dislike.status === 'ok' && disliked !== null,
       canRepeat:repeat.status === 'ok' && repeatState !== null, canShuffle:shuffle.status === 'ok',
-      signature:metadata.signature};
+      signature:metadata.signature, ...detailsFor(acquired, metadata.title),
+      ended:acquired.element.ended === true, seeking:media.seeking,
+      playbackRate:finite(acquired.element.playbackRate) && acquired.element.playbackRate > 0
+        && acquired.element.playbackRate <= 16 ? acquired.element.playbackRate : null};
   };
   const transportReady = () => {
     const bars = requestDocument.querySelectorAll('ytmusic-player-bar');

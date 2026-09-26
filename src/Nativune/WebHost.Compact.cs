@@ -24,10 +24,44 @@ public sealed partial class WebHostWindow
     // item-bound actions stay safe meanwhile because the page script re-checks the item identity.
     private const long CompactHoldMs = 8000;
     private long _compactUnavailableSince = -1;
+    // Discord presence shares the Compact read path; its hold is tracked separately so Compact
+    // invalidation (deactivate, hide) does not clear presence.
+    private const long PresenceReadIntervalMs = 5000;
+    private long _presenceUnavailableSince = -1;
+    private bool _presenceHasState;
+    private int _presenceGeneration;
 
     private bool CompactActive => _compact && _appWindow?.IsVisible == true
         && _presenter?.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized
         && !_closing && !_disposed && !_playerSuspended;
+
+    private bool PresenceReadActive => _discord?.NeedsSnapshot == true
+        && !_closing && !_disposed && !_playerSuspended;
+
+    // Starts/stops the shared read timer: 1 s while Compact is active, else 5 s for presence.
+    private void RefreshSharedReader()
+    {
+        if (_compactReadTimer is null) return;
+        var compact = CompactActive;
+        var presence = PresenceReadActive;
+        if (!presence && (_presenceHasState || _presenceUnavailableSince >= 0))
+        {
+            _presenceUnavailableSince = -1;
+            _presenceHasState = false;
+        }
+        if (!compact && !presence)
+        {
+            _compactReadTimer.Stop();
+            return;
+        }
+        var interval = TimeSpan.FromMilliseconds(compact ? 1000 : PresenceReadIntervalMs);
+        if (_compactReadTimer.Interval != interval) _compactReadTimer.Interval = interval;
+        if (!_compactReadTimer.IsRunning)
+        {
+            _compactReadTimer.Start();
+            if (!compact) _ = ReadCompactStateAsync();
+        }
+    }
 
     private void InitializeCompactSurface()
     {
@@ -133,16 +167,17 @@ public sealed partial class WebHostWindow
     private void RefreshCompactActivity()
     {
         var active = CompactActive;
-        if (_compactActivity == active) return;
+        if (_compactActivity == active)
+        {
+            RefreshSharedReader();
+            return;
+        }
         _compactActivity = active;
         _compactReadTimer?.Stop();
         InvalidateCompactState();
         CompactView.SetActive(active);
-        if (active)
-        {
-            _compactReadTimer!.Start();
-            _ = ReadCompactStateAsync();
-        }
+        RefreshSharedReader();
+        if (active) _ = ReadCompactStateAsync();
     }
 
     private void InvalidateCompactState()
@@ -169,29 +204,51 @@ public sealed partial class WebHostWindow
         else if (now - _compactUnavailableSince >= CompactHoldMs) InvalidateCompactState();
     }
 
+    private void HoldOrDropPresenceState()
+    {
+        if (!_presenceHasState) return;
+        var now = Environment.TickCount64;
+        if (_presenceUnavailableSince < 0) _presenceUnavailableSince = now;
+        else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord();
+    }
+
     private async Task ReadCompactStateAsync()
     {
-        if (!CompactActive) return;
+        var compact = CompactActive;
+        var presence = PresenceReadActive;
+        if (!compact && !presence) return;
+        var minInterval = compact ? 1000 : PresenceReadIntervalMs;
         // A user command owns the page; the next tick reads its result.
-        if (_compactReadPending || _playerBusy || Environment.TickCount64 - _lastCompactReadAt < 1000) return;
+        if (_compactReadPending || _playerBusy || Environment.TickCount64 - _lastCompactReadAt < minInterval) return;
         var controls = _playerControls;
         if (controls?.IsAvailable != true)
         {
-            HoldOrDropCompactState();
+            if (compact) HoldOrDropCompactState();
+            if (presence) HoldOrDropPresenceState();
             return;
         }
         _compactReadPending = true;
         _lastCompactReadAt = Environment.TickCount64;
         var generation = _compactGeneration;
+        var presenceGeneration = _presenceGeneration;
         try
         {
             var read = await controls.ReadCompactStateAsync();
-            if (!CompactActive || generation != _compactGeneration) return;
+            var compactCurrent = compact && CompactActive && generation == _compactGeneration;
+            var presenceCurrent = PresenceReadActive && presenceGeneration == _presenceGeneration;
             if (read.State is not { } state)
             {
-                HoldOrDropCompactState();
+                if (compactCurrent) HoldOrDropCompactState();
+                if (presenceCurrent) HoldOrDropPresenceState();
                 return;
             }
+            if (presenceCurrent)
+            {
+                _presenceUnavailableSince = -1;
+                _presenceHasState = true;
+                ObserveDiscord(state);
+            }
+            if (!compactCurrent) return;
             _compactUnavailableSince = -1;
             _compactState = state;
             _compactStartupPending = false;
@@ -204,8 +261,10 @@ public sealed partial class WebHostWindow
         }
         catch (Exception)
         {
-            if (CompactActive && generation == _compactGeneration)
+            if (compact && CompactActive && generation == _compactGeneration)
                 HoldOrDropCompactState();
+            if (PresenceReadActive && presenceGeneration == _presenceGeneration)
+                HoldOrDropPresenceState();
         }
         finally
         {

@@ -370,7 +370,8 @@
                          Text="Changes your status line only; the activity card still shows the song."
                          TextWrapping="Wrap"
                          FontSize="12"
-                         Foreground="{ThemeResource SecondaryTextBrush}" />
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         AutomationProperties.AccessibilityView="Raw" />
               <CheckBox x:Name="DiscordOpenButtonCheckBox"
                         Content="Add an Open in YouTube Music button"
                         MinHeight="36"
@@ -383,7 +384,8 @@
                          TextWrapping="Wrap"
                          FontSize="12"
                          Margin="28,-6,0,0"
-                         Foreground="{ThemeResource SecondaryTextBrush}" />
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         AutomationProperties.AccessibilityView="Raw" />
             </StackPanel>
             <TextBlock x:Name="DiscordStatusText"
                        TextWrapping="Wrap"
