@@ -167,7 +167,13 @@ public sealed partial class WebHostWindow : Window
     private Task? _initializationTask;
     private Task? _lateBrowserCleanupTask;
     private static readonly TimeSpan InitializationShutdownTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan ReleaseUpdateCheckInterval = TimeSpan.FromHours(24);
+    private static readonly TimeSpan ReleaseUpdateCheckInterval =
+#if NATIVUNE_UPDATER_TEST_HOOKS
+        // E2E only: shorter automatic-check interval (scripts/quiet-update-e2e.ps1).
+        int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_TEST_UPDATE_CHECK_SECONDS"), out var testSeconds)
+            && testSeconds is >= 5 and <= 3600 ? TimeSpan.FromSeconds(testSeconds) :
+#endif
+        TimeSpan.FromHours(3);
     private static readonly TimeSpan LateCleanupShutdownTimeout = TimeSpan.FromSeconds(5);
     private AppWindow? _appWindow;
     private OverlappedPresenter? _presenter;
@@ -1937,7 +1943,13 @@ public sealed partial class WebHostWindow : Window
         {
             var powerEvent = wParam.ToInt64();
             if (powerEvent == PbtApmsuspend) _playerSuspended = true;
-            else if (powerEvent is PbtApmresume or PbtApmresumesuspend) { _playerSuspended = false; _sleep?.CheckOnResume(); }
+            else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
+            {
+                _playerSuspended = false;
+                _sleep?.CheckOnResume();
+                // The check timer doesn't count sleep time; run a check that came due while asleep.
+                ConfigureAutomaticReleaseUpdateChecks();
+            }
             if (powerEvent is PbtApmsuspend or PbtApmresume or PbtApmresumesuspend)
             {
                 _playerControls?.Invalidate();

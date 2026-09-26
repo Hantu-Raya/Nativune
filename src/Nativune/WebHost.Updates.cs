@@ -11,6 +11,8 @@ public sealed partial class WebHostWindow
     private DateTimeOffset? _lastReleaseUpdateCheckUtc;
     private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.NotChecked;
     private bool _releaseUpdateCheckRunning;
+    private bool _releaseUpdateCheckManual;
+    private bool _releaseUpdateCheckQueued;
     private bool _releaseUpdatePromptOpen;
     private bool _skipUpdatePrompt;
     private CancellationTokenSource? _updateDownloadCancellation;
@@ -143,11 +145,7 @@ public sealed partial class WebHostWindow
 
         if (!manual && state is not (ReleaseUpdateButtonState.Downloading
             or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching))
-        {
-            if (state == ReleaseUpdateButtonState.Failed)
-                AppLog.Write("update", $"{failure ?? update?.Failure ?? ReleaseUpdateFailure.InvalidMetadata} (HTTP {update?.HttpStatus?.ToString() ?? "unknown"})");
             return;
-        }
         if (state == ReleaseUpdateButtonState.Checking)
         {
             CloseUpdateInfo();
@@ -336,26 +334,45 @@ public sealed partial class WebHostWindow
         _releaseUpdateTimer.Stop();
     }
 
+    // Automatic checks are quiet: no Checking state and no banner. They only change the Update
+    // button (and Compact/tray) when they get a definite answer; a failed automatic check is logged
+    // and leaves what is shown, so a known available update stays marked.
     private async Task CheckForReleaseUpdateAsync(bool manual)
     {
-        if (_releaseUpdateCheckRunning || _closing || _disposed || _lifetime.IsCancellationRequested
+        if (_releaseUpdateCheckRunning)
+        {
+            // e.g. a wake-up catch-up while a check from before sleep is still in flight:
+            // re-evaluate when that check finishes.
+            _releaseUpdateCheckQueued = true;
+            return;
+        }
+        if (_closing || _disposed || _lifetime.IsCancellationRequested
             || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
                 or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching
-            || (!manual && !_settings.AutoCheckUpdates))
+            || (!manual && (!_settings.AutoCheckUpdates || _releaseUpdatePromptOpen)))
             return;
 
         _releaseUpdateCheckRunning = true;
+        _releaseUpdateCheckManual = manual;
         var previousCheckUtc = _lastReleaseUpdateCheckUtc;
         _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
+        // Every check restarts the countdown, so a resume catch-up (or a manual check) is not
+        // followed by a tick left over from before it.
+        if (_releaseUpdateTimer.IsRunning)
+        {
+            _releaseUpdateTimer.Stop();
+            _releaseUpdateTimer.Start();
+        }
         var previousState = _releaseUpdateButtonState;
-        ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: manual);
+        if (manual) ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: true);
         try
         {
             var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
+            manual = _releaseUpdateCheckManual; // a click during a quiet check makes it a manual one
             if (update.Status == ReleaseUpdateStatus.Cancelled)
             {
                 _lastReleaseUpdateCheckUtc = previousCheckUtc;
-                if (!_closing && !_disposed)
+                if (manual && !_closing && !_disposed)
                 {
                     ApplyUpdateFeedback(previousState);
                     CompactView.SetUpdateProgress(null, false);
@@ -364,8 +381,15 @@ public sealed partial class WebHostWindow
             }
             if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
+            // An update dialog or download that began while this automatic check ran owns the
+            // update surfaces; drop the result (the next tick checks again).
+            if (!manual && (_releaseUpdatePromptOpen || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
+                    or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching))
+            {
+                _lastReleaseUpdateCheckUtc = previousCheckUtc;
+                return;
+            }
 
-            _availableReleaseUpdate = update.IsAvailable ? update : null;
             var state = update.Status switch
             {
                 ReleaseUpdateStatus.Available when update.IsAvailable => ReleaseUpdateButtonState.Available,
@@ -373,26 +397,48 @@ public sealed partial class WebHostWindow
                 ReleaseUpdateStatus.None => ReleaseUpdateButtonState.UpToDate,
                 _ => ReleaseUpdateButtonState.Failed
             };
+            if (!manual && state == ReleaseUpdateButtonState.Failed)
+            {
+                LogAutomaticUpdateFailure(update.Failure, update.HttpStatus);
+                return;
+            }
+            _availableReleaseUpdate = update.IsAvailable ? update : null;
             ApplyUpdateFeedback(state, update, failure: update.Failure, manual: manual);
-
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
         {
         }
         catch (Exception)
         {
-            if (!_closing && !_disposed)
+            if (!_releaseUpdateCheckManual)
+                LogAutomaticUpdateFailure(ReleaseUpdateFailure.InvalidMetadata, null);
+            else if (!_closing && !_disposed)
             {
                 _availableReleaseUpdate = null;
                 ApplyUpdateFeedback(ReleaseUpdateButtonState.Failed,
-                    failure: ReleaseUpdateFailure.InvalidMetadata, manual: manual);
+                    failure: ReleaseUpdateFailure.InvalidMetadata, manual: true);
             }
         }
         finally
         {
             _releaseUpdateCheckRunning = false;
+            if (_releaseUpdateCheckQueued)
+            {
+                _releaseUpdateCheckQueued = false;
+                ConfigureAutomaticReleaseUpdateChecks(); // checks only if one is due
+            }
         }
     }
+
+    // Automatic checks are skipped while an update dialog is open; run one that came due meanwhile.
+    private void EndReleaseUpdatePrompt()
+    {
+        _releaseUpdatePromptOpen = false;
+        ConfigureAutomaticReleaseUpdateChecks();
+    }
+
+    private static void LogAutomaticUpdateFailure(ReleaseUpdateFailure failure, int? httpStatus)
+        => AppLog.Write("update", $"{failure} (HTTP {httpStatus?.ToString() ?? "unknown"})");
 
     private void OnUpdateButtonClick()
     {
@@ -403,11 +449,21 @@ public sealed partial class WebHostWindow
             CancelUpdateDownload();
             return;
         }
-        if (_releaseUpdateCheckRunning) return;
         if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Available
             && _availableReleaseUpdate is { IsAvailable: true } update)
         {
+            // Opens even during a quiet check; that check then drops its result.
             _ = ShowReleaseUpdatePromptAsync(update);
+            return;
+        }
+        if (_releaseUpdateCheckRunning)
+        {
+            // Show the running quiet check as the check the user asked for.
+            if (!_releaseUpdateCheckManual)
+            {
+                _releaseUpdateCheckManual = true;
+                ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: true);
+            }
             return;
         }
 
@@ -682,7 +738,7 @@ public sealed partial class WebHostWindow
             _updateDownloadCancellation?.Dispose();
             _updateDownloadCancellation = null;
             _skipUpdatePrompt = false;
-            _releaseUpdatePromptOpen = false;
+            EndReleaseUpdatePrompt();
             if (deltaFallback is not null && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
                 _ = OfferFullSetupAfterQuickUpdateFailureAsync(deltaFallback);
         }
@@ -743,7 +799,7 @@ public sealed partial class WebHostWindow
         }
         finally
         {
-            _releaseUpdatePromptOpen = false;
+            EndReleaseUpdatePrompt();
         }
         if (accepted && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
             await RetryUpdateDownloadAsync(full);
@@ -882,6 +938,6 @@ public sealed partial class WebHostWindow
         }
         catch (OperationCanceledException) { }
         catch (Exception) { }
-        finally { _releaseUpdatePromptOpen = false; }
+        finally { EndReleaseUpdatePrompt(); }
     }
 }

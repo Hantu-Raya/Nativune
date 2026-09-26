@@ -235,7 +235,7 @@ While you update, Nativune tells you what is happening and keeps playing:
 
 Failures are written to `data/nativune.log` with the reason and HTTP status only.
 
-When **Check for updates automatically** is enabled in Settings (the default), the app checks at startup and every 24 hours while running. Automatic checks only report availability; they never open a dialog or download anything.
+When **Check for updates automatically** is enabled in Settings (the default), the app checks at startup and every 3 hours while running, and again after the PC wakes if a check came due while it slept. Automatic checks are quiet: they only mark the update button (and the Compact and tray tooltips) when an update is available, and never show the bar, open a dialog or download anything. If an automatic check fails, the button keeps what it showed and the reason is logged.
 
 ## Uninstall
 

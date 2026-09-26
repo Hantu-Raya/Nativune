@@ -66,7 +66,7 @@
                       MinHeight="36"
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Check for updates automatically"
-                      AutomationProperties.HelpText="Check for updates at startup and every 24 hours while Nativune is running." />
+                      AutomationProperties.HelpText="Check for updates at startup and every 3 hours while Nativune is running. Automatic checks only mark the Update button; they never show a banner." />
             <TextBlock x:Name="AutoCheckUpdatesCaption"
                        Text="Update checks run only in installed builds."
                        TextWrapping="Wrap"
