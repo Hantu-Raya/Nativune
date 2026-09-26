@@ -19,6 +19,7 @@ internal enum PrerequisiteTestScenario
     Offline,
     WebView2Outdated,
     WebView2AtFloor,
+    DownloadCheck,
 }
 
 internal sealed record PrerequisiteDefinition(
@@ -29,7 +30,6 @@ internal sealed record PrerequisiteDefinition(
     Uri InformationUri,
     string[] Arguments,
     long MaxDownloadBytes,
-    bool RequireX64Executable,
     int InstallOrder,
     // Machine-wide installers (VC++ and the .NET runtime) cannot install from this asInvoker
     // Setup; after the user's consent Windows shows its own administrator (UAC) prompt for them.
@@ -90,7 +90,6 @@ internal static class PrerequisiteInstaller
             new Uri("https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170"),
             ["/install", "/quiet", "/norestart"],
             MaxDownloadBytes,
-            RequireX64Executable: true,
             InstallOrder: 0,
             RequiresAdministrator: true),
         new(
@@ -101,7 +100,6 @@ internal static class PrerequisiteInstaller
             new Uri("https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-10.0.12-windows-x64-installer"),
             ["/install", "/quiet", "/norestart"],
             MaxDownloadBytes,
-            RequireX64Executable: true,
             InstallOrder: 1,
             RequiresAdministrator: true),
         new(
@@ -112,7 +110,6 @@ internal static class PrerequisiteInstaller
             new Uri("https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution"),
             ["/silent", "/install"],
             MaxDownloadBytes,
-            RequireX64Executable: false,
             InstallOrder: 2),
         new(
             "windows-app-sdk-2-5-1-x64",
@@ -122,7 +119,6 @@ internal static class PrerequisiteInstaller
             new Uri("https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/downloads"),
             ["--quiet"],
             MaxDownloadBytes,
-            RequireX64Executable: true,
             InstallOrder: 3),
     ];
 
@@ -190,6 +186,15 @@ internal static class PrerequisiteInstaller
         {
             return new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present);
         }
+        if (approvedPlan.TestScenario == PrerequisiteTestScenario.DownloadCheck)
+        {
+            // Real downloads, size/PE/Authenticode checks of every official installer; nothing is run.
+            var all = Definitions.Select(definition => new MissingPrerequisite(definition, "download check (test hook)")).ToArray();
+            using (new PrerequisitePlan(all, DownloadAndValidate(all, installRoot, reporter, cancellationToken)))
+            {
+            }
+            return new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present);
+        }
 #endif
         cancellationToken.ThrowIfCancellationRequested();
         IReadOnlyList<MissingPrerequisite> currentMissing;
@@ -219,11 +224,20 @@ internal static class PrerequisiteInstaller
             return new PrerequisitePlan(currentMissing, downloadDirectory: null);
         }
 
+        return new PrerequisitePlan(currentMissing, DownloadAndValidate(currentMissing, installRoot, reporter, cancellationToken));
+    }
+
+    private static string DownloadAndValidate(
+        IReadOnlyList<MissingPrerequisite> items,
+        string installRoot,
+        ISetupReporter reporter,
+        CancellationToken cancellationToken)
+    {
         string? downloadDirectory = null;
         try
         {
             downloadDirectory = CreateDownloadDirectory(installRoot);
-            var ordered = currentMissing.OrderBy(value => value.Definition.InstallOrder).ToArray();
+            var ordered = items.OrderBy(value => value.Definition.InstallOrder).ToArray();
             for (var index = 0; index < ordered.Length; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -248,7 +262,7 @@ internal static class PrerequisiteInstaller
                         error);
                 }
             }
-            return new PrerequisitePlan(currentMissing, downloadDirectory);
+            return downloadDirectory;
         }
         catch
         {
@@ -365,7 +379,7 @@ internal static class PrerequisiteInstaller
             .ToArray();
         return scenario switch
         {
-            PrerequisiteTestScenario.Present => new PrerequisitePlan([], downloadDirectory: null, testScenario: scenario),
+            PrerequisiteTestScenario.Present or PrerequisiteTestScenario.DownloadCheck => new PrerequisitePlan([], downloadDirectory: null, testScenario: scenario),
             PrerequisiteTestScenario.WebView2Outdated or PrerequisiteTestScenario.WebView2AtFloor =>
                 FindOutdatedWebView2([scenario == PrerequisiteTestScenario.WebView2AtFloor
                     ? MinimumWebView2Version
@@ -696,9 +710,11 @@ internal static class PrerequisiteInstaller
             {
                 throw new SetupException(ExitCode.PrerequisiteFailure, "The downloaded prerequisite installer has an invalid size.");
             }
-            if (definition.RequireX64Executable && !IsX64Executable(lockedFile))
+            // Official installers are x86 (the VC++ and .NET WiX Burn bundles, the WebView2 bootstrapper) or x64
+            // PE files; the installed architecture is enforced by the x64-specific detection after installation.
+            if (!IsWindowsExecutable(lockedFile))
             {
-                throw new SetupException(ExitCode.PrerequisiteFailure, "The downloaded prerequisite installer is not an x64 PE executable.");
+                throw new SetupException(ExitCode.PrerequisiteFailure, "The downloaded prerequisite installer is not an x86 or x64 Windows executable.");
             }
 
             VerifyMicrosoftAuthenticode(path);
@@ -711,7 +727,7 @@ internal static class PrerequisiteInstaller
         }
     }
 
-    private static bool IsX64Executable(Stream stream)
+    private static bool IsWindowsExecutable(Stream stream)
     {
         if (stream.Length < 64)
         {
@@ -735,7 +751,7 @@ internal static class PrerequisiteInstaller
             && header[1] == (byte)'E'
             && header[2] == 0
             && header[3] == 0
-            && BinaryPrimitives.ReadUInt16LittleEndian(header[4..]) == 0x8664;
+            && BinaryPrimitives.ReadUInt16LittleEndian(header[4..]) is 0x014c or 0x8664;
     }
 
     private static void VerifyMicrosoftAuthenticode(string path)
@@ -760,12 +776,22 @@ internal static class PrerequisiteInstaller
             throw new SetupException(ExitCode.PrerequisiteFailure, "Windows Authenticode verification failed; the installer was not run.");
         }
 
+        // Microsoft signs these with different common names (the .NET installer's is ".NET"), so check the
+        // CA-validated organization of the signer and of its issuing Microsoft code-signing CA instead.
         using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
-        var publisher = certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
-        if (!string.Equals(publisher, "Microsoft Corporation", StringComparison.OrdinalIgnoreCase))
+        if (!IsMicrosoftOrganization(certificate.SubjectName) || !IsMicrosoftOrganization(certificate.IssuerName))
         {
             throw new SetupException(ExitCode.PrerequisiteFailure, "The installer is not signed by the expected Microsoft Corporation publisher.");
         }
+    }
+
+    private static bool IsMicrosoftOrganization(X500DistinguishedName name)
+    {
+        var organizations = name.EnumerateRelativeDistinguishedNames()
+            .Where(rdn => !rdn.HasMultipleElements && rdn.GetSingleElementType().Value == "2.5.4.10")
+            .Select(rdn => rdn.GetSingleElementValue())
+            .ToArray();
+        return organizations.Length == 1 && string.Equals(organizations[0], "Microsoft Corporation", StringComparison.Ordinal);
     }
 
     private static void RunInstaller(PrerequisiteDefinition definition, string path)

@@ -348,7 +348,8 @@ internal sealed record SetupOptions(
                         "offline" => PrerequisiteTestScenario.Offline,
                         "webview2-outdated" => PrerequisiteTestScenario.WebView2Outdated,
                         "webview2-at-floor" => PrerequisiteTestScenario.WebView2AtFloor,
-                        _ => throw new SetupException(ExitCode.Usage, "--test-prerequisites requires present, missing, declined, offline, webview2-outdated, or webview2-at-floor."),
+                        "download-check" => PrerequisiteTestScenario.DownloadCheck,
+                        _ => throw new SetupException(ExitCode.Usage, "--test-prerequisites requires present, missing, declined, offline, webview2-outdated, webview2-at-floor, or download-check."),
                     };
                     break;
 #endif

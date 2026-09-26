@@ -252,7 +252,9 @@ try {
         [pscustomobject]@{ Name = 'declined'; ExpectedExitCode = 3; ExpectedStatus = 'cancelled' },
         [pscustomobject]@{ Name = 'offline'; ExpectedExitCode = 19; ExpectedStatus = 'failed' },
         [pscustomobject]@{ Name = 'webview2-outdated'; ExpectedExitCode = 19; ExpectedStatus = 'failed' },
-        [pscustomobject]@{ Name = 'webview2-at-floor'; ExpectedExitCode = 0; ExpectedStatus = 'installed' }
+        [pscustomobject]@{ Name = 'webview2-at-floor'; ExpectedExitCode = 0; ExpectedStatus = 'installed' },
+        # Network: downloads and checks (size, PE, Microsoft Authenticode) every official prerequisite installer; runs none.
+        [pscustomobject]@{ Name = 'download-check'; ExpectedExitCode = 0; ExpectedStatus = 'installed' }
     )
     foreach ($scenario in $scenarios) {
         Remove-ProjectDirectory $fixtureRoot $fixtureRoot
@@ -272,6 +274,15 @@ try {
         }
         if ($scenario.Name -eq 'webview2-outdated' -and -not $run.Stderr.Contains("is installed, but Nativune needs $setupFloorText or later")) {
             throw "webview2-outdated did not report the installed-but-old WebView2 runtime. stderr: $($run.Stderr.Trim())"
+        }
+        if ($scenario.Name -eq 'download-check') {
+            if (-not ($stdoutLines | Where-Object { $_.Contains('Downloading prerequisite 4 of 4') })) {
+                throw 'download-check did not download all four prerequisite installers.'
+            }
+            if (Get-ChildItem -LiteralPath (Split-Path -Parent $fixtureRoot) -Force -Filter '.nativune-prerequisites*') {
+                throw 'download-check left its prerequisite download directory behind.'
+            }
+            $stdoutLines = @($stdoutLines | Where-Object { -not $_.StartsWith('Downloading prerequisite') }) + '(download progress lines omitted)'
         }
         if ($scenario.ExpectedExitCode -eq 0) {
             $requiredSteps = @('Unpacking Nativune', 'Checking free space', 'Installing files', 'shortcuts')
