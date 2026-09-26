@@ -392,6 +392,39 @@ function Get-TreeRecords {
     return $members.ToArray()
 }
 
+# Process type per WebView2 child from its command line, keyed "pid:createTime100ns" like the
+# samples so a reused PID never inherits a departed process's type. Only the --type and
+# --utility-sub-type values are kept (the rest, including the profile path, is never stored).
+# Runs after every sample but queries WMI (once, batched) only when an untyped child appeared,
+# so short-lived children and short schedules are typed too.
+function Add-ProcessTypes {
+    param([hashtable] $Types, [Collections.Generic.List[object]] $Samples)
+    if ($Samples.Count -eq 0) { return }
+    $untyped = @($Samples[$Samples.Count - 1].processes | Where-Object {
+        $_.imageName -ieq 'msedgewebview2.exe' -and -not $Types.ContainsKey(('{0}:{1}' -f $_.processId, $_.createTime100ns))
+    })
+    if ($untyped.Count -eq 0) { return }
+    $byPid = @{}
+    try {
+        foreach ($cim in @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop)) { $byPid[[long] $cim.ProcessId] = $cim }
+    }
+    catch { return }
+    foreach ($item in $untyped) {
+        $cim = $byPid[[long] $item.processId]
+        if ($null -eq $cim) { continue } # exited since the sample
+        $key = '{0}:{1}' -f $item.processId, $item.createTime100ns
+        # Same generation only: WMI reports creation time to the microsecond.
+        if ($null -eq $cim.CreationDate -or [Math]::Abs($cim.CreationDate.ToFileTimeUtc() - [long] $item.createTime100ns) -ge 10000) {
+            $Types[$key] = 'unknown'
+            continue
+        }
+        $commandLine = [string] $cim.CommandLine
+        $type = if ($commandLine -match '--type=([A-Za-z0-9_-]{1,32})(?=[\s"]|$)') { $Matches[1] } else { 'browser' }
+        if ($commandLine -match '--utility-sub-type=([A-Za-z0-9_.]{1,96})(?=[\s"]|$)') { $type = "$type/$($Matches[1])" }
+        $Types[$key] = $type
+    }
+}
+
 function Add-ProcessSample {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][Collections.Generic.List[object]] $Samples,
@@ -953,6 +986,7 @@ function Invoke-BenchRun {
     $profilePath = Join-Path $runRoot 'data\webview2'
     $logPath = Join-Path $runRoot 'bench.jsonl'
     $sampleList = [Collections.Generic.List[object]]::new()
+    $processTypes = @{}
     $logicalProcessors = 0
     $processStarted = $false
     $treeState = @{ RootPid = 0L; RootCreateTime = 0L; RootExitTime = 0L; Seen = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal) }
@@ -1051,6 +1085,7 @@ function Invoke-BenchRun {
             }
             if ($clock.Elapsed.TotalSeconds -ge $timeoutDeadlineSeconds) { $timedOut = $true; break }
             Add-ProcessSample -Samples $sampleList -TreeState $treeState -SampleState $sampleState -LaunchProcess $process -RunClock $clock -LogicalProcessorCount $logicalProcessors
+            Add-ProcessTypes -Types $processTypes -Samples $sampleList
             $firstSample = $false
             $nextSampleAt += 1.0
             while ($nextSampleAt -le $clock.Elapsed.TotalSeconds) { $nextSampleAt += 1.0 }
@@ -1201,6 +1236,7 @@ function Invoke-BenchRun {
         timedOut = [bool] $timedOut
         processExitCode = $exitCode
         processSamples = $sampleList.ToArray()
+        processTypes = $processTypes
         events = $events
         phases = $phases
         startup = $startup
