@@ -200,7 +200,9 @@ public sealed partial class WebHostWindow
         if (state == ReleaseUpdateButtonState.Available && manual && update is not null)
         {
             ShowUpdateInfo(InfoBarSeverity.Informational, $"Nativune {version} is available.",
-                $"Download is {ReleaseUpdater.FormatBytes(update.Size)}.", "See what's new and update",
+                update.Delta is { } quick
+                    ? $"Quick update is about {ReleaseUpdater.FormatBytes(quick.NeededBytes)}."
+                    : $"Download is {ReleaseUpdater.FormatBytes(update.Size)}.", "See what's new and update",
                 () => _ = ShowReleaseUpdatePromptAsync(update), true);
             CompactView.SetUpdateProgress($"Nativune {version} is available · Update button",
                 CompactUpdateSurfaceVisible);
@@ -423,6 +425,7 @@ public sealed partial class WebHostWindow
         _releaseUpdatePromptOpen = true;
         Window? dialog = null;
         var choice = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ReleaseUpdateResult? deltaFallback = null;
         try
         {
             if (!_skipUpdatePrompt)
@@ -430,7 +433,7 @@ public sealed partial class WebHostWindow
             var version = update.Version ?? "the latest version";
             var message = new TextBlock
             {
-                Text = $"Nativune {version} is available ({ReleaseUpdater.FormatBytes(update.Size)}). Update now downloads and checks Setup, then closes Nativune and reopens it after the upgrade. Setup confirms the upgrade first; if you cancel, {update.InstalledVersion ?? "the current version"} stays installed and reopens.",
+                Text = $"Nativune {version} is available ({DescribeDownloadSize(update)}). Update now downloads and checks the update, then closes Nativune and reopens it after the upgrade. Setup confirms the upgrade first; if you cancel, {update.InstalledVersion ?? "the current version"} stays installed and reopens.",
                 TextWrapping = TextWrapping.Wrap,
             };
             AutomationProperties.SetName(message, "Nativune update information");
@@ -542,6 +545,8 @@ public sealed partial class WebHostWindow
             else
                 _skipUpdatePrompt = false;
 
+            var useDelta = update.Delta is not null;
+            var downloadTotal = update.Delta?.NeededBytes ?? update.Size;
             _updateDownloadCancellation?.Dispose();
             _updateDownloadCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             _updateProgressLastBytes = 0;
@@ -552,7 +557,7 @@ public sealed partial class WebHostWindow
             _updateLastAnnouncedPercent = 0;
             _updateLastTextTicks = 0;
             ApplyUpdateFeedback(ReleaseUpdateButtonState.Downloading, update,
-                new ReleaseUpdateProgress(ReleaseUpdatePhase.Connecting, 0, update.Size),
+                new ReleaseUpdateProgress(ReleaseUpdatePhase.Connecting, 0, downloadTotal),
                 message: "Downloading update · connecting…", announce: true);
             var cancellation = _updateDownloadCancellation!;
             var progress = new Progress<ReleaseUpdateProgress>(value =>
@@ -606,8 +611,9 @@ public sealed partial class WebHostWindow
                     message: compactProgress, announce: false);
                 UpdateInfoBar.Message = string.Join(" · ", parts.Where(part => part.Length > 0));
             });
-            var downloaded = await ReleaseUpdater.DownloadAsync(
-                _root, update, progress, cancellation.Token);
+            var downloaded = useDelta
+                ? await ReleaseUpdater.DownloadDeltaAsync(_root, update, progress, cancellation.Token)
+                : await ReleaseUpdater.DownloadAsync(_root, update, progress, cancellation.Token);
             if (_closing || _disposed || _lifetime.IsCancellationRequested) return;
             if (downloaded.Status == ReleaseUpdateStatus.Cancelled
                 || cancellation.IsCancellationRequested && downloaded.IsAvailable)
@@ -622,7 +628,13 @@ public sealed partial class WebHostWindow
                 ClearCompactUpdateNoticeAfter(TimeSpan.FromSeconds(5));
                 return;
             }
-            if (!downloaded.IsAvailable || downloaded.SetupPath is null)
+            if (useDelta && !downloaded.IsAvailable)
+            {
+                AppLog.Write("update", $"quick update failed before handoff: {downloaded.Failure}");
+                deltaFallback = update;
+                return;
+            }
+            if (!downloaded.IsAvailable || (!useDelta && downloaded.SetupPath is null))
             {
                 ShowUpdateDownloadFailure(downloaded, update);
                 return;
@@ -636,8 +648,16 @@ public sealed partial class WebHostWindow
             CompactView.SetUpdateProgress(
                 $"Update verified. Setup is starting and Nativune will reopen as {update.Version}.",
                 CompactUpdateSurfaceVisible);
-            var launched = await ReleaseUpdater.LaunchVerifiedSetupAsync(
-                downloaded, _root, Environment.ProcessId, _lifetime.Token);
+            var launched = useDelta
+                ? await ReleaseUpdater.LaunchDeltaSetupAsync(update, _root, Environment.ProcessId, _lifetime.Token)
+                : await ReleaseUpdater.LaunchVerifiedSetupAsync(downloaded, _root, Environment.ProcessId, _lifetime.Token);
+            if (!launched.Started && useDelta)
+            {
+                AppLog.Write("update", $"quick update handoff failed (Win32 {launched.Win32Error?.ToString() ?? "none"})");
+                ReleaseUpdater.TryDeleteDeltaDirectory(_root);
+                deltaFallback = update;
+                return;
+            }
             if (!launched.Started)
             {
                 ShowUpdateDownloadFailure(ReleaseUpdateResult.ErrorResult(ReleaseUpdateFailure.LaunchFailed),
@@ -663,7 +683,70 @@ public sealed partial class WebHostWindow
             _updateDownloadCancellation = null;
             _skipUpdatePrompt = false;
             _releaseUpdatePromptOpen = false;
+            if (deltaFallback is not null && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
+                _ = OfferFullSetupAfterQuickUpdateFailureAsync(deltaFallback);
         }
+    }
+
+    private static string DescribeDownloadSize(ReleaseUpdateResult update)
+        => update.Delta is { } delta
+            ? $"quick update about {ReleaseUpdater.FormatBytes(delta.NeededBytes)}; full Setup is {ReleaseUpdater.FormatBytes(update.Size)}"
+            : $"download is {ReleaseUpdater.FormatBytes(update.Size)}";
+
+    // A quick update that failed before handoff never falls back silently: the user decides on the full download.
+    private async Task OfferFullSetupAfterQuickUpdateFailureAsync(ReleaseUpdateResult update)
+    {
+        if (_releaseUpdatePromptOpen || _closing || _disposed) return;
+        var full = update with { Delta = null };
+        if (_availableReleaseUpdate?.Version == update.Version)
+            _availableReleaseUpdate = full;
+        ApplyUpdateFeedback(ReleaseUpdateButtonState.Available, full);
+        var size = ReleaseUpdater.FormatBytes(full.Size);
+        ShowUpdateInfo(InfoBarSeverity.Warning, "Quick update failed",
+            $"Nothing was changed. You can download the full installer ({size}) instead.",
+            "Download full installer", () => _ = RetryUpdateDownloadAsync(full), true);
+
+        _releaseUpdatePromptOpen = true;
+        var accepted = false;
+        try
+        {
+            var choice = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var message = new TextBlock
+            {
+                Text = $"The quick update to Nativune {full.Version} couldn't be completed. Nothing was changed. Download the full installer ({size}) instead?",
+                TextWrapping = TextWrapping.Wrap,
+            };
+            AutomationProperties.SetName(message, "Quick update failed");
+            var download = new Button { Content = $"Download full installer ({size})" };
+            AutomationProperties.SetName(download, $"Download the full Nativune installer, {size}");
+            var notNow = new Button { Content = "Not now" };
+            AutomationProperties.SetName(notNow, "Do not download the full installer now");
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
+            buttons.Children.Add(download);
+            buttons.Children.Add(notNow);
+            var panel = new Grid { Padding = new Thickness(16), RowSpacing = 12 };
+            panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(buttons, 1);
+            panel.Children.Add(message);
+            panel.Children.Add(buttons);
+            var dialog = CreateDialogWindow("Quick update failed", panel, 480, 220);
+            download.Click += (_, _) => { choice.TrySetResult(true); dialog.Close(); };
+            notNow.Click += (_, _) => { choice.TrySetResult(false); dialog.Close(); };
+            dialog.Closed += (_, _) => choice.TrySetResult(false);
+            dialog.Activate();
+            download.Focus(FocusState.Programmatic);
+            accepted = await choice.Task;
+        }
+        catch (Exception)
+        {
+        }
+        finally
+        {
+            _releaseUpdatePromptOpen = false;
+        }
+        if (accepted && !_closing && !_disposed && !_lifetime.IsCancellationRequested)
+            await RetryUpdateDownloadAsync(full);
     }
 
     private async Task RetryUpdateDownloadAsync(ReleaseUpdateResult update)

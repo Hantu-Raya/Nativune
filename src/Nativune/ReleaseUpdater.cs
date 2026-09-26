@@ -124,6 +124,9 @@ internal sealed record ReleaseUpdateResult(
     internal string? ReleaseNotes { get; init; }
     internal string? InstalledVersion { get; init; }
 
+    // Verified delta plan when this install can take the quick update; null means full Setup only.
+    internal DeltaPlan? Delta { get; init; }
+
     internal static ReleaseUpdateResult None()
         => new(ReleaseUpdateStatus.None, null, null, null, 0, null, null);
 
@@ -340,12 +343,13 @@ internal sealed record ReleaseSelection(
     string Sha256)
 {
     internal string VersionText => Version.ToTagString();
+    internal DeltaAssets? Delta { get; init; }
 }
 
 internal readonly record struct InstalledBuild(ReleaseVersion Version);
 internal readonly record struct InstalledManifest(ReleaseVersion Version);
 
-internal static class ReleaseUpdater
+internal static partial class ReleaseUpdater
 {
     private const string Product = "Nativune";
     private const string Executable = "app/Nativune.exe";
@@ -392,9 +396,13 @@ internal static class ReleaseUpdater
             using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 });
             var disposition = SelectRelease(document.RootElement, installed.Version, out var selection);
             if (disposition == ReleaseSelectionDisposition.None)
+            {
+                DeltaAttemptBlocks(root, installed.Version, installed.Version);
                 return ReleaseUpdateResult.None();
+            }
             if (disposition != ReleaseSelectionDisposition.Ready || selection is null)
                 return ReleaseUpdateResult.ErrorResult();
+            var delta = await TryPrepareDeltaAsync(root, selection, cancellationToken).ConfigureAwait(false);
 
             return new ReleaseUpdateResult(
                 ReleaseUpdateStatus.Available,
@@ -407,6 +415,7 @@ internal static class ReleaseUpdater
             {
                 ReleaseNotes = TryGetString(document.RootElement, "body", out var notes) ? notes : null,
                 InstalledVersion = installed.Version.ToTagString(),
+                Delta = delta,
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1000,7 +1009,7 @@ internal static class ReleaseUpdater
             || !IsDigestSha256(digest))
             return ReleaseSelectionDisposition.Error;
 
-        selection = new ReleaseSelection(version, downloadUrl, size, digest);
+        selection = new ReleaseSelection(version, downloadUrl, size, digest) { Delta = SelectDeltaAssets(assets) };
         return ReleaseSelectionDisposition.Ready;
     }
 
@@ -1839,6 +1848,243 @@ internal static class ReleaseUpdaterChecks
         };
         if (!arguments.SequenceEqual(expectedArguments, StringComparer.Ordinal))
             throw new SelfCheckException("Update command arguments failed.");
+
+        var deltaArguments = ReleaseUpdater.BuildDeltaUpdateArguments(Path.Combine(root, "installed root"), 1234, "v0.1.1", new string('a', 64));
+        if (!deltaArguments.SequenceEqual(expectedArguments.Concat(new[]
+            {
+                "--delta-dir", Path.Combine(Path.GetFullPath(Path.Combine(root, "installed root")), "updates", "delta"),
+                "--expected-manifest-sha256", new string('a', 64),
+            }), StringComparer.Ordinal))
+            throw new SelfCheckException("Delta update command arguments failed.");
+
+        RunDeltaChecks(root, releaseJson, digest);
+    }
+
+    private static void RunDeltaChecks(string root, string releaseJson, string digest)
+    {
+        static string Asset(string name, long size, string digest) => $$"""
+            { "name": "{{name}}", "state": "uploaded", "size": {{size}}, "browser_download_url": "https://github.com/Hantu-Raya/Nativune/releases/download/v0.1.1/{{name}}", "digest": "{{digest}}" },
+            """;
+        var deltaAssets = Asset("release-manifest.json", 100, digest) + Asset("Nativune-Setup.zip", 1000, digest) + Asset("delta-update.json", 100, digest);
+        var withDelta = releaseJson.Replace("\"assets\": [", "\"assets\": [" + deltaAssets, StringComparison.Ordinal);
+        if (withDelta == releaseJson
+            || ReleaseUpdater.SelectReleaseForChecks(withDelta, "0.1.0", out var deltaSelection) != ReleaseSelectionDisposition.Ready
+            || deltaSelection?.Delta is null
+            || ReleaseUpdater.SelectReleaseForChecks(releaseJson, "0.1.0", out var plainSelection) != ReleaseSelectionDisposition.Ready
+            || plainSelection?.Delta is not null
+            || ReleaseUpdater.SelectReleaseForChecks(withDelta.Replace(Asset("delta-update.json", 100, digest), Asset("delta-update.json", 100, "sha256:bad"), StringComparison.Ordinal), "0.1.0", out var badDelta) != ReleaseSelectionDisposition.Ready
+            || badDelta?.Delta is not null)
+            throw new SelfCheckException("Delta asset selection checks failed.");
+
+        ReleaseVersion.TryParse("0.1.1", requireVPrefix: false, out var offered);
+        var descriptor = $$"""{"schemaVersion":1,"product":"Nativune","version":"0.1.1","enabled":true,"applyProtocol":1,"installerSha256":"{{new string('a', 64)}}","installerSourceSha256":"{{new string('b', 64)}}"}""";
+        if (!ReleaseUpdater.TryParseDeltaDescriptor(Encoding.UTF8.GetBytes(descriptor), offered, out var installerSha)
+            || installerSha != new string('a', 64)
+            || ReleaseUpdater.TryParseDeltaDescriptor(Encoding.UTF8.GetBytes(descriptor.Replace("true", "false", StringComparison.Ordinal)), offered, out _)
+            || ReleaseUpdater.TryParseDeltaDescriptor(Encoding.UTF8.GetBytes(descriptor.Replace("0.1.1", "0.1.2", StringComparison.Ordinal)), offered, out _)
+            || ReleaseUpdater.TryParseDeltaDescriptor(Encoding.UTF8.GetBytes(descriptor.Replace("}", ",\"extra\":1}", StringComparison.Ordinal)), offered, out _)
+            || ReleaseUpdater.TryParseDeltaDescriptor(Encoding.UTF8.GetBytes(descriptor.Replace("\"applyProtocol\":1", "\"applyProtocol\":2", StringComparison.Ordinal)), offered, out _))
+            throw new SelfCheckException("Delta descriptor checks failed.");
+
+        // A small ZIP served over loopback with explicit byte ranges; only two of three entries are needed.
+        var random = new Random(1234);
+        var large = new byte[300 * 1024];
+        random.NextBytes(large);
+        var contents = new Dictionary<string, byte[]>(StringComparer.Ordinal)
+        {
+            ["app/a.txt"] = "alpha"u8.ToArray(),
+            ["app/sub/b.bin"] = large,
+            ["licenses/c.txt"] = "charlie"u8.ToArray(),
+        };
+        byte[] zipBytes;
+        using (var zipBuffer = new MemoryStream())
+        {
+            using (var archive = new System.IO.Compression.ZipArchive(zipBuffer, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+            {
+                foreach (var (name, bytes) in contents)
+                {
+                    using var entry = archive.CreateEntry(name).Open();
+                    entry.Write(bytes);
+                }
+            }
+            zipBytes = zipBuffer.ToArray();
+        }
+        DeltaFile Describe(string path, string? sha = null)
+            => new(path, contents[path].Length, sha ?? Convert.ToHexString(SHA256.HashData(contents[path])).ToLowerInvariant());
+        var needed = new[] { Describe("app/a.txt"), Describe("app/sub/b.bin") };
+
+        var directory = Path.Combine(root, "release-updater-delta-check-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string Stage(RangeTestServer.Mode mode, DeltaFile[] files, out RangeTestServer server)
+            {
+                var staging = Path.Combine(directory, Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(staging);
+                server = new RangeTestServer(zipBytes, mode);
+                var port = server.Port;
+                using var client = ReleaseUpdater.CreateAssetHttpClient();
+                using var stream = HttpRangeReadStream.Open(client, server.Url, zipBytes.Length,
+                    uri => uri.Host == "127.0.0.1" && uri.Port == port, CancellationToken.None);
+                ReleaseUpdater.StageDeltaEntries(stream, files, staging, null, CancellationToken.None);
+                return staging;
+            }
+
+            RangeTestServer? good = null;
+            try
+            {
+                var staged = Stage(RangeTestServer.Mode.Good, needed, out good);
+                if (!File.ReadAllBytes(Path.Combine(staged, "app", "a.txt")).AsSpan().SequenceEqual(contents["app/a.txt"])
+                    || !File.ReadAllBytes(Path.Combine(staged, "app", "sub", "b.bin")).AsSpan().SequenceEqual(large)
+                    || File.Exists(Path.Combine(staged, "licenses", "c.txt"))
+                    || Directory.EnumerateFiles(staged, "*", SearchOption.AllDirectories).Count() != 2)
+                    throw new SelfCheckException("Delta range staging did not extract exactly the needed entries.");
+                if (good.Ranges.Count == 0
+                    || good.Ranges.First() != "bytes=0-0"
+                    || good.Ranges.Any(range => !System.Text.RegularExpressions.Regex.IsMatch(range, "^bytes=[0-9]+-[0-9]+$")))
+                    throw new SelfCheckException("Delta range stream sent a probe-less or non-explicit range request.");
+            }
+            finally
+            {
+                good?.Dispose();
+            }
+
+            void ExpectFailure(RangeTestServer.Mode mode, DeltaFile[] files, string label)
+            {
+                RangeTestServer? server = null;
+                try
+                {
+                    Stage(mode, files, out server);
+                }
+                catch (DeltaUpdateException)
+                {
+                    return;
+                }
+                catch (InvalidDataException)
+                {
+                    return;
+                }
+                finally
+                {
+                    server?.Dispose();
+                }
+                throw new SelfCheckException($"Delta range staging accepted {label}.");
+            }
+
+            ExpectFailure(RangeTestServer.Mode.FullBody, needed, "a 200 response instead of 206");
+            ExpectFailure(RangeTestServer.Mode.WrongRange, needed, "a wrong Content-Range");
+            ExpectFailure(RangeTestServer.Mode.SuffixOnly, needed, "a server that refuses explicit ranges");
+            ExpectFailure(RangeTestServer.Mode.Good, [needed[0], Describe("app/sub/b.bin", new string('0', 64))], "a hash mismatch");
+
+            using (var suffixServer = new RangeTestServer(zipBytes, RangeTestServer.Mode.Good))
+            using (var client = ReleaseUpdater.CreateAssetHttpClient())
+            using (var response = ReleaseUpdater.SendAssetRequest(client, suffixServer.Url, "bytes=-100",
+                uri => uri.Host == "127.0.0.1", CancellationToken.None))
+            {
+                if ((int)response.StatusCode != 501)
+                    throw new SelfCheckException("Delta range test server did not refuse a suffix range.");
+            }
+        }
+        finally
+        {
+            try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+            catch (Exception) { throw new SelfCheckException("Delta check data could not be removed."); }
+        }
+    }
+
+    // Minimal HTTP/1.1 loopback server mimicking GitHub asset range behavior for self-checks.
+    private sealed class RangeTestServer : IDisposable
+    {
+        internal enum Mode { Good, FullBody, WrongRange, SuffixOnly }
+
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new();
+        private readonly byte[] _content;
+        private readonly Mode _mode;
+        private readonly Task _loop;
+
+        internal RangeTestServer(byte[] content, Mode mode)
+        {
+            _content = content;
+            _mode = mode;
+            _listener.Start();
+            Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            _loop = Task.Run(LoopAsync);
+        }
+
+        internal int Port { get; }
+        internal Uri Url => new($"http://127.0.0.1:{Port.ToString(CultureInfo.InvariantCulture)}/asset.zip");
+        internal System.Collections.Concurrent.ConcurrentQueue<string> Ranges { get; } = new();
+
+        private async Task LoopAsync()
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                TcpClient client;
+                try { client = await _listener.AcceptTcpClientAsync(_stop.Token); }
+                catch (Exception) { return; }
+                using (client)
+                {
+                    try { await HandleAsync(client.GetStream()); }
+                    catch (Exception) { }
+                }
+            }
+        }
+
+        private async Task HandleAsync(NetworkStream stream)
+        {
+            var reader = new StreamReader(stream, Encoding.ASCII, false, 1024, leaveOpen: true);
+            string? range = null;
+            await reader.ReadLineAsync();
+            while (await reader.ReadLineAsync() is { Length: > 0 } line)
+                if (line.StartsWith("Range:", StringComparison.OrdinalIgnoreCase))
+                    range = line["Range:".Length..].Trim();
+            if (range is not null) Ranges.Enqueue(range);
+
+            var match = range is null ? null : System.Text.RegularExpressions.Regex.Match(range, "^bytes=([0-9]+)-([0-9]+)$");
+            int status;
+            string? contentRange = null;
+            byte[] body;
+            if (range is not null && range.StartsWith("bytes=-", StringComparison.Ordinal))
+            {
+                (status, body) = (501, "Not Implemented"u8.ToArray());
+            }
+            else if (match is not { Success: true } || _mode == Mode.FullBody)
+            {
+                (status, body) = _mode == Mode.SuffixOnly ? (501, "Not Implemented"u8.ToArray()) : (200, _content);
+            }
+            else if (_mode == Mode.SuffixOnly)
+            {
+                (status, body) = (501, "Not Implemented"u8.ToArray());
+            }
+            else
+            {
+                var start = long.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                var end = Math.Min(long.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture), _content.Length - 1);
+                body = _content.AsSpan((int)start, (int)(end - start + 1)).ToArray();
+                status = 206;
+                var shownStart = _mode == Mode.WrongRange ? start + 1 : start;
+                var shownEnd = _mode == Mode.WrongRange ? end + 1 : end;
+                contentRange = $"bytes {shownStart}-{shownEnd}/{_content.Length}";
+            }
+            var header = new StringBuilder()
+                .Append(CultureInfo.InvariantCulture, $"HTTP/1.1 {status} X\r\n")
+                .Append(CultureInfo.InvariantCulture, $"Content-Length: {body.Length}\r\n")
+                .Append("Content-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nConnection: close\r\n");
+            if (contentRange is not null) header.Append("Content-Range: ").Append(contentRange).Append("\r\n");
+            header.Append("\r\n");
+            await stream.WriteAsync(Encoding.ASCII.GetBytes(header.ToString()));
+            await stream.WriteAsync(body);
+            await stream.FlushAsync();
+        }
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            _listener.Stop();
+            try { _loop.Wait(TimeSpan.FromSeconds(5)); }
+            catch (Exception) { }
+            _stop.Dispose();
+        }
     }
 
     private sealed class InlineProgress(Action<ReleaseUpdateProgress> report) : IProgress<ReleaseUpdateProgress>

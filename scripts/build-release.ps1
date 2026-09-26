@@ -6,7 +6,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string] $Configuration = 'Release',
     [ValidatePattern('^artifacts[/\\][A-Za-z0-9._-]+$')]
-    [string] $OutputDirectory = 'artifacts/release'
+    [string] $OutputDirectory = 'artifacts/release',
+    [string] $PreviousReleaseDirectory = ''
 )
 
 Set-StrictMode -Version Latest
@@ -27,6 +28,8 @@ $setupPath = Join-Path $releaseRoot 'Nativune-Setup.exe'
 $releaseZipPath = Join-Path $releaseRoot 'Nativune-Setup.zip'
 $manifestPath = Join-Path $releaseRoot 'release-manifest.json'
 $checksumsPath = Join-Path $releaseRoot 'SHA256SUMS.txt'
+$deltaDescriptorPath = Join-Path $releaseRoot 'delta-update.json'
+$installerEntryPath = 'installer/Nativune.Setup.exe'
 function Resolve-RepositoryPath([string] $Path) {
     if ([IO.Path]::IsPathRooted($Path)) {
         $candidate = [IO.Path]::GetFullPath($Path)
@@ -233,6 +236,106 @@ function Get-TreeFingerprint([string] $Root, [switch] $AllowDevelopmentFiles) {
     }
 }
 
+function Get-InstallerSourceFingerprint([string] $SdkVersion, [string[]] $PublishOptions) {
+    $installerRoot = Resolve-RepositoryPath 'src/Nativune.Installer'
+    $records = [Collections.Generic.List[string]]::new()
+    $files = [Collections.Generic.List[IO.FileInfo]]::new()
+    foreach ($item in Get-ChildItem -LiteralPath $installerRoot -Recurse -Force) {
+        $relative = Relative-ForwardPath $repository $item.FullName
+        if ($relative -match '(?i)^src/Nativune\.Installer/(bin|obj)(/|$)') { continue }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The installer source contains a reparse point: $($item.FullName)"
+        }
+        if (-not $item.PSIsContainer) { $files.Add($item) }
+    }
+    foreach ($name in @('global.json', 'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props', 'NuGet.config')) {
+        $path = Resolve-RepositoryPath $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Assert-RegularFile $path "Repository build input $name"
+            $files.Add((Get-Item -LiteralPath $path -Force))
+        }
+    }
+    foreach ($item in $files) {
+        $relative = Relative-ForwardPath $repository $item.FullName
+        $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $records.Add($relative + [char]0 + $item.Length.ToString([Globalization.CultureInfo]::InvariantCulture) + [char]0 + $fileHash + "`n")
+    }
+    $records.Add('dotnet-sdk-version' + [char]0 + $SdkVersion + "`n")
+    $records.Add('installer-publish-arguments' + [char]0 + ($PublishOptions -join [char]0) + "`n")
+    $records.Sort([StringComparer]::Ordinal)
+    $bytes = [Text.Encoding]::UTF8.GetBytes([string]::Concat($records))
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Read-DeltaDescriptor([string] $Path) {
+    $descriptor = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $expected = @('schemaVersion', 'product', 'version', 'enabled', 'applyProtocol', 'installerSha256', 'installerSourceSha256')
+    $names = @($descriptor.PSObject.Properties.Name)
+    if ($names.Count -ne $expected.Count -or @($expected | Where-Object { $_ -cnotin $names }).Count -ne 0) { return $null }
+    if ($descriptor.schemaVersion -isnot [int64] -and $descriptor.schemaVersion -isnot [int]) { return $null }
+    if ($descriptor.schemaVersion -ne 1 -or $descriptor.product -cne 'Nativune' -or $descriptor.version -isnot [string] -or $descriptor.enabled -isnot [bool] -or $descriptor.applyProtocol -ne 1) { return $null }
+    if ($descriptor.installerSha256 -cnotmatch '^[0-9a-f]{64}$' -or $descriptor.installerSourceSha256 -cnotmatch '^[0-9a-f]{64}$') { return $null }
+    return $descriptor
+}
+
+function Get-ReusableStub([string] $PreviousRoot, [string] $Fingerprint, [string] $Destination) {
+    $previousDescriptorPath = Join-Path $PreviousRoot 'delta-update.json'
+    $previousManifestPath = Join-Path $PreviousRoot 'release-manifest.json'
+    $previousZipPath = Join-Path $PreviousRoot 'Nativune-Setup.zip'
+    foreach ($path in @($previousDescriptorPath, $previousManifestPath, $previousZipPath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Write-Host "Previous release asset missing, building a fresh installer stub: $path"
+            return $false
+        }
+        Assert-RegularFile $path 'The previous release asset'
+    }
+    $descriptor = Read-DeltaDescriptor $previousDescriptorPath
+    if ($null -eq $descriptor) {
+        Write-Host 'The previous delta-update.json is not a valid schema 1 descriptor; building a fresh installer stub.'
+        return $false
+    }
+    if ($descriptor.installerSourceSha256 -cne $Fingerprint) {
+        Write-Host 'Installer inputs changed since the previous release; building a fresh installer stub.'
+        return $false
+    }
+    $manifestBytes = [IO.File]::ReadAllBytes($previousManifestPath)
+    $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+    $entries = @($manifest.files | Where-Object { $_.path -ceq $installerEntryPath })
+    if ($manifest.schemaVersion -ne 1 -or $manifest.product -cne 'Nativune' -or $entries.Count -ne 1) {
+        throw 'The previous release manifest does not contain exactly one installer entry.'
+    }
+    $stream = [IO.File]::OpenRead($previousZipPath)
+    $archive = $null
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true, [Text.Encoding]::UTF8)
+        $zipManifest = @($archive.Entries | Where-Object { $_.FullName -ceq 'release-manifest.json' })
+        $zipStub = @($archive.Entries | Where-Object { $_.FullName -ceq $installerEntryPath })
+        if ($zipManifest.Count -ne 1 -or $zipStub.Count -ne 1) {
+            throw 'The previous release ZIP does not contain exactly one manifest and installer entry.'
+        }
+        $buffer = [IO.MemoryStream]::new()
+        $entryStream = $zipManifest[0].Open()
+        try { $entryStream.CopyTo($buffer) } finally { $entryStream.Dispose() }
+        if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$buffer.ToArray(), [byte[]]$manifestBytes)) {
+            throw 'The previous release ZIP manifest differs from the previous release-manifest.json.'
+        }
+        if ($zipStub[0].Length -ne [int64]$entries[0].length -or $zipStub[0].Length -gt 512MB) {
+            throw 'The previous installer stub length does not match its manifest entry.'
+        }
+        $entryStream = $zipStub[0].Open()
+        $output = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $entryStream.CopyTo($output, 131072) } finally { $output.Dispose(); $entryStream.Dispose() }
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        $stream.Dispose()
+    }
+    $stubHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($stubHash -cne $entries[0].sha256 -or $stubHash -cne $descriptor.installerSha256) {
+        throw 'The previous installer stub hash does not match its manifest entry and delta descriptor.'
+    }
+    return $true
+}
+
 function New-Manifest([string] $PayloadRoot) {
     $files = @(
         foreach ($item in (Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File -Force | Sort-Object @{ Expression = { Relative-ForwardPath $PayloadRoot $_.FullName }; Ascending = $true })) {
@@ -380,13 +483,27 @@ try {
     Assert-RegularFile $dotnetNotice '.NET third-party notices'
     Assert-RegularFile $webView2License 'The WebView2 license'
     Assert-RegularFile $webView2Notice 'The WebView2 notice'
+    # The installer keeps its own version; its publish must not depend on the app version.
+    $installerPublishOptions = @('-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true', '--no-restore', '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:DebugType=none', '-p:DebugSymbols=false', '-p:InstallerTestHooks=false')
+    $installerSourceSha256 = Get-InstallerSourceFingerprint $dotnetVersion.Trim() $installerPublishOptions
+    [IO.Directory]::CreateDirectory($setupPublishRoot) | Out-Null
+    $stubReused = $false
+    if (-not [string]::IsNullOrEmpty($PreviousReleaseDirectory)) {
+        $previousRoot = Resolve-RepositoryPath $PreviousReleaseDirectory
+        if (-not (Test-Path -LiteralPath $previousRoot -PathType Container)) {
+            throw "The previous release directory is missing: $PreviousReleaseDirectory"
+        }
+        $stubReused = Get-ReusableStub $previousRoot $installerSourceSha256 (Join-Path $setupPublishRoot 'Nativune.Setup.exe')
+    }
     Push-Location $repository
     try {
         & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -p:PerfBenchHooks=false -o $appPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
         Assert-NoBundledAppRuntime $appPublishRoot 'The published Nativune app'
-        & $dotnetExecutable publish $installerProjectPath -c $Configuration -r win-x64 --self-contained true --no-restore -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -p:InstallerTestHooks=false -o $setupPublishRoot
-        if ($LASTEXITCODE -ne 0) { throw 'The installer stub publish failed.' }
+        if (-not $stubReused) {
+            & $dotnetExecutable publish $installerProjectPath @installerPublishOptions -o $setupPublishRoot
+            if ($LASTEXITCODE -ne 0) { throw 'The installer stub publish failed.' }
+        }
     } finally {
         Pop-Location
     }
@@ -398,6 +515,8 @@ try {
     Assert-RegularFile $appExecutable 'The published Nativune executable'
     $stubPath = Join-Path $setupPublishRoot 'Nativune.Setup.exe'
     Assert-RegularFile $stubPath 'The published setup stub'
+    $stubSha256 = (Get-FileHash -LiteralPath $stubPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($stubReused) { Write-Host "Installer stub: reused $stubSha256" } else { Write-Host "Installer stub: built $stubSha256" }
     # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/InstallerTestHooks=false above).
     $seamChecks = @(
         @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_') },
@@ -447,11 +566,23 @@ try {
     Remove-SafeOutputFile $setupPath 'The setup executable output'
     Remove-SafeOutputFile $manifestPath 'The release manifest output'
     Remove-SafeOutputFile $checksumsPath 'The checksum output'
+    Remove-SafeOutputFile $deltaDescriptorPath 'The delta update descriptor output'
     Copy-Item -LiteralPath $zipPath -Destination $releaseZipPath
     New-AppendedSetup $stubPath $zipPath $setupPath
     Copy-Item -LiteralPath (Join-Path $stageRoot 'release-manifest.json') -Destination $manifestPath
 
-    $checksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'release-manifest.json')
+    $descriptor = [ordered]@{
+        schemaVersion = 1
+        product = 'Nativune'
+        version = $Version
+        enabled = $true
+        applyProtocol = 1
+        installerSha256 = $stubSha256
+        installerSourceSha256 = $installerSourceSha256
+    }
+    [IO.File]::WriteAllText($deltaDescriptorPath, ($descriptor | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+
+    $checksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json')
     $checksumLines = foreach ($name in ($checksumNames | Sort-Object)) {
         $path = Join-Path $releaseRoot $name
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -461,6 +592,7 @@ try {
     Write-Host "Created $setupPath"
     Write-Host "Created $releaseZipPath"
     Write-Host "Created $manifestPath"
+    Write-Host "Created $deltaDescriptorPath"
     Write-Host "Created $checksumsPath"
 } finally {
     if (Test-Path -LiteralPath $workRoot) {

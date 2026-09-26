@@ -493,6 +493,204 @@ internal static class PayloadReader
         }
     }
 
+    internal static byte[] ReadDeltaManifestBytes(string deltaDir, string expectedManifestSha256)
+    {
+        try
+        {
+            InstallRoot.EnsureNoReparseTree(deltaDir);
+            var manifestPath = Path.Combine(deltaDir, Program.ManifestFileName);
+            if (!File.Exists(manifestPath) || Directory.Exists(manifestPath) || InstallRoot.IsReparsePoint(manifestPath))
+            {
+                throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update has no regular release manifest."));
+            }
+            using var file = new FileStream(manifestPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (file.Length <= 0 || file.Length > Manifest.MaxManifestBytes)
+            {
+                throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update release manifest has an invalid size."));
+            }
+            var bytes = new byte[file.Length];
+            file.ReadExactly(bytes);
+            if (file.ReadByte() != -1
+                || !Convert.ToHexString(SHA256.HashData(bytes)).Equals(expectedManifestSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update release manifest does not match the expected SHA-256."));
+            }
+            return bytes;
+        }
+        catch (SetupException)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update release manifest could not be read."), error);
+        }
+    }
+
+    // Builds a stage identical to ExtractVerified's from downloaded delta files plus unchanged installed files.
+    internal static Manifest BuildStageFromDelta(
+        string root,
+        string deltaDir,
+        string expectedManifestSha256,
+        string stage,
+        ISetupReporter? reporter = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var manifestBytes = ReadDeltaManifestBytes(deltaDir, expectedManifestSha256);
+            var manifest = Manifest.Parse(manifestBytes);
+            if (manifest.Files.Any(file => file.Path.StartsWith(".tools/webview2/", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new SetupException(ExitCode.InvalidPayload, "The release payload must use the shared WebView2 runtime and cannot bundle a fixed runtime.");
+            }
+            var targets = new Dictionary<string, PayloadFile>(StringComparer.OrdinalIgnoreCase);
+            foreach (var payloadFile in manifest.Files)
+            {
+                if (!targets.TryAdd(payloadFile.Path, payloadFile))
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, "The release manifest contains duplicate or case-colliding paths.");
+                }
+            }
+
+            var fullDelta = Path.GetFullPath(deltaDir).TrimEnd(Path.DirectorySeparatorChar);
+            var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(fullDelta, "*", SearchOption.AllDirectories))
+            {
+                if (InstallRoot.IsReparsePoint(entry))
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update contains a reparse point."));
+                }
+                if (Directory.Exists(entry))
+                {
+                    continue;
+                }
+                var relative = Path.GetRelativePath(fullDelta, entry).Replace(Path.DirectorySeparatorChar, '/');
+                if (string.Equals(relative, Program.ManifestFileName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (!File.Exists(entry) || !targets.TryGetValue(relative, out var target)
+                    || !string.Equals(target.Path, relative, StringComparison.Ordinal))
+                {
+                    throw new SetupException(ExitCode.InvalidPayload, DeltaFailure("The update contains a file that is not in the release manifest."));
+                }
+                present.Add(relative);
+            }
+
+            InstallRoot.CreateSafeDirectory(stage);
+            EnsureFreeSpace(stage, manifest.Files.Sum(payloadFile => payloadFile.Length));
+            File.WriteAllBytes(Path.Combine(stage, Program.ManifestFileName), manifestBytes);
+            var completedFiles = 0;
+            reporter?.Step($"Preparing Nativune v{manifest.Version} (0 of {manifest.Files.Count:N0} files)", cancellable: true);
+            reporter?.Progress(0, manifest.Files.Count);
+            foreach (var payloadFile in manifest.Files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var destination = PathSafety.ResolvePayloadPath(stage, payloadFile.Path);
+                PathSafety.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
+                if (present.Contains(payloadFile.Path))
+                {
+                    var source = PathSafety.ResolvePayloadPath(fullDelta, payloadFile.Path);
+                    RequireRegularDeltaFile(source, payloadFile.Path);
+                    File.Move(source, destination);
+                    // Verified after the move so the staged bytes are the ones checked.
+                    if (!FileMatches(destination, payloadFile))
+                    {
+                        throw new SetupException(ExitCode.InvalidPayload, DeltaFailure($"The downloaded file {payloadFile.Path} does not match its manifest."));
+                    }
+                }
+                else
+                {
+                    var installed = PathSafety.ResolvePayloadPath(root, payloadFile.Path);
+                    RequireRegularDeltaFile(installed, payloadFile.Path);
+                    using (var input = new FileStream(installed, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan))
+                    using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.SequentialScan))
+                    {
+                        if (!CopyAndHash(input, output, payloadFile))
+                        {
+                            throw new SetupException(ExitCode.InvalidPayload, DeltaFailure($"The installed file {payloadFile.Path} does not match the new release."));
+                        }
+                    }
+                }
+                completedFiles++;
+                reporter?.Step($"Preparing Nativune v{manifest.Version} ({completedFiles:N0} of {manifest.Files.Count:N0} files)", cancellable: true);
+                reporter?.Progress(completedFiles, manifest.Files.Count);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            Manifest.ValidateExtractedTools(stage);
+            return manifest;
+        }
+        catch (SetupException)
+        {
+            InstallRoot.TryDeleteDirectory(stage);
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            InstallRoot.TryDeleteDirectory(stage);
+            throw;
+        }
+        catch (Exception error)
+        {
+            InstallRoot.TryDeleteDirectory(stage);
+            throw new SetupException(ExitCode.IoFailure, "The update payload could not be staged.", error);
+        }
+    }
+
+    private static string DeltaFailure(string reason) =>
+        $"{reason}\n\nThe update could not be applied from its downloaded changes. Download and run the full Nativune Setup instead.";
+
+    private static void RequireRegularDeltaFile(string path, string relative)
+    {
+        if (!File.Exists(path) || Directory.Exists(path) || InstallRoot.IsReparsePoint(path))
+        {
+            throw new SetupException(ExitCode.InvalidPayload, DeltaFailure($"The file {relative} is missing or is not a regular file."));
+        }
+        try
+        {
+            InstallRoot.EnsureNoReparseChain(path);
+        }
+        catch (SetupException error)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, DeltaFailure($"The file {relative} is behind a reparse point."), error);
+        }
+    }
+
+    private static bool FileMatches(string path, PayloadFile expected)
+    {
+        using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
+        return CopyAndHash(input, Stream.Null, expected);
+    }
+
+    private static bool CopyAndHash(Stream source, Stream output, PayloadFile expected)
+    {
+        if (source.Length != expected.Length)
+        {
+            return false;
+        }
+        using var hash = SHA256.Create();
+        var buffer = new byte[128 * 1024];
+        long total = 0;
+        while (true)
+        {
+            var read = source.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+            {
+                break;
+            }
+            total = checked(total + read);
+            if (total > expected.Length)
+            {
+                return false;
+            }
+            output.Write(buffer, 0, read);
+            hash.TransformBlock(buffer, 0, read, buffer, 0);
+        }
+        hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+        return total == expected.Length && Convert.ToHexString(hash.Hash!).Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static byte[] ReadEntry(ZipArchiveEntry entry, int maxLength)
     {
         if (entry.Length < 0 || entry.Length > maxLength)
