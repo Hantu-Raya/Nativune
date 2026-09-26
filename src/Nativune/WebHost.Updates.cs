@@ -346,6 +346,13 @@ public sealed partial class WebHostWindow
         _releaseUpdateCheckRunning = true;
         var previousCheckUtc = _lastReleaseUpdateCheckUtc;
         _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
+        // Every check restarts the countdown, so a resume catch-up (or a manual check) is not
+        // followed by a tick left over from before it.
+        if (_releaseUpdateTimer.IsRunning)
+        {
+            _releaseUpdateTimer.Stop();
+            _releaseUpdateTimer.Start();
+        }
         var previousState = _releaseUpdateButtonState;
         if (manual) ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: true);
         try
