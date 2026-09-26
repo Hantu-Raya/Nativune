@@ -649,15 +649,15 @@ public sealed partial class WebHostWindow : Window
         _spinnerTurn.Children.Add(turn);
     }
 
-    // Shown while startup keeps the browser hidden; turns only while the window is visible and motion is allowed.
+    // Shown while startup keeps the browser hidden; turns while the window is visible unless the app's
+    // Reduce motion setting is on (the same opt-out as the Compact title marquee).
     private void UpdateLoadingSpinner()
     {
         if (_spinnerTurn is null) return;
         var loading = (_configuringPrivacy || _awaitingFirstPage)
             && !_browserFailed && !_compact && !_closing && !_disposed;
         LoadingSpinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
-        var turn = loading && _appWindow?.IsVisible != false && !_settings.ReduceMotion
-            && new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+        var turn = loading && WindowIsVisible && !_settings.ReduceMotion;
         if (turn == _spinnerTurning) return;
         _spinnerTurning = turn;
         if (turn) _spinnerTurn.Begin();
@@ -1354,6 +1354,7 @@ public sealed partial class WebHostWindow : Window
                 }
                 RefreshShortcutDescriptions();
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
+                UpdateLoadingSpinner();
                 CaptureSettings();
                 SetStatus(sleepSettingChanged || adSettingChanged
                     ? "Settings saved. Restart Nativune to apply the background sleeping or ad-blocking change."
