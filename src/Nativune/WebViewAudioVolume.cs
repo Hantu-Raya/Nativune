@@ -42,7 +42,15 @@ internal sealed class WebViewAudioVolume : IDisposable
     private float _preferredVolume = DefaultVolume;
     private bool _preferredMute;
     private bool _disposed;
+    // Published for the session-created callback, which runs on another thread.
+    private volatile GuardSnapshot? _guardSnapshot;
+    private SessionCreatedGuard? _guard;
 
+    private sealed record GuardSnapshot(IReadOnlySet<int> ProcessIds, float Volume, bool? Muted);
+
+    // Raised on a thread-pool thread when Windows creates an audio session in this WebView2 runtime's
+    // processes, so the host can reconcile at once instead of on its next refresh tick.
+    public event Action? SessionCreated;
 
     public WebViewAudioVolume(string expectedBrowserExecutablePath)
     {
@@ -105,6 +113,7 @@ internal sealed class WebViewAudioVolume : IDisposable
 
         try
         {
+            EnsureSessionGuard();
             if (!TryActivateOwnedProcesses(webViewProcessIds))
             {
                 RetireExitedProcesses();
@@ -112,6 +121,7 @@ internal sealed class WebViewAudioVolume : IDisposable
                 MarkUnavailable();
                 return;
             }
+            PublishGuardSnapshot();
             if (!TryEnumerateOwnedSessions(_activeProcessIds, _processHandles, out var sessions))
             {
                 RetireExitedProcesses();
@@ -217,6 +227,7 @@ internal sealed class WebViewAudioVolume : IDisposable
             _hasMutePreference = true;
             _preferredMute = preferredMute;
         }
+        PublishGuardSnapshot();
     }
 
     public bool TrySetVolume(double value, Func<bool>? canApplyPreference = null)
@@ -249,6 +260,7 @@ internal sealed class WebViewAudioVolume : IDisposable
             }
 
             _preferredVolume = requested;
+            PublishGuardSnapshot();
             RememberSessions(sessions);
             if (HaveConsistentState(sessions))
                 SetObservedState(sessions);
@@ -292,6 +304,7 @@ internal sealed class WebViewAudioVolume : IDisposable
 
             _hasMutePreference = true;
             _preferredMute = requested;
+            PublishGuardSnapshot();
             RememberSessions(sessions);
             if (HaveConsistentState(sessions))
                 SetObservedState(sessions);
@@ -313,6 +326,9 @@ internal sealed class WebViewAudioVolume : IDisposable
             return;
 
         _disposed = true;
+        _guardSnapshot = null;
+        _guard?.Stop();
+        _guard = null;
         _activeProcessIds.Clear();
         foreach (var processHandle in _processHandles.Values)
             processHandle.Dispose();
@@ -417,6 +433,187 @@ internal sealed class WebViewAudioVolume : IDisposable
 
         _activeProcessIds = candidateProcessIds;
         return true;
+    }
+
+    private void PublishGuardSnapshot() =>
+        _guardSnapshot = new GuardSnapshot(
+            _activeProcessIds.ToHashSet(), _preferredVolume, _hasMutePreference ? _preferredMute : null);
+
+    // (Re)registers for new-session notifications; the endpoint count check picks up added or removed devices.
+    private void EnsureSessionGuard()
+    {
+        var endpointCount = CountRenderEndpoints();
+        if (_guard is not null && _guard.EndpointCount == endpointCount)
+            return;
+        _guard?.Stop();
+        _guard = endpointCount > 0 ? SessionCreatedGuard.TryStart(this) : null;
+    }
+
+    private static int CountRenderEndpoints()
+    {
+        IMMDeviceEnumerator? enumerator = null;
+        IMMDeviceCollection? devices = null;
+        try
+        {
+            return TryGetRenderEndpoints(out enumerator, out devices, out var count) ? (int)count : -1;
+        }
+        catch (Exception exception) when (IsInteropFailure(exception))
+        {
+            return -1;
+        }
+        finally
+        {
+            ReleaseComObject(devices);
+            ReleaseComObject(enumerator);
+        }
+    }
+
+    private static bool TryGetRenderEndpoints(
+        out IMMDeviceEnumerator? enumerator, out IMMDeviceCollection? devices, out uint count)
+    {
+        devices = null;
+        count = 0;
+        var classId = MmDeviceEnumeratorClassId;
+        var interfaceId = MmDeviceEnumeratorInterfaceId;
+        if (CoCreateInstance(ref classId, 0, ClsCtxAll, ref interfaceId, out enumerator) != S_OK || enumerator is null
+            || enumerator.EnumAudioEndpoints(DataFlow.Render, DeviceStateActive, out devices) != S_OK || devices is null
+            || devices.GetCount(out count) != S_OK)
+            return false;
+        return count <= MaximumRenderEndpointCount;
+    }
+
+    // Runs on a thread-pool thread for each session Windows creates on a registered endpoint. Only a
+    // session whose process runs this WebView2 runtime and is in the verified owned set gets the preference;
+    // the host's following refresh re-applies and verifies it through the normal transaction.
+    private void ApplyPreferenceToNewSession(IAudioSessionControl control)
+    {
+        var owned = false;
+        try
+        {
+            if (!TryInitializeComMta(out var uninitializeCom))
+                return;
+            try
+            {
+                if (((IAudioSessionControl2)control).GetProcessId(out var processId) != S_OK
+                    || processId is 0 or > int.MaxValue
+                    || !TryGetWebViewProcessExecutablePath((int)processId, out var executablePath)
+                    || !PathsEqual(executablePath, _expectedBrowserExecutablePath))
+                    return;
+                owned = true;
+                if (_disposed || _guardSnapshot is not { } snapshot || !snapshot.ProcessIds.Contains((int)processId))
+                    return;
+                var volume = (ISimpleAudioVolume)control;
+                var eventContext = Guid.Empty;
+                _ = volume.SetMasterVolume(snapshot.Volume, ref eventContext);
+                if (snapshot.Muted is { } muted)
+                    _ = volume.SetMute(muted, ref eventContext);
+            }
+            finally
+            {
+                if (uninitializeCom)
+                    CoUninitialize();
+            }
+        }
+        catch (Exception)
+        {
+            // Best effort: the RCW may be shared with a concurrent refresh, which reconciles anyway.
+        }
+        finally
+        {
+            try { Marshal.ReleaseComObject(control); }
+            catch (Exception) { }
+            if (owned)
+                SessionCreated?.Invoke();
+        }
+    }
+
+    // New WebView2 sessions start at full volume; waiting for the host's 1 s refresh was audible as a sudden
+    // full-volume burst. This applies the preference as soon as Windows reports the session.
+    // ponytail: registered on the render endpoints active at (re)start; a session on a device added since
+    // then still waits for the next refresh, which re-registers when the endpoint count changes.
+    private sealed class SessionCreatedGuard : IAudioSessionNotification
+    {
+        private readonly WebViewAudioVolume _owner;
+        private readonly List<IAudioSessionManager2> _managers = [];
+
+        private SessionCreatedGuard(WebViewAudioVolume owner) => _owner = owner;
+
+        internal int EndpointCount { get; private set; }
+
+        internal static SessionCreatedGuard? TryStart(WebViewAudioVolume owner)
+        {
+            var guard = new SessionCreatedGuard(owner);
+            IMMDeviceEnumerator? enumerator = null;
+            IMMDeviceCollection? devices = null;
+            try
+            {
+                if (!TryGetRenderEndpoints(out enumerator, out devices, out var count))
+                    return null;
+                guard.EndpointCount = (int)count;
+                for (uint index = 0; index < count; index++)
+                {
+                    IMMDevice? device = null;
+                    object? managerObject = null;
+                    try
+                    {
+                        if (devices!.Item(index, out device) != S_OK || device is null)
+                            continue;
+                        var managerInterfaceId = AudioSessionManager2InterfaceId;
+                        if (device.Activate(ref managerInterfaceId, ClsCtxAll, 0, out managerObject) != S_OK
+                            || managerObject is not IAudioSessionManager2 manager
+                            || manager.RegisterSessionNotification(guard) != S_OK)
+                            continue;
+                        guard._managers.Add(manager);
+                        managerObject = null;
+                        // Windows starts delivering notifications only after the enumerator was requested once.
+                        if (manager.GetSessionEnumerator(out var sessions) == S_OK)
+                            ReleaseComObject(sessions);
+                    }
+                    finally
+                    {
+                        ReleaseComObject(managerObject);
+                        ReleaseComObject(device);
+                    }
+                }
+                return guard;
+            }
+            catch (Exception exception) when (IsInteropFailure(exception))
+            {
+                guard.Stop();
+                return null;
+            }
+            finally
+            {
+                ReleaseComObject(devices);
+                ReleaseComObject(enumerator);
+            }
+        }
+
+        public int OnSessionCreated(IAudioSessionControl newSession)
+        {
+            try
+            {
+                _ = Task.Run(() => _owner.ApplyPreferenceToNewSession(newSession));
+            }
+            catch (Exception)
+            {
+                try { Marshal.ReleaseComObject(newSession); }
+                catch (Exception) { }
+            }
+            return S_OK;
+        }
+
+        // Must not run inside OnSessionCreated (Windows forbids unregistering from the callback).
+        internal void Stop()
+        {
+            foreach (var manager in _managers)
+            {
+                try { _ = manager.UnregisterSessionNotification(this); }
+                catch (Exception exception) when (IsInteropFailure(exception)) { }
+                ReleaseComObject(manager);
+            }
+            _managers.Clear();
+        }
     }
 
 
@@ -1054,6 +1251,21 @@ internal sealed class WebViewAudioVolume : IDisposable
 
         [PreserveSig]
         int GetSessionEnumerator(out IAudioSessionEnumerator sessionEnumerator);
+
+        [PreserveSig]
+        int RegisterSessionNotification(IAudioSessionNotification sessionNotification);
+
+        [PreserveSig]
+        int UnregisterSessionNotification(IAudioSessionNotification sessionNotification);
+    }
+
+    [ComImport]
+    [Guid("641DD20B-4D41-49CC-ABA3-174B9477BB08")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioSessionNotification
+    {
+        [PreserveSig]
+        int OnSessionCreated(IAudioSessionControl newSession);
     }
 
     [ComImport]
