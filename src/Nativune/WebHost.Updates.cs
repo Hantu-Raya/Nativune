@@ -143,11 +143,7 @@ public sealed partial class WebHostWindow
 
         if (!manual && state is not (ReleaseUpdateButtonState.Downloading
             or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching))
-        {
-            if (state == ReleaseUpdateButtonState.Failed)
-                AppLog.Write("update", $"{failure ?? update?.Failure ?? ReleaseUpdateFailure.InvalidMetadata} (HTTP {update?.HttpStatus?.ToString() ?? "unknown"})");
             return;
-        }
         if (state == ReleaseUpdateButtonState.Checking)
         {
             CloseUpdateInfo();
@@ -336,26 +332,29 @@ public sealed partial class WebHostWindow
         _releaseUpdateTimer.Stop();
     }
 
+    // Automatic checks are quiet: no Checking state and no banner. They only change the Update
+    // button (and Compact/tray) when they get a definite answer; a failed automatic check is logged
+    // and leaves what is shown, so a known available update stays marked.
     private async Task CheckForReleaseUpdateAsync(bool manual)
     {
         if (_releaseUpdateCheckRunning || _closing || _disposed || _lifetime.IsCancellationRequested
             || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
                 or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching
-            || (!manual && !_settings.AutoCheckUpdates))
+            || (!manual && (!_settings.AutoCheckUpdates || _releaseUpdatePromptOpen)))
             return;
 
         _releaseUpdateCheckRunning = true;
         var previousCheckUtc = _lastReleaseUpdateCheckUtc;
         _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
         var previousState = _releaseUpdateButtonState;
-        ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: manual);
+        if (manual) ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: true);
         try
         {
             var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
             if (update.Status == ReleaseUpdateStatus.Cancelled)
             {
                 _lastReleaseUpdateCheckUtc = previousCheckUtc;
-                if (!_closing && !_disposed)
+                if (manual && !_closing && !_disposed)
                 {
                     ApplyUpdateFeedback(previousState);
                     CompactView.SetUpdateProgress(null, false);
@@ -365,7 +364,6 @@ public sealed partial class WebHostWindow
             if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
 
-            _availableReleaseUpdate = update.IsAvailable ? update : null;
             var state = update.Status switch
             {
                 ReleaseUpdateStatus.Available when update.IsAvailable => ReleaseUpdateButtonState.Available,
@@ -373,19 +371,26 @@ public sealed partial class WebHostWindow
                 ReleaseUpdateStatus.None => ReleaseUpdateButtonState.UpToDate,
                 _ => ReleaseUpdateButtonState.Failed
             };
+            if (!manual && state == ReleaseUpdateButtonState.Failed)
+            {
+                LogAutomaticUpdateFailure(update.Failure, update.HttpStatus);
+                return;
+            }
+            _availableReleaseUpdate = update.IsAvailable ? update : null;
             ApplyUpdateFeedback(state, update, failure: update.Failure, manual: manual);
-
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested)
         {
         }
         catch (Exception)
         {
-            if (!_closing && !_disposed)
+            if (!manual)
+                LogAutomaticUpdateFailure(ReleaseUpdateFailure.InvalidMetadata, null);
+            else if (!_closing && !_disposed)
             {
                 _availableReleaseUpdate = null;
                 ApplyUpdateFeedback(ReleaseUpdateButtonState.Failed,
-                    failure: ReleaseUpdateFailure.InvalidMetadata, manual: manual);
+                    failure: ReleaseUpdateFailure.InvalidMetadata, manual: true);
             }
         }
         finally
@@ -393,6 +398,9 @@ public sealed partial class WebHostWindow
             _releaseUpdateCheckRunning = false;
         }
     }
+
+    private static void LogAutomaticUpdateFailure(ReleaseUpdateFailure failure, int? httpStatus)
+        => AppLog.Write("update", $"{failure} (HTTP {httpStatus?.ToString() ?? "unknown"})");
 
     private void OnUpdateButtonClick()
     {
