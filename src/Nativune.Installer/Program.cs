@@ -19,7 +19,7 @@ internal static class Program
         Nativune Setup
 
         Usage:
-          {SetupFileName} [--install-dir <absolute-path>] [--silent] [--no-launch]  (install or upgrade)
+          {SetupFileName} [--install-dir <absolute-path>] [--silent [--install-prerequisites]] [--no-launch]  (install or upgrade)
           {SetupFileName} --update --wait-pid <positive-pid> [--install-dir <absolute-path>] [--silent] [--no-launch]
           {SetupFileName} --update --wait-pid <pid> --expected-version <version> --delta-dir <install-dir>\updates\delta --expected-manifest-sha256 <sha256> [...]
           {SetupFileName} --uninstall [--install-dir <absolute-path>] [--silent]
@@ -27,7 +27,8 @@ internal static class Program
 
         Options:
           --install-dir <path>  Absolute root under %LOCALAPPDATA%. Default: %LOCALAPPDATA%\{DefaultInstallDirectoryName}.
-          --silent              Suppress dialogs; accepts third-party terms but never installs missing prerequisites.
+          --silent              Suppress dialogs; accepts third-party terms but never installs missing prerequisites unless --install-prerequisites is given.
+          --install-prerequisites  With --silent: download and install missing prerequisites from their official sources without asking; package managers pass this as consent.
           --no-launch           Do not launch the installed application.
           --update              Updater handoff; replace the managed installation after --wait-pid exits.
           --wait-pid <pid>      Positive process id; wait up to 60 seconds before replacement/removal.
@@ -42,8 +43,8 @@ internal static class Program
           16 rollback failure; 17 launch failure; 18 unsupported platform; 19 prerequisite failure.
 
         Continuing an interactive install or update accepts the included third-party license terms.
-        Missing prerequisites are downloaded and installed only after explicit interactive consent.
-        --silent fails closed with official links when a required prerequisite is missing. Nativune adds no application EULA.
+        Missing prerequisites are downloaded and installed only after explicit interactive consent, or with --silent --install-prerequisites.
+        --silent without --install-prerequisites fails closed with official links when a required prerequisite is missing. Nativune adds no application EULA.
         """;
 
     [STAThread]
@@ -307,7 +308,8 @@ internal sealed record SetupOptions(
     string? DeltaDirectory,
     string? ExpectedManifestSha256,
     int? WaitPid,
-    PrerequisiteTestScenario TestPrerequisiteScenario)
+    PrerequisiteTestScenario TestPrerequisiteScenario,
+    bool InstallPrerequisites = false)
 {
     internal static SetupOptions Parse(string[] args)
     {
@@ -323,6 +325,7 @@ internal sealed record SetupOptions(
         string? expectedVersion = null;
         string? deltaDirectory = null;
         string? expectedManifestSha256 = null;
+        var installPrerequisites = false;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -335,6 +338,9 @@ internal sealed record SetupOptions(
                     break;
                 case "--silent":
                     silent = true;
+                    break;
+                case "--install-prerequisites":
+                    installPrerequisites = true;
                     break;
                 case "--no-launch":
                     noLaunch = true;
@@ -427,7 +433,7 @@ internal sealed record SetupOptions(
             }
         }
 
-        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || deltaDirectory is not null || expectedManifestSha256 is not null || waitPid is not null || noLaunch || testNoShell || testPrerequisiteScenario != PrerequisiteTestScenario.None))
+        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || deltaDirectory is not null || expectedManifestSha256 is not null || waitPid is not null || noLaunch || installPrerequisites || testNoShell || testPrerequisiteScenario != PrerequisiteTestScenario.None))
         {
             throw new SetupException(ExitCode.Usage, "--help cannot be combined with an operation.");
         }
@@ -438,6 +444,14 @@ internal sealed record SetupOptions(
         if (uninstall && noLaunch)
         {
             throw new SetupException(ExitCode.Usage, "--no-launch is not valid with --uninstall.");
+        }
+        if (uninstall && installPrerequisites)
+        {
+            throw new SetupException(ExitCode.Usage, "--install-prerequisites is not valid with --uninstall.");
+        }
+        if (installPrerequisites && !silent)
+        {
+            throw new SetupException(ExitCode.Usage, "--install-prerequisites is valid only with --silent.");
         }
         if (!update && waitPid is not null && !uninstall)
         {
@@ -467,7 +481,7 @@ internal sealed record SetupOptions(
             throw new SetupException(ExitCode.Usage, "--test-prerequisites requires --test-no-shell.");
         }
 #endif
-        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, deltaDirectory, expectedManifestSha256, waitPid, testPrerequisiteScenario);
+        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, deltaDirectory, expectedManifestSha256, waitPid, testPrerequisiteScenario, installPrerequisites);
     }
 }
 
@@ -852,6 +866,10 @@ internal sealed class InstallerEngine
         var currentProcessPath = SelfPath();
         if (InstallRoot.IsWithin(_root, currentProcessPath))
         {
+            // The helper's own result is not observed (it waits for this process to exit), so fail here
+            // on the common case of a running app, with a real exit code for winget/Chocolatey.
+            // ponytail: helper-side I/O failures still report success; add a result file if that matters.
+            ProcessWaiter.EnsureApplicationStopped(_root);
             return StartUninstallHandoff(currentProcessPath);
         }
 

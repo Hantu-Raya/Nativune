@@ -187,6 +187,17 @@ Setup checks for missing shared prerequisites and asks before downloading and in
 
 The default install location is `%LOCALAPPDATA%\Nativune`. Setup adds Start menu and desktop shortcuts. In-place upgrades keep the existing `data/` directory.
 
+### Package managers
+
+winget and Chocolatey packages are prepared but not yet published. Once they are, you will be able to install with:
+
+```powershell
+winget install Nativune.Nativune
+choco install nativune
+```
+
+Both run Setup silently and install missing prerequisites. Chocolatey runs elevated, so it installs Nativune for the account that runs `choco`; see [packaging/README.md](packaging/README.md).
+
 ### Unsigned-build warning
 
 The installer is not yet Authenticode-signed, so Windows may show an "Unknown publisher" or SmartScreen warning. Signing will identify the publisher, but new releases may still trigger SmartScreen until they build reputation.
@@ -226,7 +237,7 @@ When **Check for updates automatically** is enabled in Settings (the default), t
 
 ## Uninstall
 
-Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the installed Setup program with `--uninstall`. Uninstall removes application files, shell registration and the start-with-Windows entry (if it points into this installation) but keeps `data/`. Delete the installation's `data/` directory yourself if you also want to remove the isolated WebView2 profile, its site data and your Nativune settings.
+Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the installed Setup program with `--uninstall` (add `--silent` for a quiet uninstall, which winget uses). Uninstall removes application files, shell registration and the start-with-Windows entry (if it points into this installation) but keeps `data/`. Delete the installation's `data/` directory yourself if you also want to remove the isolated WebView2 profile, its site data and your Nativune settings.
 
 ## Build from source
 

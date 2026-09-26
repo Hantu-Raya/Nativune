@@ -616,7 +616,10 @@ internal static class ShellManager
             key.SetValue("Publisher", Program.ProductName, RegistryValueKind.String);
             key.SetValue("InstallLocation", root, RegistryValueKind.String);
             key.SetValue("DisplayIcon", Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar)), RegistryValueKind.String);
-            key.SetValue("UninstallString", $"{ArgumentQuoter.Quote(Path.Combine(root, "installer", Program.SetupFileName))} --uninstall --install-dir {ArgumentQuoter.Quote(root)}", RegistryValueKind.String);
+            var uninstallString = $"{ArgumentQuoter.Quote(Path.Combine(root, "installer", Program.SetupFileName))} --uninstall";
+            var installDirArgument = $" --install-dir {ArgumentQuoter.Quote(root)}";
+            key.SetValue("UninstallString", uninstallString + installDirArgument, RegistryValueKind.String);
+            key.SetValue("QuietUninstallString", uninstallString + " --silent" + installDirArgument, RegistryValueKind.String);
             key.SetValue("NoModify", 1, RegistryValueKind.DWord);
             key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
         }

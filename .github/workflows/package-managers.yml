@@ -1,0 +1,75 @@
+name: Package managers
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package (for example v0.1.26)
+        required: true
+  pull_request:
+    paths:
+      - packaging/**
+      - scripts/render-package-manifests.ps1
+      - .github/workflows/package-managers.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          switch ('${{ github.event_name }}') {
+            'release' { $tag = '${{ github.event.release.tag_name }}' }
+            'workflow_dispatch' { $tag = '${{ inputs.tag }}' }
+            default { $tag = gh release view --repo '${{ github.repository }}' --json tagName --jq .tagName }
+          }
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Unsupported release tag '$tag'." }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          # Setup 1.0.2 (first shipped in 0.1.27) adds --install-prerequisites and QuietUninstallString.
+          "publishable=$(([version]$Matches[1] -ge [version]'0.1.27').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Download release assets
+        shell: pwsh
+        run: gh release download '${{ steps.tag.outputs.tag }}' --repo '${{ github.repository }}' --pattern Nativune-Setup.exe --pattern SHA256SUMS.txt --dir artifacts/release-download
+
+      - name: Render manifests
+        shell: pwsh
+        run: ./scripts/render-package-manifests.ps1 -Version '${{ steps.tag.outputs.version }}' -ReleaseDirectory artifacts/release-download -OutputDirectory artifacts/package-managers
+
+      - name: Pack Chocolatey package
+        shell: pwsh
+        run: choco pack artifacts/package-managers/chocolatey/nativune/nativune.nuspec --outputdirectory artifacts/package-managers/chocolatey
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-managers-${{ steps.tag.outputs.version }}
+          path: artifacts/package-managers
+
+      - name: Submit to winget-pkgs
+        if: github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Nativune.Nativune
+          version: ${{ steps.tag.outputs.version }}
+          release-tag: ${{ steps.tag.outputs.tag }}
+          installers-regex: 'Nativune-Setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Push to Chocolatey
+        if: github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.CHOCO_API_KEY != ''
+        shell: pwsh
+        run: choco push "artifacts/package-managers/chocolatey/nativune.${{ steps.tag.outputs.version }}.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
