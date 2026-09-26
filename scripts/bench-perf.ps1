@@ -622,6 +622,18 @@ function Read-BenchEvents {
                         if ($eventData.ContainsKey($key)) { $event[$key] = $eventData[$key] }
                     }
                 }
+                'process-infos' {
+                    $processes = [Collections.Generic.List[object]]::new()
+                    foreach ($entry in @($eventData['processes'])) {
+                        if ($entry -isnot [Collections.IDictionary]) { continue }
+                        $processId = $entry['pid'] -as [int]
+                        $kind = [string] $entry['kind']
+                        if ($processId -gt 0 -and $kind -match '^[A-Za-z]{1,32}$') {
+                            [void] $processes.Add([ordered]@{ pid = $processId; kind = $kind })
+                        }
+                    }
+                    $event['processes'] = $processes.ToArray()
+                }
             }
             [void] $result.Add([pscustomobject] $event)
         }

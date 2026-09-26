@@ -105,6 +105,20 @@ public sealed partial class WebHostWindow
         catch (Exception) { }
     }
 
+    // H14: process kinds for the harness on every ProcessInfosChanged.
+    partial void BenchProcessInfos()
+    {
+        if (!BenchHooks.Enabled || _environment is null) return;
+        try
+        {
+            var processes = new List<Dictionary<string, object?>>();
+            foreach (var info in _environment.GetProcessInfos())
+                processes.Add(new() { ["pid"] = info.ProcessId, ["kind"] = info.Kind.ToString() });
+            BenchHooks.Event("process-infos", ("processes", processes));
+        }
+        catch (Exception) { }
+    }
+
     private void StartBenchMediaDetector()
     {
         if (_benchMediaResolved || _closing || _disposed) return;
