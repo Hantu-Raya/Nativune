@@ -6,284 +6,379 @@
   <Grid x:Name="Root"
         MinWidth="640"
         MinHeight="500"
-        Padding="24"
+        Padding="24,8,24,24"
+        RowSpacing="12"
         TabFocusNavigation="Local"
         Background="{ThemeResource CanvasBrush}">
     <Grid.RowDefinitions>
       <RowDefinition Height="*" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
-    <ScrollViewer Grid.Row="0"
-                  HorizontalScrollBarVisibility="Disabled"
-                  VerticalScrollBarVisibility="Auto"
-                  HorizontalScrollMode="Disabled"
-                  VerticalScrollMode="Auto">
-      <Grid RowSpacing="14">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-          <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
-
-        <TextBlock Grid.Row="0"
-                   Text="Settings"
-                   FontSize="24"
-                   FontWeight="SemiBold"
-                   Foreground="{ThemeResource PrimaryTextBrush}"
-                   AutomationProperties.Name="Settings" />
-
-        <TextBlock Grid.Row="1"
-                   Text="Shortcuts are remembered but only active while you enable them for this session."
-                   TextWrapping="Wrap"
-                   Foreground="{ThemeResource SecondaryTextBrush}"
-                   FontSize="13"
-                   AutomationProperties.Name="Shortcut session behavior" />
-
-        <Border Grid.Row="2"
-                Padding="16"
-                Background="{ThemeResource SurfaceBrush}"
-                BorderBrush="{ThemeResource RaisedBrush}"
-                BorderThickness="1"
-                CornerRadius="8">
-          <Grid RowSpacing="10">
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0"
-                       Text="Keyboard shortcuts"
-                       FontSize="16"
+    <NavigationView x:Name="Nav"
+                    Grid.Row="0"
+                    PaneDisplayMode="Top"
+                    IsBackButtonVisible="Collapsed"
+                    IsSettingsVisible="False"
+                    IsPaneToggleButtonVisible="False"
+                    SelectionFollowsFocus="Enabled"
+                    AutomationProperties.Name="Settings pages">
+      <NavigationView.MenuItems>
+        <NavigationViewItem x:Name="GeneralNavItem" Content="General" Tag="General" IsSelected="True" AutomationProperties.Name="General" />
+        <NavigationViewItem x:Name="StartupNavItem" Content="Startup" Tag="Startup" AutomationProperties.Name="Startup" />
+        <NavigationViewItem x:Name="ShortcutsNavItem" Content="Shortcuts" Tag="Shortcuts" AutomationProperties.Name="Shortcuts" />
+        <NavigationViewItem x:Name="PrivacyNavItem" Content="Privacy" Tag="Privacy" AutomationProperties.Name="Privacy" />
+        <NavigationViewItem x:Name="AboutNavItem" Content="About" Tag="About" AutomationProperties.Name="About" />
+      </NavigationView.MenuItems>
+      <ScrollViewer x:Name="PageScroller"
+                    HorizontalScrollBarVisibility="Disabled"
+                    VerticalScrollBarVisibility="Auto"
+                    HorizontalScrollMode="Disabled"
+                    VerticalScrollMode="Auto"
+                    Padding="0,16,0,0">
+        <Grid>
+          <StackPanel x:Name="GeneralPage" Spacing="10">
+            <TextBlock Text="General"
+                       FontSize="20"
                        FontWeight="SemiBold"
                        Foreground="{ThemeResource PrimaryTextBrush}"
-                       AutomationProperties.Name="Keyboard shortcuts" />
-            <TextBlock Grid.Row="1"
-                       Text="Use Ctrl or Alt plus a key; Shift is optional. Windows, media, function and reserved combinations (including Alt+M and Alt+Left/Right) are unavailable."
+                       AutomationProperties.HeadingLevel="Level1" />
+            <CheckBox x:Name="TrayEnabledCheckBox"
+                      Content="Show tray icon"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Show tray icon"
+                      AutomationProperties.HelpText="Closing the window hides Nativune to the tray and keeps playback running; use Quit to exit." />
+            <CheckBox x:Name="ReduceMotionCheckBox"
+                      Content="Reduce motion (disable disc rotation and scrolling titles)"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Reduce motion"
+                      AutomationProperties.HelpText="App-only preference; it does not follow Windows animation settings." />
+            <CheckBox x:Name="SleepInBackgroundCheckBox"
+                      Content="Sleep in background (restart required)"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Sleep in background (restart required)"
+                      AutomationProperties.HelpText="Allow Chromium to throttle timers and rendering while Nativune is minimized, hidden, or occluded. Restart required." />
+            <CheckBox x:Name="AutoCheckUpdatesCheckBox"
+                      Content="Check for updates automatically"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Check for updates automatically"
+                      AutomationProperties.HelpText="Check for updates at startup and every 24 hours while Nativune is running." />
+            <TextBlock x:Name="AutoCheckUpdatesCaption"
+                       Text="Update checks run only in installed builds."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,-6,0,0"
+                       Visibility="Collapsed"
+                       Foreground="{ThemeResource SecondaryTextBrush}" />
+          </StackPanel>
+
+          <StackPanel x:Name="StartupPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="Startup"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <CheckBox x:Name="StartWithWindowsCheckBox"
+                      Content="Start Nativune when I sign in to Windows"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Start Nativune when I sign in to Windows"
+                      AutomationProperties.HelpText="Adds a per-user startup entry for this installation. Off by default; you can also turn it off in Windows Settings › Apps › Startup." />
+            <TextBlock x:Name="StartWithWindowsCaption"
+                       Text="Available only when Nativune is installed with Setup."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,-6,0,0"
+                       Visibility="Collapsed"
+                       Foreground="{ThemeResource SecondaryTextBrush}" />
+            <StackPanel Margin="28,0,0,0" Spacing="6">
+              <ComboBox x:Name="AutostartModeComboBox"
+                        Header="When started with Windows, open:"
+                        MinWidth="240"
+                        AutomationProperties.Name="When started with Windows, open">
+                <ComboBoxItem x:Name="AutostartFullItem" Content="Full window" AutomationProperties.Name="Full window" />
+                <ComboBoxItem x:Name="AutostartCompactItem" Content="Compact window" AutomationProperties.Name="Compact window" />
+                <ComboBoxItem x:Name="AutostartTrayItem" Content="Hidden in the tray" AutomationProperties.Name="Hidden in the tray" />
+              </ComboBox>
+              <TextBlock x:Name="AutostartTrayCaption"
+                         Text="Requires Show tray icon"
+                         TextWrapping="Wrap"
+                         FontSize="12"
+                         Visibility="Collapsed"
+                         Foreground="{ThemeResource SecondaryTextBrush}" />
+              <TextBlock x:Name="StartupStatusText"
+                         TextWrapping="Wrap"
+                         FontSize="12"
+                         Foreground="{ThemeResource SecondaryTextBrush}"
+                         AutomationProperties.Name="Startup entry status"
+                         AutomationProperties.LiveSetting="Polite" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <HyperlinkButton x:Name="OpenStartupAppsButton"
+                                 Content="Open Startup apps"
+                                 AutomationProperties.Name="Open Startup apps"
+                                 AutomationProperties.HelpText="Opens Windows Settings › Apps › Startup." />
+                <Button x:Name="FixStartupButton"
+                        Content="Fix"
+                        MinHeight="32"
+                        Visibility="Collapsed"
+                        AutomationProperties.Name="Fix startup entry"
+                        AutomationProperties.HelpText="On Save, point the startup entry at this installation." />
+                <Button x:Name="RemoveStartupButton"
+                        Content="Remove"
+                        MinHeight="32"
+                        Visibility="Collapsed"
+                        AutomationProperties.Name="Remove startup entry"
+                        AutomationProperties.HelpText="On Save, remove the startup entry that points to another location." />
+              </StackPanel>
+            </StackPanel>
+            <CheckBox x:Name="StartCompactCheckBox"
+                      Content="Start in Compact"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Start in Compact"
+                      AutomationProperties.HelpText="Applies when you open Nativune yourself." />
+            <CheckBox x:Name="RestoreSectionCheckBox"
+                      Content="Remember last Home or Library section"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Remember last Home or Library section"
+                      AutomationProperties.HelpText="Only Home or Library is remembered. The website still owns account, queue and autoplay." />
+          </StackPanel>
+
+          <StackPanel x:Name="ShortcutsPage" Spacing="14" Visibility="Collapsed">
+            <TextBlock Text="Shortcuts"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <TextBlock
+                       Text="Shortcuts are remembered but only active while you enable them for this session."
                        TextWrapping="Wrap"
                        Foreground="{ThemeResource SecondaryTextBrush}"
-                       FontSize="12"
-                       AutomationProperties.Name="Accepted shortcut combinations" />
+                       FontSize="13"
+                       AutomationProperties.Name="Shortcut session behavior" />
 
-            <Grid Grid.Row="2" ColumnSpacing="12">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="170" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0"
-                         Text="Play/Pause"
-                         VerticalAlignment="Center"
-                         Foreground="{ThemeResource PrimaryTextBrush}"
-                         AutomationProperties.Name="Play/Pause shortcut label" />
-              <TextBox x:Name="ToggleField"
-                       Grid.Column="1"
-                       IsReadOnly="True"
-                       IsTabStop="True"
-                       MinHeight="36"
-                       VerticalContentAlignment="Center"
-                       Background="{ThemeResource RaisedBrush}"
-                       Foreground="{ThemeResource PrimaryTextBrush}"
-                       BorderBrush="{ThemeResource SeparatorBrush}"
-                       AutomationProperties.Name="Play/Pause shortcut"
-                       AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
-              <Button x:Name="ClearToggle"
-                      Grid.Column="2"
-                      Content="Clear"
-                      MinWidth="72"
-                      MinHeight="36"
-                      Tag="0"
-                      AutomationProperties.Name="Clear Play/Pause shortcut"
-                      AutomationProperties.HelpText="Clear the Play/Pause shortcut." />
-            </Grid>
+            <Border
+                    Padding="16"
+                    Background="{ThemeResource SurfaceBrush}"
+                    BorderBrush="{ThemeResource RaisedBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+              <Grid RowSpacing="10">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0"
+                           Text="Keyboard shortcuts"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           AutomationProperties.Name="Keyboard shortcuts" />
+                <TextBlock Grid.Row="1"
+                           Text="Use Ctrl or Alt plus a key; Shift is optional. Windows, media, function and reserved combinations (including Alt+M and Alt+Left/Right) are unavailable."
+                           TextWrapping="Wrap"
+                           Foreground="{ThemeResource SecondaryTextBrush}"
+                           FontSize="12"
+                           AutomationProperties.Name="Accepted shortcut combinations" />
 
-            <Grid Grid.Row="3" ColumnSpacing="12">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="170" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0"
-                         Text="Previous"
-                         VerticalAlignment="Center"
-                         Foreground="{ThemeResource PrimaryTextBrush}"
-                         AutomationProperties.Name="Previous shortcut label" />
-              <TextBox x:Name="PreviousField"
-                       Grid.Column="1"
-                       IsReadOnly="True"
-                       IsTabStop="True"
-                       MinHeight="36"
-                       VerticalContentAlignment="Center"
-                       Background="{ThemeResource RaisedBrush}"
-                       Foreground="{ThemeResource PrimaryTextBrush}"
-                       BorderBrush="{ThemeResource SeparatorBrush}"
-                       AutomationProperties.Name="Previous shortcut"
-                       AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
-              <Button x:Name="ClearPrevious"
-                      Grid.Column="2"
-                      Content="Clear"
-                      MinWidth="72"
-                      MinHeight="36"
-                      Tag="1"
-                      AutomationProperties.Name="Clear Previous shortcut"
-                      AutomationProperties.HelpText="Clear the Previous shortcut." />
-            </Grid>
+                <Grid Grid.Row="2" ColumnSpacing="12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="170" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0"
+                             Text="Play/Pause"
+                             VerticalAlignment="Center"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             AutomationProperties.Name="Play/Pause shortcut label" />
+                  <TextBox x:Name="ToggleField"
+                           Grid.Column="1"
+                           IsReadOnly="True"
+                           IsTabStop="True"
+                           MinHeight="36"
+                           VerticalContentAlignment="Center"
+                           Background="{ThemeResource RaisedBrush}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           BorderBrush="{ThemeResource SeparatorBrush}"
+                           AutomationProperties.Name="Play/Pause shortcut"
+                           AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
+                  <Button x:Name="ClearToggle"
+                          Grid.Column="2"
+                          Content="Clear"
+                          MinWidth="72"
+                          MinHeight="36"
+                          Tag="0"
+                          AutomationProperties.Name="Clear Play/Pause shortcut"
+                          AutomationProperties.HelpText="Clear the Play/Pause shortcut." />
+                </Grid>
 
-            <Grid Grid.Row="4" ColumnSpacing="12">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="170" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0"
-                         Text="Next"
-                         VerticalAlignment="Center"
-                         Foreground="{ThemeResource PrimaryTextBrush}"
-                         AutomationProperties.Name="Next shortcut label" />
-              <TextBox x:Name="NextField"
-                       Grid.Column="1"
-                       IsReadOnly="True"
-                       IsTabStop="True"
-                       MinHeight="36"
-                       VerticalContentAlignment="Center"
-                       Background="{ThemeResource RaisedBrush}"
-                       Foreground="{ThemeResource PrimaryTextBrush}"
-                       BorderBrush="{ThemeResource SeparatorBrush}"
-                       AutomationProperties.Name="Next shortcut"
-                       AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
-              <Button x:Name="ClearNext"
-                      Grid.Column="2"
-                      Content="Clear"
-                      MinWidth="72"
-                      MinHeight="36"
-                      Tag="2"
-                      AutomationProperties.Name="Clear Next shortcut"
-                      AutomationProperties.HelpText="Clear the Next shortcut." />
-            </Grid>
+                <Grid Grid.Row="3" ColumnSpacing="12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="170" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0"
+                             Text="Previous"
+                             VerticalAlignment="Center"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             AutomationProperties.Name="Previous shortcut label" />
+                  <TextBox x:Name="PreviousField"
+                           Grid.Column="1"
+                           IsReadOnly="True"
+                           IsTabStop="True"
+                           MinHeight="36"
+                           VerticalContentAlignment="Center"
+                           Background="{ThemeResource RaisedBrush}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           BorderBrush="{ThemeResource SeparatorBrush}"
+                           AutomationProperties.Name="Previous shortcut"
+                           AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
+                  <Button x:Name="ClearPrevious"
+                          Grid.Column="2"
+                          Content="Clear"
+                          MinWidth="72"
+                          MinHeight="36"
+                          Tag="1"
+                          AutomationProperties.Name="Clear Previous shortcut"
+                          AutomationProperties.HelpText="Clear the Previous shortcut." />
+                </Grid>
 
-            <Grid Grid.Row="5" ColumnSpacing="12">
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="170" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-              </Grid.ColumnDefinitions>
-              <TextBlock Grid.Column="0"
-                         Text="Compact/Full toggle"
-                         VerticalAlignment="Center"
-                         Foreground="{ThemeResource PrimaryTextBrush}"
-                         AutomationProperties.Name="Compact/Full toggle shortcut label" />
-              <TextBox x:Name="CompactField"
-                       Grid.Column="1"
-                       IsReadOnly="True"
-                       IsTabStop="True"
-                       MinHeight="36"
-                       VerticalContentAlignment="Center"
-                       Background="{ThemeResource RaisedBrush}"
-                       Foreground="{ThemeResource PrimaryTextBrush}"
-                       BorderBrush="{ThemeResource SeparatorBrush}"
-                       AutomationProperties.Name="Compact/Full toggle shortcut"
-                       AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
-              <Button x:Name="ClearCompact"
-                      Grid.Column="2"
-                      Content="Clear"
-                      MinWidth="72"
-                      MinHeight="36"
-                      Tag="3"
-                      AutomationProperties.Name="Clear Compact/Full toggle shortcut"
-                      AutomationProperties.HelpText="Clear the Compact/Full toggle shortcut." />
-            </Grid>
-          </Grid>
-        </Border>
+                <Grid Grid.Row="4" ColumnSpacing="12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="170" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0"
+                             Text="Next"
+                             VerticalAlignment="Center"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             AutomationProperties.Name="Next shortcut label" />
+                  <TextBox x:Name="NextField"
+                           Grid.Column="1"
+                           IsReadOnly="True"
+                           IsTabStop="True"
+                           MinHeight="36"
+                           VerticalContentAlignment="Center"
+                           Background="{ThemeResource RaisedBrush}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           BorderBrush="{ThemeResource SeparatorBrush}"
+                           AutomationProperties.Name="Next shortcut"
+                           AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
+                  <Button x:Name="ClearNext"
+                          Grid.Column="2"
+                          Content="Clear"
+                          MinWidth="72"
+                          MinHeight="36"
+                          Tag="2"
+                          AutomationProperties.Name="Clear Next shortcut"
+                          AutomationProperties.HelpText="Clear the Next shortcut." />
+                </Grid>
 
-        <CheckBox x:Name="ReduceMotionCheckBox"
-                  Grid.Row="3"
-                  Content="Reduce motion (disable disc rotation and scrolling titles)"
-                  MinHeight="36"
-                  Foreground="{ThemeResource PrimaryTextBrush}"
-                  AutomationProperties.Name="Reduce motion"
-                  AutomationProperties.HelpText="App-only preference; it does not follow Windows animation settings." />
+                <Grid Grid.Row="5" ColumnSpacing="12">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="170" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Grid.Column="0"
+                             Text="Compact/Full toggle"
+                             VerticalAlignment="Center"
+                             Foreground="{ThemeResource PrimaryTextBrush}"
+                             AutomationProperties.Name="Compact/Full toggle shortcut label" />
+                  <TextBox x:Name="CompactField"
+                           Grid.Column="1"
+                           IsReadOnly="True"
+                           IsTabStop="True"
+                           MinHeight="36"
+                           VerticalContentAlignment="Center"
+                           Background="{ThemeResource RaisedBrush}"
+                           Foreground="{ThemeResource PrimaryTextBrush}"
+                           BorderBrush="{ThemeResource SeparatorBrush}"
+                           AutomationProperties.Name="Compact/Full toggle shortcut"
+                           AutomationProperties.HelpText="Select this field, then press Ctrl or Alt plus a key." />
+                  <Button x:Name="ClearCompact"
+                          Grid.Column="2"
+                          Content="Clear"
+                          MinWidth="72"
+                          MinHeight="36"
+                          Tag="3"
+                          AutomationProperties.Name="Clear Compact/Full toggle shortcut"
+                          AutomationProperties.HelpText="Clear the Compact/Full toggle shortcut." />
+                </Grid>
+              </Grid>
+            </Border>
+          </StackPanel>
 
-        <CheckBox x:Name="SleepInBackgroundCheckBox"
-                  Grid.Row="4"
-                  Content="Sleep in background"
-                  MinHeight="36"
-                  Foreground="{ThemeResource PrimaryTextBrush}"
-                  AutomationProperties.Name="Sleep in background"
-                  AutomationProperties.HelpText="Allow Chromium to throttle timers and rendering while Nativune is minimized, hidden, or occluded. Restart required." />
-
-        <CheckBox x:Name="StartCompactCheckBox"
-                  Grid.Row="5"
-                  Content="Start in Compact"
-                  MinHeight="36"
-                  Foreground="{ThemeResource PrimaryTextBrush}"
-                  AutomationProperties.Name="Start in Compact"
-                  AutomationProperties.HelpText="Open Nativune in Compact view on the next app start." />
-
-        <CheckBox x:Name="AutoCheckUpdatesCheckBox"
-                  Grid.Row="6"
-                  Content="Check for updates automatically"
-                  MinHeight="36"
-                  Foreground="{ThemeResource PrimaryTextBrush}"
-                  AutomationProperties.Name="Check for updates automatically"
-                  AutomationProperties.HelpText="Check for updates at startup and every 24 hours while Nativune is running." />
-
-        <CheckBox x:Name="BlockAdsCheckBox"
-                  Grid.Row="7"
-                  Content="Block ads (against YouTube's terms; may interrupt playback)"
-                  MinHeight="36"
-                  Foreground="{ThemeResource PrimaryTextBrush}"
-                  AutomationProperties.Name="Block ads"
-                  AutomationProperties.HelpText="Turns on uBlock Origin Lite's ad filters for YouTube Music. Off by default. YouTube may detect it, interrupt playback or warn your account. Restart required." />
-        <Border Grid.Row="8"
-                Padding="14,10"
-                IsHitTestVisible="False"
-                Background="{ThemeResource SurfaceBrush}"
-                BorderBrush="{ThemeResource RaisedBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                AutomationProperties.Name="About Nativune">
-          <Grid ColumnSpacing="12">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="Auto" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0"
-                       Text="About"
+          <StackPanel x:Name="PrivacyPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="Privacy"
+                       FontSize="20"
                        FontWeight="SemiBold"
-                       Foreground="{ThemeResource PrimaryTextBrush}" />
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <CheckBox x:Name="BlockAdsCheckBox"
+                      Content="Block ads (against YouTube's terms; may interrupt playback) (restart required)"
+                      MinHeight="36"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Block ads (restart required)"
+                      AutomationProperties.HelpText="Turns on uBlock Origin Lite's ad filters for YouTube Music. Off by default. YouTube may detect it, interrupt playback or warn your account. Restart required." />
+          </StackPanel>
+
+          <StackPanel x:Name="AboutPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="About"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
             <TextBlock x:Name="VersionText"
-                       Grid.Column="1"
-                       HorizontalAlignment="Right"
+                       IsTextSelectionEnabled="True"
+                       Foreground="{ThemeResource PrimaryTextBrush}" />
+            <TextBlock x:Name="InstallKindText"
+                       TextWrapping="Wrap"
+                       IsTextSelectionEnabled="True"
                        Foreground="{ThemeResource SecondaryTextBrush}" />
-          </Grid>
-        </Border>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="CopyStatusButton"
+                      Content="Copy application status"
+                      MinHeight="36"
+                      AutomationProperties.Name="Copy application status"
+                      AutomationProperties.HelpText="Copies the current application status text to the clipboard." />
+            </StackPanel>
+            <TextBlock x:Name="CopyStatusResult"
+                       FontSize="12"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.LiveSetting="Polite" />
+          </StackPanel>
+        </Grid>
+      </ScrollViewer>
+    </NavigationView>
 
-        <Border x:Name="ErrorHost"
-                Grid.Row="9"
-                MinHeight="38"
-                Padding="8,6"
-                Visibility="Collapsed"
-                Background="{ThemeResource SurfaceBrush}"
-                BorderBrush="{ThemeResource AccentBrush}"
-                BorderThickness="1">
-          <TextBlock x:Name="ErrorText"
-                     TextWrapping="Wrap"
-                     Foreground="{ThemeResource PrimaryTextBrush}"
-                     AutomationProperties.Name="Settings error" />
-        </Border>
+    <Border x:Name="ErrorHost"
+            Grid.Row="1"
+            MinHeight="38"
+            Padding="8,6"
+            Visibility="Collapsed"
+            Background="{ThemeResource SurfaceBrush}"
+            BorderBrush="{ThemeResource AccentBrush}"
+            BorderThickness="1">
+      <TextBlock x:Name="ErrorText"
+                 TextWrapping="Wrap"
+                 Foreground="{ThemeResource PrimaryTextBrush}"
+                 AutomationProperties.Name="Settings error" />
+    </Border>
 
-      </Grid>
-    </ScrollViewer>
-    <Grid Grid.Row="1" ColumnSpacing="10">
+    <Grid Grid.Row="2" ColumnSpacing="10">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
@@ -292,6 +387,7 @@
           <Button x:Name="RestoreButton"
                   Grid.Column="0"
                   HorizontalAlignment="Left"
+                  Visibility="Collapsed"
                   Content="Restore defaults"
                   MinHeight="38"
                   AutomationProperties.Name="Restore shortcut defaults"

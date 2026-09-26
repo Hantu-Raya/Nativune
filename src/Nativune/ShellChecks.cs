@@ -43,7 +43,8 @@ internal static class ShellChecks
 
         var file = Path.Combine(root, "data", "settings.json");
         var savedSettingsText = File.ReadAllText(file);
-        Require(savedSettingsText.Contains("\"Version\": 5", StringComparison.Ordinal)
+        Require(savedSettingsText.Contains("\"Version\": 6", StringComparison.Ordinal)
+            && savedSettingsText.Contains("\"AutostartMode\": 2", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"AutoCheckUpdates\": false", StringComparison.Ordinal),
             "Current settings schema did not persist compact startup and automatic update preferences.");
@@ -92,6 +93,22 @@ internal static class ShellChecks
         var previousV4 = ShellSettings.Load(root, out warning);
         Require(warning is null && previousV4.AutoCheckUpdates,
             "Existing P4 settings without the automatic update preference did not default to true.");
+        File.WriteAllText(file,
+            "{\"Version\":5,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"TrayEnabled\":true}");
+        var previousV5Tray = ShellSettings.Load(root, out warning);
+        Require(warning is null && previousV5Tray.AutostartMode == AutostartMode.Tray,
+            "Existing P5 settings with the tray icon did not default the autostart launch state to the tray.");
+        File.WriteAllText(file,
+            "{\"Version\":5,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"TrayEnabled\":false}");
+        var previousV5Full = ShellSettings.Load(root, out warning);
+        Require(warning is null && previousV5Full.AutostartMode == AutostartMode.Full
+            && previous.AutostartMode == AutostartMode.Full,
+            "Settings without the tray icon did not default the autostart launch state to the full window.");
+        ShellSettings.SaveAsync(root, settings with { AutostartMode = AutostartMode.Compact },
+            CancellationToken.None).GetAwaiter().GetResult();
+        Require(ShellSettings.Load(root, out _).AutostartMode == AutostartMode.Compact,
+            "The autostart launch state did not survive a save and reload.");
+        CheckStartupRegistration(root);
         var sleepingArguments = WebHostWindow.BrowserArguments(sleepInBackground: true);
         var activeArguments = WebHostWindow.BrowserArguments(sleepInBackground: false);
         Require(!sleepingArguments.Contains("--disable-background-timer-throttling", StringComparison.Ordinal)
@@ -554,6 +571,71 @@ internal static class ShellChecks
     private static extern bool IsWindowEnabled(nint window);
     [DllImport("user32.dll", ExactSpelling = true)]
     private static extern bool IsWindowVisible(nint window);
+    // Uses a unique HKCU test subkey passed explicitly; the real Run key is never touched.
+    private static void CheckStartupRegistration(string root)
+    {
+        var testBase = @"Software\Nativune\Test\" + Guid.NewGuid().ToString("N");
+        var runKey = testBase + @"\Run";
+        var approvedKey = testBase + @"\StartupApproved\Run";
+        var installRoot = Path.Combine(Path.GetFullPath(root), "startup-root");
+        try
+        {
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.Off,
+                "A missing startup entry was not reported as off.");
+            StartupRegistration.Enable(installRoot, runKey);
+            using (var run = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(runKey))
+            {
+                var expected = $"\"{Path.Combine(installRoot, "app", "Nativune.exe")}\" web --root \"{installRoot}\" --autostart";
+                Require(run?.GetValue("Nativune") as string == expected
+                    && StartupRegistration.Command(installRoot) == expected
+                    && run.GetValueKind("Nativune") == Microsoft.Win32.RegistryValueKind.String,
+                    "The startup entry command did not match the installed launch command.");
+            }
+            Require(StartupRegistration.Read(installRoot.ToUpperInvariant(), runKey, approvedKey) == StartupEntryState.On,
+                "An enabled startup entry for this root was not reported as on.");
+            using (var approved = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(approvedKey))
+                approved.SetValue("Nativune", new byte[] { 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+                    Microsoft.Win32.RegistryValueKind.Binary);
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.DisabledByUser,
+                "A startup entry turned off in Windows was not reported as disabled by the user.");
+            StartupRegistration.Disable(Path.Combine(installRoot, "other"), runKey);
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.DisabledByUser,
+                "Disabling another root removed this installation's startup entry.");
+            using (var run = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(runKey))
+                run.SetValue("Nativune", "\"C:\\Elsewhere\\app\\Nativune.exe\" web --root \"C:\\Elsewhere\" --autostart");
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.Stale,
+                "A startup entry pointing elsewhere was not reported as stale.");
+            StartupRegistration.Disable(installRoot, runKey);
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.Stale,
+                "Disable removed a startup entry that belongs to another location.");
+            StartupRegistration.RemoveStale(runKey);
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.Off,
+                "Removing a stale startup entry left it in place.");
+            StartupRegistration.Enable(installRoot, runKey);
+            StartupRegistration.Disable(installRoot, runKey);
+            Require(StartupRegistration.Read(installRoot, runKey, approvedKey) == StartupEntryState.Off,
+                "Disabling this installation's startup entry left it in place.");
+        }
+        finally
+        {
+            Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(testBase, throwOnMissingSubKey: false);
+            DeleteIfEmpty(@"Software\Nativune\Test");
+            DeleteIfEmpty(@"Software\Nativune");
+        }
+        using var leftover = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(testBase);
+        Require(leftover is null, "The startup registration test key was not removed.");
+    }
+
+    private static void DeleteIfEmpty(string path)
+    {
+        using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(path))
+        {
+            if (key is null || key.SubKeyCount != 0 || key.ValueCount != 0)
+                return;
+        }
+        Microsoft.Win32.Registry.CurrentUser.DeleteSubKey(path, throwOnMissingSubKey: false);
+    }
+
     private static void Require(bool condition, string message)
     {
         if (!condition) throw new SelfCheckException(message);

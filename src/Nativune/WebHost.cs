@@ -27,7 +27,7 @@ internal static class WebHost
 {
     private const string InitialUri = "https://music.youtube.com/";
 
-    public static int Run(string root)
+    public static int Run(string root, bool autostart = false)
     {
         AppLog.Start(root);
         Exception? startupFailure = null;
@@ -43,9 +43,12 @@ internal static class WebHost
                 WebHostWindow? window = null;
                 ShellApplication.Run(() =>
                 {
-                    window = new WebHostWindow(root, InitialUri);
+                    window = new WebHostWindow(root, InitialUri, autostart: autostart);
                     instance.StartListening(window.RequestActivation);
-                    window.Activate();
+                    if (window.StartsHiddenInTray)
+                        window.StartHiddenInTray();
+                    else
+                        window.Activate();
                 });
                 exitCode = window?.ExitCode ?? 0;
             }
@@ -219,21 +222,19 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyout _timerFlyout = null!;
     private MenuFlyoutItem _retryItem = null!;
     private MenuFlyoutItem _playPauseItem = null!;
-    private MenuFlyoutItem _playItem = null!;
-    private MenuFlyoutItem _pauseItem = null!;
     private MenuFlyoutItem _previousItem = null!;
     private MenuFlyoutItem _nextItem = null!;
     private ToggleMenuFlyoutItem _shortcutsItem = null!;
+    private MenuFlyoutSubItem _playbackSubItem = null!;
+    private MenuFlyoutSubItem _zoomSubItem = null!;
     private MenuFlyoutItem _zoomInItem = null!;
     private MenuFlyoutItem _zoomOutItem = null!;
     private MenuFlyoutItem _zoomResetItem = null!;
     private MenuFlyoutItem _fullscreenItem = null!;
-    private MenuFlyoutItem _compactItem = null!;
     private ToggleMenuFlyoutItem _topmostItem = null!;
-    private ToggleMenuFlyoutItem _trayItem = null!;
-    private ToggleMenuFlyoutItem _restoreItem = null!;
     private MenuFlyoutItem _setTimerItem = null!;
     private MenuFlyoutItem _cancelTimerItem = null!;
+    private readonly AutostartMode? _autostartMode;
     private MenuFlyoutItem _statusDetailsItem = null!;
     private MenuFlyoutItem _settingsItem = null!;
     private MenuFlyoutItem _quitItem = null!;
@@ -246,12 +247,13 @@ public sealed partial class WebHostWindow : Window
     internal Window? TimerDialogForChecks
         => _ownedDialogs.FirstOrDefault(dialog => dialog.Title == "Pause playback in...");
 
-    public WebHostWindow(string root, string initialUri, bool initializeBrowser = true)
+    public WebHostWindow(string root, string initialUri, bool initializeBrowser = true, bool autostart = false)
     {
         _root = Path.GetFullPath(root);
         _initialUri = initialUri;
         _initializeBrowser = initializeBrowser;
         _settings = ShellSettings.Load(_root, out _settingsWarning);
+        _autostartMode = autostart && ReleaseUpdater.IsInstalledBuild(_root) ? _settings.AutostartMode : null;
         InitializeComponent();
 
         _dispatcherQueue = UiDispatcherQueue.GetForCurrentThread()
@@ -299,21 +301,40 @@ public sealed partial class WebHostWindow : Window
 
     private event EventHandler? AppWindowChanged;
 
+    // Autostart in Tray mode: the window is never activated or shown; the tray icon restores it
+    // exactly as after closing to the tray (RequestActivation shows and activates it).
+    internal bool StartsHiddenInTray
+        => _autostartMode == AutostartMode.Tray && _settings.TrayEnabled && NativeHandle != 0;
+
+    internal void StartHiddenInTray() => OnLoaded(this, null!);
+
     private void OnLoaded(object sender, RoutedEventArgs args)
     {
         if (_loaded) return;
         _loaded = true;
+        var startHidden = StartsHiddenInTray && _appWindow?.IsVisible != true;
         TryInitializeNativeWindow();
         UpdateWindowVisibilityPolicy();
-        BenchWindowShown();
+        if (!startHidden)
+            BenchWindowShown();
         if (_settings.TrayEnabled)
             SetTrayEnabled(true);
         ApplyCompactSurface();
-        if (_settings.StartCompact)
+        if (startHidden && _tray is not { IsVisible: true })
+        {
+            startHidden = false;
+            SetStatus("Nativune could not start hidden in the tray, so the window is shown.");
+            RequestActivation();
+        }
+        var autostartMode = _autostartMode == AutostartMode.Tray && !_settings.TrayEnabled
+            ? AutostartMode.Full : _autostartMode;
+        if (!startHidden && (_settings.StartCompact || autostartMode == AutostartMode.Compact))
         {
             _compactStartupPending = true;
             SetCompact(true);
         }
+        if (startHidden)
+            UpdateBrowserVisibility();
         if (_initializeBrowser)
             _initializationTask = InitializeAsync();
         ConfigureAutomaticReleaseUpdateChecks();
@@ -396,30 +417,27 @@ public sealed partial class WebHostWindow : Window
 
         _retryItem = CreateMenuItem("Retry failed navigation", "retry", RetryNavigation);
         _playPauseItem = CreatePlayerItem("Play or pause", "toggle", "play-pause");
-        _playItem = CreatePlayerItem("Start website playback", "play", "play");
-        _pauseItem = CreatePlayerItem("Pause website playback", "pause", "pause");
         _previousItem = CreatePlayerItem("Previous item", "previous", "previous");
         _nextItem = CreatePlayerItem("Next item", "next", "next");
-        _zoomInItem = CreateMenuItem("Zoom page in", "zoom-in", () => SetZoom(_settings.Zoom + 0.1));
-        _zoomOutItem = CreateMenuItem("Zoom page out", "zoom-out", () => SetZoom(_settings.Zoom - 0.1));
-        _zoomResetItem = CreateMenuItem("Reset page zoom", "zoom-reset", () => SetZoom(1));
+        _shortcutsItem = CreateToggleItem("Session playback shortcuts", "settings", value => SetShortcutsEnabled(value));
+        _playbackSubItem = new MenuFlyoutSubItem { Text = "Playback", Icon = _iconCache.CreateElement("play-pause", 16) };
+        AutomationProperties.SetName(_playbackSubItem, "Playback");
+        foreach (var item in new MenuFlyoutItemBase[] { _playPauseItem, _previousItem, _nextItem, new MenuFlyoutSeparator(), _shortcutsItem })
+            _playbackSubItem.Items.Add(item);
         _fullscreenItem = CreateMenuItem("Enter fullscreen", "fullscreen", ToggleFullscreen);
-        _compactItem = CreateMenuItem("Compact window", "compact", ToggleCompact);
-        _shortcutsItem = CreateToggleItem("Enable session playback shortcuts", "settings", value => SetShortcutsEnabled(value));
+        _fullscreenItem.KeyboardAcceleratorTextOverride = "F11";
         _topmostItem = CreateToggleItem("Keep window on top", "pin", value => SetTopmost(value));
-        _trayItem = CreateToggleItem("Enable tray icon", "tray", value => { SetTrayEnabled(value); CaptureSettings(); });
-        _restoreItem = CreateToggleItem("Start on last Home or Library section", "restore-section", value =>
-        {
-            _settings = _settings with { RestoreSection = value, LastSection = "home" };
-            CaptureSettings();
-            SetStatus(value
-                ? "Remembering Home or Library only. The website still owns account, queue and autoplay behavior."
-                : "Section restore disabled. Startup returns to Home.");
-        });
+        _zoomInItem = CreateMenuItem("Zoom in", "zoom-in", () => SetZoom(_settings.Zoom + 0.1));
+        _zoomOutItem = CreateMenuItem("Zoom out", "zoom-out", () => SetZoom(_settings.Zoom - 0.1));
+        _zoomResetItem = CreateMenuItem(ZoomResetText(), "zoom-reset", () => SetZoom(1));
+        _zoomSubItem = new MenuFlyoutSubItem { Text = "Zoom", Icon = _iconCache.CreateElement("zoom-in", 16) };
+        AutomationProperties.SetName(_zoomSubItem, "Zoom");
+        foreach (var item in new MenuFlyoutItemBase[] { _zoomInItem, _zoomOutItem, _zoomResetItem })
+            _zoomSubItem.Items.Add(item);
         _setTimerItem = CreateMenuItem("Set pause timer", "quit-timer", SetPauseTimer);
         _cancelTimerItem = CreateMenuItem("Cancel pause timer", "cancel-timer", CancelPauseTimer);
-        _statusDetailsItem = CreateMenuItem("Read application status", "status", ShowStatusDetails);
-        _settingsItem = CreateMenuItem("Settings", "settings", ShowSettings);
+        _statusDetailsItem = CreateMenuItem("Application status", "status", ShowStatusDetails);
+        _settingsItem = CreateMenuItem("Settings…", "settings", ShowSettings);
         _quitItem = CreateMenuItem("Quit Nativune", "quit", () => _ = ShutdownAsync());
         _versionItem = new MenuFlyoutItem
         {
@@ -428,13 +446,9 @@ public sealed partial class WebHostWindow : Window
         };
         AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
 
-        // Grouped by importance: recovery, playback (now only here in the full window), window, timer, app.
         AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(),
-            _playPauseItem, _playItem, _pauseItem, _previousItem, _nextItem, _shortcutsItem,
-            new MenuFlyoutSeparator(), _compactItem, _fullscreenItem, _topmostItem,
-            _zoomInItem, _zoomOutItem, _zoomResetItem, new MenuFlyoutSeparator(),
-            _setTimerItem, _cancelTimerItem, new MenuFlyoutSeparator(),
-            _trayItem, _restoreItem, _settingsItem, _statusDetailsItem,
+            _playbackSubItem, _fullscreenItem, _topmostItem, _zoomSubItem, new MenuFlyoutSeparator(),
+            _settingsItem, _statusDetailsItem,
             new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
@@ -442,6 +456,8 @@ public sealed partial class WebHostWindow : Window
         _retryItem.IsEnabled = false;
         _statusDetailsItem.IsEnabled = true;
     }
+
+    private string ZoomResetText() => $"Reset zoom ({Math.Round(_settings.Zoom * 100):0}%)";
 
     private MenuFlyoutItem CreateMenuItem(string text, string icon, Action action)
     {
@@ -486,8 +502,6 @@ public sealed partial class WebHostWindow : Window
         };
         BuildLoadingSpinner();
         _shortcutsItem.IsChecked = false;
-        _restoreItem.IsChecked = _settings.RestoreSection;
-        _trayItem.IsChecked = _settings.TrayEnabled;
         _topmostItem.IsChecked = _presenter?.IsAlwaysOnTop == true;
         RefreshShortcutDescriptions();
         UpdateNavigation();
@@ -523,8 +537,6 @@ public sealed partial class WebHostWindow : Window
     {
         _retryItem.Icon = _iconCache.CreateElement("retry", 16);
         _playPauseItem.Icon = _iconCache.CreateElement("play-pause", 16);
-        _playItem.Icon = _iconCache.CreateElement("play", 16);
-        _pauseItem.Icon = _iconCache.CreateElement("pause", 16);
         _previousItem.Icon = _iconCache.CreateElement("previous", 16);
         _nextItem.Icon = _iconCache.CreateElement("next", 16);
         _shortcutsItem.Icon = _iconCache.CreateElement("settings", 16);
@@ -532,10 +544,7 @@ public sealed partial class WebHostWindow : Window
         _zoomOutItem.Icon = _iconCache.CreateElement("zoom-out", 16);
         _zoomResetItem.Icon = _iconCache.CreateElement("zoom-reset", 16);
         _fullscreenItem.Icon = _iconCache.CreateElement(_fullscreen ? "exit-fullscreen" : "fullscreen", 16);
-        _compactItem.Icon = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 16);
         _topmostItem.Icon = _iconCache.CreateElement("pin", 16);
-        _trayItem.Icon = _iconCache.CreateElement("tray", 16);
-        _restoreItem.Icon = _iconCache.CreateElement("restore-section", 16);
         _setTimerItem.Icon = _iconCache.CreateElement("quit-timer", 16);
         _cancelTimerItem.Icon = _iconCache.CreateElement("cancel-timer", 16);
         _statusDetailsItem.Icon = _iconCache.CreateElement("status", 16);
@@ -560,8 +569,6 @@ public sealed partial class WebHostWindow : Window
     {
         var enabled = PlayerAvailable;
         _playPauseItem.IsEnabled = enabled;
-        _playItem.IsEnabled = enabled;
-        _pauseItem.IsEnabled = enabled;
         _previousItem.IsEnabled = enabled;
         _nextItem.IsEnabled = enabled;
         _shortcutsItem.IsEnabled = !_closing && !_disposed && NativeHandle != 0;
@@ -1097,6 +1104,8 @@ public sealed partial class WebHostWindow : Window
         _settings = _settings with { Zoom = Math.Clamp(Math.Round(zoom, 2), 0.75, 1.5) };
         if (!_disposed && !_closing && _browserHost is not null)
             _browserHost.ZoomFactor = _settings.Zoom;
+        _zoomResetItem.Text = ZoomResetText();
+        AutomationProperties.SetName(_zoomResetItem, _zoomResetItem.Text);
         ScheduleSettings();
         SetStatus($"Zoom: {_settings.Zoom:P0}.");
     }
@@ -1111,7 +1120,8 @@ public sealed partial class WebHostWindow : Window
         if (isError) AppLog.Write("status", text);
         if (_statusDetailsText.Length > 4096)
             _statusDetailsText = _statusDetailsText[..4096];
-        _statusDetailsItem.Text = isError ? "Read application status (error)" : "Read application status";
+        _statusDetailsItem.Text = isError ? "Application status (error)" : "Application status";
+        AutomationProperties.SetName(_statusDetailsItem, _statusDetailsItem.Text);
         AutomationProperties.SetName(MoreButton, isError
             ? "More commands and settings. Application status reports an error."
             : "More commands and settings");
@@ -1317,6 +1327,13 @@ public sealed partial class WebHostWindow : Window
     {
         if (_closing || _disposed || _settingsDialogOpen) return;
         _settingsDialogOpen = true;
+        var installed = ReleaseUpdater.IsInstalledBuild(_root);
+        var startupState = StartupEntryState.Off;
+        if (installed)
+        {
+            try { startupState = StartupRegistration.Read(_root); }
+            catch (Exception) { SetStatus("The Windows startup entry could not be read.", isError: true); }
+        }
         var dialog = new SettingsDialog(_settings, bindings =>
         {
             if (!bindings.Validate(out var error)) return error;
@@ -1324,7 +1341,7 @@ public sealed partial class WebHostWindow : Window
             var applied = _sessionShortcuts?.TryApply(bindings, out error) == true;
             _shortcutsItem.IsChecked = _shortcutsEnabled;
             return applied ? null : error;
-        });
+        }, installed, startupState, () => _statusDetailsText);
         _settingsDialog = dialog;
         _ = ShowSettingsAsync(dialog);
     }
@@ -1337,6 +1354,8 @@ public sealed partial class WebHostWindow : Window
             {
                 var sleepSettingChanged = _settings.SleepInBackground != dialog.Result.SleepInBackground;
                 var adSettingChanged = _settings.BlockAds != dialog.Result.BlockAds;
+                var restoreChanged = _settings.RestoreSection != dialog.Result.RestoreSection;
+                var trayChanged = _settings.TrayEnabled != dialog.Result.TrayEnabled;
                 _settings = _settings with
                 {
                     Shortcuts = dialog.Result.Shortcuts,
@@ -1344,8 +1363,31 @@ public sealed partial class WebHostWindow : Window
                     SleepInBackground = dialog.Result.SleepInBackground,
                     StartCompact = dialog.Result.StartCompact,
                     AutoCheckUpdates = dialog.Result.AutoCheckUpdates,
-                    BlockAds = dialog.Result.BlockAds
+                    BlockAds = dialog.Result.BlockAds,
+                    AutostartMode = dialog.Result.AutostartMode,
+                    RestoreSection = dialog.Result.RestoreSection
                 };
+                if (restoreChanged)
+                    _settings = _settings with { LastSection = "home" };
+                if (trayChanged)
+                    SetTrayEnabled(dialog.Result.TrayEnabled);
+                string? startupError = null;
+                if (ReleaseUpdater.IsInstalledBuild(_root))
+                {
+                    try
+                    {
+                        switch (dialog.StartupChange)
+                        {
+                            case StartupChange.Enable: StartupRegistration.Enable(_root); break;
+                            case StartupChange.Disable: StartupRegistration.Disable(_root); break;
+                            case StartupChange.RemoveStale: StartupRegistration.RemoveStale(); break;
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        startupError = "Settings saved, but the Windows startup entry could not be changed.";
+                    }
+                }
                 ConfigureAutomaticReleaseUpdateChecks();
                 if (!_settings.StartCompact)
                 {
@@ -1356,11 +1398,18 @@ public sealed partial class WebHostWindow : Window
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
                 UpdateLoadingSpinner();
                 CaptureSettings();
-                SetStatus(sleepSettingChanged || adSettingChanged
-                    ? "Settings saved. Restart Nativune to apply the background sleeping or ad-blocking change."
-                    : _shortcutsEnabled
-                        ? "Settings saved. Updated global shortcuts are active for this session."
-                        : "Settings saved. Global shortcuts remain off until enabled for this session.");
+                if (startupError is not null)
+                    SetStatus(startupError, isError: true);
+                else if (restoreChanged)
+                    SetStatus(_settings.RestoreSection
+                        ? "Settings saved. Remembering Home or Library only. The website still owns account, queue and autoplay behavior."
+                        : "Settings saved. Section restore disabled. Startup returns to Home.");
+                else
+                    SetStatus(sleepSettingChanged || adSettingChanged
+                        ? "Settings saved. Restart Nativune to apply the background sleeping or ad-blocking change."
+                        : _shortcutsEnabled
+                            ? "Settings saved. Updated global shortcuts are active for this session."
+                            : "Settings saved. Global shortcuts remain off until enabled for this session.");
             }
         }
         catch (Exception) when (!_closing && !_disposed)
@@ -1480,7 +1529,6 @@ public sealed partial class WebHostWindow : Window
                 SetStatus("Tray icon could not be created. The window remains available.", isError: true);
             }
         }
-        _trayItem.IsChecked = enabled;
         _settings = _settings with { TrayEnabled = enabled };
         if (enabled)
             SetStatus("Tray enabled. Close hides to the tray and keeps playback running; use Quit to exit.");
@@ -1657,8 +1705,6 @@ public sealed partial class WebHostWindow : Window
     {
         _fullscreenItem.Text = _fullscreen ? "Exit fullscreen" : "Enter fullscreen";
         AutomationProperties.SetName(_fullscreenItem, _fullscreen ? "Exit fullscreen" : "Enter fullscreen");
-        _compactItem.Text = _compact ? "Restore full-size window" : "Compact window";
-        AutomationProperties.SetName(_compactItem, _compact ? "Restore full-size window" : "Compact window");
         AutomationProperties.SetName(CompactButton, _compact ? "Restore full-size window" : "Compact window");
         ToolTipService.SetToolTip(CompactButton, ShortcutDescription(_compact ? "Restore full-size window" : "Compact window", _settings.Shortcuts.Compact));
         UpdateInfoBar.Visibility = _compact || _fullscreen ? Visibility.Collapsed : Visibility.Visible;

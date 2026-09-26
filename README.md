@@ -77,16 +77,17 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   ![Tall layout at 480 × 480 with a large CD disc above the title, controls and seek bar](assets/screenshots/compact-layout/tall-480x480.png)
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
-- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More, next to the website's own player bar.
+- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
-- **Optional tray icon.** It is on by default for new profiles. While it is enabled, Close hides the window and playback keeps running. Quit always exits.
+- **Optional tray icon.** It is on by default for new profiles (**Settings › General › Show tray icon**). While it is enabled, Close hides the window and playback keeps running. Quit always exits.
+- **Optional start with Windows, off by default.** **Settings › Startup › Start Nativune when I sign in to Windows** adds a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for this installation. It is available only in installs made with Setup. You choose whether it opens the full window, Compact, or hidden in the tray. Turning it off in Task Manager or **Windows Settings › Apps › Startup** is respected; Nativune never turns it back on. Uninstalling removes the entry.
 - **Pause timer** from one second to four hours. When it expires, playback pauses and the window stays open.
 - **App volume and mute**, which control only Nativune's own audio, not the system volume or the website's slider. Nativune remembers them and restores them the next time it starts.
 - **Keyboard shortcuts you can customize.** They only work after you enable them for the current session from the menu.
 - **Window options:** keep on top, fullscreen, page zoom, start in Compact, and reopen on the last Home or Library section.
 - **Reduce motion** setting that stops the rotating artwork and scrolling titles in Compact.
 - **uBlock Origin Lite, privacy-only by default.** Only the EasyPrivacy tracker list is enabled, and only on `music.youtube.com`.
-- **Optional ad blocking, off by default.** **Settings > Block ads** adds uBlock Origin Lite's ad filters on `music.youtube.com` after a restart. Blocking ads is against YouTube's terms; YouTube may detect it, interrupt playback or warn your account. YouTube Premium removes ads legitimately.
+- **Optional ad blocking, off by default.** **Settings › Privacy › Block ads** adds uBlock Origin Lite's ad filters on `music.youtube.com` after a restart. Blocking ads is against YouTube's terms; YouTube may detect it, interrupt playback or warn your account. YouTube Premium removes ads legitimately.
 - **Per-user installer** with SHA-256 checksums. It does not need administrator rights to install Nativune itself.
 - **Update indicator** that checks GitHub Releases and never downloads or installs anything without a click.
 
@@ -197,7 +198,7 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 3. Play music as you would on the website. The website's player bar, the taskbar buttons, the More menu and the Compact player all control the same player.
 4. Select the **Compact window** button at the left of the toolbar (a window with an arrow pointing into a small player) to switch to the mini player, and **Return to full** (the same window with the arrow pointing out) to switch back.
 5. In Compact, select **Playlists** (the list-and-play icon next to Dislike) to choose one of your playlists. The menu shows what YouTube Music lists in its sidebar, so you need to be signed in.
-6. Open **More commands and settings** (`…`) for playback commands, tray, keep-on-top, zoom, fullscreen, the pause timer, session shortcuts and **Settings**.
+6. Open **More commands and settings** (`…`) for Playback (play/pause, previous, next and session shortcuts), fullscreen, keep-on-top, Zoom, **Settings…**, **Application status** and Quit. The pause timer has its own toolbar button. Settings has five pages: General (tray icon, reduce motion, sleep in background, update checks), Startup (start with Windows, start in Compact, remember Home or Library), Shortcuts, Privacy (Block ads) and About.
 
 ## Updates
 
@@ -225,7 +226,7 @@ When **Check for updates automatically** is enabled in Settings (the default), t
 
 ## Uninstall
 
-Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the installed Setup program with `--uninstall`. Uninstall removes application files and shell registration but keeps `data/`. Delete the installation's `data/` directory yourself if you also want to remove the isolated WebView2 profile, its site data and your Nativune settings.
+Uninstall Nativune from **Windows Settings > Apps > Installed apps**, or run the installed Setup program with `--uninstall`. Uninstall removes application files, shell registration and the start-with-Windows entry (if it points into this installation) but keeps `data/`. Delete the installation's `data/` directory yourself if you also want to remove the isolated WebView2 profile, its site data and your Nativune settings.
 
 ## Build from source
 
@@ -282,7 +283,7 @@ The window, toolbar, Compact player, dialogs, tray and taskbar integration are n
 YouTube Music's website skips a song as soon as you dislike it, and Nativune presses the website's own button. Compact's Dislike therefore reads "Dislike and skip". One click gives one dislike and one skip, and extra clicks can't dislike the songs that follow.
 
 **Does Nativune block ads or download music?**
-It never downloads music; website downloads are cancelled. By default it enables only the EasyPrivacy tracker list and does not block ads. You can turn on **Settings > Block ads**, which adds uBlock Origin Lite's ad filters after a restart. That is against YouTube's terms, YouTube may detect it and interrupt playback or warn your account, and some ads may still get through.
+It never downloads music; website downloads are cancelled. By default it enables only the EasyPrivacy tracker list and does not block ads. You can turn on **Settings › Privacy › Block ads**, which adds uBlock Origin Lite's ad filters after a restart. That is against YouTube's terms, YouTube may detect it and interrupt playback or warn your account, and some ads may still get through.
 
 **Do I need YouTube Premium?**
 No. Nativune works signed out or with any account the website accepts. What you can play, and whether you see ads, depends on your account, just as on the website.

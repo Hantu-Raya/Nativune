@@ -16,7 +16,7 @@
     <ApplicationIcon>..\..\assets\app-icon\nativune.ico</ApplicationIcon>
     <AssemblyName>Nativune.Setup</AssemblyName>
     <RootNamespace>Nativune.Installer</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RepositoryUrl>https://github.com/Hantu-Raya/Nativune</RepositoryUrl>
     <ImplicitUsings>enable</ImplicitUsings>

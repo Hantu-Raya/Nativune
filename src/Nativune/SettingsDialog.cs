@@ -5,14 +5,19 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
 using Windows.System;
 using Windows.UI.Core;
 using WinRT.Interop;
 
 namespace Nativune;
+
+// Registry change requested by Save; the caller applies it with StartupRegistration.
+internal enum StartupChange { None, Enable, Disable, RemoveStale }
 
 public sealed partial class SettingsDialog : Window
 {
@@ -25,13 +30,17 @@ public sealed partial class SettingsDialog : Window
     ];
 
     private const int GwlpHwndParent = -8;
-    private const double DialogWidthDip = 640;
-    private const double DialogHeightDip = 520;
+    private const double DialogWidthDip = 720;
+    private const double DialogHeightDip = 580;
 
     private readonly ShellSettings _initial;
     private readonly Func<ShortcutBindings, string?> _applyBindings;
     private readonly TextBox[] _bindingFields;
     private readonly int[] _values;
+    private readonly bool _isInstalledBuild;
+    private readonly StartupEntryState _startupState;
+    private readonly Func<string>? _statusText;
+    private StartupChange _staleAction;
     private TaskCompletionSource<bool>? _completion;
     private Control? _ownerFocus;
     private Window? _owner;
@@ -46,8 +55,13 @@ public sealed partial class SettingsDialog : Window
     private bool _closed;
     private bool _closeRequested;
 
-    internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings)
+    internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings,
+        bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
+        Func<string>? statusText = null)
     {
+        _isInstalledBuild = isInstalledBuild;
+        _startupState = startupState;
+        _statusText = statusText;
         _initial = initial ?? throw new ArgumentNullException(nameof(initial));
         _applyBindings = applyBindings ?? throw new ArgumentNullException(nameof(applyBindings));
         _values =
@@ -68,8 +82,17 @@ public sealed partial class SettingsDialog : Window
         StartCompactCheckBox.IsChecked = initial.StartCompact;
         AutoCheckUpdatesCheckBox.IsChecked = initial.AutoCheckUpdates;
         BlockAdsCheckBox.IsChecked = initial.BlockAds;
+        TrayEnabledCheckBox.IsChecked = initial.TrayEnabled;
+        RestoreSectionCheckBox.IsChecked = initial.RestoreSection;
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
+        InstallKindText.Text = isInstalledBuild
+            ? "Installed at %LOCALAPPDATA%\\Nativune" : "Development build";
+        AutomationProperties.SetName(InstallKindText, InstallKindText.Text);
+        CopyStatusButton.IsEnabled = statusText is not null;
+        CopyStatusButton.Click += (_, _) => CopyStatus();
+        StartWithWindows = startupState is StartupEntryState.On or StartupEntryState.DisabledByUser;
+        InitializeUpdatesAndStartup(initial);
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -89,6 +112,7 @@ public sealed partial class SettingsDialog : Window
         ClearNext.Click += (_, _) => SetBinding(2, 0);
         ClearCompact.Click += (_, _) => SetBinding(3, 0);
         RestoreButton.Click += (_, _) => RestoreDefaults();
+        Nav.SelectionChanged += OnNavSelectionChanged;
         SaveButton.Click += (_, _) => Save();
         CancelButton.Click += (_, _) => CloseWithoutSaving();
         Root.Loaded += OnRootLoaded;
@@ -97,6 +121,11 @@ public sealed partial class SettingsDialog : Window
     }
 
     internal ShellSettings Result { get; private set; }
+
+    // Desired start-with-Windows state after Save (registry is the source of truth, not settings.json).
+    internal bool StartWithWindows { get; private set; }
+
+    internal StartupChange StartupChange { get; private set; }
 
     internal async Task<bool> ShowAsync(Window owner)
     {
@@ -163,7 +192,7 @@ public sealed partial class SettingsDialog : Window
     {
         Root.Loaded -= OnRootLoaded;
         if (_focusedBinding < 0)
-            ToggleField.Focus(FocusState.Programmatic);
+            TrayEnabledCheckBox.Focus(FocusState.Programmatic);
     }
 
     private void OnRootKeyDown(object sender, KeyRoutedEventArgs args)
@@ -175,7 +204,7 @@ public sealed partial class SettingsDialog : Window
             return;
         }
         if (args.Key == VirtualKey.Enter
-            && args.OriginalSource is not Button)
+            && args.OriginalSource is not (Button or HyperlinkButton or ComboBox or ComboBoxItem or NavigationViewItem))
         {
             args.Handled = true;
             Save();
@@ -293,10 +322,142 @@ public sealed partial class SettingsDialog : Window
             StartCompact = StartCompactCheckBox.IsChecked == true,
             AutoCheckUpdates = AutoCheckUpdatesCheckBox.IsChecked == true,
             BlockAds = BlockAdsCheckBox.IsChecked == true,
+            TrayEnabled = TrayEnabledCheckBox.IsChecked == true,
+            RestoreSection = RestoreSectionCheckBox.IsChecked == true,
+            AutostartMode = SelectedAutostartMode(),
             Shortcuts = bindings
         };
+        (StartWithWindows, StartupChange) = ResolveStartupChange();
         _saved = true;
         Close();
+    }
+
+    private void InitializeUpdatesAndStartup(ShellSettings initial)
+    {
+        if (!_isInstalledBuild)
+        {
+            AutoCheckUpdatesCheckBox.IsEnabled = false;
+            AutoCheckUpdatesCaption.Visibility = Visibility.Visible;
+            AutomationProperties.SetHelpText(AutoCheckUpdatesCheckBox, AutoCheckUpdatesCaption.Text);
+
+            StartWithWindowsCheckBox.IsEnabled = false;
+            StartWithWindowsCheckBox.IsChecked = false;
+            StartWithWindowsCaption.Visibility = Visibility.Visible;
+            AutomationProperties.SetHelpText(StartWithWindowsCheckBox, StartWithWindowsCaption.Text);
+        }
+        else
+        {
+            StartWithWindowsCheckBox.IsChecked = StartWithWindows;
+        }
+
+        AutostartModeComboBox.SelectedIndex = (int)(Enum.IsDefined(initial.AutostartMode)
+            ? initial.AutostartMode : ShellSettings.DefaultAutostartMode(initial.TrayEnabled));
+        UpdateStartupControls(announce: false);
+
+        StartWithWindowsCheckBox.Checked += (_, _) => UpdateStartupControls(announce: true);
+        StartWithWindowsCheckBox.Unchecked += (_, _) => UpdateStartupControls(announce: true);
+        TrayEnabledCheckBox.Checked += (_, _) => UpdateStartupControls(announce: false);
+        TrayEnabledCheckBox.Unchecked += (_, _) => UpdateStartupControls(announce: false);
+        OpenStartupAppsButton.Click += async (_, _) =>
+            await Launcher.LaunchUriAsync(new Uri("ms-settings:startupapps"));
+        FixStartupButton.Click += (_, _) => ChooseStaleAction(StartupChange.Enable);
+        RemoveStartupButton.Click += (_, _) => ChooseStaleAction(StartupChange.RemoveStale);
+    }
+
+    private void ChooseStaleAction(StartupChange action)
+    {
+        _staleAction = action;
+        if (action == StartupChange.Enable)
+            StartWithWindowsCheckBox.IsChecked = true;
+        UpdateStartupControls(announce: true);
+    }
+
+    private void UpdateStartupControls(bool announce)
+    {
+        var parentOn = _isInstalledBuild && StartWithWindowsCheckBox.IsChecked == true;
+        var trayOn = TrayEnabledCheckBox.IsChecked == true;
+        AutostartModeComboBox.IsEnabled = parentOn;
+        AutostartTrayItem.IsEnabled = trayOn;
+        AutostartTrayCaption.Visibility = trayOn ? Visibility.Collapsed : Visibility.Visible;
+        AutomationProperties.SetHelpText(AutostartTrayItem, trayOn ? string.Empty : "Requires Show tray icon");
+        if (!trayOn && AutostartModeComboBox.SelectedIndex == (int)AutostartMode.Tray)
+            AutostartModeComboBox.SelectedIndex = (int)AutostartMode.Full;
+
+        var stale = _startupState == StartupEntryState.Stale && _isInstalledBuild;
+        FixStartupButton.Visibility = stale && _staleAction == StartupChange.None ? Visibility.Visible : Visibility.Collapsed;
+        RemoveStartupButton.Visibility = FixStartupButton.Visibility;
+
+        var (desired, _) = ResolveStartupChange();
+        StartupStatusText.Text = _startupState switch
+        {
+            StartupEntryState.DisabledByUser when desired
+                => "Startup entry: Turned off in Task Manager or Windows Settings — turn it back on there.",
+            StartupEntryState.Stale when _staleAction == StartupChange.Enable
+                => "Startup entry points to another location; it will be fixed when you save.",
+            StartupEntryState.Stale when _staleAction == StartupChange.RemoveStale
+                => "Startup entry points to another location; it will be removed when you save.",
+            StartupEntryState.Stale when !desired => "Startup entry points to another location",
+            _ => desired ? "Startup entry: on" : "Startup entry: off"
+        };
+        if (!_isInstalledBuild)
+            StartupStatusText.Text = "Startup entry: off";
+        AutomationProperties.SetName(StartupStatusText, StartupStatusText.Text);
+        if (announce && FrameworkElementAutomationPeer.FromElement(StartupStatusText) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    private (bool Desired, StartupChange Change) ResolveStartupChange()
+    {
+        if (!_isInstalledBuild)
+            return (false, StartupChange.None);
+        var wanted = StartWithWindowsCheckBox.IsChecked == true;
+        return _startupState switch
+        {
+            StartupEntryState.Stale when _staleAction == StartupChange.RemoveStale && !wanted
+                => (false, StartupChange.RemoveStale),
+            StartupEntryState.Stale => wanted ? (true, StartupChange.Enable) : (false, StartupChange.None),
+            StartupEntryState.Off => wanted ? (true, StartupChange.Enable) : (false, StartupChange.None),
+            _ => wanted ? (true, StartupChange.None) : (false, StartupChange.Disable)
+        };
+    }
+
+    private AutostartMode SelectedAutostartMode()
+    {
+        var mode = AutostartModeComboBox.SelectedIndex is >= 0 and <= 2
+            ? (AutostartMode)AutostartModeComboBox.SelectedIndex
+            : ShellSettings.DefaultAutostartMode(TrayEnabledCheckBox.IsChecked == true);
+        return mode == AutostartMode.Tray && TrayEnabledCheckBox.IsChecked != true ? AutostartMode.Full : mode;
+    }
+
+    private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        var tag = (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "General";
+        GeneralPage.Visibility = tag == "General" ? Visibility.Visible : Visibility.Collapsed;
+        StartupPage.Visibility = tag == "Startup" ? Visibility.Visible : Visibility.Collapsed;
+        ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
+        PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
+        AboutPage.Visibility = tag == "About" ? Visibility.Visible : Visibility.Collapsed;
+        RestoreButton.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
+        PageScroller.ChangeView(null, 0, null, disableAnimation: true);
+    }
+
+    private void CopyStatus()
+    {
+        if (_statusText is null)
+            return;
+        try
+        {
+            var package = new DataPackage();
+            package.SetText(_statusText());
+            Clipboard.SetContent(package);
+            CopyStatusResult.Text = "Application status copied.";
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        {
+            CopyStatusResult.Text = "The clipboard is not available right now.";
+        }
+        if (FrameworkElementAutomationPeer.FromElement(CopyStatusResult) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }
 
     private void CloseWithoutSaving()
