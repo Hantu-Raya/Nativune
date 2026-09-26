@@ -50,14 +50,14 @@ jobs:
           }
           $appVersion = Get-ProjectVersion 'src/Nativune/Nativune.csproj'
           $installerVersion = Get-ProjectVersion 'src/Nativune.Installer/Nativune.Installer.csproj'
-          if ($appVersion -cne $installerVersion) {
-            throw "Application version '$appVersion' does not match installer version '$installerVersion'."
-          }
           if ($appVersion -cnotmatch $versionPattern) {
-            throw "Project version '$appVersion' is not a valid release version."
+            throw "Application version '$appVersion' is not a valid release version."
           }
-          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$appVersion`n", [Text.UTF8Encoding]::new($false))
-          Write-Host "Verified application and installer version $appVersion."
+          if ($installerVersion -cnotmatch $versionPattern) {
+            throw "Installer version '$installerVersion' is not a valid release version."
+          }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$appVersion`ninstaller_version=$installerVersion`n", [Text.UTF8Encoding]::new($false))
+          Write-Host "Verified application version $appVersion and installer version $installerVersion."
 
       - name: Bootstrap pinned local .NET SDK
         shell: pwsh
@@ -114,19 +114,73 @@ jobs:
           python scripts/check-pinvoke.py
           if ($LASTEXITCODE -ne 0) { throw 'P/Invoke entry point check failed.' }
 
+      - name: Fetch previous release assets for installer stub reuse
+        id: previous-release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $previousRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts/previous-release'
+          if (Test-Path -LiteralPath $previousRoot) { throw "Expected a clean previous-release directory: $previousRoot" }
+          $releaseJson = & gh api "repos/$env:GITHUB_REPOSITORY/releases/latest"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'No latest published release is available; building a fresh installer stub.'
+            exit 0
+          }
+          $release = ($releaseJson -join "`n") | ConvertFrom-Json
+          $names = @('Nativune-Setup.zip', 'release-manifest.json', 'delta-update.json')
+          $assets = @{}
+          foreach ($name in $names) {
+            $matched = @($release.assets | Where-Object { $_.name -ceq $name })
+            if ($matched.Count -ne 1) {
+              Write-Host "Latest release $($release.tag_name) lacks $name; building a fresh installer stub."
+              exit 0
+            }
+            if ([string]$matched[0].digest -cnotmatch '^sha256:([0-9a-f]{64})$') {
+              throw "Latest release asset $name has no SHA-256 digest."
+            }
+            $assets[$name] = [pscustomobject]@{ Id = [int64]$matched[0].id; Sha256 = $Matches[1] }
+          }
+          [IO.Directory]::CreateDirectory($previousRoot) | Out-Null
+          $client = [Net.Http.HttpClient]::new()
+          try {
+            # Redirects to the asset CDN drop the Authorization header automatically.
+            $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $env:GH_TOKEN)
+            $client.DefaultRequestHeaders.UserAgent.ParseAdd('nativune-build')
+            $client.DefaultRequestHeaders.Accept.ParseAdd('application/octet-stream')
+            foreach ($name in $names) {
+              $target = Join-Path $previousRoot $name
+              $bytes = $client.GetByteArrayAsync("https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/assets/$($assets[$name].Id)").GetAwaiter().GetResult()
+              [IO.File]::WriteAllBytes($target, $bytes)
+              $actual = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -cne $assets[$name].Sha256) { throw "Downloaded $name does not match its release digest." }
+            }
+          } finally {
+            $client.Dispose()
+          }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "directory=artifacts/previous-release`n", [Text.UTF8Encoding]::new($false))
+          Write-Host "Fetched verified assets of $($release.tag_name) for installer stub reuse."
+
       - name: Build release package after tests
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+          PREVIOUS_RELEASE_DIRECTORY: ${{ steps.previous-release.outputs.directory }}
         run: |
           $ErrorActionPreference = 'Stop'
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Version $env:RELEASE_VERSION -Configuration Release
+          $previousArguments = @()
+          if (-not [string]::IsNullOrEmpty($env:PREVIOUS_RELEASE_DIRECTORY)) {
+            $previousArguments = @('-PreviousReleaseDirectory', $env:PREVIOUS_RELEASE_DIRECTORY)
+          }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Version $env:RELEASE_VERSION -Configuration Release @previousArguments
           if ($LASTEXITCODE -ne 0) { throw 'Release package build failed.' }
 
       - name: Verify release outputs and appended payload
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+          INSTALLER_VERSION: ${{ steps.release-version.outputs.installer_version }}
         run: |
           $ErrorActionPreference = 'Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -136,7 +190,8 @@ jobs:
           $zipPath = Join-Path $releaseRoot 'Nativune-Setup.zip'
           $manifestPath = Join-Path $releaseRoot 'release-manifest.json'
           $checksumsPath = Join-Path $releaseRoot 'SHA256SUMS.txt'
-          foreach ($path in @($setupPath, $zipPath, $manifestPath, $checksumsPath)) {
+          $deltaPath = Join-Path $releaseRoot 'delta-update.json'
+          foreach ($path in @($setupPath, $zipPath, $manifestPath, $checksumsPath, $deltaPath)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Required release output is missing: $path"
             }
@@ -322,23 +377,61 @@ jobs:
           $standaloneZipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($embeddedZipHash -cne $standaloneZipHash) { throw 'Appended setup payload differs from the standalone release ZIP.' }
 
-          $expectedChecksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'release-manifest.json')
+          # The outer setup stub and the payload installer must be the same installer build.
+          $stubCopyPath = Join-Path $env:RUNNER_TEMP 'nativune-outer-stub.exe'
+          $setupStream = [IO.File]::OpenRead($setupPath)
+          $stubOutput = [IO.File]::Open($stubCopyPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try {
+            $buffer = [byte[]]::new(1048576)
+            $remaining = [int64]$stubLength
+            while ($remaining -gt 0) {
+              $read = $setupStream.Read($buffer, 0, [int][Math]::Min([int64]$buffer.Length, $remaining))
+              if ($read -le 0) { throw 'Setup executable ended before its stub was fully read.' }
+              $stubOutput.Write($buffer, 0, $read)
+              $remaining -= $read
+            }
+          } finally {
+            $stubOutput.Dispose()
+            $setupStream.Dispose()
+          }
+          $outerStubHash = (Get-FileHash -LiteralPath $stubCopyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerEntries = @($manifestFiles | Where-Object { [string]$_.path -ceq 'installer/Nativune.Setup.exe' })
+          if ($installerEntries.Count -ne 1 -or [int64]$installerEntries[0].length -ne $stubLength -or [string]$installerEntries[0].sha256 -cne $outerStubHash) {
+            throw 'Outer setup stub is not byte-identical to the payload installer/Nativune.Setup.exe.'
+          }
+          $stubProductVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($stubCopyPath).ProductVersion
+          Remove-Item -LiteralPath $stubCopyPath -Force
+          if ($stubProductVersion -cne $env:INSTALLER_VERSION) {
+            throw "Installer stub version '$stubProductVersion' does not match installer project version '$env:INSTALLER_VERSION'."
+          }
+
+          $deltaDescriptor = Get-Content -LiteralPath $deltaPath -Raw | ConvertFrom-Json
+          $deltaNames = @($deltaDescriptor.PSObject.Properties.Name)
+          $expectedDeltaNames = @('schemaVersion', 'product', 'version', 'enabled', 'applyProtocol', 'installerSha256', 'installerSourceSha256')
+          if ($deltaNames.Count -ne $expectedDeltaNames.Count -or @($expectedDeltaNames | Where-Object { $_ -cnotin $deltaNames }).Count -ne 0 -or
+              $deltaDescriptor.schemaVersion -ne 1 -or $deltaDescriptor.product -cne 'Nativune' -or $deltaDescriptor.version -cne $env:RELEASE_VERSION -or
+              $deltaDescriptor.enabled -isnot [bool] -or -not $deltaDescriptor.enabled -or $deltaDescriptor.applyProtocol -ne 1 -or
+              [string]$deltaDescriptor.installerSha256 -cne $outerStubHash -or [string]$deltaDescriptor.installerSourceSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'delta-update.json does not match the built release manifest installer entry.'
+          }
+
+          $expectedChecksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json')
           $checksumMap = @{}
           foreach ($line in @(Get-Content -LiteralPath $checksumsPath | Where-Object { $_.Length -gt 0 })) {
-            if ($line -cnotmatch '^([0-9a-f]{64})  (Nativune-Setup\.exe|Nativune-Setup\.zip|release-manifest\.json)$') {
+            if ($line -cnotmatch '^([0-9a-f]{64})  (Nativune-Setup\.exe|Nativune-Setup\.zip|delta-update\.json|release-manifest\.json)$') {
               throw "Malformed checksum line: $line"
             }
             $name = $Matches[2]
             if ($checksumMap.ContainsKey($name)) { throw "Duplicate checksum entry: $name" }
             $checksumMap[$name] = $Matches[1]
           }
-          if ($checksumMap.Count -ne $expectedChecksumNames.Count) { throw 'Checksum file does not list exactly the three release outputs.' }
+          if ($checksumMap.Count -ne $expectedChecksumNames.Count) { throw 'Checksum file does not list exactly the four release outputs.' }
           foreach ($name in $expectedChecksumNames) {
             if (-not $checksumMap.ContainsKey($name)) { throw "Checksum file is missing $name." }
             $actualHash = (Get-FileHash -LiteralPath (Join-Path $releaseRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actualHash -cne $checksumMap[$name]) { throw "Checksum verification failed for $name." }
           }
-          Write-Host "Verified $env:RELEASE_VERSION release manifest, ZIP inventory, appended setup payload, and output checksums."
+          Write-Host "Verified $env:RELEASE_VERSION release manifest, ZIP inventory, appended setup payload, installer $env:INSTALLER_VERSION stub, delta descriptor, and output checksums."
 
       - name: Upload unpublished run artifact
         if: ${{ success() }}
@@ -349,6 +442,7 @@ jobs:
             artifacts/release/Nativune-Setup.exe
             artifacts/release/Nativune-Setup.zip
             artifacts/release/release-manifest.json
+            artifacts/release/delta-update.json
             artifacts/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14

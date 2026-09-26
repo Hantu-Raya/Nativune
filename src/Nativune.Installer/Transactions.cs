@@ -162,7 +162,10 @@ internal static class InstallTransaction
             }
             if (rollbackError is not null)
             {
-                throw new SetupException(ExitCode.RollbackFailure, "Nativune installation failed and rollback was incomplete.", rollbackError);
+                throw new SetupException(
+                    ExitCode.RollbackFailure,
+                    $"Nativune installation failed and rollback was incomplete. The previous files were kept in {backup}; do not delete that folder until Nativune is reinstalled.",
+                    rollbackError);
             }
             if (error is SetupException setup)
             {

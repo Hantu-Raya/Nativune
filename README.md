@@ -214,6 +214,7 @@ While you update, Nativune tells you what is happening and keeps playing:
 
 - **Checks you start** show a bar under the toolbar: up to date, an update is available, or why the check failed (for example no internet connection, or GitHub limiting checks from your network until a given time). Automatic checks only change the button.
 - **Downloading** shows MB done, percent and time left in that bar, on the taskbar button and in the tray tooltip; Compact shows it under the title and turns its Update button into **Cancel**. You can cancel until the download is being checked.
+- **Quick updates.** When your installed Setup matches the new release's Setup, Nativune downloads only the files that changed (usually a few MB) instead of the full installer, by reading just those parts of the release's `Nativune-Setup.zip`. Installed files that no longer match their recorded SHA-256 are downloaded again too. Each file is checked against the SHA-256 in the release's `release-manifest.json`, which is itself checked against the digest GitHub publishes. If a quick update fails before Setup starts, Nativune asks whether to download the full installer and shows its size; cancelling never starts the full download. The owner can turn quick updates off for a release by removing its `delta-update.json` asset.
 - **Checking the download** compares it with the SHA-256 published for the release; a mismatch deletes the file and nothing is installed.
 - **Setup** then takes over, shows its own progress window, and reopens Nativune when it finishes. If you cancel Setup or it fails before changing anything, your current version reopens unchanged. It doesn't reopen if Nativune was still running after a minute, if the install location failed Setup's safety checks, or if a failed upgrade couldn't be rolled back; Setup says which.
 - **After the update**, a bar says "Nativune was updated to vX" with **What's new**, and the downloaded Setup is deleted. If the update didn't finish, the bar says so and offers **Try again**.
@@ -241,7 +242,9 @@ pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune
 pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.23 -Configuration Release
 ```
 
-Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json` and `SHA256SUMS.txt` to `artifacts/release/`.
+Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json`, `delta-update.json` and `SHA256SUMS.txt` to `artifacts/release/`.
+
+Setup has its own version (`src/Nativune.Installer/Nativune.Installer.csproj`), separate from the app version. Bump it only when Setup's code or build inputs change. When they haven't changed, CI reuses the previous release's Setup binary byte for byte (`-PreviousReleaseDirectory`), which keeps quick updates available. When Setup changes, that release is a full-installer update for everyone.
 
 To run a development build without installing it:
 

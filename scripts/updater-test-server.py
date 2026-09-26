@@ -9,12 +9,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
+import re
 import time
 
 
 METADATA_PATH = "/repos/Hantu-Raya/Nativune/releases/latest"
 DOWNLOAD_PATH = "/download/Nativune-Setup.exe"
 DIGEST = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+DOWNLOAD_PREFIX = "/download/"
+DELTA_ASSETS = ("release-manifest.json", "Nativune-Setup.zip", "delta-update.json")
+EXPLICIT_RANGE = re.compile(r"^bytes=([0-9]+)-([0-9]*)$")
 
 
 def parse_port(value):
@@ -35,6 +39,17 @@ def parse_rate_kbps(value):
     if rate <= 0:
         raise argparse.ArgumentTypeError("rate-kbps must be a positive integer")
     return rate
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while True:
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def release_json(tag, server):
@@ -62,21 +77,76 @@ def release_json(tag, server):
             }
         ],
     }
+    for name, (_, asset_size, asset_digest) in sorted(server.extra_assets.items()):
+        release["assets"].append(
+            {
+                "name": name,
+                "state": "uploaded",
+                "size": asset_size,
+                "browser_download_url": f"http://127.0.0.1:{server.server_port}{DOWNLOAD_PREFIX}{name}",
+                "digest": asset_digest,
+            }
+        )
     return (json.dumps(release, indent=2) + "\n").encode("utf-8")
 
 
 class MetadataRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        self._dispatch()
+
+    def do_HEAD(self):
+        self._dispatch()
+
+    def _dispatch(self):
         if self.path == DOWNLOAD_PATH:
             self._handle_download()
+        elif self.path.startswith(DOWNLOAD_PREFIX) and self.path[len(DOWNLOAD_PREFIX):] in self.server.extra_assets:
+            self._handle_extra_asset(self.path[len(DOWNLOAD_PREFIX):])
         else:
             self._handle_metadata_request()
 
-    def do_HEAD(self):
-        if self.path == DOWNLOAD_PATH:
-            self._handle_download()
-        else:
-            self._handle_metadata_request()
+    def _parse_range(self, size):
+        """Returns None for a whole-file request, (start, end) for an explicit range, or an HTTP status."""
+        value = self.headers.get("Range")
+        if value is None:
+            return None
+        value = value.strip()
+        if value.startswith("bytes=-"):
+            # GitHub's asset CDN refuses suffix ranges; mimic it so clients never rely on them.
+            return HTTPStatus.NOT_IMPLEMENTED
+        match = EXPLICIT_RANGE.match(value)
+        if match is None:
+            return HTTPStatus.NOT_IMPLEMENTED
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else size - 1
+        if start >= size or end < start:
+            return HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE
+        return (start, min(end, size - 1))
+
+    def _handle_extra_asset(self, name):
+        if self.server.scenario != "available":
+            self._send_response(HTTPStatus.NOT_FOUND, b"Not Found\n", "text/plain; charset=utf-8")
+            return
+        path, size, _ = self.server.extra_assets[name]
+        byte_range = self._parse_range(size)
+        if isinstance(byte_range, HTTPStatus):
+            headers = {"Content-Range": f"bytes */{size}"} if byte_range == HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE else {}
+            self._send_response(byte_range, f"{int(byte_range)} {byte_range.phrase}\n".encode("utf-8"), "text/plain; charset=utf-8", headers)
+            return
+        start, end = (0, size - 1) if byte_range is None else byte_range
+        try:
+            with path.open("rb") as source:
+                source.seek(start)
+                body = source.read(end - start + 1)
+        except OSError:
+            self._send_response(HTTPStatus.NOT_FOUND, b"Not Found\n", "text/plain; charset=utf-8")
+            return
+        headers = {"Accept-Ranges": "bytes"}
+        status = HTTPStatus.OK
+        if byte_range is not None:
+            status = HTTPStatus.PARTIAL_CONTENT
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        self._send_response(status, body, "application/octet-stream", headers)
 
     def _handle_metadata_request(self):
         scenario = self.server.scenario
@@ -124,12 +194,24 @@ class MetadataRequestHandler(BaseHTTPRequestHandler):
             return
 
         method = self.command or "-"
+        byte_range = self._parse_range(self.server.setup_size)
+        if isinstance(byte_range, HTTPStatus):
+            source.close()
+            self._send_response(byte_range, f"{int(byte_range)} {byte_range.phrase}\n".encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        start, end = (0, self.server.setup_size - 1) if byte_range is None else byte_range
+        status = HTTPStatus.OK if byte_range is None else HTTPStatus.PARTIAL_CONTENT
         timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        print(f"{timestamp} {method} {DOWNLOAD_PATH} {int(HTTPStatus.OK)}", flush=True)
+        print(f"{timestamp} {method} {DOWNLOAD_PATH} {int(status)}", flush=True)
         with source:
-            self.send_response(HTTPStatus.OK)
+            source.seek(start)
+            remaining = end - start + 1
+            self.send_response(status)
             self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(self.server.setup_size))
+            self.send_header("Content-Length", str(remaining))
+            self.send_header("Accept-Ranges", "bytes")
+            if byte_range is not None:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{self.server.setup_size}")
             self.end_headers()
             if method == "HEAD":
                 return
@@ -143,13 +225,15 @@ class MetadataRequestHandler(BaseHTTPRequestHandler):
             started = time.monotonic()
             sent = 0
             try:
-                while True:
-                    chunk = source.read(chunk_size)
+                while remaining > 0:
+                    chunk = source.read(min(chunk_size, remaining))
                     if not chunk:
                         break
-                    if sent <= corrupt_offset < sent + len(chunk):
+                    remaining -= len(chunk)
+                    position = start + sent
+                    if position <= corrupt_offset < position + len(chunk):
                         changed = bytearray(chunk)
-                        changed[corrupt_offset - sent] ^= 1
+                        changed[corrupt_offset - position] ^= 1
                         chunk = changed
                     self.wfile.write(chunk)
                     sent += len(chunk)
@@ -204,12 +288,26 @@ def main():
     parser.add_argument("--setup-file", type=Path, help="serve this file as the available Setup asset")
     parser.add_argument("--rate-kbps", type=parse_rate_kbps, help="throttle the download in kilobits per second")
     parser.add_argument("--corrupt", action="store_true", help="flip one byte in the served Setup file")
+    parser.add_argument(
+        "--delta-dir",
+        type=Path,
+        help="also serve release-manifest.json, Nativune-Setup.zip and delta-update.json from this folder (build-release.ps1 output)",
+    )
     parser.add_argument("--tag", default="v0.1.11", help="release tag offered by the available scenario (match the served Setup version)")
     args = parser.parse_args()
 
     setup_file = args.setup_file
     setup_size = 0
     setup_digest = ""
+    extra_assets = {}
+    if args.delta_dir is not None:
+        if setup_file is None:
+            parser.error("--delta-dir requires --setup-file")
+        for name in DELTA_ASSETS:
+            path = (args.delta_dir / name).resolve()
+            if not path.is_file() or path.stat().st_size <= 0:
+                parser.error(f"--delta-dir must contain a non-empty {name}")
+            extra_assets[name] = (path, path.stat().st_size, "sha256:" + file_sha256(path))
     if setup_file is not None:
         if not setup_file.is_file():
             parser.error("--setup-file must name an existing file")
@@ -217,14 +315,7 @@ def main():
         setup_size = setup_file.stat().st_size
         if setup_size <= 0:
             parser.error("--setup-file must not be empty")
-        digest = hashlib.sha256()
-        with setup_file.open("rb") as source:
-            while True:
-                chunk = source.read(1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-        setup_digest = "sha256:" + digest.hexdigest()
+        setup_digest = "sha256:" + file_sha256(setup_file)
     elif args.rate_kbps is not None or args.corrupt:
         parser.error("--rate-kbps and --corrupt require --setup-file")
 
@@ -236,6 +327,7 @@ def main():
         server.rate_kbps = args.rate_kbps
         server.corrupt = args.corrupt
         server.tag = args.tag
+        server.extra_assets = extra_assets
         print(f"http://127.0.0.1:{server.server_port}{METADATA_PATH}", flush=True)
         try:
             server.serve_forever()

@@ -21,6 +21,7 @@ internal static class Program
         Usage:
           {SetupFileName} [--install-dir <absolute-path>] [--silent] [--no-launch]  (install or upgrade)
           {SetupFileName} --update --wait-pid <positive-pid> [--install-dir <absolute-path>] [--silent] [--no-launch]
+          {SetupFileName} --update --wait-pid <pid> --expected-version <version> --delta-dir <install-dir>\updates\delta --expected-manifest-sha256 <sha256> [...]
           {SetupFileName} --uninstall [--install-dir <absolute-path>] [--silent]
           {SetupFileName} --help
 
@@ -30,6 +31,9 @@ internal static class Program
           --no-launch           Do not launch the installed application.
           --update              Updater handoff; replace the managed installation after --wait-pid exits.
           --wait-pid <pid>      Positive process id; wait up to 60 seconds before replacement/removal.
+          --expected-version <v> With --update; the release version selected by the updater.
+          --delta-dir <path>    With --update; apply downloaded changed files from <install-dir>\updates\delta.
+          --expected-manifest-sha256 <hex>  Required with --delta-dir; SHA-256 of the delta release manifest.
           --uninstall           Remove manifest-owned files and shell registration, preserving data/.
 
         Exit codes:
@@ -300,6 +304,8 @@ internal sealed record SetupOptions(
     bool Uninstall,
     string? InstallDirectory,
     string? ExpectedVersion,
+    string? DeltaDirectory,
+    string? ExpectedManifestSha256,
     int? WaitPid,
     PrerequisiteTestScenario TestPrerequisiteScenario)
 {
@@ -315,6 +321,8 @@ internal sealed record SetupOptions(
         int? waitPid = null;
         var testPrerequisiteScenario = PrerequisiteTestScenario.None;
         string? expectedVersion = null;
+        string? deltaDirectory = null;
+        string? expectedManifestSha256 = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -381,6 +389,28 @@ internal sealed record SetupOptions(
                     }
                     expectedVersion = args[index];
                     break;
+                case "--delta-dir":
+                    if (++index >= args.Length || string.IsNullOrWhiteSpace(args[index]) || !Path.IsPathFullyQualified(args[index]))
+                    {
+                        throw new SetupException(ExitCode.Usage, "--delta-dir requires an absolute path.");
+                    }
+                    if (deltaDirectory is not null)
+                    {
+                        throw new SetupException(ExitCode.Usage, "--delta-dir may be specified only once.");
+                    }
+                    deltaDirectory = args[index];
+                    break;
+                case "--expected-manifest-sha256":
+                    if (++index >= args.Length || args[index].Length != 64 || !args[index].All(Uri.IsHexDigit))
+                    {
+                        throw new SetupException(ExitCode.Usage, "--expected-manifest-sha256 requires 64 hexadecimal characters.");
+                    }
+                    if (expectedManifestSha256 is not null)
+                    {
+                        throw new SetupException(ExitCode.Usage, "--expected-manifest-sha256 may be specified only once.");
+                    }
+                    expectedManifestSha256 = args[index];
+                    break;
                 case "--wait-pid":
                     if (++index >= args.Length || !int.TryParse(args[index], out var parsedPid) || parsedPid <= 0)
                     {
@@ -397,7 +427,7 @@ internal sealed record SetupOptions(
             }
         }
 
-        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || waitPid is not null || noLaunch || testNoShell || testPrerequisiteScenario != PrerequisiteTestScenario.None))
+        if (help && (update || uninstall || installDirectory is not null || expectedVersion is not null || deltaDirectory is not null || expectedManifestSha256 is not null || waitPid is not null || noLaunch || testNoShell || testPrerequisiteScenario != PrerequisiteTestScenario.None))
         {
             throw new SetupException(ExitCode.Usage, "--help cannot be combined with an operation.");
         }
@@ -421,6 +451,14 @@ internal sealed record SetupOptions(
         {
             throw new SetupException(ExitCode.Usage, "--expected-version is valid only with --update.");
         }
+        if (deltaDirectory is not null && (!update || expectedVersion is null || expectedManifestSha256 is null))
+        {
+            throw new SetupException(ExitCode.Usage, "--delta-dir is valid only with --update and requires --expected-version and --expected-manifest-sha256.");
+        }
+        if (expectedManifestSha256 is not null && deltaDirectory is null)
+        {
+            throw new SetupException(ExitCode.Usage, "--expected-manifest-sha256 is valid only with --delta-dir.");
+        }
 #if INSTALLER_TEST_HOOKS
         // Test-hook builds may run the interactive window with --test-no-shell so the Setup UI can be
         // exercised without touching the real Start menu, desktop or uninstall registration.
@@ -429,7 +467,7 @@ internal sealed record SetupOptions(
             throw new SetupException(ExitCode.Usage, "--test-prerequisites requires --test-no-shell.");
         }
 #endif
-        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, waitPid, testPrerequisiteScenario);
+        return new SetupOptions(help, silent, noLaunch, testNoShell, update, uninstall, installDirectory, expectedVersion, deltaDirectory, expectedManifestSha256, waitPid, testPrerequisiteScenario);
     }
 }
 
@@ -512,7 +550,9 @@ internal sealed class InstallerEngine
             }
             RootValidated = true;
 
-            var payloadManifest = PayloadReader.ReadPackagedManifest(SelfPath());
+            var payloadManifest = DeltaDirectory() is string deltaDir
+                ? Manifest.Parse(PayloadReader.ReadDeltaManifestBytes(deltaDir, _options.ExpectedManifestSha256!))
+                : PayloadReader.ReadPackagedManifest(SelfPath());
             PayloadVersion = payloadManifest.Version;
             if (payloadManifest.Product != Program.ProductName)
             {
@@ -533,9 +573,54 @@ internal sealed class InstallerEngine
         catch
         {
             prerequisitePlan?.Dispose();
+            if (_options.DeltaDirectory is not null && RootValidated)
+            {
+                InstallRoot.TryDeleteDirectory(DeltaDirectoryPath());
+            }
             operationLock.Dispose();
             throw;
         }
+    }
+
+    private string DeltaDirectoryPath() => Path.Combine(_root, "updates", "delta");
+
+    // Returns the validated delta directory, or null when this is a full-payload run.
+    private string? DeltaDirectory()
+    {
+        if (_options.DeltaDirectory is null)
+        {
+            return null;
+        }
+        var expected = Path.GetFullPath(DeltaDirectoryPath());
+        string requested;
+        try
+        {
+            requested = Path.GetFullPath(_options.DeltaDirectory);
+        }
+        catch (Exception error)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The update directory is not a valid path.", error);
+        }
+        if (!string.Equals(
+                requested.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                expected,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The update directory must be the install directory's updates\\delta folder.");
+        }
+        try
+        {
+            InstallRoot.EnsureNoReparseChain(expected);
+        }
+        catch (SetupException error)
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The update directory is behind a reparse point.", error);
+        }
+        if (!Directory.Exists(expected))
+        {
+            throw new SetupException(ExitCode.InvalidPayload, "The update directory is missing. Download and run the full Nativune Setup instead.");
+        }
+        return expected;
     }
 
     internal SetupOutcome Execute(InstallerPreparation preparation, ISetupReporter reporter, CancellationToken cancellationToken)
@@ -549,6 +634,7 @@ internal sealed class InstallerEngine
         string? backup = null;
         ShellState? shellState = null;
         var changed = false;
+        var keepBackup = false;
         SetupOutcome outcome;
         try
         {
@@ -571,7 +657,9 @@ internal sealed class InstallerEngine
 
             stage = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-stage");
             backup = InstallRoot.CreateAdjacentDirectory(_root, ".nativune-backup");
-            var incomingManifest = PayloadReader.ExtractVerified(SelfPath(), stage, reporter, cancellationToken);
+            var incomingManifest = DeltaDirectory() is string deltaDir
+                ? PayloadReader.BuildStageFromDelta(_root, deltaDir, _options.ExpectedManifestSha256!, stage, reporter, cancellationToken)
+                : PayloadReader.ExtractVerified(SelfPath(), stage, reporter, cancellationToken);
             toVersion = incomingManifest.Version;
             if (incomingManifest.Product != Program.ProductName)
             {
@@ -619,6 +707,7 @@ internal sealed class InstallerEngine
         }
         catch (SetupException error)
         {
+            keepBackup = error.Code == ExitCode.RollbackFailure;
             var canReopen = CanReopenAfterOperation(fromVersion, error.Code, waitPassed);
             var displayError = error;
             if (error.Code == ExitCode.UnsafeRoot && _options.Update)
@@ -655,7 +744,15 @@ internal sealed class InstallerEngine
         finally
         {
             InstallRoot.TryDeleteDirectory(stage);
-            InstallRoot.TryDeleteDirectory(backup);
+            // An incomplete rollback leaves the backup as the only copy of replaced files.
+            if (!keepBackup)
+            {
+                InstallRoot.TryDeleteDirectory(backup);
+            }
+            if (_options.DeltaDirectory is not null)
+            {
+                InstallRoot.TryDeleteDirectory(DeltaDirectoryPath());
+            }
             if (!changed && shellState is not null)
             {
                 ShellManager.TryRestore(shellState);

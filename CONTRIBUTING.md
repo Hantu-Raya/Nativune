@@ -45,6 +45,11 @@ Before adding a test, read the testing rules in [agents.md](agents.md#test): pre
 
 Start the local metadata server with `python scripts/updater-test-server.py --scenario available`. Build the app with `-p:UpdaterTestHooks=true`, then set `NATIVUNE_TEST_RELEASE_METADATA_URL` to the URL the server prints. The test hook accepts only loopback `http://127.0.0.1` addresses and is not compiled into release builds.
 
+Quick (delta) updates have two end-to-end checks:
+
+- `pwsh -NoProfile -File scripts/delta-update-fixture.ps1` builds two releases (the second reusing the first's Setup) and runs the Setup side under `.cache`: applying the update, tampered, missing and extra files, a wrong manifest hash, repairing a corrupted file, removing an obsolete file, and usage errors. Report: `artifacts/delta-update/fixture-report.json`.
+- `scripts/delta-update-app-e2e.ps1` drives the real app through Update now against the local server (`--delta-dir`). It needs `%LOCALAPPDATA%\Nativune-fixture`, so ask the owner first. Its Setup runs with `--test-no-shell`, because the real shortcuts and uninstall entry share names with an installed Nativune. The steps are in the script header.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).
