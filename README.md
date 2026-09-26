@@ -23,7 +23,7 @@ YouTube and YouTube Music are trademarks of Google LLC.
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.20](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.20) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.21](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.21) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -238,7 +238,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.20 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.21 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json` and `SHA256SUMS.txt` to `artifacts/release/`.
