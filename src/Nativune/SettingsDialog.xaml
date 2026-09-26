@@ -87,7 +87,7 @@
                       MinHeight="36"
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Start Nativune when I sign in to Windows"
-                      AutomationProperties.HelpText="Adds a per-user startup entry for this installation. Off by default; you can also turn it off in Windows Settings › Apps › Startup." />
+                      AutomationProperties.HelpText="Adds a per-user startup entry for this installation. On by default; you can also turn it off in Windows Settings › Apps › Startup." />
             <TextBlock x:Name="StartWithWindowsCaption"
                        Text="Available only when Nativune is installed with Setup."
                        TextWrapping="Wrap"

@@ -1328,8 +1328,9 @@ internal static class CompactViewChecks
 
         Require(ReadField(host, "_appWindow") is not Microsoft.UI.Windowing.AppWindow appWindow
             || !Microsoft.UI.Windowing.AppWindowTitleBar.IsCustomizationSupported()
-            || !appWindow.TitleBar.ExtendsContentIntoTitleBar,
-            "Returning to full mode left content extended into the title bar, hiding the caption row.");
+            || appWindow.TitleBar.ExtendsContentIntoTitleBar
+                && appWindow.TitleBar.PreferredHeightOption == Microsoft.UI.Windowing.TitleBarHeightOption.Tall,
+            "Returning to full mode did not restore the toolbar title bar.");
     }
 
     private static async Task<string> ReadStatusDetailsAsync(WebHostWindow host)

@@ -77,10 +77,10 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   ![Tall layout at 480 × 480 with a large CD disc above the title, controls and seek bar](assets/screenshots/compact-layout/tall-480x480.png)
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
-- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
+- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. The toolbar is also the title bar: minimize, maximize and close sit at its right end, and dragging its empty middle moves the window. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles (**Settings › General › Show tray icon**). While it is enabled, Close hides the window and playback keeps running. Quit always exits.
-- **Optional start with Windows, off by default.** **Settings › Startup › Start Nativune when I sign in to Windows** adds a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for this installation. It is available only in installs made with Setup. You choose whether it opens the full window, Compact, or hidden in the tray. Turning it off in Task Manager or **Windows Settings › Apps › Startup** is respected; Nativune never turns it back on. Uninstalling removes the entry.
+- **Start with Windows, on by default.** The first time an installed Nativune starts, it turns on **Settings › Startup › Start Nativune when I sign in to Windows** once and says so; if you turn it off, it stays off. The setting adds a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for this installation. It is available only in installs made with Setup. You choose whether it opens the full window, Compact, or hidden in the tray. Turning it off in Task Manager or **Windows Settings › Apps › Startup** is respected; Nativune never turns it back on. Uninstalling removes the entry.
 - **Pause timer** from one second to four hours. When it expires, playback pauses and the window stays open.
 - **App volume and mute**, which control only Nativune's own audio, not the system volume or the website's slider. Nativune remembers them and restores them the next time it starts.
 - **Keyboard shortcuts you can customize.** They only work after you enable them for the current session from the menu.
@@ -202,7 +202,7 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 
 ## Updates
 
-The app never opens an update dialog on its own and never downloads an update without a click. In the full-window top toolbar, the button at the far right shows:
+The app never opens an update dialog on its own and never downloads an update without a click. In the full-window top toolbar, the button just left of the window controls shows:
 
 - `update-available` (accent-tinted) when a newer stable release is available
 - `update` otherwise, including before the first check and when a check fails

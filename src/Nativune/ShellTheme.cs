@@ -123,10 +123,12 @@ internal static class ShellTheme
                 ? ResourceColor("SystemColorHighlightTextColor", SystemColor(ColorHighlightText, PrimaryTextColor))
                 : PrimaryTextColor;
             var titleBar = appWindow.TitleBar;
+            // An extended title bar (the full window's toolbar row) shows its own surface behind the buttons.
+            var buttonBackground = titleBar.ExtendsContentIntoTitleBar ? Colors.Transparent : background;
             titleBar.ForegroundColor = foreground;
             titleBar.BackgroundColor = background;
             titleBar.ButtonForegroundColor = foreground;
-            titleBar.ButtonBackgroundColor = background;
+            titleBar.ButtonBackgroundColor = buttonBackground;
             titleBar.ButtonHoverForegroundColor = buttonHoverForeground;
             titleBar.ButtonHoverBackgroundColor = buttonHoverBackground;
             titleBar.ButtonPressedForegroundColor = buttonPressedForeground;
@@ -138,7 +140,7 @@ internal static class ShellTheme
             titleBar.ButtonInactiveForegroundColor = highContrast
                 ? ResourceColor("SystemColorGrayTextColor", SystemColor(ColorGrayText, foreground))
                 : SecondaryTextColor;
-            titleBar.ButtonInactiveBackgroundColor = background;
+            titleBar.ButtonInactiveBackgroundColor = buttonBackground;
         }
         catch (COMException)
         {

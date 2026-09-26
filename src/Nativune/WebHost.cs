@@ -292,6 +292,7 @@ public sealed partial class WebHostWindow : Window
         InitializeCompactSurface();
         ApplyAppearance();
         CompactButton.Click += (_, _) => ToggleCompact();
+        TitleDragRegion.SizeChanged += (_, _) => ApplyFullTitleBar();
         _sleep = new SleepDeadline(OnTimerExpired, SynchronizationContext.Current!);
 
         RootGrid.Loaded += OnLoaded;
@@ -342,9 +343,29 @@ public sealed partial class WebHostWindow : Window
         ConfigureAutomaticReleaseUpdateChecks();
         if (ReleaseUpdater.IsInstalledBuild(_root))
         {
+            var startupEnabled = false;
+            try { startupEnabled = StartupRegistration.ApplyDefaultOnce(_root); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or System.Security.SecurityException or InvalidOperationException)
+            {
+                AppLog.Write("startup", $"Start with Windows default not applied ({ex.GetType().Name})");
+            }
             ShowUpdateOutcomeOnStartup();
+            if (startupEnabled)
+                ShowStartupDefaultNotice();
             StartDownloadedSetupCleanup();
         }
+    }
+
+    private void ShowStartupDefaultNotice()
+    {
+        AppLog.Write("startup", "Start with Windows turned on by default");
+        const string hint = "Turn this off in Settings › Startup.";
+        if (UpdateInfoBar.IsOpen)
+            UpdateInfoBar.Message = $"{UpdateInfoBar.Message} Nativune now starts when you sign in to Windows. {hint}".TrimStart();
+        else
+            ShowUpdateInfo(InfoBarSeverity.Informational, "Nativune now starts when you sign in to Windows",
+                hint, "Settings", ShowSettings, true);
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
@@ -375,6 +396,7 @@ public sealed partial class WebHostWindow : Window
             _presenter.IsMinimizable = true;
             _presenter.IsMaximizable = true;
             _presenter.SetBorderAndTitleBar(true, true);
+            ApplyFullTitleBar();
             _nativeWindowServices = new NativeWindowServices(NativeHandle, HandleNativeMessage);
             _appWindow.Changed += (_, _) => AppWindowChanged?.Invoke(this, EventArgs.Empty);
             _nativeWindowReady = true;
@@ -1693,14 +1715,37 @@ public sealed partial class WebHostWindow : Window
         UpdateWindowPresentation();
     }
 
-    // SetBorderAndTitleBar(false, false) also sets AppWindow.TitleBar.ExtendsContentIntoTitleBar, and
-    // SetBorderAndTitleBar(true, true) does not clear it. Left extended, the full window loses its
-    // caption row and the system caption buttons cover the right end of the toolbar.
+    // SetBorderAndTitleBar(false, false) (Compact, fullscreen) replaces the caption regions, so returning
+    // to the framed full window re-applies the toolbar title bar.
     private void RestoreSystemFrame()
     {
         _presenter?.SetBorderAndTitleBar(true, true);
-        if (_appWindow is not null && AppWindowTitleBar.IsCustomizationSupported())
-            _appWindow.TitleBar.ExtendsContentIntoTitleBar = false;
+        ApplyFullTitleBar();
+    }
+
+    // Full window: the toolbar row is the title bar. Content extends into the caption area, Windows draws
+    // Tall (48 px) caption buttons over the reserved right column, and only the toolbar's empty middle is a
+    // caption (drag) region, so every toolbar button stays clickable. Compact owns its own regions.
+    private void ApplyFullTitleBar()
+    {
+        if (_appWindow is null || _compact || !AppWindowTitleBar.IsCustomizationSupported()) return;
+        try
+        {
+            var titleBar = _appWindow.TitleBar;
+            titleBar.ExtendsContentIntoTitleBar = true;
+            titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+            var scale = RootGrid.XamlRoot?.RasterizationScale ?? CurrentDpi() / 96d;
+            CaptionButtonsColumn.Width = new GridLength((_fullscreen ? 0 : titleBar.RightInset / scale) + 8);
+            if (RootGrid.XamlRoot is null || TitleDragRegion.ActualWidth <= 0) return;
+            var left = TitleDragRegion.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point()).X;
+            var drag = new RectInt32((int)Math.Round(left * scale), 0,
+                (int)Math.Round(TitleDragRegion.ActualWidth * scale), (int)Math.Round(ToolbarHost.ActualHeight * scale));
+            InputNonClientPointerSource.GetForWindowId(_windowId).SetRegionRects(NonClientRegionKind.Caption, [drag]);
+        }
+        catch (Exception ex) when (ex is COMException or InvalidOperationException or ArgumentException)
+        {
+            Console.Error.WriteLine($"Toolbar title bar unavailable: {ex.Message}");
+        }
     }
 
     private void UpdateWindowPresentation()
@@ -1711,6 +1756,7 @@ public sealed partial class WebHostWindow : Window
         ToolTipService.SetToolTip(CompactButton, ShortcutDescription(_compact ? "Restore full-size window" : "Compact window", _settings.Shortcuts.Compact));
         UpdateInfoBar.Visibility = _compact || _fullscreen ? Visibility.Collapsed : Visibility.Visible;
         UpdateInfoRow.Height = _compact || _fullscreen ? new GridLength(0) : GridLength.Auto;
+        ApplyFullTitleBar();
         SetButtonIcons();
         SetMenuIcons();
     }
