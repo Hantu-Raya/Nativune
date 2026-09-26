@@ -470,8 +470,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void UpdateStatusMenuItem()
     {
         _statusItem.IsEnabled = true;
-        _statusItem.Text = _statusIsError ? "Application status (error)" : "Application status";
-        SetAccessible(_statusItem, "Application status",
+        var label = _statusIsError ? "Application status (error)" : "Application status";
+        _statusItem.Text = label;
+        SetAccessible(_statusItem, label,
             BuildStatusMenuDescription(_statusMessage, _state is not null));
     }
 

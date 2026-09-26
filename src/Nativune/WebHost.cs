@@ -328,7 +328,9 @@ public sealed partial class WebHostWindow : Window
         }
         var autostartMode = _autostartMode == AutostartMode.Tray && !_settings.TrayEnabled
             ? AutostartMode.Full : _autostartMode;
-        if (!startHidden && (_settings.StartCompact || autostartMode == AutostartMode.Compact))
+        // An explicit Windows-startup mode decides the launch state; Start in Compact covers manual launches.
+        var startCompact = autostartMode is { } mode ? mode == AutostartMode.Compact : _settings.StartCompact;
+        if (!startHidden && startCompact)
         {
             _compactStartupPending = true;
             SetCompact(true);
@@ -1341,7 +1343,7 @@ public sealed partial class WebHostWindow : Window
             var applied = _sessionShortcuts?.TryApply(bindings, out error) == true;
             _shortcutsItem.IsChecked = _shortcutsEnabled;
             return applied ? null : error;
-        }, installed, startupState, () => _statusDetailsText);
+        }, installed, startupState, () => _statusDetailsText, _root);
         _settingsDialog = dialog;
         _ = ShowSettingsAsync(dialog);
     }

@@ -57,7 +57,7 @@ public sealed partial class SettingsDialog : Window
 
     internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings,
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
-        Func<string>? statusText = null)
+        Func<string>? statusText = null, string? installRoot = null)
     {
         _isInstalledBuild = isInstalledBuild;
         _startupState = startupState;
@@ -87,7 +87,7 @@ public sealed partial class SettingsDialog : Window
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
         InstallKindText.Text = isInstalledBuild
-            ? "Installed at %LOCALAPPDATA%\\Nativune" : "Development build";
+            ? (installRoot is null ? "Installed build" : $"Installed at {installRoot}") : "Development build";
         AutomationProperties.SetName(InstallKindText, InstallKindText.Text);
         CopyStatusButton.IsEnabled = statusText is not null;
         CopyStatusButton.Click += (_, _) => CopyStatus();
@@ -392,12 +392,18 @@ public sealed partial class SettingsDialog : Window
         {
             StartupEntryState.DisabledByUser when desired
                 => "Startup entry: Turned off in Task Manager or Windows Settings — turn it back on there.",
-            StartupEntryState.Stale when _staleAction == StartupChange.Enable
+            StartupEntryState.Stale when desired || _staleAction == StartupChange.Enable
                 => "Startup entry points to another location; it will be fixed when you save.",
             StartupEntryState.Stale when _staleAction == StartupChange.RemoveStale
                 => "Startup entry points to another location; it will be removed when you save.",
             StartupEntryState.Stale when !desired => "Startup entry points to another location",
-            _ => desired ? "Startup entry: on" : "Startup entry: off"
+            _ => (_startupState is StartupEntryState.On or StartupEntryState.DisabledByUser, desired) switch
+            {
+                (true, true) => "Startup entry: on",
+                (false, false) => "Startup entry: off",
+                (false, true) => "Startup entry: off — will be added when you save.",
+                (true, false) => "Startup entry: on — will be removed when you save."
+            }
         };
         if (!_isInstalledBuild)
             StartupStatusText.Text = "Startup entry: off";

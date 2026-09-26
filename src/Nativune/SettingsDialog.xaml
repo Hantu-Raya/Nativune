@@ -35,7 +35,7 @@
                     VerticalScrollBarVisibility="Auto"
                     HorizontalScrollMode="Disabled"
                     VerticalScrollMode="Auto"
-                    Padding="0,16,0,0">
+                    Padding="24,20,24,20">
         <Grid>
           <StackPanel x:Name="GeneralPage" Spacing="10">
             <TextBlock Text="General"
