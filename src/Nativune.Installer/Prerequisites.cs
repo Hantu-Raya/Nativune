@@ -137,7 +137,7 @@ internal static class PrerequisiteInstaller
 #if INSTALLER_TEST_HOOKS
         if (options.TestPrerequisiteScenario != PrerequisiteTestScenario.None)
         {
-            return PrepareInjectedForDetection(options.TestPrerequisiteScenario);
+            return PrepareInjectedForDetection(options.TestPrerequisiteScenario, options.InstallPrerequisites);
         }
 #endif
         IReadOnlyList<MissingPrerequisite> missing;
@@ -168,7 +168,7 @@ internal static class PrerequisiteInstaller
             throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdatedWebView));
         }
 
-        if (options.Silent && missing.Count > 0)
+        if (options.Silent && !options.InstallPrerequisites && missing.Count > 0)
         {
             throw new SetupException(ExitCode.PrerequisiteFailure, BuildSilentFailure(missing));
         }
@@ -372,7 +372,7 @@ internal static class PrerequisiteInstaller
     }
 
 #if INSTALLER_TEST_HOOKS
-    private static PrerequisitePlan PrepareInjectedForDetection(PrerequisiteTestScenario scenario)
+    private static PrerequisitePlan PrepareInjectedForDetection(PrerequisiteTestScenario scenario, bool installPrerequisites)
     {
         var injectedMissing = Definitions
             .Select(definition => new MissingPrerequisite(definition, "injected test state"))
@@ -387,6 +387,10 @@ internal static class PrerequisiteInstaller
                 is { } outdated
                     ? throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdated))
                     : new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present),
+            // --install-prerequisites would take the download-and-install path; the test hook never runs real installers.
+            PrerequisiteTestScenario.Missing when installPrerequisites => throw new SetupException(
+                ExitCode.PrerequisiteFailure,
+                "Prerequisite installation was requested with --install-prerequisites (test hook). No prerequisite installer was run and Nativune was not changed."),
             PrerequisiteTestScenario.Missing => throw new SetupException(
                 ExitCode.PrerequisiteFailure,
                 BuildSilentFailure(injectedMissing)),

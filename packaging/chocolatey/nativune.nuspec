@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>nativune</id>
+    <version>{{VERSION}}</version>
+    <title>Nativune</title>
+    <authors>Hantu-Raya</authors>
+    <owners>Hantu-Raya</owners>
+    <projectUrl>https://github.com/Hantu-Raya/Nativune</projectUrl>
+    <projectSourceUrl>https://github.com/Hantu-Raya/Nativune</projectSourceUrl>
+    <packageSourceUrl>https://github.com/Hantu-Raya/Nativune/tree/main/packaging/chocolatey</packageSourceUrl>
+    <docsUrl>https://github.com/Hantu-Raya/Nativune#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/Hantu-Raya/Nativune/issues</bugTrackerUrl>
+    <licenseUrl>https://github.com/Hantu-Raya/Nativune/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <iconUrl>https://cdn.jsdelivr.net/gh/Hantu-Raya/Nativune@v{{VERSION}}/assets/app-icon/nativune-icon.svg</iconUrl>
+    <tags>nativune youtube-music music player winui webview2 unofficial</tags>
+    <summary>Unofficial native Windows app for YouTube Music.</summary>
+    <description>Nativune is an unofficial native Windows app (WinUI 3) for YouTube Music. It hosts the YouTube Music website in an isolated WebView2 profile and adds a compact player, taskbar and tray controls, keyboard shortcuts and update checks. Nativune is not affiliated with Google or YouTube.
+
+Notes:
+- x64 Windows only (Windows 10 2004 / build 19041 or later).
+- Nativune installs per user under `%LOCALAPPDATA%\Nativune`. Chocolatey runs elevated, so the app is installed for the account that runs `choco`. If you use a separate administrator account, install Nativune from the GitHub release as the intended user instead.
+- Setup installs the Windows App Runtime 2.5.1 itself when it is missing, because no Chocolatey package provides it.</description>
+    <releaseNotes>https://github.com/Hantu-Raya/Nativune/releases/tag/v{{VERSION}}</releaseNotes>
+    <dependencies>
+      <dependency id="vcredist140" version="14.40" />
+      <dependency id="dotnet-10.0-runtime" version="10.0.0" />
+      <dependency id="webview2-runtime" version="152.0.4191.53" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

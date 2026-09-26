@@ -391,6 +391,40 @@ try {
         })
     }
 
+    # --install-prerequisites is consent only with --silent; the injected missing state must take the
+    # install path instead of the silent refusal. The test hook never runs a real prerequisite installer.
+    # Usage errors without --silent open a dialog, so the usage case is exercised headlessly via --uninstall --silent.
+    # QuietUninstallString is not asserted here: --test-no-shell skips the real HKCU uninstall key by design.
+    $consentCases = @(
+        [pscustomobject]@{ Name = 'install-prerequisites-with-uninstall'; Arguments = @('--uninstall', '--silent', '--test-no-shell', '--install-prerequisites', '--install-dir', $fixtureRoot); ExpectedExitCode = 2; ExpectedText = '--install-prerequisites is not valid with --uninstall' },
+        [pscustomobject]@{ Name = 'install-prerequisites-missing'; Arguments = @('--silent', '--test-no-shell', '--no-launch', '--install-prerequisites', '--test-prerequisites', 'missing', '--install-dir', $fixtureRoot); ExpectedExitCode = 19; ExpectedText = 'requested with --install-prerequisites (test hook)' }
+    )
+    foreach ($case in $consentCases) {
+        Remove-ProjectDirectory $fixtureRoot $fixtureRoot
+        $run = Invoke-Setup $testSetupPath $case.Arguments
+        if ($run.ExitCode -ne $case.ExpectedExitCode) {
+            throw "$($case.Name) returned exit code $($run.ExitCode), expected $($case.ExpectedExitCode). stderr: $($run.Stderr.Trim())"
+        }
+        if (-not $run.Stderr.Contains($case.ExpectedText)) {
+            throw "$($case.Name) did not report '$($case.ExpectedText)'. stderr: $($run.Stderr.Trim())"
+        }
+        if ($run.Stderr.Contains('In --silent mode Setup never downloads')) {
+            throw "$($case.Name) took the silent prerequisite refusal path."
+        }
+        if (Test-Path -LiteralPath (Join-Path $fixtureRoot 'release-manifest.json')) {
+            throw "$($case.Name) changed the install root."
+        }
+        $scenarioReports.Add([ordered]@{
+            name = $case.Name
+            command = $run.Command
+            arguments = $case.Arguments
+            exitCode = $run.ExitCode
+            expectedExitCode = $case.ExpectedExitCode
+            stdout = @($run.Stdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+            stderr = @($run.Stderr -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+        })
+    }
+
     # Uninstall removes only a Start-with-Windows entry that points into the install root.
     # The test-hook build redirects both registry keys under a unique HKCU test subkey.
     $startupKey = "Software\Nativune\Test\installer-fixture-$([guid]::NewGuid().ToString('N'))"
