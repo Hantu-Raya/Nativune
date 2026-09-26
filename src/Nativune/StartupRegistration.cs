@@ -53,6 +53,28 @@ internal static class StartupRegistration
             DeleteValue(path);
     }
 
+    // Owner decision (26 September 2026): Start with Windows is on by default. Applied once per install
+    // root (marker in data\): only an Off entry is enabled, never one the user turned off in Task Manager
+    // or one owned by another copy, and later choices stand. Hook (fixture) builds apply it only under a
+    // test key, so they can never write the real Run value shared with the owner's install.
+    internal static bool ApplyDefaultOnce(string root)
+    {
+        var marker = Path.Combine(Path.GetFullPath(root), "data", "startup-default-applied");
+        if (File.Exists(marker))
+            return false;
+#if NATIVUNE_UPDATER_TEST_HOOKS
+        if (TestBase() is null)
+            return false;
+#endif
+        // Marker first: if it cannot be written nothing is enabled, and a later Disable is never undone.
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        File.WriteAllText(marker, string.Empty);
+        if (Read(root) != StartupEntryState.Off)
+            return false;
+        Enable(root);
+        return true;
+    }
+
     // Parses the leading quoted (or first unquoted token) executable path of a Run command.
     internal static string? ExecutableOf(string command)
     {

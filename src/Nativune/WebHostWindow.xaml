@@ -14,17 +14,18 @@
       <RowDefinition x:Name="ContentRow" Height="*" />
     </Grid.RowDefinitions>
 
-    <!-- Full-window command bar. The system caption above it keeps the app identity (icon and
-         title); this row keeps only commands. Left: window mode, then browser navigation.
-         Right: app output, pause timer and the More overflow, then the update indicator.
-         Website playback stays with the site's own player bar and the More menu. -->
+    <!-- Full-window command bar, which is also the title bar: Windows draws the minimize, maximize and
+         close buttons over CaptionButtonsColumn and the empty TitleDragRegion moves the window.
+         Left: window mode, then browser navigation. Right: app output, pause timer and the More
+         overflow, then the update indicator. Website playback stays with the site's own player bar
+         and the More menu. -->
     <Border x:Name="ToolbarHost"
             Grid.Row="0"
             Background="{ThemeResource SurfaceBrush}"
             BorderBrush="{ThemeResource RaisedBrush}"
             BorderThickness="0,0,0,1">
       <Grid x:Name="Toolbar"
-            Margin="8,4"
+            Margin="8,8,0,8"
             HorizontalAlignment="Stretch">
         <Grid.Resources>
           <ResourceDictionary>
@@ -76,9 +77,14 @@
         </Grid.Resources>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" />
-          <ColumnDefinition Width="*" />
+          <!-- Always leave a drag area. ponytail: below ~560 px the right group slides under the
+               caption buttons; add an overflow if narrow full windows matter. -->
+          <ColumnDefinition Width="*" MinWidth="40" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition x:Name="CaptionButtonsColumn" Width="8" />
         </Grid.ColumnDefinitions>
+
+        <Border x:Name="TitleDragRegion" Grid.Column="1" Background="Transparent" />
 
         <!-- Window mode, then browser navigation. Tab order follows the visual order. -->
         <StackPanel Grid.Column="0"

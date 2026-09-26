@@ -1799,6 +1799,8 @@ public sealed class CompactMarqueeText : UserControl
         {
             FontSize = 16,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            // Centered when the title fits; a scrolling (overflowing) title has natural width, so it is unaffected.
+            TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.NoWrap,
             RenderTransform = transform
         };

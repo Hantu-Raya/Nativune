@@ -122,6 +122,7 @@
             <TextBlock x:Name="InlineStatus" Width="452" Height="16"
                        FontSize="12"
                        TextTrimming="CharacterEllipsis"
+                       TextAlignment="Center"
                        VerticalAlignment="Center"
                        Foreground="{ThemeResource SecondaryTextBrush}"
                        AutomationProperties.LiveSetting="Off" />
