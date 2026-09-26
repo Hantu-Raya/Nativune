@@ -866,6 +866,10 @@ internal sealed class InstallerEngine
         var currentProcessPath = SelfPath();
         if (InstallRoot.IsWithin(_root, currentProcessPath))
         {
+            // The helper's own result is not observed (it waits for this process to exit), so fail here
+            // on the common case of a running app, with a real exit code for winget/Chocolatey.
+            // ponytail: helper-side I/O failures still report success; add a result file if that matters.
+            ProcessWaiter.EnsureApplicationStopped(_root);
             return StartUninstallHandoff(currentProcessPath);
         }
 

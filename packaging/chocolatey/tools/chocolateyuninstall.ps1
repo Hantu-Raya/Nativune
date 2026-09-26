@@ -14,13 +14,20 @@ foreach ($key in $keys) {
         continue
     }
 
+    # Run a copy from outside the install root so Setup uninstalls directly and returns its real
+    # exit code (the installed copy hands off to a helper and cannot report the helper's result).
+    $setupCopy = Join-Path $env:TEMP "Nativune-uninstall-$([guid]::NewGuid().ToString('N'))\Nativune.Setup.exe"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $setupCopy) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $installLocation 'installer\Nativune.Setup.exe') -Destination $setupCopy
+
     $packageArgs = @{
         packageName    = $env:ChocolateyPackageName
         fileType       = 'exe'
-        file           = Join-Path $installLocation 'installer\Nativune.Setup.exe'
+        file           = $setupCopy
         silentArgs     = "--uninstall --silent --install-dir `"$installLocation`""
         validExitCodes = @(0)
     }
 
-    Uninstall-ChocolateyPackage @packageArgs
+    try { Uninstall-ChocolateyPackage @packageArgs }
+    finally { Remove-Item -LiteralPath (Split-Path -Parent $setupCopy) -Recurse -Force -ErrorAction SilentlyContinue }
 }
