@@ -177,6 +177,10 @@ public sealed partial class WebHostWindow : Window
     private bool _browserFailed;
     private bool _navigationFailed;
     private bool _configuringPrivacy = true;
+    // The privacy setup leaves the uBO Lite dashboard as the last painted page, and Chromium keeps showing
+    // it after the Music navigation commits until Music paints. Stay hidden until a page other than the
+    // extension has finished loading, so startup never flashes the dashboard.
+    private bool _awaitingFirstPage = true;
     private bool _playerBusy;
     private bool _playerSuspended;
     private bool _closing;
@@ -480,6 +484,7 @@ public sealed partial class WebHostWindow : Window
         {
             if (BrowserShouldBeVisible) _browserHost?.Focus();
         };
+        BuildLoadingSpinner();
         _shortcutsItem.IsChecked = false;
         _restoreItem.IsChecked = _settings.RestoreSection;
         _trayItem.IsChecked = _settings.TrayEnabled;
@@ -568,16 +573,97 @@ public sealed partial class WebHostWindow : Window
         && _browserHost is not null;
     private bool BrowserShouldBeVisible
         => _appWindow?.IsVisible == true
-            && !_compact && !_configuringPrivacy && !_browserFailed
+            && !_compact && !_configuringPrivacy && !_awaitingFirstPage && !_browserFailed
             && _presenter?.State != OverlappedPresenterState.Minimized
             && !_closing && !_disposed;
 
     private void UpdateBrowserVisibility()
     {
+        UpdateLoadingSpinner();
         if (_browserHost is null) return;
         try { _browserHost.SetVisible(BrowserShouldBeVisible); }
         catch (Exception) when (_closing || _disposed) { }
     }
+
+    // Design after loading.dev's Comet spinner (MIT, Jakub Krehel): a ring whose conic gradient fades into
+    // its tail, a round head at the leading end, one linear turn per 700 ms. XAML has no conic brush, so
+    // the ring is drawn as sectors blending from the canvas color to the text color.
+    private Microsoft.UI.Xaml.Media.Animation.Storyboard? _spinnerTurn;
+    private bool _spinnerTurning;
+
+    private void BuildLoadingSpinner()
+    {
+        const int sectors = 60;
+        const double size = 40, outer = size / 2, inner = outer - size * 0.12, overlap = 1;
+        var color = ((SolidColorBrush)Application.Current.Resources["PrimaryTextBrush"]).Color;
+        var canvas = (WebViewSlot.Background as SolidColorBrush)?.Color ?? Colors.Black;
+        Windows.Foundation.Point At(double radius, double degrees)
+        {
+            var radians = degrees * Math.PI / 180;
+            return new(outer + radius * Math.Sin(radians), outer - radius * Math.Cos(radians));
+        }
+        for (var index = 0; index < sectors; index++)
+        {
+            var start = index * 360.0 / sectors;
+            var end = Math.Min(360, start + 360.0 / sectors + overlap);
+            var figure = new PathFigure { StartPoint = At(outer, start), IsClosed = true };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = At(outer, end), Size = new(outer, outer), SweepDirection = SweepDirection.Clockwise
+            });
+            figure.Segments.Add(new LineSegment { Point = At(inner, end) });
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = At(inner, start), Size = new(inner, inner), SweepDirection = SweepDirection.Counterclockwise
+            });
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            // Opaque blends over the canvas: overlapping sectors hide antialiasing seams without brightening.
+            var t = (index + 1.0) / sectors;
+            byte Mix(byte from, byte to) => (byte)Math.Round(from + (to - from) * t);
+            LoadingSpinner.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Data = geometry,
+                Fill = new SolidColorBrush(ColorHelper.FromArgb(
+                    255, Mix(canvas.R, color.R), Mix(canvas.G, color.G), Mix(canvas.B, color.B)))
+            });
+        }
+        LoadingSpinner.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = outer - inner,
+            Height = outer - inner,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Fill = new SolidColorBrush(color)
+        });
+        var turn = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+        {
+            From = 0,
+            To = 360,
+            Duration = TimeSpan.FromMilliseconds(700),
+            RepeatBehavior = Microsoft.UI.Xaml.Media.Animation.RepeatBehavior.Forever
+        };
+        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(turn, LoadingSpinnerRotation);
+        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(turn, "Angle");
+        _spinnerTurn = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+        _spinnerTurn.Children.Add(turn);
+    }
+
+    // Shown while startup keeps the browser hidden; turns only while the window is visible and motion is allowed.
+    private void UpdateLoadingSpinner()
+    {
+        if (_spinnerTurn is null) return;
+        var loading = (_configuringPrivacy || _awaitingFirstPage)
+            && !_browserFailed && !_compact && !_closing && !_disposed;
+        LoadingSpinner.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+        var turn = loading && _appWindow?.IsVisible != false && !_settings.ReduceMotion
+            && new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+        if (turn == _spinnerTurning) return;
+        _spinnerTurning = turn;
+        if (turn) _spinnerTurn.Begin();
+        else _spinnerTurn.Stop();
+    }
+
     private bool WindowIsVisible
         => _appWindow?.IsVisible == true && _presenter?.State != OverlappedPresenterState.Minimized;
 
@@ -606,6 +692,7 @@ public sealed partial class WebHostWindow : Window
         _retryItem.IsEnabled = canNavigate && _navigationFailed;
         _statusDetailsItem.IsEnabled = true;
         UpdatePlayerControls();
+        UpdateLoadingSpinner();
     }
 
     private async Task ExecutePlayerCommandAsync(string command)
@@ -698,6 +785,9 @@ public sealed partial class WebHostWindow : Window
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
             host.ZoomFactor = _settings.Zoom;
+            // WebView2 paints white before its first frame; match the canvas so revealing it never flashes.
+            if (WebViewSlot.Background is SolidColorBrush canvas)
+                host.DefaultBackgroundColor = canvas.Color;
             environment.ProcessInfosChanged += (_, _) => OnProcessInfosChanged();
             BenchMuteOutput();
             StartOutputAudio();
@@ -754,7 +844,6 @@ public sealed partial class WebHostWindow : Window
                 return;
 
             SetStatus("Loading official YouTube Music...");
-            UpdateBrowserVisibility();
             if (!CanContinueInitialization(lifetimeToken))
                 return;
             var startupUri = _settings.StartupUri;
@@ -871,6 +960,12 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationCompleted(CoreWebView2NavigationCompletedEventArgs args)
     {
+        if (_awaitingFirstPage && _browserHost?.Core.Source is { } source
+            && !source.StartsWith("chrome-extension:", StringComparison.OrdinalIgnoreCase))
+        {
+            _awaitingFirstPage = false;
+            UpdateBrowserVisibility();
+        }
         if (_closing || _disposed || _browserFailed || args.NavigationId != _activeNavigation
             || args.NavigationId == _blockedNavigation)
             return;

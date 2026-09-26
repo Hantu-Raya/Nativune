@@ -443,8 +443,9 @@ public sealed partial class WebHostWindow
             {
                 if (_outputAudio is null)
                 {
-                    _outputAudio = new WebViewAudioVolume(_outputAudioExecutablePath!);
-                    _outputAudio.SessionCreated += RefreshOutputAudio;
+                    _outputAudio = new WebViewAudioVolume(
+                        _outputAudioExecutablePath!, RootLocator.WebViewProfilePath(_root));
+                    _outputAudio.RefreshRequested += RefreshOutputAudio;
                 }
                 _outputAudio.SetPreferredOutput(desiredVolume, desiredMute);
                 _outputAudio.Refresh(processIds, () => IsCurrentOutputAudioGeneration(generation));

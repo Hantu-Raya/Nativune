@@ -205,6 +205,18 @@
               AutomationProperties.Name="Embedded Music browser"
               HorizontalAlignment="Stretch"
               VerticalAlignment="Stretch" />
+      <!-- Comet spinner while the browser is hidden during startup; sectors are added in code. -->
+      <Grid x:Name="LoadingSpinner"
+            Width="40" Height="40"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            IsHitTestVisible="False"
+            RenderTransformOrigin="0.5,0.5"
+            AutomationProperties.Name="Loading YouTube Music">
+        <Grid.RenderTransform>
+          <RotateTransform x:Name="LoadingSpinnerRotation" />
+        </Grid.RenderTransform>
+      </Grid>
       <local:CompactPlayerView x:Name="CompactView"
                                Visibility="Collapsed"
                                HorizontalAlignment="Stretch"

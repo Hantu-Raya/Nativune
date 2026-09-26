@@ -73,6 +73,11 @@ internal sealed class NativeBrowserHost : IDisposable
 
     internal bool IsVisible => !_disposed && _controller.IsVisible;
 
+    internal Windows.UI.Color DefaultBackgroundColor
+    {
+        set => _controller.DefaultBackgroundColor = value;
+    }
+
     internal event TypedEventHandler<CoreWebView2Controller, CoreWebView2AcceleratorKeyPressedEventArgs> AcceleratorKeyPressed
     {
         add => _controller.AcceleratorKeyPressed += value;
