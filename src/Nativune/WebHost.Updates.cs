@@ -12,6 +12,7 @@ public sealed partial class WebHostWindow
     private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.NotChecked;
     private bool _releaseUpdateCheckRunning;
     private bool _releaseUpdateCheckManual;
+    private bool _releaseUpdateCheckQueued;
     private bool _releaseUpdatePromptOpen;
     private bool _skipUpdatePrompt;
     private CancellationTokenSource? _updateDownloadCancellation;
@@ -338,7 +339,14 @@ public sealed partial class WebHostWindow
     // and leaves what is shown, so a known available update stays marked.
     private async Task CheckForReleaseUpdateAsync(bool manual)
     {
-        if (_releaseUpdateCheckRunning || _closing || _disposed || _lifetime.IsCancellationRequested
+        if (_releaseUpdateCheckRunning)
+        {
+            // e.g. a wake-up catch-up while a check from before sleep is still in flight:
+            // re-evaluate when that check finishes.
+            _releaseUpdateCheckQueued = true;
+            return;
+        }
+        if (_closing || _disposed || _lifetime.IsCancellationRequested
             || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
                 or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching
             || (!manual && (!_settings.AutoCheckUpdates || _releaseUpdatePromptOpen)))
@@ -414,6 +422,11 @@ public sealed partial class WebHostWindow
         finally
         {
             _releaseUpdateCheckRunning = false;
+            if (_releaseUpdateCheckQueued)
+            {
+                _releaseUpdateCheckQueued = false;
+                ConfigureAutomaticReleaseUpdateChecks(); // checks only if one is due
+            }
         }
     }
 
