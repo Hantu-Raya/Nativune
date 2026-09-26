@@ -23,6 +23,8 @@ internal sealed class WebViewAudioVolume : IDisposable
     internal const int MaximumNewSessionPreferenceAttempts = 2;
 
     private const uint DeviceStateActive = 0x00000001;
+    private const int ProcessCommandLineInformation = 60;
+    private const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
 
     private static readonly Guid MmDeviceEnumeratorClassId = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
     private static readonly Guid MmDeviceEnumeratorInterfaceId = new("A95664D2-9614-4F35-A746-DE8DB63617E6");
@@ -45,17 +47,67 @@ internal sealed class WebViewAudioVolume : IDisposable
     // Published for the session-created callback, which runs on another thread.
     private volatile GuardSnapshot? _guardSnapshot;
     private SessionCreatedGuard? _guard;
+    // Set by the device-change callback; the next refresh re-registers on the current render endpoints.
+    private volatile bool _endpointsChanged;
 
     private sealed record GuardSnapshot(IReadOnlySet<int> ProcessIds, float Volume, bool? Muted);
 
     // Raised on a thread-pool thread when Windows creates an audio session in this WebView2 runtime's
-    // processes, so the host can reconcile at once instead of on its next refresh tick.
-    public event Action? SessionCreated;
+    // processes or a render device appears, changes state or becomes default, so the host reconciles at
+    // once instead of on its next refresh tick.
+    public event Action? RefreshRequested;
 
-    public WebViewAudioVolume(string expectedBrowserExecutablePath)
+    // userDataFolder is the folder passed to CreateCoreWebView2Environment. A new audio service process can
+    // create its session before the host's next refresh adds it to the owned set; its command line names
+    // this profile, which identifies it without touching another app's WebView2 processes.
+    public WebViewAudioVolume(string expectedBrowserExecutablePath, string? userDataFolder = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedBrowserExecutablePath);
         _expectedBrowserExecutablePath = Path.GetFullPath(expectedBrowserExecutablePath);
+        if (userDataFolder is not null)
+            _profileArgument = $"--user-data-dir=\"{Path.Combine(Path.GetFullPath(userDataFolder), "EBWebView")}\"";
+    }
+
+    private readonly string? _profileArgument;
+
+    private bool RunsThisProfile(int processId)
+        => _profileArgument is not null && TryGetProcessCommandLine(processId, out var commandLine)
+            && commandLine.Contains(_profileArgument, StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryGetProcessCommandLine(int processId, out string commandLine)
+    {
+        commandLine = string.Empty;
+        using var process = OpenProcess(ProcessQueryLimitedInformation, inheritHandle: false, (uint)processId);
+        if (process is null || process.IsInvalid)
+            return false;
+        var size = 8192;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                var status = NtQueryInformationProcess(process, ProcessCommandLineInformation, buffer, size, out var needed);
+                if (status == StatusInfoLengthMismatch && attempt == 0 && needed is > 0 and <= 1 << 20)
+                {
+                    size = needed;
+                    continue;
+                }
+                if (status != 0)
+                    return false;
+                // UNICODE_STRING { ushort Length; ushort MaximumLength; nint Buffer } followed by its text.
+                var length = (ushort)Marshal.ReadInt16(buffer);
+                var text = Marshal.ReadIntPtr(buffer, IntPtr.Size);
+                if (text < buffer || text + length > buffer + size)
+                    return false;
+                commandLine = Marshal.PtrToStringUni(text, length / 2);
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        return false;
     }
 
     internal static bool TryGetWebViewProcessExecutablePath(int processId, out string executablePath)
@@ -439,12 +491,13 @@ internal sealed class WebViewAudioVolume : IDisposable
         _guardSnapshot = new GuardSnapshot(
             _activeProcessIds.ToHashSet(), _preferredVolume, _hasMutePreference ? _preferredMute : null);
 
-    // (Re)registers for new-session notifications; the endpoint count check picks up added or removed devices.
+    // (Re)registers for new-session notifications when devices changed; the count check is a fallback.
     private void EnsureSessionGuard()
     {
         var endpointCount = CountRenderEndpoints();
-        if (_guard is not null && _guard.EndpointCount == endpointCount)
+        if (_guard is not null && !_endpointsChanged && _guard.EndpointCount == endpointCount)
             return;
+        _endpointsChanged = false;
         _guard?.Stop();
         _guard = endpointCount > 0 ? SessionCreatedGuard.TryStart(this) : null;
     }
@@ -500,7 +553,8 @@ internal sealed class WebViewAudioVolume : IDisposable
                     || !PathsEqual(executablePath, _expectedBrowserExecutablePath))
                     return;
                 owned = true;
-                if (_disposed || _guardSnapshot is not { } snapshot || !snapshot.ProcessIds.Contains((int)processId))
+                if (_disposed || _guardSnapshot is not { } snapshot
+                    || !(snapshot.ProcessIds.Contains((int)processId) || RunsThisProfile((int)processId)))
                     return;
                 var volume = (ISimpleAudioVolume)control;
                 var eventContext = Guid.Empty;
@@ -523,18 +577,19 @@ internal sealed class WebViewAudioVolume : IDisposable
             try { Marshal.ReleaseComObject(control); }
             catch (Exception) { }
             if (owned)
-                SessionCreated?.Invoke();
+                RefreshRequested?.Invoke();
         }
     }
 
     // New WebView2 sessions start at full volume; waiting for the host's 1 s refresh was audible as a sudden
-    // full-volume burst. This applies the preference as soon as Windows reports the session.
-    // ponytail: registered on the render endpoints active at (re)start; a session on a device added since
-    // then still waits for the next refresh, which re-registers when the endpoint count changes.
-    private sealed class SessionCreatedGuard : IAudioSessionNotification
+    // full-volume burst. This applies the preference as soon as Windows reports the session. Device
+    // notifications trigger an immediate refresh, which registers on a newly active endpoint and applies
+    // the preference to any session Chromium already opened there.
+    private sealed class SessionCreatedGuard : IAudioSessionNotification, IMMNotificationClient
     {
         private readonly WebViewAudioVolume _owner;
         private readonly List<IAudioSessionManager2> _managers = [];
+        private IMMDeviceEnumerator? _deviceEvents;
 
         private SessionCreatedGuard(WebViewAudioVolume owner) => _owner = owner;
 
@@ -575,6 +630,11 @@ internal sealed class WebViewAudioVolume : IDisposable
                         ReleaseComObject(device);
                     }
                 }
+                if (enumerator!.RegisterEndpointNotificationCallback(guard) == S_OK)
+                {
+                    guard._deviceEvents = enumerator;
+                    enumerator = null;
+                }
                 return guard;
             }
             catch (Exception exception) when (IsInteropFailure(exception))
@@ -603,9 +663,32 @@ internal sealed class WebViewAudioVolume : IDisposable
             return S_OK;
         }
 
-        // Must not run inside OnSessionCreated (Windows forbids unregistering from the callback).
+        // Device callbacks must not block or (un)register; they only flag and request a refresh.
+        public int OnDeviceStateChanged(string deviceId, uint newState) => DevicesChanged();
+        public int OnDeviceAdded(string deviceId) => DevicesChanged();
+        public int OnDeviceRemoved(string deviceId) => DevicesChanged();
+        public int OnDefaultDeviceChanged(DataFlow flow, int role, string? defaultDeviceId)
+            => flow == DataFlow.Capture ? S_OK : DevicesChanged();
+        public int OnPropertyValueChanged(string deviceId, PropertyKey key) => S_OK;
+
+        private int DevicesChanged()
+        {
+            _owner._endpointsChanged = true;
+            try { _ = Task.Run(() => _owner.RefreshRequested?.Invoke()); }
+            catch (Exception) { }
+            return S_OK;
+        }
+
+        // Must not run inside a Core Audio callback (Windows forbids unregistering from one).
         internal void Stop()
         {
+            if (_deviceEvents is not null)
+            {
+                try { _ = _deviceEvents.UnregisterEndpointNotificationCallback(this); }
+                catch (Exception exception) when (IsInteropFailure(exception)) { }
+                ReleaseComObject(_deviceEvents);
+                _deviceEvents = null;
+            }
             foreach (var manager in _managers)
             {
                 try { _ = manager.UnregisterSessionNotification(this); }
@@ -1194,6 +1277,10 @@ internal sealed class WebViewAudioVolume : IDisposable
     [DllImport("kernel32.dll", ExactSpelling = true)]
     private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
 
+    [DllImport("ntdll.dll", ExactSpelling = true)]
+    private static extern int NtQueryInformationProcess(
+        SafeProcessHandle processHandle, int informationClass, nint information, int length, out int returnLength);
+
     private enum DataFlow
     {
         Render = 0,
@@ -1210,6 +1297,46 @@ internal sealed class WebViewAudioVolume : IDisposable
         [PreserveSig]
         int EnumAudioEndpoints(DataFlow dataFlow, uint stateMask, out IMMDeviceCollection devices);
 
+        // Unused vtable slots, declared so later methods keep their Windows SDK order.
+        [PreserveSig]
+        int GetDefaultAudioEndpoint(DataFlow dataFlow, int role, out IMMDevice device);
+
+        [PreserveSig]
+        int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
+
+        [PreserveSig]
+        int RegisterEndpointNotificationCallback(IMMNotificationClient client);
+
+        [PreserveSig]
+        int UnregisterEndpointNotificationCallback(IMMNotificationClient client);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PropertyKey
+    {
+        public Guid FormatId;
+        public uint PropertyId;
+    }
+
+    [ComImport]
+    [Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMNotificationClient
+    {
+        [PreserveSig]
+        int OnDeviceStateChanged([MarshalAs(UnmanagedType.LPWStr)] string deviceId, uint newState);
+
+        [PreserveSig]
+        int OnDeviceAdded([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+
+        [PreserveSig]
+        int OnDeviceRemoved([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+
+        [PreserveSig]
+        int OnDefaultDeviceChanged(DataFlow flow, int role, [MarshalAs(UnmanagedType.LPWStr)] string? defaultDeviceId);
+
+        [PreserveSig]
+        int OnPropertyValueChanged([MarshalAs(UnmanagedType.LPWStr)] string deviceId, PropertyKey key);
     }
 
     // IID matches IMMDeviceCollection in the Windows SDK mmdeviceapi.h.
