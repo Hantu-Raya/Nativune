@@ -392,18 +392,22 @@ function Get-TreeRecords {
     return $members.ToArray()
 }
 
-# Process type per WebView2 child from its command line: only the --type and --utility-sub-type
-# values are kept (the rest, including the profile path, is never stored).
+# Process type per WebView2 child from its command line, keyed "pid:createTime100ns" like the
+# samples so a reused PID never inherits a departed process's type. Only the --type and
+# --utility-sub-type values are kept (the rest, including the profile path, is never stored).
 function Add-ProcessTypes {
     param([hashtable] $Types, [Collections.Generic.List[object]] $Samples)
     if ($Samples.Count -eq 0) { return }
     foreach ($item in @($Samples[$Samples.Count - 1].processes)) {
-        $key = [string] $item.processId
+        $key = '{0}:{1}' -f $item.processId, $item.createTime100ns
         if ($item.imageName -ine 'msedgewebview2.exe' -or $Types.ContainsKey($key)) { continue }
         try {
-            $commandLine = [string] (Get-CimInstance Win32_Process -Filter "ProcessId=$([long] $item.processId)" -ErrorAction Stop).CommandLine
-            $type = if ($commandLine -match '--type=([a-z-]{1,32})') { $Matches[1] } else { 'browser' }
-            if ($commandLine -match '--utility-sub-type=([A-Za-z.]{1,64})') { $type = "$type/$($Matches[1])" }
+            $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$([long] $item.processId)" -ErrorAction Stop
+            # Same generation only: WMI reports creation time to the microsecond.
+            if ($null -eq $cim -or [Math]::Abs($cim.CreationDate.ToFileTimeUtc() - [long] $item.createTime100ns) -ge 10000) { continue }
+            $commandLine = [string] $cim.CommandLine
+            $type = if ($commandLine -match '--type=([A-Za-z0-9_-]{1,32})(?=[\s"]|$)') { $Matches[1] } else { 'browser' }
+            if ($commandLine -match '--utility-sub-type=([A-Za-z0-9_.]{1,96})(?=[\s"]|$)') { $type = "$type/$($Matches[1])" }
             $Types[$key] = $type
         }
         catch { }
