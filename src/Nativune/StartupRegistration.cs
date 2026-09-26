@@ -66,12 +66,13 @@ internal static class StartupRegistration
         if (TestBase() is null)
             return false;
 #endif
-        var enable = Read(root) == StartupEntryState.Off;
-        if (enable)
-            Enable(root);
+        // Marker first: if it cannot be written nothing is enabled, and a later Disable is never undone.
         Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
         File.WriteAllText(marker, string.Empty);
-        return enable;
+        if (Read(root) != StartupEntryState.Off)
+            return false;
+        Enable(root);
+        return true;
     }
 
     // Parses the leading quoted (or first unquoted token) executable path of a Run command.
