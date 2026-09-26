@@ -370,6 +370,14 @@ public sealed partial class WebHostWindow
             }
             if (_closing || _disposed || _lifetime.IsCancellationRequested)
                 return;
+            // An update dialog or download that began while this automatic check ran owns the
+            // update surfaces; drop the result (the next tick checks again).
+            if (!manual && (_releaseUpdatePromptOpen || _releaseUpdateButtonState is ReleaseUpdateButtonState.Downloading
+                    or ReleaseUpdateButtonState.Verifying or ReleaseUpdateButtonState.Launching))
+            {
+                _lastReleaseUpdateCheckUtc = previousCheckUtc;
+                return;
+            }
 
             var state = update.Status switch
             {
