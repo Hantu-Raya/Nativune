@@ -11,6 +11,7 @@ public sealed partial class WebHostWindow
     private DateTimeOffset? _lastReleaseUpdateCheckUtc;
     private ReleaseUpdateButtonState _releaseUpdateButtonState = ReleaseUpdateButtonState.NotChecked;
     private bool _releaseUpdateCheckRunning;
+    private bool _releaseUpdateCheckManual;
     private bool _releaseUpdatePromptOpen;
     private bool _skipUpdatePrompt;
     private CancellationTokenSource? _updateDownloadCancellation;
@@ -344,6 +345,7 @@ public sealed partial class WebHostWindow
             return;
 
         _releaseUpdateCheckRunning = true;
+        _releaseUpdateCheckManual = manual;
         var previousCheckUtc = _lastReleaseUpdateCheckUtc;
         _lastReleaseUpdateCheckUtc = DateTimeOffset.UtcNow;
         // Every check restarts the countdown, so a resume catch-up (or a manual check) is not
@@ -358,6 +360,7 @@ public sealed partial class WebHostWindow
         try
         {
             var update = await ReleaseUpdater.CheckAsync(_root, _lifetime.Token);
+            manual = _releaseUpdateCheckManual; // a click during a quiet check makes it a manual one
             if (update.Status == ReleaseUpdateStatus.Cancelled)
             {
                 _lastReleaseUpdateCheckUtc = previousCheckUtc;
@@ -399,7 +402,7 @@ public sealed partial class WebHostWindow
         }
         catch (Exception)
         {
-            if (!manual)
+            if (!_releaseUpdateCheckManual)
                 LogAutomaticUpdateFailure(ReleaseUpdateFailure.InvalidMetadata, null);
             else if (!_closing && !_disposed)
             {
@@ -433,11 +436,21 @@ public sealed partial class WebHostWindow
             CancelUpdateDownload();
             return;
         }
-        if (_releaseUpdateCheckRunning) return;
         if (_releaseUpdateButtonState == ReleaseUpdateButtonState.Available
             && _availableReleaseUpdate is { IsAvailable: true } update)
         {
+            // Opens even during a quiet check; that check then drops its result.
             _ = ShowReleaseUpdatePromptAsync(update);
+            return;
+        }
+        if (_releaseUpdateCheckRunning)
+        {
+            // Show the running quiet check as the check the user asked for.
+            if (!_releaseUpdateCheckManual)
+            {
+                _releaseUpdateCheckManual = true;
+                ApplyUpdateFeedback(ReleaseUpdateButtonState.Checking, manual: true);
+            }
             return;
         }
 
