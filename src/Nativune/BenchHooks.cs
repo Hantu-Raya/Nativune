@@ -35,6 +35,9 @@ internal static class BenchHooks
     internal static Uri? StartUri => Enabled ? ValidStartUri : null;
     internal static IReadOnlyList<BenchScheduledAction> Schedule => Enabled ? ScheduledActions : Array.Empty<BenchScheduledAction>();
 
+    internal static void Event(string eventName, params (string Name, object? Value)[] properties)
+        => Write(eventName, properties);
+
     internal static void Start(string browserArguments)
     {
         if (!Enabled || Interlocked.Exchange(ref _startWritten, 1) != 0) return;
