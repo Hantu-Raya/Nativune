@@ -50,6 +50,14 @@ $appExe = Join-Path $appDirectory 'Nativune.exe'
 $runId = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N')
 $runDirectory = Join-Path $outputRoot $runId
 $rootBase = Join-Path $repo ".cache/discord-rpc-e2e/$runId"
+# The pinned version comes from BrowserPrivacy.ExtensionVersion so the two cannot drift.
+$ubolVersion = [regex]::Match((Get-Content -Raw (Join-Path $repo 'src/Nativune/BrowserPrivacy.cs')),
+    'ExtensionVersion\s*=\s*"([^"]+)"').Groups[1].Value
+if (-not $ubolVersion) { throw 'Could not read BrowserPrivacy.ExtensionVersion.' }
+$ubolSource = Join-Path $repo ".tools/ubol/$ubolVersion"
+if (-not (Test-Path -LiteralPath (Join-Path $ubolSource 'manifest.json') -PathType Leaf)) {
+    throw "uBO Lite $ubolVersion is missing at $ubolSource (manifest.json). Provision the repository .tools/ubol tree before running the Discord E2E."
+}
 $prefix = 'nativune-test-' + [guid]::NewGuid().ToString('N') + '-discord-ipc-'
 $clientId = '100000000000000001'
 $minWriteSeconds = 3
@@ -86,6 +94,11 @@ function Write-Settings([string] $Root, [bool] $Enabled) {
 function New-Root([string] $Name) {
     $root = Join-Path $rootBase $Name
     [IO.Directory]::CreateDirectory($root) | Out-Null
+    # BrowserPrivacy fails closed without <root>/.tools/ubol/<version>/manifest.json and rejects
+    # reparse points, so each root gets a real copy of the repository uBO Lite tree.
+    $ubolDestination = Join-Path $root '.tools/ubol'
+    [IO.Directory]::CreateDirectory($ubolDestination) | Out-Null
+    Copy-Item -LiteralPath $ubolSource -Destination $ubolDestination -Recurse
     if ($CopyWebView2Runtime) {
         $source = Join-Path $repo '.tools/webview2'
         $version = (Get-Content -LiteralPath (Join-Path $source 'runtime-path.txt') -Raw).Trim()
@@ -225,7 +238,8 @@ function Test-Timeline {
     Add-Check 'timeline.durationSpan210s' ($spans.Count -gt 0 -and -not ($spans | Where-Object { [Math]::Abs($_ - 210) -gt 2 }))
     $starts = @($aPlaying | ForEach-Object { [double] (Get-Prop (& $ts $_.Activity) 'start') })
     $seekShift = $false
-    for ($i = 1; $i -lt $starts.Count; $i++) { if ([Math]::Abs(($starts[$i] - $starts[0]) + 100) -le 5) { $seekShift = $true } }
+    # Fixture seeks at page time 25 s from ~25 s to 100 s, so start shifts by -(100-25) = -75 s.
+    for ($i = 1; $i -lt $starts.Count; $i++) { if ([Math]::Abs(($starts[$i] - $starts[0]) + 75) -le 4) { $seekShift = $true } }
     Add-Check 'timeline.seekReanchors' $seekShift
 
     $pauseIndex = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isA $s) -and (Get-Prop (& $assets $s.Activity) 'small_image') -eq 'pause' })
@@ -236,14 +250,22 @@ function Test-Timeline {
     Add-Check 'timeline.resumeTimestamps' $resumed
 
     Add-Check 'timeline.trackBFields' ($b.Count -gt 0 -and -not ($b | Where-Object {
-        (Get-Prop $_.Activity 'state') -ne 'Second Artist' -or (Get-Prop (& $assets $_.Activity) 'large_text') -ne 'Second Album'
-        -or (Get-Prop (& $assets $_.Activity) 'large_image') -ne 'https://lh3.googleusercontent.com/fixture-b=w544-h544' }))
+        (Get-Prop $_.Activity 'state') -ne 'Second Artist' -or (Get-Prop (& $assets $_.Activity) 'large_text') -ne 'Second Album' -or
+        (Get-Prop (& $assets $_.Activity) 'large_image') -ne 'https://lh3.googleusercontent.com/fixture-b=w544-h544' }))
     $firstB = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isB $s) })
     Add-Check 'timeline.noStaleTrackAAfterB' ($firstB -ge 0 -and -not ($sets | Select-Object -Skip $firstB | Where-Object { $null -ne $_.Activity -and (& $isA $_) }))
     $repeatIndex = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isB $s) -and (Get-Prop (& $assets $s.Activity) 'small_image') -eq 'repeat-one' })
     Add-Check 'timeline.repeatOneBadge' ($repeatIndex -ge 0)
-    $endedClear = $repeatIndex -ge 0 -and [bool] ($sets | Select-Object -Skip ($repeatIndex + 1) | Where-Object {
-        $null -eq $_.Activity -and $closeUtc -and $_.Utc -lt $closeUtc.AddSeconds(-1) })
+    # Fixture ends at page time 120 s (repeat-one at 100 s): the first null after the repeat-one frame must
+    # arrive within 25 s of it, and no track-B pause-badge card may follow the repeat-one frame.
+    $endedClear = $false
+    if ($repeatIndex -ge 0) {
+        $afterRepeat = @($sets | Select-Object -Skip ($repeatIndex + 1))
+        $firstNull = $afterRepeat | Where-Object { $null -eq $_.Activity } | Select-Object -First 1
+        $pauseAfterRepeat = $afterRepeat | Where-Object {
+            $null -ne $_.Activity -and (& $isB $_) -and (Get-Prop (& $assets $_.Activity) 'small_image') -eq 'pause' }
+        $endedClear = $null -ne $firstNull -and (($firstNull.Mono - $sets[$repeatIndex].Mono) / 1000) -le 25 -and -not $pauseAfterRepeat
+    }
     Add-Check 'timeline.endedClears' $endedClear
     Add-Check 'timeline.finalClear' ($sets.Count -gt 0 -and $null -eq $sets[-1].Activity)
 
@@ -259,7 +281,20 @@ function Test-Timeline {
     $channelIds = @([regex]::Matches($fixtureHtml, 'channel/(UC[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
     $albumIds = @([regex]::Matches($fixtureHtml, 'browse/(MPREb[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
     $readyUtc = if ($readyIndex -ge 0) { ConvertTo-UtcTime $frames[$readyIndex].utc } else { $null }
-    $inAdWindow = { param($s) $readyUtc -and $s.Utc -ge $readyUtc.AddSeconds(66) -and $s.Utc -le $readyUtc.AddSeconds(76) }
+    # The fixture timeline is in PAGE time (ad-showing 65-75 s after page load), but the page loads several
+    # seconds after READY. Estimate the READY->page offset from events with known page times: track B starts at
+    # page 80 s and track A resumes at page 60 s. Each observed send = pageTime + offset + debounce (1 s) + possible
+    # MIN_WRITE gate delay, so (send - pageTime - debounce) is an upper bound on the offset; take the smallest.
+    $debounceSeconds = 1; $adStart = 65; $adEnd = 75
+    $offsetCandidates = @()
+    if ($readyUtc -and $firstB -ge 0) { $offsetCandidates += ($sets[$firstB].Utc - $readyUtc).TotalSeconds - 80 - $debounceSeconds }
+    if ($readyUtc -and $pauseIndex -ge 0) {
+        $resumeSet = $sets | Select-Object -Skip ($pauseIndex + 1) | Where-Object {
+            $null -ne $_.Activity -and (& $isA $_) -and $null -ne (& $ts $_.Activity) } | Select-Object -First 1
+        if ($resumeSet) { $offsetCandidates += ($resumeSet.Utc - $readyUtc).TotalSeconds - 60 - $debounceSeconds }
+    }
+    $adOffset = if ($offsetCandidates.Count -gt 0) { ($offsetCandidates | Measure-Object -Minimum).Minimum } else { $null }
+    $inAdWindow = { param($s) $null -ne $adOffset -and $s.Utc -ge $readyUtc.AddSeconds(65 + $adOffset) -and $s.Utc -le $readyUtc.AddSeconds(75 + $adOffset) }
     $hasTrackLinks = { param($s, [string] $Url)
         $btn = @(Get-Prop $s.Activity 'buttons' | Where-Object { $_ })
         (Get-Prop $s.Activity 'details_url') -eq $Url -and $btn.Count -eq 1 -and
@@ -271,9 +306,19 @@ function Test-Timeline {
         (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[0])" }))
     Add-Check 'timeline.trackALargeUrl' ($albumIds.Count -ge 1 -and $aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object {
         (Get-Prop (& $assets $_.Activity) 'large_url') -ne "https://music.youtube.com/browse/$($albumIds[0])" }))
-    $adSets = @($nonNull | Where-Object { & $inAdWindow $_ })
-    Add-Check 'timeline.adWindowNoLinks' ([bool] $readyUtc -and -not ($adSets | Where-Object {
-        (Get-Prop $_.Activity 'details_url') -or @(Get-Prop $_.Activity 'buttons' | Where-Object { $_ }).Count -gt 0 }))
+    $linkless = { param($s) -not (Get-Prop $s.Activity 'details_url') -and @(Get-Prop $s.Activity 'buttons' | Where-Object { $_ }).Count -eq 0 }
+    $adSets = @(); $adOk = $false
+    if ($null -ne $adOffset) {
+        # Offset is an upper bound, so [adStart+offset, adEnd+offset] cannot contain pre-ad linked cards; the ad card
+        # itself lands debounce later. The fixture's title-link change forces a republish inside the window.
+        $winStart = $readyUtc.AddSeconds($adStart + $adOffset); $winEnd = $readyUtc.AddSeconds($adEnd + $adOffset)
+        $adSets = @($nonNull | Where-Object { $_.Utc -ge $winStart -and $_.Utc -le $winEnd })
+        $restoreAfter = $readyUtc.AddSeconds($adEnd + $adOffset + $minWriteSeconds + $debounceSeconds)
+        $afterAd = $nonNull | Where-Object { $_.Utc -gt $restoreAfter } | Select-Object -First 1
+        $adOk = $adSets.Count -gt 0 -and -not ($adSets | Where-Object { -not (& $linkless $_) }) -and
+            $null -ne $afterAd -and ((& $hasTrackLinks $afterAd $urlA) -or (& $hasTrackLinks $afterAd $urlB))
+    }
+    Add-Check 'timeline.adWindowNoLinks' $adOk
     Add-Check 'timeline.trackBDetailsUrlAndButton' ($b.Count -gt 0 -and -not ($b | Where-Object { -not (& $hasTrackLinks $_ $urlB) }))
     Add-Check 'timeline.trackBStateAndLargeUrl' ($channelIds.Count -ge 2 -and $albumIds.Count -ge 2 -and $b.Count -gt 0 -and -not ($b | Where-Object {
         (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[1])" -or
@@ -288,6 +333,8 @@ function Test-Timeline {
         setActivityCount = $sets.Count; nonNullCount = $nonNull.Count; clearCount = $sets.Count - $nonNull.Count
         minNonNullGapSeconds = if ([double]::IsInfinity($minGapSeconds)) { $null } else { [Math]::Round($minGapSeconds, 3) }
         observedDetailsUrls = $detailsUrls; observedButtonCount = $buttons.Count; adWindowActivityCount = $adSets.Count
+        adWindowOffsetSeconds = if ($null -ne $adOffset) { [Math]::Round($adOffset, 3) } else { $null }
+        adWindowMethod = 'offset = min(firstTrackB - 80 s, firstResume - 60 s) - 1 s debounce (READY-relative); window = page 65-75 s + offset'
         timestampUnitAssumption = 'unix seconds (contract ToDiscordWireTimestamp; real-client check pending)'
     }
     $root
@@ -406,7 +453,10 @@ try {
     }
 }
 
-$passed = $checks.Count -gt 0 -and -not ($checks.Values | Where-Object { -not $_ })
+# Count failures explicitly: piping the values into Where-Object yields a single $false for one failed check,
+# and -not $false is $true, which is how a failed check (timeline.adWindowNoLinks) once reported passed=true.
+$failedChecks = @($checks.Keys | Where-Object { -not $checks[$_] })
+$passed = $checks.Count -gt 0 -and $failedChecks.Count -eq 0
 $report = [ordered]@{
     command = $commandLine; runId = $runId; appVersion = $appVersion; pipePrefix = $prefix
     scenarios = $scenarioResults; checks = $checks; passed = [bool] $passed

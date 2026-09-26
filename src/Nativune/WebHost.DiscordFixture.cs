@@ -26,13 +26,17 @@ public sealed partial class WebHostWindow
             stream.CopyTo(buffer);
             s_discordFixturePage = buffer.ToArray();
         }
-        core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        // Only http(s) is intercepted so chrome-extension:// (uBO Lite dashboard/resources) loads normally.
+        core.AddWebResourceRequestedFilter("https://*", CoreWebView2WebResourceContext.All);
+        core.AddWebResourceRequestedFilter("http://*", CoreWebView2WebResourceContext.All);
         core.WebResourceRequested += OnDiscordFixtureResourceRequested;
     }
 
     private static void OnDiscordFixtureResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
     {
         Uri? uri = Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var parsed) ? parsed : null;
+        if (uri is not null && uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
+            return;
         var https = uri is not null && uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && uri.UserInfo.Length == 0;
         if (https && uri!.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase))
         {

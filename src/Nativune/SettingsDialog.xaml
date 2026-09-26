@@ -354,8 +354,7 @@
                        TextWrapping="Wrap"
                        FontSize="12"
                        Margin="28,-6,0,0"
-                       Foreground="{ThemeResource SecondaryTextBrush}"
-                       AutomationProperties.Name="What Discord sharing sends" />
+                       Foreground="{ThemeResource SecondaryTextBrush}" />
             <StackPanel x:Name="DiscordOptionsPanel" Margin="28,0,0,0" Spacing="6">
               <ComboBox x:Name="DiscordStatusLineComboBox"
                         Header="Status line shows"

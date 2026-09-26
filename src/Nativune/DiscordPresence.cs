@@ -170,7 +170,8 @@ internal sealed class DiscordPresence : IAsyncDisposable
         _itemArt = o.ArtworkUrl;
 
         // Pause deadline starts at the first paused observation of an item; late metadata does not restart it.
-        if (o.Paused) { if (_pausedSinceMs is null || itemChanged) _pausedSinceMs = nowMs; }
+        // An ended item clears immediately (BuildDesired); it never starts the pause deadline.
+        if (o.Paused && !o.Ended) { if (_pausedSinceMs is null || itemChanged) _pausedSinceMs = nowMs; }
         else _pausedSinceMs = null;
 
         if (o is { ClockConfirmed: true, Paused: false, Ended: false, Seeking: false, PlaybackRate: 1.0 }
@@ -201,7 +202,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
         {
             changesAtMs = null;
             var o = _observation;
-            if (o is null || !_options.Enabled) return null;
+            if (o is null || o.Ended || !_options.Enabled) return null;
             if (o.Paused && _pausedSinceMs is long since)
             {
                 var expiry = since + (long)_environment.PauseTimeout.TotalMilliseconds;
