@@ -43,7 +43,7 @@ internal static class ShellChecks
 
         var file = Path.Combine(root, "data", "settings.json");
         var savedSettingsText = File.ReadAllText(file);
-        Require(savedSettingsText.Contains("\"Version\": 6", StringComparison.Ordinal)
+        Require(savedSettingsText.Contains("\"Version\": 7", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"AutostartMode\": 2", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"AutoCheckUpdates\": false", StringComparison.Ordinal),

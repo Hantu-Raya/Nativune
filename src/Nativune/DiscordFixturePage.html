@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="nativune-discord-fixture" content="1">
+<title>YouTube Music</title>
+<!--
+  Synthetic YouTube Music page for scripts/discord-rpc-e2e.ps1 (test-hook builds only; served by
+  WebHost.DiscordFixture.cs for https://music.youtube.com/ documents). It mirrors only the public
+  player-bar DOM read by CompactPlayback.cs: one ytmusic-player-bar, exactly one media element,
+  #left-controls transport, span.time-info, tp-yt-paper-slider#progress-bar with #sliderBar,
+  like/dislike/repeat/shuffle buttons, one .title, a byline and loaded artwork from an allowed host.
+  This proves app plumbing and the DOM contract, not that the live site still matches it.
+
+  Deterministic timeline, seconds after page load:
+    0   track A playing: "Fixture Song A" / Fixture Artist / Fixture Album, 210 s, position 0,
+        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544, URL /watch?v=fixtureSngA
+   25   seek track A to 100 s
+   45   pause
+   60   resume
+   80   track B playing: "Fixture Song B" / Second Artist / Second Album, 185 s, position 0,
+        artwork https://lh3.googleusercontent.com/fixture-b=w544-h544, URL /watch?v=fixtureSngB
+  100   repeat-one on (button label "Repeat one")
+  120   stop: media ended (loop off, currentTime = duration, paused), clock at the end
+  The fixture clock advances only by the media element's own currentTime progress.
+-->
+<style>
+  html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
+  ytmusic-app, ytmusic-player, ytmusic-player-bar, tp-yt-paper-slider, yt-formatted-string { display: block; }
+  ytmusic-player { width: 320px; height: 180px; }
+  #song-image img { width: 180px; height: 180px; }
+  ytmusic-player-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 72px; display: flex;
+    align-items: center; gap: 12px; padding: 0 12px; background: #212121; }
+  tp-yt-paper-slider { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+  #sliderBar { height: 4px; background: #555; }
+  #sliderBar > div { height: 4px; background: #f00; width: 0; }
+  .left-controls { display: flex; align-items: center; gap: 4px; }
+  button { min-width: 40px; height: 32px; color: rgb(144, 144, 144); background: transparent; border: 1px solid #444; }
+  .thumbnail { width: 40px; height: 40px; }
+  .middle { flex: 1; min-width: 0; }
+  .byline { color: #aaa; }
+  .byline a { color: inherit; }
+  video { width: 1px; height: 1px; }
+</style>
+</head>
+<body>
+<ytmusic-app>
+  <ytmusic-player id="player"><div id="song-image"><img id="large-art" alt=""></div></ytmusic-player>
+  <ytmusic-player-bar class="style-scope ytmusic-app">
+    <tp-yt-paper-slider id="progress-bar" role="slider" aria-label="Seek slider" aria-valuemin="0" aria-valuemax="210" aria-valuenow="0">
+      <div id="sliderBar" aria-hidden="true"><div id="primaryProgress"></div></div>
+    </tp-yt-paper-slider>
+    <div id="left-controls" class="left-controls style-scope ytmusic-player-bar">
+      <button aria-label="Previous">&#9198;</button>
+      <button id="play-pause-button" aria-label="Pause">&#9208;</button>
+      <button aria-label="Next">&#9197;</button>
+      <span class="time-info style-scope ytmusic-player-bar">0:00 / 3:30</span>
+    </div>
+    <img id="bar-art" class="thumbnail image" alt="">
+    <div class="middle content-info-wrapper">
+      <yt-formatted-string class="title style-scope ytmusic-player-bar"></yt-formatted-string>
+      <span class="subtitle"><yt-formatted-string class="byline style-scope ytmusic-player-bar"></yt-formatted-string></span>
+    </div>
+    <div id="right-controls">
+      <button id="like" aria-label="Like" aria-pressed="false">&#128077;</button>
+      <button id="dislike" aria-label="Dislike" aria-pressed="false">&#128078;</button>
+      <button id="repeat" aria-label="Repeat off">&#128257;</button>
+      <button id="shuffle" aria-label="Shuffle" aria-pressed="false">&#128256;</button>
+    </div>
+  </ytmusic-player-bar>
+  <video id="media" muted loop playsinline></video>
+</ytmusic-app>
+<script>
+(() => {
+  const tracks = {
+    A: { id: 'fixtureSngA', title: 'Fixture Song A', duration: 210,
+      artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
+      byline: '<a href="channel/UCfixtureArtist0001">Fixture Artist</a> \u2022 <a href="browse/MPREbfixtureAlbum01">Fixture Album</a> \u2022 2026' },
+    B: { id: 'fixtureSngB', title: 'Fixture Song B', duration: 185,
+      artwork: 'https://lh3.googleusercontent.com/fixture-b=w544-h544',
+      byline: '<a href="channel/UCsecondArtist00001">Second Artist</a> \u2022 <a href="browse/MPREbsecondAlbum001">Second Album</a> \u2022 2026' }
+  };
+  const $ = selector => document.querySelector(selector);
+  const media = $('#media'), slider = $('#progress-bar'), timeInfo = $('.time-info');
+  const playButton = $('#play-pause-button');
+  let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
+
+  // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
+  // accumulates its progress, so the page clock only moves while the media element really plays.
+  const silentWav = () => {
+    const rate = 8000, samples = rate * 5, bytes = new Uint8Array(44 + samples);
+    const view = new DataView(bytes.buffer);
+    const ascii = (offset, text) => [...text].forEach((c, i) => bytes[offset + i] = c.charCodeAt(0));
+    ascii(0, 'RIFF'); view.setUint32(4, 36 + samples, true); ascii(8, 'WAVE');
+    ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate, true); view.setUint16(32, 1, true); view.setUint16(34, 8, true);
+    ascii(36, 'data'); view.setUint32(40, samples, true);
+    bytes.fill(128, 44);
+    return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  };
+
+  const clockText = seconds => {
+    const whole = Math.floor(seconds);
+    return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
+  };
+  const render = () => {
+    const shown = Math.min(Math.max(position, 0), track.duration);
+    slider.setAttribute('aria-valuemax', String(track.duration));
+    slider.setAttribute('aria-valuenow', String(Math.floor(shown)));
+    $('#primaryProgress').style.width = (100 * shown / track.duration) + '%';
+    timeInfo.textContent = clockText(shown) + ' / ' + clockText(track.duration);
+    playButton.setAttribute('aria-label', media.paused ? 'Play' : 'Pause');
+  };
+  const tick = () => {
+    const now = media.currentTime;
+    if (!ended) {
+      let delta = now - lastMediaTime;
+      if (delta < 0 && Number.isFinite(media.duration)) delta += media.duration;
+      if (!media.paused && delta > 0 && delta < 2) position = Math.min(position + delta, track.duration);
+    }
+    lastMediaTime = now;
+    render();
+  };
+  const load = next => {
+    track = next;
+    position = 0;
+    history.pushState(null, '', '/watch?v=' + track.id);
+    $('.title').textContent = track.title;
+    $('.byline').innerHTML = track.byline;
+    $('#bar-art').src = track.artwork;
+    $('#large-art').src = track.artwork;
+    render();
+  };
+  const play = () => media.play().catch(() => {});
+
+  const timeline = [
+    [25, () => { position = 100; }],
+    [45, () => media.pause()],
+    [60, () => play()],
+    [80, () => { load(tracks.B); play(); }],
+    [100, () => $('#repeat').setAttribute('aria-label', 'Repeat one')],
+    [120, () => {
+      ended = true;
+      media.loop = false;
+      position = track.duration;
+      if (Number.isFinite(media.duration)) media.currentTime = media.duration;
+      media.pause();
+    }]
+  ];
+
+  load(tracks.A);
+  media.muted = true;
+  media.src = silentWav();
+  play();
+  const started = performance.now();
+  for (const [at, step] of timeline)
+    setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
+  setInterval(tick, 250);
+  media.addEventListener('play', render);
+  media.addEventListener('pause', render);
+})();
+</script>
+</body>
+</html>
