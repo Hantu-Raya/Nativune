@@ -25,7 +25,7 @@ internal static class Program
                 "self-check" => SelfCheck.Run(root),
                 "media" => await MediaProbe.RunAsync(false, cancellation.Cancellation),
                 "media-control" => await MediaProbe.RunAsync(true, cancellation.Cancellation),
-                "web" => WebHost.Run(root),
+                "web" => WebHost.Run(root, options.Autostart),
                 "native-fixture" => NativeFixture.Run(root, measureInteractions: false),
                 "native-interactions" => NativeFixture.Run(root, measureInteractions: true),
                 "output-audio-fixture" => OutputAudioFixture.Run(root),
@@ -74,6 +74,7 @@ internal static class Program
         Console.WriteLine("Nativune - Windows media and native shell capability probe");
         Console.WriteLine();
         Console.WriteLine("Usage: Nativune [--root <project-root>] <command>");
+        Console.WriteLine("       Nativune web --root <install-root> --autostart   (used by the Windows sign-in entry)");
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  help       Show this help (the default command)");
@@ -93,7 +94,7 @@ internal static class Program
     }
 }
 
-internal sealed record CliOptions(string Command, string? Root, bool Help);
+internal sealed record CliOptions(string Command, string? Root, bool Help, bool Autostart = false);
 
 internal static class CommandLine
 {
@@ -105,12 +106,19 @@ internal static class CommandLine
         string? command = null;
         string? root = null;
         var help = false;
+        var autostart = false;
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
             if (arg is "--help" or "-h")
             {
                 help = true;
+                continue;
+            }
+
+            if (arg == "--autostart")
+            {
+                autostart = true;
                 continue;
             }
 
@@ -137,7 +145,9 @@ internal static class CommandLine
             command = arg.ToLowerInvariant();
         }
 
-        return new CliOptions(command ?? "help", root, help);
+        if (autostart && command is not "web")
+            throw new UsageException("--autostart is only valid with the web command.");
+        return new CliOptions(command ?? "help", root, help, autostart);
     }
 }
 

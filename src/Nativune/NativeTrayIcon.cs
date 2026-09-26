@@ -296,7 +296,7 @@ internal sealed class NativeTrayIcon : IDisposable
             AddMenuItem(menu, NextId, "Next", playbackFlags);
             AddSeparator(menu);
             AddMenuItem(menu, TimerId, "Pause timer");
-            AddMenuItem(menu, QuitId, "Quit");
+            AddMenuItem(menu, QuitId, "Quit Nativune");
             if (!SetForegroundWindow(_window))
                 Console.Error.WriteLine(
                     $"Tray menu owner could not be foregrounded: {Marshal.GetLastWin32Error()}.");

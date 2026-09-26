@@ -326,6 +326,9 @@ internal static class UninstallTransaction
         }
 
         var shellMutated = false;
+        var startupKeys = StartupEntryCleanup.ResolveKeys(noShell);
+        var startupState = startupKeys is null ? null : StartupEntryCleanup.Capture(startupKeys.Value);
+        var startupMutated = false;
         try
         {
             foreach (var relativePath in managedPaths)
@@ -347,6 +350,11 @@ internal static class UninstallTransaction
                 shellMutated = true;
                 ShellManager.Remove(root);
             }
+            if (startupKeys is not null)
+            {
+                startupMutated = true;
+                StartupEntryCleanup.Remove(startupKeys.Value, root);
+            }
             RemoveEmptyManagedDirectories(root, manifest.Files.Select(file => file.Path));
         }
         catch (Exception error)
@@ -354,6 +362,10 @@ internal static class UninstallTransaction
             Exception? rollbackError = null;
             try
             {
+                if (startupMutated && startupState is not null)
+                {
+                    StartupEntryCleanup.Restore(startupKeys!.Value, startupState);
+                }
                 if (shellMutated && shellState is not null)
                 {
                     ShellManager.Restore(shellState);
@@ -416,6 +428,114 @@ internal static class UninstallTransaction
                 Directory.Delete(directory);
             }
         }
+    }
+}
+
+internal sealed record StartupEntrySnapshot(
+    (object Value, RegistryValueKind Kind)? Run,
+    (object Value, RegistryValueKind Kind)? Approved);
+
+internal static class StartupEntryCleanup
+{
+    private const string ValueName = "Nativune";
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string ApprovedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
+    // Returns null when startup cleanup must not run for this uninstall.
+    internal static (string Run, string Approved)? ResolveKeys(bool noShell)
+    {
+#if INSTALLER_TEST_HOOKS
+        var overrideKey = Environment.GetEnvironmentVariable("NATIVUNE_TEST_STARTUP_KEY");
+        if (!string.IsNullOrEmpty(overrideKey))
+        {
+            if (!overrideKey.StartsWith(@"Software\Nativune\Test\", StringComparison.OrdinalIgnoreCase)
+                || overrideKey.Contains(".."))
+            {
+                throw new SetupException(ExitCode.Usage, @"NATIVUNE_TEST_STARTUP_KEY must start with Software\Nativune\Test\.");
+            }
+            var baseKey = overrideKey.TrimEnd('\\');
+            return (baseKey + @"\Run", baseKey + @"\StartupApproved\Run");
+        }
+#endif
+        return noShell ? null : (RunKeyPath, ApprovedKeyPath);
+    }
+
+    internal static StartupEntrySnapshot Capture((string Run, string Approved) keys) =>
+        new(ReadValue(keys.Run), ReadValue(keys.Approved));
+
+    internal static void Remove((string Run, string Approved) keys, string root)
+    {
+        try
+        {
+            using var run = Registry.CurrentUser.OpenSubKey(keys.Run, writable: true);
+            var command = run?.GetValue(ValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
+            if (run is null || !PointsInside(command, root))
+            {
+                return;
+            }
+            run.DeleteValue(ValueName, throwOnMissingValue: false);
+            using var approved = Registry.CurrentUser.OpenSubKey(keys.Approved, writable: true);
+            approved?.DeleteValue(ValueName, throwOnMissingValue: false);
+        }
+        catch (Exception error)
+        {
+            throw new SetupException(ExitCode.ShellFailure, "The Start with Windows entry could not be removed.", error);
+        }
+    }
+
+    internal static void Restore((string Run, string Approved) keys, StartupEntrySnapshot state)
+    {
+        RestoreValue(keys.Run, state.Run);
+        RestoreValue(keys.Approved, state.Approved);
+    }
+
+    internal static bool PointsInside(string? command, string root)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return false;
+        var text = command.Trim();
+        string exe;
+        if (text.StartsWith('"'))
+        {
+            var end = text.IndexOf('"', 1);
+            if (end <= 1) return false;
+            exe = text[1..end];
+        }
+        else
+        {
+            var space = text.IndexOf(' ');
+            exe = space < 0 ? text : text[..space];
+        }
+        try
+        {
+            var full = Path.GetFullPath(exe);
+            var rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            return full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static (object Value, RegistryValueKind Kind)? ReadValue(string keyPath)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(keyPath, writable: false);
+        var value = key?.GetValue(ValueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        return value is null ? null : (value, key!.GetValueKind(ValueName));
+    }
+
+    private static void RestoreValue(string keyPath, (object Value, RegistryValueKind Kind)? value)
+    {
+        if (value is null)
+        {
+            using var existing = Registry.CurrentUser.OpenSubKey(keyPath, writable: true);
+            existing?.DeleteValue(ValueName, throwOnMissingValue: false);
+            return;
+        }
+        using var key = Registry.CurrentUser.CreateSubKey(keyPath, writable: true)
+            ?? throw new UnauthorizedAccessException("Could not restore the Start with Windows entry.");
+        key.SetValue(ValueName, value.Value.Value, value.Value.Kind);
     }
 }
 

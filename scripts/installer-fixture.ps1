@@ -390,6 +390,84 @@ try {
             stepOrderChecked = ($scenario.ExpectedExitCode -eq 0)
         })
     }
+
+    # Uninstall removes only a Start-with-Windows entry that points into the install root.
+    # The test-hook build redirects both registry keys under a unique HKCU test subkey.
+    $startupKey = "Software\Nativune\Test\installer-fixture-$([guid]::NewGuid().ToString('N'))"
+    $startupCases = @(
+        [pscustomobject]@{ Name = 'uninstall-startup-inside-root'; Target = (Join-Path $fixtureRoot 'app\Nativune.exe'); ExpectRemoved = $true },
+        [pscustomobject]@{ Name = 'uninstall-startup-outside-root'; Target = (Join-Path $workRoot 'elsewhere\Nativune.exe'); ExpectRemoved = $false }
+    )
+    $env:NATIVUNE_TEST_STARTUP_KEY = $startupKey
+    try {
+        foreach ($case in $startupCases) {
+            Remove-ProjectDirectory $fixtureRoot $fixtureRoot
+            $installArguments = @('--silent', '--test-no-shell', '--no-launch', '--test-prerequisites', 'present', '--install-dir', $fixtureRoot)
+            $installRun = Invoke-Setup $testSetupPath $installArguments
+            if ($installRun.ExitCode -ne 0) {
+                throw "$($case.Name) install returned exit code $($installRun.ExitCode). stderr: $($installRun.Stderr.Trim())"
+            }
+            $runKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$startupKey\Run")
+            $approvedKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("$startupKey\StartupApproved\Run")
+            try {
+                $runKey.SetValue('Nativune', "`"$($case.Target)`" web --root `"$fixtureRoot`" --autostart", [Microsoft.Win32.RegistryValueKind]::String)
+                $approvedKey.SetValue('Nativune', [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), [Microsoft.Win32.RegistryValueKind]::Binary)
+            }
+            finally {
+                $runKey.Dispose()
+                $approvedKey.Dispose()
+            }
+            $uninstallArguments = @('--uninstall', '--silent', '--test-no-shell', '--install-dir', $fixtureRoot)
+            $uninstallRun = Invoke-Setup $testSetupPath $uninstallArguments
+            if ($uninstallRun.ExitCode -ne 0) {
+                throw "$($case.Name) uninstall returned exit code $($uninstallRun.ExitCode). stderr: $($uninstallRun.Stderr.Trim())"
+            }
+            if (Test-Path -LiteralPath (Join-Path $fixtureRoot 'release-manifest.json')) {
+                throw "$($case.Name) uninstall left the manifest behind."
+            }
+            $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$startupKey\Run")
+            $approvedKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$startupKey\StartupApproved\Run")
+            try {
+                $runPresent = $null -ne $runKey -and $null -ne $runKey.GetValue('Nativune')
+                $approvedPresent = $null -ne $approvedKey -and $null -ne $approvedKey.GetValue('Nativune')
+            }
+            finally {
+                if ($null -ne $runKey) { $runKey.Dispose() }
+                if ($null -ne $approvedKey) { $approvedKey.Dispose() }
+            }
+            if ($case.ExpectRemoved -and ($runPresent -or $approvedPresent)) {
+                throw "$($case.Name) did not remove the Run and StartupApproved values."
+            }
+            if (-not $case.ExpectRemoved -and -not ($runPresent -and $approvedPresent)) {
+                throw "$($case.Name) removed a startup entry that points outside the install root."
+            }
+            $scenarioReports.Add([ordered]@{
+                name = $case.Name
+                command = $uninstallRun.Command
+                arguments = $uninstallArguments
+                exitCode = $uninstallRun.ExitCode
+                expectedExitCode = 0
+                runValueTarget = $case.Target
+                expectRemoved = $case.ExpectRemoved
+                runValuePresentAfter = $runPresent
+                startupApprovedPresentAfter = $approvedPresent
+                stdout = @($uninstallRun.Stdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+                stderr = @($uninstallRun.Stderr -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+            })
+            [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($startupKey, $false)
+        }
+    }
+    finally {
+        Remove-Item Env:NATIVUNE_TEST_STARTUP_KEY -ErrorAction SilentlyContinue
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($startupKey, $false)
+        foreach ($parentPath in @('Software\Nativune\Test', 'Software\Nativune')) {
+            $parent = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($parentPath)
+            if ($null -eq $parent) { continue }
+            try { $empty = $parent.SubKeyCount -eq 0 -and $parent.ValueCount -eq 0 } finally { $parent.Dispose() }
+            if (-not $empty) { break }
+            [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($parentPath, $false)
+        }
+    }
     $report.status = 'passed'
 }
 catch {
