@@ -255,6 +255,14 @@ function Get-InstallerSourceFingerprint([string] $SdkVersion, [string[]] $Publis
             $files.Add((Get-Item -LiteralPath $path -Force))
         }
     }
+    # Project inputs outside src/Nativune.Installer (for example the ApplicationIcon under assets/) are
+    # referenced with ..\ paths in the project file; a change to any of them must force a fresh Setup build.
+    $projectText = [IO.File]::ReadAllText((Join-Path $installerRoot 'Nativune.Installer.csproj'))
+    foreach ($match in [regex]::Matches($projectText, '\.\.[\\/][^<>";]+')) {
+        $path = Resolve-RepositoryPath ([IO.Path]::GetFullPath((Join-Path $installerRoot $match.Value.Trim())))
+        Assert-RegularFile $path "Installer project input $($match.Value)"
+        $files.Add((Get-Item -LiteralPath $path -Force))
+    }
     foreach ($item in $files) {
         $relative = Relative-ForwardPath $repository $item.FullName
         $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
