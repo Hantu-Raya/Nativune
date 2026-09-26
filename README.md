@@ -4,9 +4,9 @@ Nativune is an unofficial, native Windows desktop app for YouTube Music, built w
 
 Nativune is for Windows users who want YouTube Music in its own desktop window with native controls, rather than in a browser tab or an Electron-based client. It uses the shared WebView2 runtime that Windows already provides instead of bundling its own copy of Chromium. It does not download media or use a private playback API, and it blocks ads only if you turn that on yourself (off by default).
 
-![Nativune full window with the native toolbar above YouTube Music's player page, showing Viva La Vida by Coldplay with its cover and the Up next queue (signed out)](assets/screenshots/nativune-full-view.png)
+![Nativune full window: the native toolbar, which is also the title bar, above YouTube Music's player page, showing Viva La Vida by Coldplay paused, with its cover and the Up next queue (signed out)](assets/screenshots/nativune-full-view.png)
 
-![Nativune Compact mini player at 800 × 180: the album cover on a CD with a hole in the middle, the track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
+![Nativune Compact mini player at 800 × 180: the album cover on a CD with a hole in the middle, the centered track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
 
 ## Notice
 
