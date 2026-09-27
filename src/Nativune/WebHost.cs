@@ -231,6 +231,7 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyoutItem _previousItem = null!;
     private MenuFlyoutItem _nextItem = null!;
     private ToggleMenuFlyoutItem _shortcutsItem = null!;
+    private ToggleMenuFlyoutItem _discordPresenceItem = null!;
     private MenuFlyoutSubItem _playbackSubItem = null!;
     private MenuFlyoutSubItem _zoomSubItem = null!;
     private MenuFlyoutItem _zoomInItem = null!;
@@ -243,6 +244,7 @@ public sealed partial class WebHostWindow : Window
     private readonly AutostartMode? _autostartMode;
     private MenuFlyoutItem _statusDetailsItem = null!;
     private MenuFlyoutItem _settingsItem = null!;
+    private MenuFlyoutItem _discordSettingsItem = null!;
     private MenuFlyoutItem _quitItem = null!;
     private MenuFlyoutItem _versionItem = null!;
 
@@ -297,6 +299,7 @@ public sealed partial class WebHostWindow : Window
         WireSurface();
         InitializeOutputAudio();
         InitializeCompactSurface();
+        InitializeDiscordPresence();
         ApplyAppearance();
         CompactButton.Click += (_, _) => ToggleCompact();
         TitleDragRegion.SizeChanged += (_, _) => ApplyFullTitleBar();
@@ -372,7 +375,7 @@ public sealed partial class WebHostWindow : Window
             UpdateInfoBar.Message = $"{UpdateInfoBar.Message} Nativune now starts when you sign in to Windows. {hint}".TrimStart();
         else
             ShowUpdateInfo(InfoBarSeverity.Informational, "Nativune now starts when you sign in to Windows",
-                hint, "Settings", ShowSettings, true);
+                hint, "Settings", () => ShowSettings(), true);
     }
 
     private void OnClosed(object sender, WindowEventArgs args)
@@ -450,6 +453,10 @@ public sealed partial class WebHostWindow : Window
         _playPauseItem = CreatePlayerItem("Play or pause", "toggle", "play-pause");
         _previousItem = CreatePlayerItem("Previous item", "previous", "previous");
         _nextItem = CreatePlayerItem("Next item", "next", "next");
+        _discordPresenceItem = CreateToggleItem("Show what I'm playing on Discord", "discord",
+            SetDiscordEnabled);
+        _discordSettingsItem = CreateMenuItem("Discord settings…", "settings",
+            () => ShowSettings(discordPage: true));
         _shortcutsItem = CreateToggleItem("Session playback shortcuts", "settings", value => SetShortcutsEnabled(value));
         _playbackSubItem = new MenuFlyoutSubItem { Text = "Playback", Icon = _iconCache.CreateElement("play-pause", 16) };
         AutomationProperties.SetName(_playbackSubItem, "Playback");
@@ -468,7 +475,7 @@ public sealed partial class WebHostWindow : Window
         _setTimerItem = CreateMenuItem("Set pause timer", "quit-timer", SetPauseTimer);
         _cancelTimerItem = CreateMenuItem("Cancel pause timer", "cancel-timer", CancelPauseTimer);
         _statusDetailsItem = CreateMenuItem("Application status", "status", ShowStatusDetails);
-        _settingsItem = CreateMenuItem("Settings…", "settings", ShowSettings);
+        _settingsItem = CreateMenuItem("Settings…", "settings", () => ShowSettings());
         _quitItem = CreateMenuItem("Quit Nativune", "quit", () => _ = ShutdownAsync());
         _versionItem = new MenuFlyoutItem
         {
@@ -479,11 +486,12 @@ public sealed partial class WebHostWindow : Window
 
         AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(),
             _playbackSubItem, _fullscreenItem, _topmostItem, _zoomSubItem, new MenuFlyoutSeparator(),
-            _settingsItem, _statusDetailsItem,
+            _discordPresenceItem, _discordSettingsItem, _settingsItem, _statusDetailsItem,
             new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
         TimerButton.Flyout = _timerFlyout;
+        RefreshDiscordSurfaces();
         _retryItem.IsEnabled = false;
         _statusDetailsItem.IsEnabled = true;
     }
@@ -525,6 +533,8 @@ public sealed partial class WebHostWindow : Window
         BackButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoBack == true) _browserHost.Core.GoBack(); };
         ForwardButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _browserHost.Core.GoForward(); };
         HomeButton.Click += (_, _) => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); };
+        DiscordButton.Click += (_, _) => SetDiscordEnabled(!_settings.Discord.Enabled);
+        DiscordSettingsContextItem.Click += (_, _) => ShowSettings(discordPage: true);
         UpdateButton.Click += (_, _) => OnUpdateButtonClick();
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
@@ -555,11 +565,13 @@ public sealed partial class WebHostWindow : Window
     private void SetButtonIcons()
     {
         BackButton.Content = _iconCache.CreateElement("back", 20);
+        DiscordButton.Content = _iconCache.CreateElement("discord", 20);
         ForwardButton.Content = _iconCache.CreateElement("forward", 20);
         HomeButton.Content = _iconCache.CreateElement("home", 20);
         MoreButton.Content = _iconCache.CreateElement("overflow", 20);
         SetTimerButtonContent(TimerBadge);
         CompactButton.Content = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 20);
+        RefreshDiscordSurfaces();
         SetReleaseUpdateButtonState(
             _releaseUpdateButtonState, _availableReleaseUpdate?.Version);
     }
@@ -578,6 +590,8 @@ public sealed partial class WebHostWindow : Window
         _topmostItem.Icon = _iconCache.CreateElement("pin", 16);
         _setTimerItem.Icon = _iconCache.CreateElement("quit-timer", 16);
         _cancelTimerItem.Icon = _iconCache.CreateElement("cancel-timer", 16);
+        _discordPresenceItem.Icon = _iconCache.CreateElement("discord", 16);
+        _discordSettingsItem.Icon = _iconCache.CreateElement("settings", 16);
         _statusDetailsItem.Icon = _iconCache.CreateElement("status", 16);
         _settingsItem.Icon = _iconCache.CreateElement("settings", 16);
         _quitItem.Icon = _iconCache.CreateElement("quit", 16);
@@ -773,6 +787,9 @@ public sealed partial class WebHostWindow : Window
             var runtimeDirectory = ResolveRuntimeDirectory(_root);
             var browserArguments = BrowserArguments(_settings.SleepInBackground);
             BenchStart(ref browserArguments);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            DiscordFixtureBrowserArguments(ref browserArguments);
+#endif
             var options = new CoreWebView2EnvironmentOptions
             {
                 AreBrowserExtensionsEnabled = true,
@@ -822,6 +839,9 @@ public sealed partial class WebHostWindow : Window
             core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            InstallDiscordFixturePage(core);
+#endif
             host.ZoomFactor = _settings.Zoom;
             // WebView2 paints white before its first frame; match the canvas so revealing it never flashes.
             if (WebViewSlot.Background is SolidColorBrush canvas)
@@ -965,6 +985,8 @@ public sealed partial class WebHostWindow : Window
             return;
         }
         InvalidateCompactState();
+        // A main-frame navigation replaces the document (account pages included).
+        InvalidateDiscord();
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
@@ -1084,6 +1106,7 @@ public sealed partial class WebHostWindow : Window
                 try { _browserHost?.SetVisible(false); } catch (Exception) { }
                 _playerControls?.Invalidate();
                 InvalidateCompactState();
+                InvalidateDiscord();
                 _browserFailed = true;
                 ExitCode = 1;
                 UpdateNavigation();
@@ -1092,6 +1115,7 @@ public sealed partial class WebHostWindow : Window
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
                 InvalidateCompactState();
+                InvalidateDiscord();
                 if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
                 {
                     SetStatus("The page stopped again. Use Retry, or close and relaunch the app.", isError: true);
@@ -1355,7 +1379,7 @@ public sealed partial class WebHostWindow : Window
         _ = ExecutePlayerCommandAsync("pause");
     }
 
-    private void ShowSettings()
+    private void ShowSettings(bool discordPage = false)
     {
         if (_closing || _disposed || _settingsDialogOpen) return;
         _settingsDialogOpen = true;
@@ -1374,8 +1398,23 @@ public sealed partial class WebHostWindow : Window
             _shortcutsItem.IsChecked = _shortcutsEnabled;
             return applied ? null : error;
         }, installed, startupState, () => _statusDetailsText, _root);
+        dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
+        if (discordPage)
+            dialog.SelectDiscordPage();
         _settingsDialog = dialog;
         _ = ShowSettingsAsync(dialog);
+    }
+
+    private void SetDiscordEnabled(bool enabled)
+    {
+        if (_closing || _disposed) return;
+        if (_settings.Discord.Enabled != enabled)
+        {
+            _settings = _settings with { Discord = _settings.Discord with { Enabled = enabled } };
+            ApplyDiscordOptions(_settings.Discord);
+            CaptureSettings();
+        }
+        RefreshDiscordSurfaces();
     }
 
     private async Task ShowSettingsAsync(SettingsDialog dialog)
@@ -1397,8 +1436,11 @@ public sealed partial class WebHostWindow : Window
                     AutoCheckUpdates = dialog.Result.AutoCheckUpdates,
                     BlockAds = dialog.Result.BlockAds,
                     AutostartMode = dialog.Result.AutostartMode,
-                    RestoreSection = dialog.Result.RestoreSection
+                    RestoreSection = dialog.Result.RestoreSection,
+                    Discord = dialog.Result.Discord
                 };
+                ApplyDiscordOptions(_settings.Discord);
+                RefreshDiscordSurfaces();
                 if (restoreChanged)
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
@@ -1867,13 +1909,15 @@ public sealed partial class WebHostWindow : Window
     {
         CaptureCompactGeometry();
         var bounds = _compact ? _fullBounds : _fullscreen ? _windowBounds : GetAppBounds();
-        if (!HasPositiveSize(bounds)) return;
-        _settings = _settings with
+        if (HasPositiveSize(bounds))
         {
-            X = bounds.X, Y = bounds.Y, Width = bounds.Width, Height = bounds.Height,
-            Dpi = _compact ? _fullDpi : CurrentDpi(),
-            Maximized = _compact ? _fullMaximized : _fullscreen ? _windowMaximized : _presenter?.State == OverlappedPresenterState.Maximized
-        };
+            _settings = _settings with
+            {
+                X = bounds.X, Y = bounds.Y, Width = bounds.Width, Height = bounds.Height,
+                Dpi = _compact ? _fullDpi : CurrentDpi(),
+                Maximized = _compact ? _fullMaximized : _fullscreen ? _windowMaximized : _presenter?.State == OverlappedPresenterState.Maximized
+            };
+        }
         _pendingSettings = _settings;
         if (_saveTask.IsCompleted) _saveTask = SaveSettingsAsync();
     }
@@ -1890,6 +1934,29 @@ public sealed partial class WebHostWindow : Window
                 _settingsWarning = "Settings could not be saved. Changes apply to this session only.";
                 SetStatus(_settingsWarning, true);
             }
+        }
+    }
+
+    // WM_POWERBROADCAST. Also driven by the Discord fixture's command-power-* hooks in test-hook builds.
+    private void HandlePowerEvent(long powerEvent)
+    {
+        if (powerEvent == PbtApmsuspend)
+        {
+            _playerSuspended = true;
+            InvalidateDiscord(keepItem: true);
+        }
+        else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
+        {
+            _playerSuspended = false;
+            _sleep?.CheckOnResume();
+            // The check timer doesn't count sleep time; run a check that came due while asleep.
+            ConfigureAutomaticReleaseUpdateChecks();
+        }
+        if (powerEvent is PbtApmsuspend or PbtApmresume or PbtApmresumesuspend)
+        {
+            _playerControls?.Invalidate();
+            RefreshCompactActivity();
+            UpdatePlayerControls();
         }
     }
 
@@ -1940,23 +2007,7 @@ public sealed partial class WebHostWindow : Window
             return true;
         }
         if (message == WmPowerBroadcast)
-        {
-            var powerEvent = wParam.ToInt64();
-            if (powerEvent == PbtApmsuspend) _playerSuspended = true;
-            else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
-            {
-                _playerSuspended = false;
-                _sleep?.CheckOnResume();
-                // The check timer doesn't count sleep time; run a check that came due while asleep.
-                ConfigureAutomaticReleaseUpdateChecks();
-            }
-            if (powerEvent is PbtApmsuspend or PbtApmresume or PbtApmresumesuspend)
-            {
-                _playerControls?.Invalidate();
-                RefreshCompactActivity();
-                UpdatePlayerControls();
-            }
-        }
+            HandlePowerEvent(wParam.ToInt64());
         if (message is WmSettingChange or WmThemeChanged)
             QueueShellAppearanceRefresh();
         if (TaskbarButtonCreated != 0 && message == TaskbarButtonCreated && !_closing && !_disposed)
@@ -2117,6 +2168,8 @@ public sealed partial class WebHostWindow : Window
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
+        // Clear presence while the module can still write (bounded to about 1 s internally).
+        try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
         try { await WaitForInitializationAsync(); }
         catch (Exception ex) { RememberFailure(ex); }

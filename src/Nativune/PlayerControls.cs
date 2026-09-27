@@ -148,7 +148,10 @@ internal sealed class PlayerControls : IDisposable
     // what they already show. Sampled with a null state means the website had no coherent player.
     internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
 
-    internal async Task<CompactRead> ReadCompactStateAsync()
+    internal Task<CompactRead> ReadCompactStateAsync() => ReadPlaybackStateAsync();
+
+    // presenceOnly labels test-hook read diagnostics only; every caller runs the same full read.
+    internal async Task<CompactRead> ReadPlaybackStateAsync(bool presenceOnly = false)
     {
         if (!IsAvailable) return default;
         if (!TryStart("compact-state", out var request, out _)) return default;
@@ -156,9 +159,23 @@ internal sealed class PlayerControls : IDisposable
         {
             var script = CompactPlayback.BuildScript("state", null, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(presenceOnly ? "Presence" : "Compact", script.Length);
+            var diagnosticValid = false;
+            try
+            {
+#endif
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !OwnsDocument(request)) return default;
-            return new CompactRead(true, CompactPlayback.TryParseState(json, out var state) ? state : null);
+            var parsed = CompactPlayback.TryParseState(json, out var state);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            diagnosticValid = parsed && state is not null;
+#endif
+            return new CompactRead(true, parsed ? state : null);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            }
+            finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(diagnosticId, diagnosticValid); }
+#endif
         }
         finally { CompleteRequest(request); }
     }

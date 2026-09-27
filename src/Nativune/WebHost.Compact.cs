@@ -10,10 +10,12 @@ public sealed partial class WebHostWindow
         "Website playback controls are not ready. Compact controls will stay unavailable until they load; use Return to full to continue browsing.";
     private const string CompactReadinessCheckingStatus =
         "Checking the website playback controls before opening Compact.";
-    private DispatcherQueueTimer _compactReadTimer = null!;
+    private DispatcherQueueTimer _playbackReadTimer = null!;
     private bool _compactActivity;
-    private bool _compactReadPending;
+    private bool _playbackReadPending;
     private int _compactGeneration;
+    // Last shared playback read (Compact or presence). Name kept for WebHost.cs, which zeroes it
+    // after a user command so the next tick reads the command's result.
     private long _lastCompactReadAt = -1000;
     private CompactPlaybackState? _compactState;
     private bool _compactReadinessProbePending;
@@ -24,26 +26,69 @@ public sealed partial class WebHostWindow
     // item-bound actions stay safe meanwhile because the page script re-checks the item identity.
     private const long CompactHoldMs = 8000;
     private long _compactUnavailableSince = -1;
+    // Discord presence shares the Compact read path; its hold is tracked separately so Compact
+    // invalidation (deactivate, hide) does not clear presence.
+    private const long PresenceReadIntervalMs = 5000;
+    private long _presenceUnavailableSince = -1;
+    private bool _presenceHasState;
+    private int _presenceGeneration;
 
     private bool CompactActive => _compact && _appWindow?.IsVisible == true
         && _presenter?.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized
         && !_closing && !_disposed && !_playerSuspended;
 
+    private bool PresenceReadActive => _discord?.NeedsSnapshot == true
+        && !_closing && !_disposed && !_playerSuspended;
+
+    // Which consumer needs the shared playback reader (sets cadence and delivery; every demand runs
+    // the same full read). Compact takes precedence and also feeds presence: one read per tick.
+    private enum ReaderDemand { None, Presence, Compact }
+
+    private ReaderDemand CurrentReaderDemand => CompactActive ? ReaderDemand.Compact
+        : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
+
+    private static long ReadIntervalMs(ReaderDemand demand)
+        => demand == ReaderDemand.Compact ? 1000 : PresenceReadIntervalMs;
+
+    // Starts/stops the shared read timer: 1 s while Compact is active, else 5 s for presence.
+    private void RefreshSharedReader()
+    {
+        if (_playbackReadTimer is null) return;
+        var demand = CurrentReaderDemand;
+        if (!PresenceReadActive && (_presenceHasState || _presenceUnavailableSince >= 0))
+        {
+            _presenceUnavailableSince = -1;
+            _presenceHasState = false;
+        }
+        if (demand == ReaderDemand.None)
+        {
+            _playbackReadTimer.Stop();
+            return;
+        }
+        var interval = TimeSpan.FromMilliseconds(ReadIntervalMs(demand));
+        if (_playbackReadTimer.Interval != interval) _playbackReadTimer.Interval = interval;
+        if (!_playbackReadTimer.IsRunning)
+        {
+            _playbackReadTimer.Start();
+            if (demand == ReaderDemand.Presence) _ = ReadPlaybackStateAsync();
+        }
+    }
+
     private void InitializeCompactSurface()
     {
-        _compactReadTimer = _dispatcherQueue.CreateTimer();
-        _compactReadTimer.Interval = TimeSpan.FromSeconds(1);
-        _compactReadTimer.IsRepeating = true;
-        _compactReadTimer.Tick += async (_, _) =>
+        _playbackReadTimer = _dispatcherQueue.CreateTimer();
+        _playbackReadTimer.Interval = TimeSpan.FromSeconds(1);
+        _playbackReadTimer.IsRepeating = true;
+        _playbackReadTimer.Tick += async (_, _) =>
         {
             UpdateCompactTimer();
-            await ReadCompactStateAsync();
+            await ReadPlaybackStateAsync();
         };
 
         CompactView.CommandRequested += (command, value) => _ = ExecuteCompactCommandAsync(command, value);
         CompactView.ReturnToFullRequested += () => SetCompact(false);
         CompactView.UpdateRequested += OnUpdateButtonClick;
-        CompactView.SettingsRequested += ShowSettings;
+        CompactView.SettingsRequested += () => ShowSettings();
         CompactView.WhatsNewRequested += () =>
         {
             if (_pendingWhatsNewVersion is { } version)
@@ -133,16 +178,17 @@ public sealed partial class WebHostWindow
     private void RefreshCompactActivity()
     {
         var active = CompactActive;
-        if (_compactActivity == active) return;
+        if (_compactActivity == active)
+        {
+            RefreshSharedReader();
+            return;
+        }
         _compactActivity = active;
-        _compactReadTimer?.Stop();
+        _playbackReadTimer?.Stop();
         InvalidateCompactState();
         CompactView.SetActive(active);
-        if (active)
-        {
-            _compactReadTimer!.Start();
-            _ = ReadCompactStateAsync();
-        }
+        RefreshSharedReader();
+        if (active) _ = ReadPlaybackStateAsync();
     }
 
     private void InvalidateCompactState()
@@ -169,48 +215,95 @@ public sealed partial class WebHostWindow
         else if (now - _compactUnavailableSince >= CompactHoldMs) InvalidateCompactState();
     }
 
-    private async Task ReadCompactStateAsync()
+    private void HoldOrDropPresenceState()
     {
-        if (!CompactActive) return;
+        if (!_presenceHasState) return;
+        var now = Environment.TickCount64;
+        if (_presenceUnavailableSince < 0) _presenceUnavailableSince = now;
+        // A read gap (no coherent player for the hold window) clears the card but keeps the song's pause deadline,
+        // so intermittent read failures cannot restart an expired pause. Navigation and crashes still forget fully.
+        else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord(keepItem: true);
+    }
+
+    // One shared full read per tick. The captured compact flag decides whether the result also
+    // reaches Compact UI; presence-only demand delivers to presence alone.
+    private async Task ReadPlaybackStateAsync()
+    {
+        var demand = CurrentReaderDemand;
+        if (demand == ReaderDemand.None) return;
+        var compact = demand == ReaderDemand.Compact;
         // A user command owns the page; the next tick reads its result.
-        if (_compactReadPending || _playerBusy || Environment.TickCount64 - _lastCompactReadAt < 1000) return;
+        if (_playbackReadPending || _playerBusy
+            || Environment.TickCount64 - _lastCompactReadAt < ReadIntervalMs(demand)) return;
         var controls = _playerControls;
         if (controls?.IsAvailable != true)
+        {
+            if (compact) HoldOrDropCompactState();
+            if (PresenceReadActive) HoldOrDropPresenceState();
+            return;
+        }
+        _playbackReadPending = true;
+        _lastCompactReadAt = Environment.TickCount64;
+        var generation = _compactGeneration;
+        var presenceGeneration = _presenceGeneration;
+        var presenceEpoch = _discord?.ConnectionEpoch ?? 0;
+        try
+        {
+            var read = await controls.ReadPlaybackStateAsync(presenceOnly: !compact);
+            DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration, presenceEpoch);
+        }
+        catch (Exception)
+        {
+            DeliverPlaybackSnapshot(null, compact, generation, presenceGeneration, presenceEpoch);
+        }
+        finally
+        {
+            _playbackReadPending = false;
+        }
+    }
+
+    // Each consumer accepts the result only if its own generation is still current. Reads made
+    // for presence demand alone (compact false) never reach Compact UI. Presence also rejects a
+    // read that started on an earlier Discord connection (checked atomically inside Observe).
+    private void DeliverPlaybackSnapshot(CompactPlaybackState? state, bool compact,
+        int generation, int presenceGeneration, int presenceEpoch)
+    {
+        if (PresenceReadActive && presenceGeneration == _presenceGeneration
+            && presenceEpoch == _discord?.ConnectionEpoch)
+            ApplyPresenceSnapshot(state, presenceEpoch);
+        if (compact && CompactActive && generation == _compactGeneration)
+            ApplyCompactSnapshot(state);
+    }
+
+    // Null means no coherent player (or a failed read): hold briefly, then drop.
+    private void ApplyPresenceSnapshot(CompactPlaybackState? state, int epoch)
+    {
+        if (state is null)
+        {
+            HoldOrDropPresenceState();
+            return;
+        }
+        _presenceUnavailableSince = -1;
+        _presenceHasState = true;
+        ObserveDiscord(state, epoch);
+    }
+
+    private void ApplyCompactSnapshot(CompactPlaybackState? state)
+    {
+        if (state is null)
         {
             HoldOrDropCompactState();
             return;
         }
-        _compactReadPending = true;
-        _lastCompactReadAt = Environment.TickCount64;
-        var generation = _compactGeneration;
-        try
-        {
-            var read = await controls.ReadCompactStateAsync();
-            if (!CompactActive || generation != _compactGeneration) return;
-            if (read.State is not { } state)
-            {
-                HoldOrDropCompactState();
-                return;
-            }
-            _compactUnavailableSince = -1;
-            _compactState = state;
-            _compactStartupPending = false;
-            _compactResumeAfterAccount = false;
-            CompactView.SetPlayback(state);
-            UpdateCompactArtwork(state.ArtworkUrl);
-            if (_statusDetailsText.StartsWith("[!] Error: " + CompactReadinessFallbackStatus,
-                    StringComparison.Ordinal))
-                SetStatus(string.Empty);
-        }
-        catch (Exception)
-        {
-            if (CompactActive && generation == _compactGeneration)
-                HoldOrDropCompactState();
-        }
-        finally
-        {
-            _compactReadPending = false;
-        }
+        _compactUnavailableSince = -1;
+        _compactState = state;
+        _compactStartupPending = false;
+        _compactResumeAfterAccount = false;
+        CompactView.SetPlayback(state);
+        UpdateCompactArtwork(state.ArtworkUrl);
+        if (_statusDetailsText.StartsWith("[!] Error: " + CompactReadinessFallbackStatus,
+                StringComparison.Ordinal))
+            SetStatus(string.Empty);
     }
 
 
@@ -352,7 +445,7 @@ public sealed partial class WebHostWindow
 
     private void DisposeCompactSurface()
     {
-        _compactReadTimer?.Stop();
+        _playbackReadTimer?.Stop();
         _compactArtworkCancellation?.Cancel();
         _compactArtworkCancellation?.Dispose();
         _compactArtworkCancellation = null;

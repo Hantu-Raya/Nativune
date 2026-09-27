@@ -54,6 +54,7 @@ public sealed partial class SettingsDialog : Window
     private bool _saved;
     private bool _closed;
     private bool _closeRequested;
+    private DiscordPresenceStatus _discordStatus = DiscordPresenceStatus.Off;
 
     internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings,
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
@@ -93,6 +94,7 @@ public sealed partial class SettingsDialog : Window
         CopyStatusButton.Click += (_, _) => CopyStatus();
         StartWithWindows = startupState is StartupEntryState.On or StartupEntryState.DisabledByUser;
         InitializeUpdatesAndStartup(initial);
+        InitializeDiscord(initial);
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -325,6 +327,8 @@ public sealed partial class SettingsDialog : Window
             TrayEnabled = TrayEnabledCheckBox.IsChecked == true,
             RestoreSection = RestoreSectionCheckBox.IsChecked == true,
             AutostartMode = SelectedAutostartMode(),
+            Discord = new DiscordPresenceOptions(DiscordPresenceCheckBox.IsChecked == true,
+                SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true),
             Shortcuts = bindings
         };
         (StartWithWindows, StartupChange) = ResolveStartupChange();
@@ -435,6 +439,69 @@ public sealed partial class SettingsDialog : Window
         return mode == AutostartMode.Tray && TrayEnabledCheckBox.IsChecked != true ? AutostartMode.Full : mode;
     }
 
+    private void InitializeDiscord(ShellSettings initial)
+    {
+        DiscordPresenceCheckBox.IsChecked = initial.Discord.Enabled;
+        DiscordStatusLineComboBox.SelectedIndex = (int)(Enum.IsDefined(initial.Discord.StatusLine)
+            ? initial.Discord.StatusLine : DiscordStatusLine.Artist);
+        DiscordOpenButtonCheckBox.IsChecked = initial.Discord.ShowOpenButton;
+        _discordStatus = initial.Discord.Enabled ? DiscordPresenceStatus.Connecting : DiscordPresenceStatus.Off;
+        UpdateDiscordControls(announce: false);
+        DiscordPresenceCheckBox.Checked += (_, _) => UpdateDiscordControls(announce: true);
+        DiscordPresenceCheckBox.Unchecked += (_, _) => UpdateDiscordControls(announce: true);
+    }
+
+    internal void SelectDiscordPage() => Nav.SelectedItem = DiscordNavItem;
+
+    // Called by the owner with the live presence state; the text never contains track data.
+    internal void SetDiscordStatus(DiscordPresenceStatus status)
+    {
+        if (_discordStatus == status)
+            return;
+        _discordStatus = status;
+        UpdateDiscordControls(announce: true);
+    }
+
+    private void UpdateDiscordControls(bool announce)
+    {
+        var on = DiscordPresenceCheckBox.IsChecked == true;
+        DiscordStatusLineComboBox.IsEnabled = on;
+        DiscordOpenButtonCheckBox.IsEnabled = on;
+        var text = on == _initial.Discord.Enabled
+            ? DiscordStatusMessage(_discordStatus)
+            : on ? "Turns on after Save" : "Turns off after Save";
+        if (DiscordStatusText.Text == text)
+            return;
+        DiscordStatusText.Text = text;
+        AutomationProperties.SetName(DiscordStatusText, text.Length == 0 ? "Discord connection status" : text);
+        if (announce && FrameworkElementAutomationPeer.FromElement(DiscordStatusText) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    private static string DiscordStatusMessage(DiscordPresenceStatus status) => status switch
+    {
+        DiscordPresenceStatus.Unavailable => "Not available in this build.",
+        DiscordPresenceStatus.Connecting => "Connecting to Discord...",
+        DiscordPresenceStatus.Connected => "Connected to Discord.",
+        DiscordPresenceStatus.DiscordAbsent => "Discord isn't running. Nativune will connect when it starts.",
+        DiscordPresenceStatus.Error => "Couldn't update Discord. Playback is unaffected.",
+        _ => string.Empty
+    };
+
+    private static string DiscordStatusCopyName(DiscordPresenceStatus status) => status switch
+    {
+        DiscordPresenceStatus.Unavailable => "unavailable",
+        DiscordPresenceStatus.Connecting => "connecting",
+        DiscordPresenceStatus.Connected => "connected",
+        DiscordPresenceStatus.DiscordAbsent => "not running",
+        DiscordPresenceStatus.Error => "error",
+        _ => "off"
+    };
+
+    private DiscordStatusLine SelectedDiscordStatusLine()
+        => DiscordStatusLineComboBox.SelectedIndex is >= 0 and <= 2
+            ? (DiscordStatusLine)DiscordStatusLineComboBox.SelectedIndex : DiscordStatusLine.Artist;
+
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         var tag = (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "General";
@@ -442,6 +509,7 @@ public sealed partial class SettingsDialog : Window
         StartupPage.Visibility = tag == "Startup" ? Visibility.Visible : Visibility.Collapsed;
         ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
+        DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
         AboutPage.Visibility = tag == "About" ? Visibility.Visible : Visibility.Collapsed;
         RestoreButton.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PageScroller.ChangeView(null, 0, null, disableAnimation: true);
@@ -454,7 +522,7 @@ public sealed partial class SettingsDialog : Window
         try
         {
             var package = new DataPackage();
-            package.SetText(_statusText());
+            package.SetText(_statusText().TrimEnd() + Environment.NewLine + "Discord: " + DiscordStatusCopyName(_discordStatus));
             Clipboard.SetContent(package);
             CopyStatusResult.Text = "Application status copied.";
         }

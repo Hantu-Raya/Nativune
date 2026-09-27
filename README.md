@@ -12,7 +12,7 @@ Nativune is for Windows users who want YouTube Music in its own desktop window w
 
 Nativune is an unofficial project. It is not affiliated with, endorsed by or sponsored by Google or YouTube. It displays the official YouTube Music website, and playback, ads and account features remain governed by that website and its terms.
 
-YouTube and YouTube Music are trademarks of Google LLC.
+YouTube and YouTube Music are trademarks of Google LLC. Discord and the Discord logo are trademarks of Discord Inc.; Nativune uses the Discord symbol only on its Discord status button, unmodified, as Discord's [brand guidelines](https://discord.com/branding) allow.
 
 ## Project at a glance
 
@@ -77,7 +77,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   ![Tall layout at 480 × 480 with a large CD disc above the title, controls and seek bar](assets/screenshots/compact-layout/tall-480x480.png)
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
-- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer, More (`…`) and the update indicator on the right. The toolbar is also the title bar: minimize, maximize and close sit at its right end, and dragging its empty middle moves the window. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
+- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer and More (`…`), then the Discord status toggle and the update indicator, on the right. The toolbar is also the title bar: minimize, maximize and close sit at its right end, and dragging its empty middle moves the window. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles (**Settings › General › Show tray icon**). While it is enabled, Close hides the window and playback keeps running. Quit always exits.
 - **Start with Windows, on by default.** The first time an installed Nativune starts, it turns on **Settings › Startup › Start Nativune when I sign in to Windows** once and says so; if you turn it off, it stays off. The setting adds a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for this installation. It is available only in installs made with Setup. You choose whether it opens the full window, Compact, or hidden in the tray. Turning it off in Task Manager or **Windows Settings › Apps › Startup** is respected; Nativune never turns it back on. Uninstalling removes the entry.
@@ -88,6 +88,21 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 - **Reduce motion** setting that stops the rotating artwork and scrolling titles in Compact.
 - **uBlock Origin Lite, privacy-only by default.** Only the EasyPrivacy tracker list is enabled, and only on `music.youtube.com`.
 - **Optional ad blocking, off by default.** **Settings › Privacy › Block ads** adds uBlock Origin Lite's ad filters on `music.youtube.com` after a restart. Blocking ads is against YouTube's terms; YouTube may detect it, interrupt playback or warn your account. YouTube Premium removes ads legitimately.
+- **Discord status, optional and off by default.** Nativune can show what you're listening to on your Discord profile, through the Discord desktop app on the same PC.
+
+  ![Discord "Listening to Nativune" card: the song's cover, the title Thinking out Loud, the artist Ed Sheeran, the line "Nativune 0.1.30 · by Hantu-Raya" and a time bar at 0:17 of 4:50](assets/screenshots/discord/discord-status-card.png)
+
+  - **Turn it on or off with one click.** The Discord button at the top right of the toolbar, beside the update indicator, turns the status on (the icon turns Discord blurple) or off (white). The setting is saved right away. You can also use **More › Show what I'm playing on Discord**. The button's tooltip and screen-reader name say whether it is on and whether the Discord app is connected.
+
+    ![The right end of the Nativune toolbar: volume, pause timer and More, then the blurple Discord button (on), the update indicator and the window buttons](assets/screenshots/discord/toolbar-discord-on.png)
+
+  - **More options in Settings › Discord.** Right-click the Discord button and choose **Discord settings…**, or use **More › Discord settings…**, to open Settings directly on the Discord page. There you choose the status line (Artist, Song title or App only) and whether to add an **Open in YouTube Music** button.
+
+    ![Settings › Discord: Show what I'm playing on Discord (on), the disclosure of what is shared, the Status line shows menu set to Artist, and the Open in YouTube Music button option](assets/screenshots/discord/settings-discord.png)
+
+  - **What the card shows:** song title, artist, album art, a time bar while playing, a pause badge while paused (cleared after 10 minutes paused) and a repeat-one badge. Clicking the song title opens that song on YouTube Music, and the optional button does the same; both appear only when Nativune can confirm the playing song's link. Hovering the art shows "Nativune <version> · by Hantu-Raya", and clicking it opens this repository.
+  - The status keeps working while Nativune is hidden in the tray or in Compact, and clears when playback ends, when you turn it off and when you quit.
+  - **Limitations:** the Discord desktop app must be running; it works only with the English site language, like Compact; during an ad the status may briefly show or drop the song; and Discord's own activity privacy settings decide who sees it.
 - **Per-user installer** with SHA-256 checksums. It does not need administrator rights to install Nativune itself.
 - **Update indicator** that checks GitHub Releases and never downloads or installs anything without a click.
 
@@ -111,6 +126,7 @@ The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It instal
 - **Isolated profile.** Cookies and site data stay in Nativune's own WebView2 profile. Nativune does not import cookies from other browsers and does not collect passwords.
 - **Library data stays on screen.** The Compact Playlists menu reads playlist names from the page only when you open it. They are shown in the menu and not stored, sent anywhere or written to the log.
 - **Tracker filtering by default.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are blocked only if you turn on **Block ads**, which adds uBlock Origin Lite's ad lists and page filtering on `music.youtube.com` only. Either way, Nativune checks the extension's configuration before loading Music and stops if it doesn't match.
+- **Discord status is the one exception to "stays on screen".** When you turn on Discord status (the toolbar's Discord button, **More › Show what I'm playing on Discord** or **Settings › Discord**), Nativune sends the current song's public details (title, artist, artwork link and song link) over a local connection to the Discord desktop app, which shows them to people who can see your activity. Discord fetches the artwork from YouTube's image servers. Nativune uses no Discord login, token or account access. Nothing is sent while the setting is off, and Nativune does not log song details.
 - **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Opening the update dialog makes one more anonymous request, for the release notes. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
 
 ## Performance

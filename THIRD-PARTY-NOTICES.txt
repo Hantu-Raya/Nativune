@@ -33,6 +33,13 @@ uBlock Origin Lite 2026.907.2003
   unpacked extension source at .tools/ubol/2026.907.2003/LICENSE.txt
 - Bundled only in the project's configured privacy-only mode.
 
+Discord symbol (the "Clyde" logo)
+- Source: Discord's official brand kit, https://discord.com/branding
+  (white symbol download, Discord-Symbol-White.svg).
+- Trademark of Discord Inc. It is not covered by Nativune's MIT License. It
+  is used unmodified in shape, in white or Blurple (#5865F2) only, as the
+  icon of Nativune's Discord status toggle, as the brand guidelines allow.
+
 The original Nativune native icon set is part of the Nativune source. On
 20 September 2026, the project owner confirmed ownership or permission to
 publicly distribute the ten previously supplied additions and selected the

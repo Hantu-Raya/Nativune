@@ -25,6 +25,7 @@
     "cancel-timer",
     "close",
     "compact",
+    "discord",
     "dislike",
     "dislike-filled",
     "error",
@@ -99,6 +100,13 @@
       "width": 16,
       "height": 16,
       "sha256": "090eb8374393032553c36388933e736c2e04a4b1121bc95a456473aeac223521"
+    },
+    {
+      "path": "16/discord.png",
+      "logicalName": "Nativune.NativeIcons.16.discord.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "43b422ba92d4ab4bb16e1b2f112eeb685083d9d2750fba1bef1de4864881a002"
     },
     {
       "path": "16/dislike.png",
@@ -402,6 +410,13 @@
       "sha256": "1a725d41f115c5ad31dbce15c9daee58af67500308770c8dfa369adc626e272d"
     },
     {
+      "path": "20/discord.png",
+      "logicalName": "Nativune.NativeIcons.20.discord.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "3a654c84ffbab624a446e62357ad8f45213b39183189f59d05f17f0a5eba2e63"
+    },
+    {
       "path": "20/dislike.png",
       "logicalName": "Nativune.NativeIcons.20.dislike.png",
       "width": 20,
@@ -701,6 +716,13 @@
       "width": 24,
       "height": 24,
       "sha256": "21d56fa82770f68bb49bb7e644a738092cbbbd41ff8db69d0476206756101f34"
+    },
+    {
+      "path": "24/discord.png",
+      "logicalName": "Nativune.NativeIcons.24.discord.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "d727d058658a3b66f02c0421899cb449e6df72e533dc377a215f87bf15f4d509"
     },
     {
       "path": "24/dislike.png",
@@ -1004,6 +1026,13 @@
       "sha256": "144bcb1ee736d994a3aad2effb234ebc12fabff2b75155d26aa4ddc5505b60aa"
     },
     {
+      "path": "25/discord.png",
+      "logicalName": "Nativune.NativeIcons.25.discord.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "a922ccfa3c1676d04e79fc9ad371f0fa2a7271653adf58a4abe7da3923c336cd"
+    },
+    {
       "path": "25/dislike.png",
       "logicalName": "Nativune.NativeIcons.25.dislike.png",
       "width": 25,
@@ -1303,6 +1332,13 @@
       "width": 30,
       "height": 30,
       "sha256": "ff1f1911393792afb00467c13984891c91abf00bd3718fb7ccf6cde551603e68"
+    },
+    {
+      "path": "30/discord.png",
+      "logicalName": "Nativune.NativeIcons.30.discord.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "2cc8ccc7acdb03bf68be739bef9fbc173e6a1e9bdef02cfa455287ce677729f5"
     },
     {
       "path": "30/dislike.png",
@@ -1606,6 +1642,13 @@
       "sha256": "7b55293dbc02c335ff19831551ab6a4dab214886f56303a1b49233efbea752a1"
     },
     {
+      "path": "32/discord.png",
+      "logicalName": "Nativune.NativeIcons.32.discord.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "71c0d7d6bab17a689a0fad5baf437517a5b6c2e6e0e65b18b7dec3de88a07827"
+    },
+    {
       "path": "32/dislike.png",
       "logicalName": "Nativune.NativeIcons.32.dislike.png",
       "width": 32,
@@ -1905,6 +1948,13 @@
       "width": 40,
       "height": 40,
       "sha256": "3c5111fa4f08037e57aa8ebb31000307e5c4b9b93d55487de349c036a655a774"
+    },
+    {
+      "path": "40/discord.png",
+      "logicalName": "Nativune.NativeIcons.40.discord.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "a5faffa2287468ef58c542eb08c61ff73ec14e1eaf7e0a892e4875804e8272f9"
     },
     {
       "path": "40/dislike.png",
@@ -2208,6 +2258,13 @@
       "sha256": "46af62d4119fe92fbbe3cd0c3d944e032d273c76d61d5391957c3ecbcf2e521f"
     },
     {
+      "path": "48/discord.png",
+      "logicalName": "Nativune.NativeIcons.48.discord.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "7e4ec64e3f7e525fc297590050691b7189dcc95d366392a9a76f603a7d7b628a"
+    },
+    {
       "path": "48/dislike.png",
       "logicalName": "Nativune.NativeIcons.48.dislike.png",
       "width": 48,
@@ -2507,6 +2564,13 @@
       "width": 64,
       "height": 64,
       "sha256": "48b0685fda8671880878f6acdedaef9a19c6790cf9b39388e46e9658c0e39fc8"
+    },
+    {
+      "path": "64/discord.png",
+      "logicalName": "Nativune.NativeIcons.64.discord.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "527017aea61c64685d16aca611053f5449beba7897cf8184e331ff28217fac8c"
     },
     {
       "path": "64/dislike.png",

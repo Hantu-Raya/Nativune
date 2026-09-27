@@ -309,6 +309,40 @@ internal static class CompactViewChecks
             throw new SelfCheckException("Compact host did not expose a XAML root.");
         phase = "root-layout";
         Prepare(root);
+        var discordButton = FindPart(root, "DiscordButton") as Button;
+        var profileRoot = ReadField(host, "_root") as string
+            ?? throw new SelfCheckException("The host profile root was not available for the Discord toolbar check.");
+        var priorDiscord = ReadField(host, "_discord");
+        var initialDiscordEnabled = ShellSettings.Load(profileRoot, out _).Discord.Enabled;
+        var initialDiscordName = discordButton is null ? null : AutomationProperties.GetName(discordButton);
+        Require(discordButton is not null && (initialDiscordEnabled
+                ? initialDiscordName?.StartsWith("Discord: on, ", StringComparison.Ordinal) == true
+                : initialDiscordName == "Discord: off"),
+            "The Discord toolbar button did not expose its current enabled state to UI Automation.");
+        SetField(host, "_discord", null); // Keep this persistence/UI check from opening a live Discord IPC connection.
+        try
+        {
+            InvokeControl(discordButton!, "Discord Rich Presence");
+            await ((Task)(ReadField(host, "_saveTask")
+                ?? throw new SelfCheckException("The Discord toolbar click did not queue settings persistence.")))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            var enabledDiscord = ShellSettings.Load(profileRoot, out _).Discord.Enabled;
+            Require(enabledDiscord != initialDiscordEnabled
+                && AutomationProperties.GetName(discordButton) == "Discord: on, waiting for the Discord app"
+                && (ReadField(host, "_discordPresenceItem") as ToggleMenuFlyoutItem)?.IsChecked == enabledDiscord,
+                "Clicking the Discord toolbar button did not persist its setting and synchronize More.");
+            InvokeControl(discordButton!, "Discord Rich Presence");
+            await ((Task)(ReadField(host, "_saveTask")
+                ?? throw new SelfCheckException("The Discord toolbar reversal did not queue settings persistence.")))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Require(ShellSettings.Load(profileRoot, out _).Discord.Enabled == initialDiscordEnabled
+                && AutomationProperties.GetName(discordButton!) == "Discord: off",
+                "Clicking the Discord toolbar button again did not persist and announce the original setting.");
+        }
+        finally
+        {
+            SetField(host, "_discord", priorDiscord);
+        }
         var fullMute = FindPart(root, "OutputMuteButton") as Button;
         var fullFlyout = fullMute?.ContextFlyout as Flyout;
         var flyoutSurface = fullFlyout?.Content as FrameworkElement;

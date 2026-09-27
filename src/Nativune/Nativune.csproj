@@ -14,9 +14,11 @@
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <UpdaterTestHooks Condition="'$(UpdaterTestHooks)' == ''">false</UpdaterTestHooks>
     <PerfBenchHooks Condition="'$(PerfBenchHooks)' == ''">false</PerfBenchHooks>
+    <DiscordPresenceTestHooks Condition="'$(DiscordPresenceTestHooks)' == ''">false</DiscordPresenceTestHooks>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <DefineConstants Condition="'$(UpdaterTestHooks)' == 'true'">$(DefineConstants);NATIVUNE_UPDATER_TEST_HOOKS</DefineConstants>
     <DefineConstants Condition="'$(PerfBenchHooks)' == 'true'">$(DefineConstants);NATIVUNE_PERF_BENCH_HOOKS</DefineConstants>
+    <DefineConstants Condition="'$(DiscordPresenceTestHooks)' == 'true'">$(DefineConstants);NATIVUNE_DISCORD_TEST_HOOKS</DefineConstants>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>true</PublishReadyToRun>
@@ -54,6 +56,11 @@
     <Page Include="SettingsDialog.xaml">
       <Generator>MSBuild:Compile</Generator>
     </Page>
+  </ItemGroup>
+
+  <!-- Synthetic Music page for scripts/discord-rpc-e2e.ps1; embedded only in test-hook builds. -->
+  <ItemGroup Condition="'$(DiscordPresenceTestHooks)' == 'true'">
+    <EmbeddedResource Include="DiscordFixturePage.html" LogicalName="Nativune.DiscordFixturePage.html" />
   </ItemGroup>
 
   <ItemGroup>

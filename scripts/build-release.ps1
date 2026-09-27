@@ -505,7 +505,7 @@ try {
     }
     Push-Location $repository
     try {
-        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -p:PerfBenchHooks=false -o $appPublishRoot
+        & $dotnetExecutable publish $appProjectPath -c $Configuration -r win-x64 --no-restore -p:AssemblyName=Nativune -p:Version=$Version -p:DebugType=none -p:DebugSymbols=false -p:UpdaterTestHooks=false -p:PerfBenchHooks=false -p:DiscordPresenceTestHooks=false -o $appPublishRoot
         if ($LASTEXITCODE -ne 0) { throw 'The application publish failed.' }
         Assert-NoBundledAppRuntime $appPublishRoot 'The published Nativune app'
         if (-not $stubReused) {
@@ -525,9 +525,9 @@ try {
     Assert-RegularFile $stubPath 'The published setup stub'
     $stubSha256 = (Get-FileHash -LiteralPath $stubPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($stubReused) { Write-Host "Installer stub: reused $stubSha256" } else { Write-Host "Installer stub: built $stubSha256" }
-    # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/InstallerTestHooks=false above).
+    # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/DiscordPresenceTestHooks/InstallerTestHooks=false above).
     $seamChecks = @(
-        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_') },
+        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_', 'NATIVUNE_TEST_DISCORD', 'nativune-discord-fixture') },
         @{ Path = $stubPath; Markers = @('--test-prerequisites') }
     )
     foreach ($check in $seamChecks) {

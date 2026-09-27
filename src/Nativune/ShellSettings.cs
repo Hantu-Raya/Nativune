@@ -26,6 +26,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public bool BlockAds { get; init; }
     // Launch state for --autostart runs (Settings > Startup). Start-with-Windows itself lives in the registry.
     public AutostartMode AutostartMode { get; init; } = AutostartMode.Tray;
+    // Opt-in Discord Rich Presence (Settings > Discord). Off by default; versions before 7 load off.
+    public DiscordPresenceOptions Discord { get; init; } = DiscordPresenceOptions.Default;
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -38,7 +40,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 6;
+    private const int CurrentVersion = 7;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
     private const int MinDpi = 48;
@@ -82,7 +84,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version is not (1 or 2 or 3 or 4 or 5 or CurrentVersion) || !IsCoreValid(persisted))
+            if (persisted is null || persisted.Version is not (1 or 2 or 3 or 4 or 5 or 6 or CurrentVersion) || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;
@@ -210,7 +212,12 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             OutputMuted = settings.OutputMuted,
             BlockAds = settings.BlockAds,
             AutostartMode = Enum.IsDefined(settings.AutostartMode) ? settings.AutostartMode
-                : DefaultAutostartMode(settings.TrayEnabled)
+                : DefaultAutostartMode(settings.TrayEnabled),
+            Discord = settings.Discord with
+            {
+                StatusLine = Enum.IsDefined(settings.Discord.StatusLine) ? settings.Discord.StatusLine
+                    : DiscordStatusLine.Artist
+            }
         };
     }
 
@@ -272,7 +279,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         int CompactWidth = 800, int CompactHeight = 180, int CompactDpi = DefaultDpi,
         bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
-        AutostartMode? AutostartMode = null)
+        AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
+        bool DiscordOpenButton = true)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -293,7 +301,12 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             OutputMuted = OutputMuted,
             BlockAds = BlockAds,
             // Versions before 6 (and partial writes) get the Q1 default: tray when the tray icon is on.
-            AutostartMode = AutostartMode ?? DefaultAutostartMode(TrayEnabled)
+            AutostartMode = AutostartMode ?? DefaultAutostartMode(TrayEnabled),
+            // Discord sharing is opt-in: anything written before version 7 loads off.
+            Discord = new DiscordPresenceOptions(Version >= CurrentVersion && DiscordPresence,
+                Enum.IsDefined((Nativune.DiscordStatusLine)DiscordStatusLine)
+                    ? (Nativune.DiscordStatusLine)DiscordStatusLine : Nativune.DiscordStatusLine.Artist,
+                DiscordOpenButton)
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -302,6 +315,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
-                settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode);
+                settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
+                settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton);
     }
 }

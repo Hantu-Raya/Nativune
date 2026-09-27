@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="nativune-discord-fixture" content="1">
+<meta name="nativune-discord-bench-profile" content="">
+<title>YouTube Music</title>
+<!--
+  Synthetic YouTube Music page for scripts/discord-rpc-e2e.ps1 (test-hook builds only; served by
+  WebHost.DiscordFixture.cs for https://music.youtube.com/ documents). It mirrors only the public
+  player-bar DOM read by CompactPlayback.cs: one ytmusic-player-bar, exactly one media element,
+  #left-controls transport, span.time-info, tp-yt-paper-slider#progress-bar with #sliderBar,
+  like/dislike/repeat/shuffle buttons, one .title, a byline and loaded artwork from an allowed host.
+  This proves app plumbing and the DOM contract, not that the live site still matches it.
+
+  Deterministic timeline, seconds after page load:
+    0   track A playing: "Fixture Song A" / Fixture Artist, 210 s, position 0,
+        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544, URL /watch?v=fixtureSngA,
+        artist channel/UCfixtureArtist000000001, album canary anchor "AlbumCanaryQ7a" ->
+        browse/MPREb_albumCanaryQ7a (the e2e asserts no album canary text/URL leaves the app),
+        hidden ytmusic-player a.ytp-title-link -> https://music.youtube.com/watch?v=fixtureSngA
+   25   seek track A to 100 s
+   45   pause
+   60   resume
+   65   ad window: .html5-video-player gains class ad-showing, ytp-title-link text "Advertisement"
+        (trackUrl must read null)
+   75   ad window ends: ad-showing removed, ytp-title-link text restored to the current title
+   80   track B playing: "Fixture Song B" / Second Artist, 185 s, position 0,
+        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544 (the SAME URL as track A, so
+        consecutive songs share album art), URL /watch?v=fixtureSngB,
+        artist channel/UCsecondArtist0000000001, album canary "AlbumCanaryQ7b", title link fixtureSngB
+  100   repeat-one on (button label "Repeat one"; stays on for the rest of the page)
+  120   stop: media ended (loop off, currentTime = duration, paused), clock at the end
+  125   track C playing: "Fixture Song C" / Third Artist, 240 s, URL /watch?v=fixtureSngC,
+        artist channel/UCthirdArtist00000000001, album canary "AlbumCanaryQ7c", title link fixtureSngC,
+        artwork https://lh3.googleusercontent.com/fixture-missing=w544-h544 (403 from the fixture
+        server, so it never loads: the card must fall back to large_image "nativune")
+  137   artwork recovers: https://lh3.googleusercontent.com/fixture-b=w544-h544 (loads)
+  147   unproven title link (route still /watch?v=fixtureSngC): link text "Some Other Song"
+  152   link text restored, href invalid candidate https://example.invalid/watch?v=fixtureSngC
+  157   title link element removed from the player
+  162   title link restored (text + href fixtureSngC): song links return
+  172   pause while repeat-one is on ("Paused" badge must win over "Repeat one")
+  182   resume (repeat-one badge again)
+  192   stop: media ended as at 120
+  The fixture clock advances only by the media element's own currentTime progress.
+
+  Benchmark-only steady profiles (bench protocol v2, scripts/discord-rpc-bench.ps1). The native fixture fills
+  the nativune-discord-bench-profile meta content only when NATIVUNE_TEST_DISCORD_BENCH_PROFILE is valid;
+  with the empty default the timeline above runs unchanged.
+    Playing  track A (duration 1800 s) playing from 0, clock progressing, no timeline events
+    Paused   track A (duration 1800 s) paused at 60 s, not ended, clock fixed
+    Empty    no coherent player item: empty title/byline/artwork/title link, media without source
+    ArtGap   track A playing with loaded art; 12 s art becomes unloadable (reader reports no art) while A still
+             plays; 24 s track B starts with track A's (loaded) art URL. B's first card must not show that art.
+             40 s B's art switches to a loadable URL longer than 256 characters (must fall back to 'nativune').
+    SameTitle  track A paused at 60 s with no title link (no proven song link); 12 s a different song with the
+             SAME title (id fixtureSnA2, Second Artist) loads, still paused and still without a title link.
+             Only the route's video id tells them apart; the pause deadline must restart for the new song.
+    ReaderGap  track A paused at 60 s; 5 s the player title empties (no coherent player: the reader returns null,
+             past the 8 s hold the card clears); 32 s the same paused song returns, after its original pause
+             deadline. It must not get a fresh deadline (no card after the gap).
+-->
+<style>
+  html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
+  ytmusic-app, ytmusic-player, ytmusic-player-bar, tp-yt-paper-slider, yt-formatted-string { display: block; }
+  ytmusic-player { width: 320px; height: 180px; }
+  #song-image img { width: 180px; height: 180px; }
+  ytmusic-player-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 72px; display: flex;
+    align-items: center; gap: 12px; padding: 0 12px; background: #212121; }
+  tp-yt-paper-slider { position: absolute; left: 0; right: 0; top: 0; height: 4px; }
+  #sliderBar { height: 4px; background: #555; }
+  #sliderBar > div { height: 4px; background: #f00; width: 0; }
+  .left-controls { display: flex; align-items: center; gap: 4px; }
+  button { min-width: 40px; height: 32px; color: rgb(144, 144, 144); background: transparent; border: 1px solid #444; }
+  .thumbnail { width: 40px; height: 40px; }
+  .middle { flex: 1; min-width: 0; }
+  .byline { color: #aaa; }
+  .byline a { color: inherit; }
+  video { width: 1px; height: 1px; }
+</style>
+</head>
+<body>
+<ytmusic-app>
+  <ytmusic-player id="player"><div id="song-image"><img id="large-art" alt=""></div>
+    <div class="html5-video-player"><a class="ytp-title-link yt-uix-sessionlink" hidden></a></div></ytmusic-player>
+  <ytmusic-player-bar class="style-scope ytmusic-app">
+    <tp-yt-paper-slider id="progress-bar" role="slider" aria-label="Seek slider" aria-valuemin="0" aria-valuemax="210" aria-valuenow="0">
+      <div id="sliderBar" aria-hidden="true"><div id="primaryProgress"></div></div>
+    </tp-yt-paper-slider>
+    <div id="left-controls" class="left-controls style-scope ytmusic-player-bar">
+      <button aria-label="Previous">&#9198;</button>
+      <button id="play-pause-button" aria-label="Pause">&#9208;</button>
+      <button aria-label="Next">&#9197;</button>
+      <span class="time-info style-scope ytmusic-player-bar">0:00 / 3:30</span>
+    </div>
+    <img id="bar-art" class="thumbnail image" alt="">
+    <div class="middle content-info-wrapper">
+      <yt-formatted-string class="title style-scope ytmusic-player-bar"></yt-formatted-string>
+      <span class="byline-wrapper"><span class="subtitle"><yt-formatted-string class="byline complex-string style-scope ytmusic-player-bar"></yt-formatted-string></span></span>
+    </div>
+    <div id="right-controls">
+      <button id="like" aria-label="Like" aria-pressed="false">&#128077;</button>
+      <button id="dislike" aria-label="Dislike" aria-pressed="false">&#128078;</button>
+      <button id="repeat" aria-label="Repeat off">&#128257;</button>
+      <button id="shuffle" aria-label="Shuffle" aria-pressed="false">&#128256;</button>
+    </div>
+  </ytmusic-player-bar>
+  <video id="media" muted loop playsinline></video>
+</ytmusic-app>
+<script>
+(() => {
+  const tracks = {
+    A: { id: 'fixtureSngA', title: 'Fixture Song A', duration: 210,
+      artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCfixtureArtist000000001">Fixture Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7a">AlbumCanaryQ7a</a> \u2022 2026' },
+    B: { id: 'fixtureSngB', title: 'Fixture Song B', duration: 185,
+      artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCsecondArtist0000000001">Second Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7b">AlbumCanaryQ7b</a> \u2022 2026' },
+    C: { id: 'fixtureSngC', title: 'Fixture Song C', duration: 240,
+      artwork: 'https://lh3.googleusercontent.com/fixture-missing=w544-h544',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCthirdArtist00000000001">Third Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7c">AlbumCanaryQ7c</a> \u2022 2026' }
+  };
+  const $ = selector => document.querySelector(selector);
+  const media = $('#media'), slider = $('#progress-bar'), timeInfo = $('.time-info');
+  const playButton = $('#play-pause-button');
+  const videoPlayer = $('ytmusic-player .html5-video-player');
+  const titleLink = $('ytmusic-player a.ytp-title-link');
+  let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
+
+  // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
+  // accumulates its progress, so the page clock only moves while the media element really plays.
+  const silentWav = () => {
+    const rate = 8000, samples = rate * 5, bytes = new Uint8Array(44 + samples);
+    const view = new DataView(bytes.buffer);
+    const ascii = (offset, text) => [...text].forEach((c, i) => bytes[offset + i] = c.charCodeAt(0));
+    ascii(0, 'RIFF'); view.setUint32(4, 36 + samples, true); ascii(8, 'WAVE');
+    ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, rate, true); view.setUint32(28, rate, true); view.setUint16(32, 1, true); view.setUint16(34, 8, true);
+    ascii(36, 'data'); view.setUint32(40, samples, true);
+    bytes.fill(128, 44);
+    return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  };
+
+  const clockText = seconds => {
+    const whole = Math.floor(seconds);
+    return Math.floor(whole / 60) + ':' + String(whole % 60).padStart(2, '0');
+  };
+  const render = () => {
+    const shown = Math.min(Math.max(position, 0), track.duration);
+    slider.setAttribute('aria-valuemax', String(track.duration));
+    slider.setAttribute('aria-valuenow', String(Math.floor(shown)));
+    $('#primaryProgress').style.width = (100 * shown / track.duration) + '%';
+    timeInfo.textContent = clockText(shown) + ' / ' + clockText(track.duration);
+    playButton.setAttribute('aria-label', media.paused ? 'Play' : 'Pause');
+  };
+  const tick = () => {
+    const now = media.currentTime;
+    if (!ended) {
+      let delta = now - lastMediaTime;
+      if (delta < 0 && Number.isFinite(media.duration)) delta += media.duration;
+      if (!media.paused && delta > 0 && delta < 2) position = Math.min(position + delta, track.duration);
+    }
+    lastMediaTime = now;
+    render();
+  };
+  const load = next => {
+    track = next;
+    position = 0;
+    history.pushState(null, '', '/watch?v=' + track.id);
+    $('.title').textContent = track.title;
+    $('.byline').innerHTML = track.byline;
+    $('#bar-art').src = track.artwork;
+    $('#large-art').src = track.artwork;
+    titleLink.href = 'https://music.youtube.com/watch?v=' + track.id;
+    titleLink.textContent = track.title;
+    render();
+  };
+  const play = () => media.play().catch(() => {});
+
+  const stop = () => {
+    ended = true;
+    media.loop = false;
+    position = track.duration;
+    if (Number.isFinite(media.duration)) media.currentTime = media.duration;
+    media.pause();
+  };
+  const setArt = url => { $('#bar-art').src = url; $('#large-art').src = url; };
+
+  const timeline = [
+    [25, () => { position = 100; }],
+    [45, () => media.pause()],
+    [60, () => play()],
+    [65, () => { videoPlayer.classList.add('ad-showing'); titleLink.textContent = 'Advertisement'; }],
+    [75, () => { videoPlayer.classList.remove('ad-showing'); titleLink.textContent = track.title; }],
+    [80, () => { load(tracks.B); play(); }],
+    [100, () => $('#repeat').setAttribute('aria-label', 'Repeat one')],
+    [120, stop],
+    [125, () => { ended = false; media.loop = true; media.currentTime = 0; lastMediaTime = 0; load(tracks.C); play(); }],
+    [137, () => setArt('https://lh3.googleusercontent.com/fixture-b=w544-h544')],
+    [147, () => { titleLink.textContent = 'Some Other Song'; }],
+    [152, () => { titleLink.textContent = track.title; titleLink.href = 'https://example.invalid/watch?v=' + track.id; }],
+    [157, () => titleLink.remove()],
+    [162, () => {
+      videoPlayer.appendChild(titleLink);
+      titleLink.href = 'https://music.youtube.com/watch?v=' + track.id;
+      titleLink.textContent = track.title;
+    }],
+    [172, () => media.pause()],
+    [182, () => play()],
+    [192, stop]
+  ];
+
+  const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
+  if (profile === 'Playing' || profile === 'Paused') {
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
+    // audible YouTube Music playback never hits. The PCM is silence, so nothing is audible.
+    media.muted = false;
+    media.src = silentWav();
+    if (profile === 'Playing') play();
+    else { position = 60; media.pause(); }
+    setInterval(tick, 250);
+  } else if (profile === 'ArtGap') {
+    load(tracks.A);
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    play();
+    setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-missing=w544-h544'), 12000);
+    setTimeout(() => { load(tracks.B); play(); }, 24000);
+    setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-a' + 'x'.repeat(300) + '=w544-h544'), 40000);
+    setInterval(tick, 250);
+  } else if (profile === 'SameTitle') {
+    titleLink.remove();
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    position = 60; media.pause();
+    setTimeout(() => { load(Object.assign({}, tracks.B, { id: 'fixtureSnA2', title: tracks.A.title, duration: 1800 }));
+      position = 30; media.pause(); }, 12000);
+    setInterval(tick, 250);
+  } else if (profile === 'ReaderGap') {
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    position = 60; media.pause();
+    setTimeout(() => { $('.title').textContent = ''; }, 5000);
+    setTimeout(() => { $('.title').textContent = tracks.A.title; }, 32000);
+    setInterval(tick, 250);
+  } else if (profile === 'Empty') {
+    titleLink.remove();
+    slider.setAttribute('aria-valuemax', '0');
+    timeInfo.textContent = '';
+    playButton.setAttribute('aria-label', 'Play');
+  } else {
+  load(tracks.A);
+  media.muted = true;
+  media.src = silentWav();
+  play();
+  const started = performance.now();
+  for (const [at, step] of timeline)
+    setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
+  setInterval(tick, 250);
+  }
+  media.addEventListener('play', render);
+  media.addEventListener('pause', render);
+})();
+</script>
+</body>
+</html>
