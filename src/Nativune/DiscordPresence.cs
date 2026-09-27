@@ -31,7 +31,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
     // Guarded by _gate.
     private DiscordPresenceOptions _options = DiscordPresenceOptions.Default;
     private DiscordTrackObservation? _observation;
-    private string? _itemTitle, _itemTrackUrl, _itemArt, _itemLastArt, _previousItemArt;
+    private string? _itemTitle, _itemTrackUrl, _itemVideoId, _previousItemVideoId, _itemArt, _itemLastArt, _previousItemArt;
     private long _itemArtSinceMs; // monotonic start of the current item's continuous run on _itemArt
     private long? _pausedSinceMs;
     private DateTimeOffset? _anchorStart;
@@ -149,7 +149,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
     private void ForgetTrackLocked()
     {
         ForgetObservationLocked();
-        _itemTitle = _itemTrackUrl = _itemArt = _itemLastArt = _previousItemArt = null;
+        _itemTitle = _itemTrackUrl = _itemVideoId = _previousItemVideoId = _itemArt = _itemLastArt = _previousItemArt = null;
         _pausedSinceMs = null;
     }
 
@@ -163,8 +163,10 @@ internal sealed class DiscordPresence : IAsyncDisposable
 
     private void TrackLocked(DiscordTrackObservation o, long nowMs)
     {
+        var previousVideoId = _itemVideoId ?? _previousItemVideoId;
         var itemChanged = _itemTitle is null
             || !string.Equals(_itemTitle, o.Title, StringComparison.Ordinal)
+            || (_itemVideoId is not null && o.VideoId is not null && !string.Equals(_itemVideoId, o.VideoId, StringComparison.Ordinal))
             || (_itemTrackUrl is not null && o.TrackUrl is not null && !string.Equals(_itemTrackUrl, o.TrackUrl, StringComparison.Ordinal));
         if (itemChanged)
         {
@@ -174,11 +176,17 @@ internal sealed class DiscordPresence : IAsyncDisposable
             _itemLastArt = null;
             _itemTitle = o.Title;
             _itemTrackUrl = o.TrackUrl;
+            // A video id still equal to the previous item's (the route can lag the title) is not trusted for
+            // the new item; a later sample's different id is adopted instead.
+            _previousItemVideoId = previousVideoId;
+            _itemVideoId = string.Equals(o.VideoId, previousVideoId, StringComparison.Ordinal) ? null : o.VideoId;
             _anchorStart = null;
         }
-        else if (o.TrackUrl is not null)
+        else
         {
-            _itemTrackUrl = o.TrackUrl;
+            if (o.TrackUrl is not null) _itemTrackUrl = o.TrackUrl;
+            if (o.VideoId is not null && _itemVideoId is null
+                && !string.Equals(o.VideoId, _previousItemVideoId, StringComparison.Ordinal)) _itemVideoId = o.VideoId;
         }
         if (itemChanged || !string.Equals(_itemArt, o.ArtworkUrl, StringComparison.Ordinal)) _itemArtSinceMs = nowMs;
         _itemArt = o.ArtworkUrl;
@@ -493,6 +501,13 @@ internal sealed class DiscordPresence : IAsyncDisposable
                             {
                                 if (!loggedRejection) { AppLog.Write(LogCategory, "discord: activity rejected"); loggedRejection = true; }
                                 SetStatus(session, DiscordPresenceStatus.Error);
+                                // A rejected clear may leave the last accepted card up. Discord removes a client's
+                                // activity when its IPC connection closes, so drop the connection and reconnect.
+                                if (pendingIsClear)
+                                {
+                                    AppLog.Write(LogCategory, "discord: clear rejected; reconnecting");
+                                    return false;
+                                }
                             }
                             else
                             {

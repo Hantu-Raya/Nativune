@@ -150,7 +150,8 @@ internal sealed class PlayerControls : IDisposable
 
     internal Task<CompactRead> ReadCompactStateAsync() => ReadPlaybackStateAsync();
 
-    internal async Task<CompactRead> ReadPlaybackStateAsync()
+    // presenceOnly labels test-hook read diagnostics only; every caller runs the same full read.
+    internal async Task<CompactRead> ReadPlaybackStateAsync(bool presenceOnly = false)
     {
         if (!IsAvailable) return default;
         if (!TryStart("compact-state", out var request, out _)) return default;
@@ -159,7 +160,7 @@ internal sealed class PlayerControls : IDisposable
             var script = CompactPlayback.BuildScript("state", null, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
 #if NATIVUNE_DISCORD_TEST_HOOKS
-            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted("Compact", script.Length);
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(presenceOnly ? "Presence" : "Compact", script.Length);
             var diagnosticValid = false;
             try
             {

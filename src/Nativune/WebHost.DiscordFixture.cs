@@ -216,7 +216,7 @@ public sealed partial class WebHostWindow
         {
         }
         string? error = null;
-        if (profile is not ("Playing" or "Paused" or "Empty" or "ArtGap")) error = "invalid-profile";
+        if (profile is not ("Playing" or "Paused" or "Empty" or "ArtGap" or "SameTitle")) error = "invalid-profile";
         else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
         else if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
             error = "invalid-prefix";
@@ -299,7 +299,7 @@ public sealed partial class WebHostWindow
                 || pr.GetString() != _discordBenchProfile) return;
             if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
             if (_discordBenchProfile is "Playing" or "ArtGap" && paused != false) return;
-            if (_discordBenchProfile == "Paused" && paused != true) return;
+            if (_discordBenchProfile is "Paused" or "SameTitle" && paused != true) return;
             _discordBenchPageReady = true;
         }
 

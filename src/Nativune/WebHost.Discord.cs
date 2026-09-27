@@ -90,7 +90,8 @@ public sealed partial class WebHostWindow
             state.Seeking,
             state.PlaybackRate,
             Environment.TickCount64,
-            DateTimeOffset.UtcNow), epoch);
+            DateTimeOffset.UtcNow,
+            state.VideoId), epoch);
     }
 
     // keepItem (system suspend): clear the card but keep the song's pause deadline and art history.

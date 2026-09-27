@@ -247,7 +247,7 @@ public sealed partial class WebHostWindow
         var presenceEpoch = _discord?.ConnectionEpoch ?? 0;
         try
         {
-            var read = await controls.ReadPlaybackStateAsync();
+            var read = await controls.ReadPlaybackStateAsync(presenceOnly: !compact);
             DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration, presenceEpoch);
         }
         catch (Exception)

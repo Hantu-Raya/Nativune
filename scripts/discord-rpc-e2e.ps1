@@ -56,6 +56,12 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
   'nativune' fallback (a transient missing-art sample must not erase A's art from the stale-art guard); B's
   shared art may appear only >= 3 s later. At 40 s B's art becomes a loadable URL longer than 256 characters:
   no large_image may exceed 256 characters, and the card falls back to 'nativune'.
+- RejectedClear: PAUSE override 20 s, profile Paused, fake server -Mode ErrorOnFirstClear. The pause-expiry
+  clear is answered with ERROR, so Discord may still show the card: the app must drop the connection (Discord
+  removes a closed client's activity), reconnect, and publish no card while still paused and expired.
+- SameTitle: PAUSE override 20 s, profile SameTitle. A paused song is replaced at page 12 s by a different
+  paused song with the same title and no proven song link; only the route's video id differs. The new song's
+  card must get its own 20 s pause deadline (clear >= 25 s after the first card), not inherit the first one's.
 - LiveToggle: command-discord-off / command-discord-on call ApplyDiscordOptions(Enabled false/true), the
   Settings Save path. Off: a clear, then the connection closes, then no further frames. On: a new connection,
   READY and a fresh non-null card after that READY.
@@ -69,7 +75,7 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 [CmdletBinding()]
 param(
     [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate',
-        'PauseExpiry', 'ArtGap', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
+        'PauseExpiry', 'ArtGap', 'RejectedClear', 'SameTitle', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -221,14 +227,15 @@ function Get-HookSnapshot([string] $Root, [string] $Label) {
     Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 8
 }
 
-# Reads started in (Start.boundaryQpc, End.boundaryQpc], counted in total (every read records mode 'Compact').
+# Reads started in (Start.boundaryQpc, End.boundaryQpc]: total plus the recorded mode (Compact demand vs presence-only).
 function Get-ReadCounts($Start, $End) {
-    $counts = [ordered]@{ total = 0; seconds = $null }
+    $counts = [ordered]@{ total = 0; presence = 0; compact = 0; seconds = $null }
     if (-not $Start -or -not $End) { return $counts }
     $counts.seconds = [Math]::Round(([double] $End.boundaryQpc - [double] $Start.boundaryQpc) / [double] $End.qpcFrequency, 3)
     foreach ($read in @($End.reads)) {
         if ([double] $read.startQpc -gt [double] $Start.boundaryQpc -and [double] $read.startQpc -le [double] $End.boundaryQpc) {
             $counts.total++
+            if ($read.mode -eq 'Presence') { $counts.presence++ } else { $counts.compact++ }
         }
     }
     $counts
@@ -829,6 +836,77 @@ function Test-ArtGap {
     }
 }
 
+function Test-RejectedClear {
+    $root = New-Root 'rejectedclear'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'rejectedclear' 'ErrorOnFirstClear'
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
+            NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Paused'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        $firstUtc = Wait-FirstCard $server 60
+        if (-not $firstUtc) { throw 'RejectedClear: no paused card within 60 s.' }
+        Wait-UntilUtc $firstUtc.AddSeconds(45)
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['RejectedClear'] = $frames
+    Copy-AppLog $root 'rejectedclear'
+    $sets = @(Get-Activities $frames)
+    $clear = $sets | Where-Object { $null -eq $_.Activity } | Select-Object -First 1
+    $clearUtc = if ($clear) { $clear.Utc } else { $null }
+    $drops = @(if ($clearUtc) { Get-FrameEvents $frames 'disconnected' | Where-Object { (ConvertTo-UtcTime $_.utc) -ge $clearUtc } })
+    $dropUtc = if ($drops.Count) { ConvertTo-UtcTime $drops[0].utc } else { $null }
+    $reconnects = @(if ($dropUtc) { Get-FrameEvents $frames 'connected' | Where-Object { (ConvertTo-UtcTime $_.utc) -gt $dropUtc } })
+    $cardsAfter = @(if ($clearUtc) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $clearUtc } })
+    Add-Check 'rejectedClear.benchReady' $ready
+    Add-Check 'rejectedClear.noCrash' $alive
+    Add-Check 'rejectedClear.clearSent' ($null -ne $clearUtc)
+    Add-Check 'rejectedClear.connectionDropped' ($null -ne $dropUtc -and ($dropUtc - $clearUtc).TotalSeconds -le 6)
+    Add-Check 'rejectedClear.reconnected' ($reconnects.Count -ge 1)
+    Add-Check 'rejectedClear.noCardAfterRejectedClear' ($null -ne $clearUtc -and $cardsAfter.Count -eq 0)
+    $scenarioResults['RejectedClear'] = [ordered]@{
+        appPid = $app.Id; clearToDropSeconds = if ($dropUtc) { [Math]::Round(($dropUtc - $clearUtc).TotalSeconds, 3) } else { $null }
+        reconnects = $reconnects.Count; cardsAfterRejectedClear = $cardsAfter.Count
+    }
+}
+
+function Test-SameTitle {
+    $root = New-Root 'sametitle'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'sametitle'
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
+            NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'SameTitle'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        $firstUtc = Wait-FirstCard $server 60
+        if (-not $firstUtc) { throw 'SameTitle: no paused card within 60 s.' }
+        Wait-UntilUtc $firstUtc.AddSeconds(45)
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['SameTitle'] = $frames
+    Copy-AppLog $root 'sametitle'
+    $sets = @(Get-Activities $frames)
+    $first = $sets | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
+    $clear = if ($first) { $sets | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $first.Utc } | Select-Object -First 1 } else { $null }
+    $delay = if ($clear) { ($clear.Utc - $first.Utc).TotalSeconds } else { $null }
+    $second = @($sets | Where-Object { $null -ne $_.Activity -and (Get-Prop $_.Activity 'state') -eq 'Second Artist' })
+    Add-Check 'sameTitle.benchReady' $ready
+    Add-Check 'sameTitle.noCrash' $alive
+    Add-Check 'sameTitle.secondSongCardShown' ($second.Count -gt 0 -and (Get-Prop $second[0].Activity 'details') -eq 'Fixture Song A')
+    Add-Check 'sameTitle.pauseDeadlineRestarted' ($null -ne $delay -and $delay -ge 25 -and $delay -le 40)
+    $scenarioResults['SameTitle'] = [ordered]@{
+        appPid = $app.Id; firstCardToClearSeconds = if ($null -ne $delay) { [Math]::Round($delay, 3) } else { $null }; secondSongCards = $second.Count
+    }
+}
+
 function Test-LiveToggle {
     $root = New-Root 'livetoggle'
     Write-Settings $root $true
@@ -965,6 +1043,10 @@ function Test-HiddenAndCompact {
         $null -eq $_.Activity -or (Get-Prop $_.Activity 'details') -ne 'Fixture Song A' }))
     Add-Check 'hiddenCompact.fullState' ($null -ne $fullState -and $fullState.compact -eq $false -and $fullState.windowVisible -eq $true)
     Add-Check 'hiddenCompact.fullReads5s' ([bool] (& $fiveSecondCadence $full))
+    # Diagnostics label each read by demand: presence-only in Hidden/Full, Compact while Compact is active
+    # (one read at a phase boundary may carry the previous label).
+    Add-Check 'hiddenCompact.readModesLabelled' ($hidden.presence -gt 0 -and $hidden.compact -le 1 -and $full.presence -gt 0 -and
+        $full.compact -le 1 -and $compact.compact -gt 0 -and $compact.presence -le 1)
     $scenarioResults['HiddenAndCompact'] = [ordered]@{
         appPid = $app.Id; phaseSeconds = $phaseSeconds; hiddenReads = $hidden; compactReads = $compact; fullReads = $full
         setsInWindow = $inWindow.Count; snapshotsTaken = @($snap.Keys | Where-Object { $snap[$_] }).Count
@@ -1001,6 +1083,8 @@ try {
     & $runScenario 'ProductionGate' { Test-ProductionGate }
     & $runScenario 'PauseExpiry' { Test-PauseExpiry }
     & $runScenario 'ArtGap' { Test-ArtGap }
+    & $runScenario 'RejectedClear' { Test-RejectedClear }
+    & $runScenario 'SameTitle' { Test-SameTitle }
     & $runScenario 'LiveToggle' { Test-LiveToggle }
     & $runScenario 'TrueQuit' { Test-TrueQuit }
     & $runScenario 'HiddenAndCompact' { Test-HiddenAndCompact }

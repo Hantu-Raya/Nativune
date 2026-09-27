@@ -40,4 +40,5 @@ internal sealed record DiscordTrackObservation(
     bool Seeking,
     double? PlaybackRate,
     long SampleMonotonicMs,
-    DateTimeOffset SampleUtc);
+    DateTimeOffset SampleUtc,
+    string? VideoId = null);

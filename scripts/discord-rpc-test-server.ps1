@@ -3,7 +3,8 @@ Fake Discord IPC server for scripts/discord-rpc-e2e.ps1. Standard library only (
 
 It listens on one test pipe name (never a real discord-ipc-N name), accepts repeated connections,
 answers HANDSHAKE with READY, SET_ACTIVITY with a success response (or one ERROR in
--Mode ErrorOnFirstSet), PING with PONG, and records every frame in both directions as one JSON line:
+-Mode ErrorOnFirstSet, or one ERROR for the first clear in -Mode ErrorOnFirstClear), PING with PONG, and
+records every frame in both directions as one JSON line:
   {utc, monoMs, direction ("in"|"out"|"event"), connection, opcode, length, json}
 It runs until -StopFile exists or the process is killed.
 
@@ -23,7 +24,7 @@ param(
     [Parameter(Mandatory)] [string] $PipeName,
     [Parameter(Mandatory)] [string] $FramesPath,
     [Parameter(Mandatory)] [string] $StopFile,
-    [ValidateSet('Normal', 'ErrorOnFirstSet')] [string] $Mode = 'Normal',
+    [ValidateSet('Normal', 'ErrorOnFirstSet', 'ErrorOnFirstClear')] [string] $Mode = 'Normal',
     [string] $ReadyFile,
     [string] $SummaryPath
 )
@@ -106,7 +107,7 @@ function Invoke-Connection([IO.Pipes.NamedPipeServerStream] $Pipe) {
                     $script:sets.Add([ordered]@{ connection = $script:connection; kind = if ($null -eq $activity) { 'clear' } else { 'activity' }; utc = $stamp.utc; qpc = $stamp.qpc })
                     $nonce = if ($message.PSObject.Properties['nonce']) { $message.nonce } else { $null }
                     $nonceJson = ConvertTo-Json -InputObject $nonce -Compress
-                    if ($Mode -eq 'ErrorOnFirstSet' -and -not $script:errorSent) {
+                    if (-not $script:errorSent -and ($Mode -eq 'ErrorOnFirstSet' -or ($Mode -eq 'ErrorOnFirstClear' -and $null -eq $activity))) {
                         $script:errorSent = $true
                         Send-Frame $Pipe $OpFrame ('{"cmd":"SET_ACTIVITY","nonce":' + $nonceJson + ',"evt":"ERROR","data":{"code":4000,"message":"fixture"}}')
                         $script:errors++

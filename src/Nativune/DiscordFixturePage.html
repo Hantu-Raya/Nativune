@@ -54,6 +54,9 @@
     ArtGap   track A playing with loaded art; 12 s art becomes unloadable (reader reports no art) while A still
              plays; 24 s track B starts with track A's (loaded) art URL. B's first card must not show that art.
              40 s B's art switches to a loadable URL longer than 256 characters (must fall back to 'nativune').
+    SameTitle  track A paused at 60 s with no title link (no proven song link); 12 s a different song with the
+             SAME title (id fixtureSnA2, Second Artist) loads, still paused and still without a title link.
+             Only the route's video id tells them apart; the pause deadline must restart for the new song.
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -223,6 +226,15 @@
     setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-missing=w544-h544'), 12000);
     setTimeout(() => { load(tracks.B); play(); }, 24000);
     setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-a' + 'x'.repeat(300) + '=w544-h544'), 40000);
+    setInterval(tick, 250);
+  } else if (profile === 'SameTitle') {
+    titleLink.remove();
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    position = 60; media.pause();
+    setTimeout(() => { load(Object.assign({}, tracks.B, { id: 'fixtureSnA2', title: tracks.A.title, duration: 1800 }));
+      position = 30; media.pause(); }, 12000);
     setInterval(tick, 250);
   } else if (profile === 'Empty') {
     titleLink.remove();
