@@ -156,9 +156,23 @@ internal sealed class PlayerControls : IDisposable
         {
             var script = CompactPlayback.BuildScript("state", null, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted("Compact", script.Length);
+            var diagnosticValid = false;
+            try
+            {
+#endif
             var json = await RunCompactScriptAsync(request, script);
             if (json is null || !OwnsDocument(request)) return default;
-            return new CompactRead(true, CompactPlayback.TryParseState(json, out var state) ? state : null);
+            var parsed = CompactPlayback.TryParseState(json, out var state);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            diagnosticValid = parsed && state is not null;
+#endif
+            return new CompactRead(true, parsed ? state : null);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            }
+            finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(diagnosticId, diagnosticValid); }
+#endif
         }
         finally { CompleteRequest(request); }
     }

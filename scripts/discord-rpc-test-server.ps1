@@ -7,6 +7,14 @@ answers HANDSHAKE with READY, SET_ACTIVITY with a success response (or one ERROR
   {utc, monoMs, direction ("in"|"out"|"event"), connection, opcode, length, json}
 It runs until -StopFile exists or the process is killed.
 
+Bench protocol v2 additions (optional, backwards compatible):
+  -ReadyFile    written once the first pipe instance exists and is listening (deterministic readiness
+                instead of a fixed sleep); contains {utc, qpc, qpcFrequency, pid}.
+  -SummaryPath  written at exit: per-connection intervals (connected/READY/disconnected UTC and QPC),
+                SET_ACTIVITY counts parsed from `cmd` (non-null activity vs clear), acknowledgements and
+                the UTC/QPC of each SET_ACTIVITY. Frame lines also carry `qpc` (Stopwatch.GetTimestamp,
+                comparable with the app's diagnostics clock on the same machine).
+
   pwsh -NoProfile -File scripts/discord-rpc-test-server.ps1 -PipeName nativune-test-<32 hex>-discord-ipc-0 `
        -FramesPath artifacts/discord-rpc/<run>/frames.jsonl -StopFile artifacts/discord-rpc/<run>/stop
 #>
@@ -15,7 +23,9 @@ param(
     [Parameter(Mandatory)] [string] $PipeName,
     [Parameter(Mandatory)] [string] $FramesPath,
     [Parameter(Mandatory)] [string] $StopFile,
-    [ValidateSet('Normal', 'ErrorOnFirstSet')] [string] $Mode = 'Normal'
+    [ValidateSet('Normal', 'ErrorOnFirstSet')] [string] $Mode = 'Normal',
+    [string] $ReadyFile,
+    [string] $SummaryPath
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -33,10 +43,16 @@ $log = [IO.StreamWriter]::new([IO.Path]::GetFullPath($FramesPath), $true, $utf8)
 $log.AutoFlush = $true
 $script:errorSent = $false
 $script:connection = 0
+$script:connections = [Collections.Generic.List[object]]::new()
+$script:current = $null
+$script:sets = [Collections.Generic.List[object]]::new()
+$script:acks = 0; $script:errors = 0; $script:unparsedFrames = 0
+
+function Get-Stamp { [ordered]@{ utc = [DateTime]::UtcNow.ToString('o'); qpc = [Diagnostics.Stopwatch]::GetTimestamp() } }
 
 function Write-FrameLog([string] $Direction, [int] $Opcode, [int] $Length, [string] $Json) {
     $entry = [ordered]@{
-        utc = [DateTime]::UtcNow.ToString('o'); monoMs = $clock.Elapsed.TotalMilliseconds; direction = $Direction
+        utc = [DateTime]::UtcNow.ToString('o'); qpc = [Diagnostics.Stopwatch]::GetTimestamp(); monoMs = $clock.Elapsed.TotalMilliseconds; direction = $Direction
         connection = $script:connection; opcode = $Opcode; length = $Length; json = $Json
     }
     $log.WriteLine(($entry | ConvertTo-Json -Compress -Depth 4))
@@ -79,16 +95,24 @@ function Invoke-Connection([IO.Pipes.NamedPipeServerStream] $Pipe) {
         switch ($opcode) {
             $OpHandshake {
                 Send-Frame $Pipe $OpFrame '{"cmd":"DISPATCH","evt":"READY","data":{"v":1,"user":{"id":"0","username":"fixture"}},"nonce":null}'
+                if ($script:current -and -not $script:current.ready) { $script:current.ready = Get-Stamp }
             }
             $OpFrame {
+                if (-not $message) { $script:unparsedFrames++ }
                 if ($message -and $message.PSObject.Properties['cmd'] -and $message.cmd -eq 'SET_ACTIVITY') {
+                    $arguments = if ($message.PSObject.Properties['args']) { $message.args } else { $null }
+                    $activity = if ($arguments -and $arguments.PSObject.Properties['activity']) { $arguments.activity } else { $null }
+                    $stamp = Get-Stamp
+                    $script:sets.Add([ordered]@{ connection = $script:connection; kind = if ($null -eq $activity) { 'clear' } else { 'activity' }; utc = $stamp.utc; qpc = $stamp.qpc })
                     $nonce = if ($message.PSObject.Properties['nonce']) { $message.nonce } else { $null }
                     $nonceJson = ConvertTo-Json -InputObject $nonce -Compress
                     if ($Mode -eq 'ErrorOnFirstSet' -and -not $script:errorSent) {
                         $script:errorSent = $true
                         Send-Frame $Pipe $OpFrame ('{"cmd":"SET_ACTIVITY","nonce":' + $nonceJson + ',"evt":"ERROR","data":{"code":4000,"message":"fixture"}}')
+                        $script:errors++
                     } else {
                         Send-Frame $Pipe $OpFrame ('{"cmd":"SET_ACTIVITY","nonce":' + $nonceJson + ',"evt":null,"data":{}}')
+                        $script:acks++
                     }
                 }
             }
@@ -104,11 +128,21 @@ try {
             [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous)
         try {
             $wait = $pipe.WaitForConnectionAsync()
+            if ($ReadyFile -and -not (Test-Path -LiteralPath $ReadyFile)) {
+                $readyPath = [IO.Path]::GetFullPath($ReadyFile)
+                $stamp = Get-Stamp
+                [IO.File]::WriteAllText($readyPath + '.tmp', ([ordered]@{ utc = $stamp.utc; qpc = $stamp.qpc
+                    qpcFrequency = [Diagnostics.Stopwatch]::Frequency; pid = $PID; pipe = $PipeName } | ConvertTo-Json -Compress), $utf8)
+                [IO.File]::Move($readyPath + '.tmp', $readyPath, $true)
+            }
             while (-not $wait.Wait(250)) { if (Test-Path -LiteralPath $StopFile) { break } }
             if (-not $wait.IsCompleted) { continue }
             $script:connection++
+            $script:current = [ordered]@{ connection = $script:connection; connected = Get-Stamp; ready = $null; disconnected = $null; error = $null }
+            $script:connections.Add($script:current)
             Write-FrameLog 'event' -1 0 'connected'
-            try { Invoke-Connection $pipe } catch { Write-FrameLog 'event' -1 0 ('connection-error: ' + $_.Exception.GetType().Name) }
+            try { Invoke-Connection $pipe } catch { $script:current.error = $_.Exception.GetType().Name; Write-FrameLog 'event' -1 0 ('connection-error: ' + $_.Exception.GetType().Name) }
+            $script:current.disconnected = Get-Stamp
             Write-FrameLog 'event' -1 0 'disconnected'
         } finally {
             $pipe.Dispose()
@@ -116,4 +150,20 @@ try {
     }
 } finally {
     $log.Dispose()
+    if ($SummaryPath) {
+        $summary = [ordered]@{
+            schema = 2; pipe = $PipeName; mode = $Mode; qpcFrequency = [Diagnostics.Stopwatch]::Frequency; stopped = Get-Stamp
+            connectionCount = $script:connections.Count; connections = $script:connections
+            setActivity = [ordered]@{
+                total = $script:sets.Count
+                activity = @($script:sets | Where-Object { $_.kind -eq 'activity' }).Count
+                clear = @($script:sets | Where-Object { $_.kind -eq 'clear' }).Count
+                acks = $script:acks; errors = $script:errors; frames = $script:sets
+            }
+            unparsedFrames = $script:unparsedFrames
+        }
+        $summaryPath = [IO.Path]::GetFullPath($SummaryPath)
+        [IO.File]::WriteAllText($summaryPath + '.tmp', ($summary | ConvertTo-Json -Depth 8), $utf8)
+        [IO.File]::Move($summaryPath + '.tmp', $summaryPath, $true)
+    }
 }

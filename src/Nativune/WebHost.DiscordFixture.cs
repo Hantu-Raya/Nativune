@@ -1,7 +1,11 @@
 #if NATIVUNE_DISCORD_TEST_HOOKS
+using Microsoft.UI.Windowing;
 using Microsoft.Web.WebView2.Core;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Compression;
+using System.Text;
+using System.Text.Json;
 using Windows.Storage.Streams;
 
 namespace Nativune;
@@ -26,6 +30,7 @@ public sealed partial class WebHostWindow
             stream.CopyTo(buffer);
             s_discordFixturePage = buffer.ToArray();
         }
+        StartDiscordBench();
         // Only http(s) is intercepted so chrome-extension:// (uBO Lite dashboard/resources) loads normally.
         core.AddWebResourceRequestedFilter("https://*", CoreWebView2WebResourceContext.All);
         core.AddWebResourceRequestedFilter("http://*", CoreWebView2WebResourceContext.All);
@@ -132,6 +137,252 @@ public sealed partial class WebHostWindow
         }
         BinaryPrimitives.WriteUInt32BigEndian(number, crc ^ 0xFFFFFFFFu);
         output.Write(number);
+    }
+
+    // ---- Bench protocol v2 native setup (plan .cache/tmp/discord-rpc/opt-refactor-plan.md §1, §4 item 5). ----
+    // Active only when NATIVUNE_TEST_DISCORD_BENCH_PROFILE and _STATE are both set to valid values, the fixture
+    // page is enabled and the pipe prefix is a valid nativune-test prefix. All files live at fixed paths under
+    // <root>/data/discord-bench; nothing is read from or written to an environment-controlled path. The page
+    // profile is written into the served fixture document; the state uses the normal TryHideToTray/SetCompact
+    // paths. Files:
+    //   ready.json / failed.json        written once after native page + state confirmation (or failure)
+    //   command-snapshot-{start,end,final}  harness request -> diagnostics-<label>.json + state-<label>.json
+    //   command-quit                    harness request -> diagnostics-quit.json, then the normal Quit path
+    private const string DiscordBenchProfileMeta = "<meta name=\"nativune-discord-bench-profile\" content=\"\">";
+    private static readonly TimeSpan DiscordBenchSetupTimeout = TimeSpan.FromSeconds(50);
+    private static readonly string[] DiscordBenchSnapshotLabels = ["start", "end", "final"];
+    private const string DiscordBenchProbeScript =
+        "(() => { const m = document.querySelector('meta[name=\"nativune-discord-bench-profile\"]');"
+        + " const v = document.querySelector('video');"
+        + " return JSON.stringify({ fixture: !!document.querySelector('meta[name=\"nativune-discord-fixture\"]'),"
+        + " profile: m ? m.content : null, ready: document.readyState, paused: v ? v.paused : null }); })()";
+
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _discordBenchTimer;
+    private string? _discordBenchProfile;
+    private string? _discordBenchState;
+    private string? _discordBenchDirectory;
+    private long _discordBenchStartedAt;
+    private int _discordBenchProbes;
+    private bool _discordBenchBusy, _discordBenchPageReady, _discordBenchStateRequested, _discordBenchDone;
+
+    private void StartDiscordBench()
+    {
+        var profile = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_PROFILE");
+        var state = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_STATE");
+        if (profile is null && state is null) return;
+        _discordBenchDirectory = Path.Combine(_root, "data", "discord-bench");
+        _discordBenchStartedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory, "started.json"),
+                DiscordBenchJson(("schema", 2), ("processId", Environment.ProcessId), ("qpc", _discordBenchStartedAt),
+                    ("qpcFrequency", Stopwatch.Frequency), ("utc", DateTime.UtcNow.ToString("o"))));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        string? error = null;
+        if (profile is not ("Playing" or "Paused" or "Empty")) error = "invalid-profile";
+        else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
+        else if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
+            error = "invalid-prefix";
+        else
+        {
+            var page = Encoding.UTF8.GetString(s_discordFixturePage!);
+            if (!page.Contains(DiscordBenchProfileMeta, StringComparison.Ordinal)) error = "profile-slot-missing";
+            else s_discordFixturePage = Encoding.UTF8.GetBytes(page.Replace(DiscordBenchProfileMeta,
+                "<meta name=\"nativune-discord-bench-profile\" content=\"" + profile + "\">", StringComparison.Ordinal));
+        }
+        if (error is not null)
+        {
+            FailDiscordBench(error);
+            return;
+        }
+        _discordBenchProfile = profile;
+        _discordBenchState = state;
+        _discordBenchTimer = _dispatcherQueue.CreateTimer();
+        _discordBenchTimer.Interval = TimeSpan.FromMilliseconds(250);
+        _discordBenchTimer.IsRepeating = true;
+        _discordBenchTimer.Tick += OnDiscordBenchTick;
+        _discordBenchTimer.Start();
+    }
+
+    // Same shape as DiscordPresenceEnvironment's test-prefix check: ^nativune-test-[0-9a-f]{32}-discord-ipc-$
+    private static bool IsDiscordBenchTestPrefix(string? value)
+    {
+        const string head = "nativune-test-", tail = "-discord-ipc-";
+        if (value is null || value.Length != head.Length + 32 + tail.Length
+            || !value.StartsWith(head, StringComparison.Ordinal) || !value.EndsWith(tail, StringComparison.Ordinal))
+            return false;
+        foreach (var c in value.AsSpan(head.Length, 32))
+            if (c is not ((>= '0' and <= '9') or (>= 'a' and <= 'f'))) return false;
+        return true;
+    }
+
+    private async void OnDiscordBenchTick(object? sender, object args)
+    {
+        if (_discordBenchBusy || _closing || _disposed) return;
+        _discordBenchBusy = true;
+        try
+        {
+            if (!_discordBenchDone) await AdvanceDiscordBenchSetupAsync();
+            ProcessDiscordBenchCommands();
+        }
+        catch (Exception ex)
+        {
+            if (!_discordBenchDone) FailDiscordBench("exception-" + ex.GetType().Name);
+        }
+        finally
+        {
+            _discordBenchBusy = false;
+        }
+    }
+
+    private async Task AdvanceDiscordBenchSetupAsync()
+    {
+        if (Stopwatch.GetElapsedTime(_discordBenchStartedAt) > DiscordBenchSetupTimeout)
+        {
+            FailDiscordBench(_discordBenchPageReady ? "state-timeout" : "page-timeout");
+            return;
+        }
+        if (!_discordBenchPageReady)
+        {
+            if (_awaitingFirstPage || _browserHost is not { } host) return;
+            if (!Uri.TryCreate(host.Core.Source, UriKind.Absolute, out var source)
+                || !source.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase))
+                return;
+            _discordBenchProbes++;
+            var raw = await host.Core.ExecuteScriptAsync(DiscordBenchProbeScript);
+            if (_closing || _disposed) return;
+            using var outer = JsonDocument.Parse(raw);
+            if (outer.RootElement.ValueKind != JsonValueKind.String) return;
+            using var probe = JsonDocument.Parse(outer.RootElement.GetString()!);
+            var root = probe.RootElement;
+            var paused = root.TryGetProperty("paused", out var p) && p.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? p.GetBoolean() : (bool?)null;
+            if (!root.TryGetProperty("fixture", out var f) || f.ValueKind != JsonValueKind.True) return;
+            if (!root.TryGetProperty("profile", out var pr) || pr.ValueKind != JsonValueKind.String
+                || pr.GetString() != _discordBenchProfile) return;
+            if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
+            if (_discordBenchProfile == "Playing" && paused != false) return;
+            if (_discordBenchProfile == "Paused" && paused != true) return;
+            _discordBenchPageReady = true;
+        }
+
+        var fullVisible = WindowIsVisible && !_compact;
+        switch (_discordBenchState)
+        {
+            case "Full":
+                if (!fullVisible) return;
+                break;
+            case "Compact":
+                if (!_discordBenchStateRequested)
+                {
+                    _discordBenchStateRequested = true;
+                    SetCompact(true);
+                }
+                if (!(_compact && WindowIsVisible)) return;
+                break;
+            case "Hidden":
+                if (!_discordBenchStateRequested)
+                {
+                    // Start Full, wait for the tray, then one normal tray hide; false fails the run.
+                    if (!fullVisible || _tray is not { IsVisible: true }) return;
+                    _discordBenchStateRequested = true;
+                    if (!TryHideToTray())
+                    {
+                        FailDiscordBench("try-hide-to-tray-false");
+                        return;
+                    }
+                }
+                if (_appWindow is not { IsVisible: false } || _tray is not { IsVisible: true } || _compact) return;
+                break;
+            default:
+                return;
+        }
+        _discordBenchDone = true;
+        _discordBenchTimer!.Interval = TimeSpan.FromMilliseconds(500);
+        DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory!, "ready.json"),
+            DiscordBenchStateJson("ready"));
+    }
+
+    private void FailDiscordBench(string reason)
+    {
+        _discordBenchDone = true;
+        if (_discordBenchDirectory is null) return;
+        try
+        {
+            DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory, "failed.json"),
+                DiscordBenchJson(("schema", 2), ("reason", reason), ("qpc", Stopwatch.GetTimestamp()),
+                    ("utc", DateTime.UtcNow.ToString("o")), ("processId", Environment.ProcessId)));
+        }
+        catch (Exception)
+        {
+        }
+        // Commands (snapshot/quit) stay available after a failure for cancellation-safe collection.
+        if (_discordBenchTimer is null && _discordBenchProfile is null)
+        {
+            _discordBenchTimer = _dispatcherQueue.CreateTimer();
+            _discordBenchTimer.Interval = TimeSpan.FromMilliseconds(500);
+            _discordBenchTimer.IsRepeating = true;
+            _discordBenchTimer.Tick += OnDiscordBenchTick;
+            _discordBenchTimer.Start();
+        }
+    }
+
+    private void ProcessDiscordBenchCommands()
+    {
+        var directory = _discordBenchDirectory!;
+        foreach (var label in DiscordBenchSnapshotLabels)
+        {
+            var command = Path.Combine(directory, "command-snapshot-" + label);
+            if (!File.Exists(command)) continue;
+            File.Delete(command);
+            DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-" + label + ".json"), label);
+            DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(directory, "state-" + label + ".json"),
+                DiscordBenchStateJson(label));
+        }
+        var quit = Path.Combine(directory, "command-quit");
+        if (!File.Exists(quit)) return;
+        File.Delete(quit);
+        DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-quit.json"), "quit");
+        _discordBenchTimer?.Stop();
+        _ = ShutdownAsync();
+    }
+
+    private string DiscordBenchStateJson(string label)
+    {
+        var size = _appWindow?.Size;
+        var client = GetClientSize();
+        return DiscordBenchJson(("schema", 2), ("label", label), ("profile", _discordBenchProfile),
+            ("state", _discordBenchState), ("compact", _compact), ("windowVisible", WindowIsVisible),
+            ("appWindowVisible", _appWindow?.IsVisible), ("minimized", _presenter?.State == OverlappedPresenterState.Minimized),
+            ("trayVisible", _tray?.IsVisible), ("width", size?.Width), ("height", size?.Height),
+            ("clientWidth", client.Width), ("clientHeight", client.Height), ("probes", _discordBenchProbes),
+            ("qpc", Stopwatch.GetTimestamp()), ("qpcFrequency", Stopwatch.Frequency),
+            ("utc", DateTime.UtcNow.ToString("o")), ("processId", Environment.ProcessId));
+    }
+
+    private static string DiscordBenchJson(params (string Name, object? Value)[] fields)
+    {
+        using var buffer = new MemoryStream();
+        using (var json = new Utf8JsonWriter(buffer))
+        {
+            json.WriteStartObject();
+            foreach (var (name, value) in fields)
+            {
+                switch (value)
+                {
+                    case null: json.WriteNull(name); break;
+                    case bool b: json.WriteBoolean(name, b); break;
+                    case int i: json.WriteNumber(name, i); break;
+                    case long l: json.WriteNumber(name, l); break;
+                    default: json.WriteString(name, value.ToString()); break;
+                }
+            }
+            json.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
     }
 }
 #endif

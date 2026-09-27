@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="nativune-discord-fixture" content="1">
+<meta name="nativune-discord-bench-profile" content="">
 <title>YouTube Music</title>
 <!--
   Synthetic YouTube Music page for scripts/discord-rpc-e2e.ps1 (test-hook builds only; served by
@@ -43,6 +44,13 @@
   182   resume (repeat-one badge again)
   192   stop: media ended as at 120
   The fixture clock advances only by the media element's own currentTime progress.
+
+  Benchmark-only steady profiles (bench protocol v2, scripts/discord-rpc-bench.ps1). The native fixture fills
+  the nativune-discord-bench-profile meta content only when NATIVUNE_TEST_DISCORD_BENCH_PROFILE is valid;
+  with the empty default the timeline above runs unchanged.
+    Playing  track A (duration 1800 s) playing from 0, clock progressing, no timeline events
+    Paused   track A (duration 1800 s) paused at 60 s, not ended, clock fixed
+    Empty    no coherent player item: empty title/byline/artwork/title link, media without source
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -194,6 +202,20 @@
     [192, stop]
   ];
 
+  const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
+  if (profile === 'Playing' || profile === 'Paused') {
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    media.muted = true;
+    media.src = silentWav();
+    if (profile === 'Playing') play();
+    else { position = 60; media.pause(); }
+    setInterval(tick, 250);
+  } else if (profile === 'Empty') {
+    titleLink.remove();
+    slider.setAttribute('aria-valuemax', '0');
+    timeInfo.textContent = '';
+    playButton.setAttribute('aria-label', 'Play');
+  } else {
   load(tracks.A);
   media.muted = true;
   media.src = silentWav();
@@ -202,6 +224,7 @@
   for (const [at, step] of timeline)
     setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
   setInterval(tick, 250);
+  }
   media.addEventListener('play', render);
   media.addEventListener('pause', render);
 })();
