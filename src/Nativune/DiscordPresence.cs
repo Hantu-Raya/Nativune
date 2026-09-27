@@ -14,9 +14,9 @@ namespace Nativune;
 /// </summary>
 internal sealed class DiscordPresence : IAsyncDisposable
 {
-    // Public Discord application (client) id. Empty until the owner's Developer Portal app exists,
-    // which keeps an enabled feature at Status Unavailable with no pipe work.
-    internal const string ApplicationId = "";
+    // Public Discord application (client) id of the owner's "Nativune" Developer Portal app
+    // (art assets: nativune, pause, repeat-one). Not a secret; no client secret or OAuth is used.
+    internal const string ApplicationId = "1553558181240766615";
 
     private const string LogCategory = "discord";
     private const int OpHandshake = 0, OpFrame = 1, OpClose = 2, OpPing = 3, OpPong = 4;
