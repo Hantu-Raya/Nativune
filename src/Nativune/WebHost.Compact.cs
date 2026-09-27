@@ -220,7 +220,9 @@ public sealed partial class WebHostWindow
         if (!_presenceHasState) return;
         var now = Environment.TickCount64;
         if (_presenceUnavailableSince < 0) _presenceUnavailableSince = now;
-        else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord();
+        // A read gap (no coherent player for the hold window) clears the card but keeps the song's pause deadline,
+        // so intermittent read failures cannot restart an expired pause. Navigation and crashes still forget fully.
+        else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord(keepItem: true);
     }
 
     // One shared full read per tick. The captured compact flag decides whether the result also

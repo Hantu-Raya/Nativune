@@ -57,6 +57,9 @@
     SameTitle  track A paused at 60 s with no title link (no proven song link); 12 s a different song with the
              SAME title (id fixtureSnA2, Second Artist) loads, still paused and still without a title link.
              Only the route's video id tells them apart; the pause deadline must restart for the new song.
+    ReaderGap  track A paused at 60 s; 5 s the player title empties (no coherent player: the reader returns null,
+             past the 8 s hold the card clears); 32 s the same paused song returns, after its original pause
+             deadline. It must not get a fresh deadline (no card after the gap).
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -235,6 +238,14 @@
     position = 60; media.pause();
     setTimeout(() => { load(Object.assign({}, tracks.B, { id: 'fixtureSnA2', title: tracks.A.title, duration: 1800 }));
       position = 30; media.pause(); }, 12000);
+    setInterval(tick, 250);
+  } else if (profile === 'ReaderGap') {
+    load(Object.assign({}, tracks.A, { duration: 1800 }));
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    position = 60; media.pause();
+    setTimeout(() => { $('.title').textContent = ''; }, 5000);
+    setTimeout(() => { $('.title').textContent = tracks.A.title; }, 32000);
     setInterval(tick, 250);
   } else if (profile === 'Empty') {
     titleLink.remove();

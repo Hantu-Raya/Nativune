@@ -4,6 +4,13 @@ normal page snapshot reader, scheduler and IPC module) against a fake Discord IP
 Discord client, account, discord-ipc-N pipe, YouTube or Google request is involved.
 
   pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 -Scenario All -OutputDirectory artifacts/discord-rpc
+  pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 -Scenario All -Parallel 1 -OutputDirectory artifacts/discord-rpc   # serial
+
+-Scenario takes one name, All, or a comma-separated list (Timeline,Disable). -Parallel N (default 4) publishes the
+hook build once, then runs scenario groups as child processes of this script, at most N at a time, longest
+first. Each child has its own pipe prefix, fake server and roots, so groups cannot see each other's pipes.
+Timeline and Disable stay in one group (Disable reuses the Timeline root). The parent merges every child's
+checks, scenario results and frames into one report.json/frames.json and records per-group wall time.
 
 Steps: publish a hook build (-p:DiscordPresenceTestHooks=true) to artifacts/discord-rpc/app (never
 ship it), create artifacts/discord-rpc/<utc>-<guid>/ and a fresh root .cache/discord-rpc-e2e/<run-id>/
@@ -62,6 +69,9 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 - RejectedClear: PAUSE override 20 s, profile Paused, fake server -Mode ErrorOnFirstClear. The pause-expiry
   clear is answered with ERROR, so Discord may still show the card: the app must drop the connection (Discord
   removes a closed client's activity), reconnect, and publish no card while still paused and expired.
+- ReaderGap: PAUSE override 20 s, profile ReaderGap. While a song stays paused, the reader returns no coherent
+  player long enough for the 8 s hold to clear the card; the same paused song returns after its original 20 s
+  deadline. The card must stay cleared (read gaps must not restart the pause deadline).
 - SameTitle: PAUSE override 20 s, profile SameTitle. A paused song is replaced at page 12 s by a different
   paused song with the same title and no proven song link; only the route's video id differs. The new song's
   card must get its own 20 s pause deadline (clear >= 25 s after the first card), not inherit the first one's.
@@ -77,8 +87,10 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate',
-        'PauseExpiry', 'ArtGap', 'RejectedClear', 'RejectedReplace', 'SameTitle', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
+    # One name, All, or a comma-separated list; validated below (a comma list arrives as one string via -File).
+    [string[]] $Scenario = @('All'),
+    # Qualified at 4 (two consecutive clean full runs, 282 s each); -Parallel 1 runs everything in this process.
+    [int] $Parallel = 4,
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -88,9 +100,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$allScenarios = @('Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate', 'PauseExpiry',
+    'ArtGap', 'RejectedClear', 'RejectedReplace', 'SameTitle', 'ReaderGap', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')
+$Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+foreach ($name in $Scenario) {
+    if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
+}
+$selected = if ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
+
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $commandLine = 'pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 ' + (($PSBoundParameters.GetEnumerator() | ForEach-Object {
-    if ($_.Value -is [switch]) { if ($_.Value) { "-$($_.Key)" } } else { "-$($_.Key) $($_.Value)" } }) -join ' ')
+    if ($_.Value -is [switch]) { if ($_.Value) { "-$($_.Key)" } } else { "-$($_.Key) $(@($_.Value) -join ',')" } }) -join ' ')
 $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $repo $OutputDirectory }
 $appDirectory = Join-Path $repo 'artifacts/discord-rpc/app'
 $appExe = Join-Path $appDirectory 'Nativune.exe'
@@ -160,11 +180,13 @@ function New-Root([string] $Name) {
 function Start-FakeServer([string] $Name, [string] $Mode = 'Normal') {
     $frames = Join-Path $runDirectory "frames-$Name.jsonl"
     $stop = Join-Path $runDirectory "stop-$Name"
+    $ready = Join-Path $runDirectory "ready-$Name.json"
     $arguments = @('-NoProfile', '-File', (Join-Path $repo 'scripts/discord-rpc-test-server.ps1'),
-        '-PipeName', ($prefix + '0'), '-FramesPath', $frames, '-StopFile', $stop, '-Mode', $Mode)
+        '-PipeName', ($prefix + '0'), '-FramesPath', $frames, '-StopFile', $stop, '-Mode', $Mode, '-ReadyFile', $ready)
     $process = Start-Process -FilePath pwsh -ArgumentList $arguments -PassThru -WindowStyle Hidden
     $started.Add($process)
-    Start-Sleep -Seconds 2
+    # The server writes the ready file once its first pipe instance is listening (no fixed sleep).
+    if (-not (Wait-Until { Test-Path -LiteralPath $ready } 20)) { throw "Fake Discord server '$Name' did not become ready within 20 s." }
     [pscustomobject]@{ Process = $process; Frames = $frames; Stop = $stop }
 }
 
@@ -256,8 +278,10 @@ function Stop-App([Diagnostics.Process] $Process, [string] $Root) {
     if (-not $Process) { return $null }
     $closeUtc = [DateTime]::UtcNow
     if (-not $Process.HasExited) {
-        [void] $Process.CloseMainWindow()
-        # The window may only hide to the tray; give the app time to send its exit clear first.
+        # WM_CLOSE only hides to the tray (TrayEnabled), which used to cost a full 8 s wait plus a force kill on
+        # every launch. The test-hook command-quit runs the normal Quit path instead. Checks that must not
+        # count the quit clear are bounded by the returned close time (see timeline.finalClear).
+        try { [void] (Send-HookCommand $Root 'command-quit') } catch { }
         if (-not $Process.WaitForExit(8000)) {
             foreach ($id in (Get-ProcessTree $Process.Id $Root)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
         }
@@ -395,7 +419,10 @@ function Test-Timeline {
         $endedClear = $null -ne $firstNull -and (($firstNull.Mono - $sets[$repeatIndex].Mono) / 1000) -le 25 -and -not $pauseAfterRepeat
     }
     Add-Check 'timeline.endedClears' $endedClear
-    Add-Check 'timeline.finalClear' ($sets.Count -gt 0 -and $null -eq $sets[-1].Activity)
+    # Only frames sent before the harness closed the app: the quit path's own clear must not stand in for the
+    # ended clear (page 192) that this check proves.
+    $preClose = @($sets | Where-Object { $null -ne $closeUtc -and $_.Utc -lt $closeUtc })
+    Add-Check 'timeline.finalClear' ($preClose.Count -gt 0 -and $null -eq $preClose[-1].Activity)
 
     $allowedTrackUrls = @('https://music.youtube.com/watch?v=fixtureSngA', 'https://music.youtube.com/watch?v=fixtureSngB',
         'https://music.youtube.com/watch?v=fixtureSngC')
@@ -947,6 +974,41 @@ function Test-SameTitle {
     }
 }
 
+function Test-ReaderGap {
+    $root = New-Root 'readergap'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'readergap'
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null
+    $closeUtc = $null
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
+            NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'ReaderGap'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        $firstUtc = Wait-FirstCard $server 60
+        if (-not $firstUtc) { throw 'ReaderGap: no paused card within 60 s.' }
+        # The song returns at page 32 s; allow two reader ticks, debounce and the write gate after that.
+        Wait-UntilUtc $firstUtc.AddSeconds(50)
+        $alive = -not $app.HasExited
+        $closeUtc = Stop-App $app $root
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['ReaderGap'] = $frames
+    Copy-AppLog $root 'readergap'
+    $sets = @(Get-Activities $frames | Where-Object { $null -eq $closeUtc -or $_.Utc -lt $closeUtc })
+    $first = $sets | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
+    $gapClear = if ($first) { $sets | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $first.Utc } | Select-Object -First 1 } else { $null }
+    $after = @(if ($gapClear) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $gapClear.Utc } })
+    Add-Check 'readerGap.benchReady' $ready
+    Add-Check 'readerGap.noCrash' $alive
+    # The page title vanishes at page 5 s; the 8 s hold plus a 5 s reader tick puts the clear well before 25 s.
+    Add-Check 'readerGap.clearedDuringGap' ($null -ne $gapClear -and ($gapClear.Utc - $first.Utc).TotalSeconds -le 25)
+    Add-Check 'readerGap.noCardAfterExpiredSongReturns' ($null -ne $gapClear -and $after.Count -eq 0)
+    $scenarioResults['ReaderGap'] = [ordered]@{
+        appPid = $app.Id; firstCardToGapClearSeconds = if ($gapClear) { [Math]::Round(($gapClear.Utc - $first.Utc).TotalSeconds, 3) } else { $null }
+        cardsAfterGap = $after.Count
+    }
+}
+
 function Test-LiveToggle {
     $root = New-Root 'livetoggle'
     Write-Settings $root $true
@@ -1093,6 +1155,77 @@ function Test-HiddenAndCompact {
     }
 }
 
+# -Parallel: groups run as child processes of this script (own prefix, server and roots), longest first.
+# Order and grouping come from measured serial times (run 20260927T085304Z): Timeline+Disable ~260 s,
+# ProductionGate ~150, PauseExpiry ~95, Reconnect ~90, HiddenAndCompact ~85, then the short ones.
+$parallelGroups = @(@('Timeline', 'Disable'), @('ProductionGate'), @('PauseExpiry'), @('Reconnect'), @('HiddenAndCompact'),
+    @('ArtGap'), @('ReaderGap'), @('RejectedClear'), @('SameTitle'), @('ButtonOff'), @('RejectedReplace'), @('Migration'), @('Absent'),
+    @('LiveToggle'), @('TrueQuit'))
+$childProcesses = [Collections.Generic.List[Diagnostics.Process]]::new()
+
+function Invoke-ParallelGroups {
+    $partsRoot = Join-Path $runDirectory 'parts'
+    $queue = [Collections.Generic.Queue[object]]::new()
+    foreach ($group in $parallelGroups) {
+        $names = @($group | Where-Object { $_ -in $selected })
+        if ($names.Count) { $queue.Enqueue($names) }
+    }
+    $running = [Collections.Generic.List[object]]::new()
+    $durations = [ordered]@{}
+    $childTimeout = [TimeSpan]::FromMinutes(15)
+    while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+        while ($queue.Count -gt 0 -and $running.Count -lt $Parallel) {
+            $names = $queue.Dequeue()
+            $label = $names -join '+'
+            $out = Join-Path $partsRoot ($label.ToLowerInvariant())
+            [IO.Directory]::CreateDirectory($out) | Out-Null
+            $arguments = @('-NoProfile', '-File', $PSCommandPath, '-Scenario', ($names -join ','), '-SkipPublish', '-OutputDirectory', $out,
+                '-TimelineSeconds', "$TimelineSeconds", '-Parallel', '1')
+            if ($CopyWebView2Runtime) { $arguments += '-CopyWebView2Runtime' }
+            if ($KeepRoot) { $arguments += '-KeepRoot' }
+            $process = Start-Process -FilePath pwsh -ArgumentList $arguments -PassThru -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $out 'stdout.txt') -RedirectStandardError (Join-Path $out 'stderr.txt')
+            $childProcesses.Add($process)
+            $running.Add([pscustomobject]@{ Label = $label; Names = $names; Out = $out; Process = $process; Started = [DateTime]::UtcNow })
+        }
+        Start-Sleep -Milliseconds 500
+        foreach ($child in @($running)) {
+            $elapsed = [DateTime]::UtcNow - $child.Started
+            if (-not $child.Process.HasExited -and $elapsed -lt $childTimeout) { continue }
+            if (-not $child.Process.HasExited) {
+                & taskkill /PID $child.Process.Id /T /F 2>&1 | Out-Null
+                Add-Check "runner.$($child.Label).timedOut" $false
+            }
+            $durations[$child.Label] = [Math]::Round($elapsed.TotalSeconds, 1)
+            [void] $running.Remove($child)
+            Merge-ChildRun $child.Label $child.Out $child.Names
+        }
+    }
+    $scenarioResults['parallel'] = [ordered]@{ parallel = $Parallel; groupSeconds = $durations }
+}
+
+function Merge-ChildRun([string] $Label, [string] $Out, [string[]] $Names) {
+    $reportFile = Get-ChildItem -LiteralPath $Out -Recurse -Filter report.json -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $reportFile) { Add-Check "runner.$Label.completed" $false; return }
+    $child = [IO.File]::ReadAllText($reportFile.FullName) | ConvertFrom-Json -Depth 32
+    foreach ($p in $child.checks.PSObject.Properties) {
+        $checks[$p.Name] = if ($checks.Contains($p.Name)) { [bool] $checks[$p.Name] -and [bool] $p.Value } else { [bool] $p.Value }
+    }
+    foreach ($p in $child.scenarios.PSObject.Properties) {
+        $key = if ($p.Name -in 'errors', 'error') { "$($p.Name).$Label" } else { $p.Name }
+        $scenarioResults[$key] = $p.Value
+    }
+    $framesFile = Join-Path $reportFile.DirectoryName 'frames.json'
+    if (Test-Path -LiteralPath $framesFile) {
+        $frames = [IO.File]::ReadAllText($framesFile) | ConvertFrom-Json -Depth 32
+        foreach ($p in $frames.PSObject.Properties) { $framesByScenario[$p.Name] = $p.Value }
+    }
+    # Every requested scenario must have reported its results; a child that stopped early fails the run.
+    foreach ($name in $Names) {
+        if (-not $child.scenarios.PSObject.Properties[$name]) { Add-Check "runner.$name.reported" $false }
+    }
+}
+
 [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
 $appVersion = $null
 try {
@@ -1107,13 +1240,17 @@ try {
     $timelineRoot = $null
     $scenarioErrors = [ordered]@{}
     $runScenario = { param([string] $Name, [scriptblock] $Body)
-        if ($Scenario -notin 'All', $Name) { return }
+        if ($Name -notin $selected) { return }
         try { & $Body } catch {
             Add-Check "runner.$Name.completed" $false
             $scenarioErrors[$Name] = [ordered]@{ message = $_.Exception.Message; scriptStackTrace = $_.ScriptStackTrace
                 position = "$($_.InvocationInfo.PositionMessage)" }
         }
     }
+    $groupCount = @($parallelGroups | Where-Object { @($_ | Where-Object { $_ -in $selected }).Count -gt 0 }).Count
+    if ($Parallel -gt 1 -and $groupCount -gt 1) {
+        Invoke-ParallelGroups
+    } else {
     & $runScenario 'Timeline' { $script:timelineRoot = Test-Timeline }
     & $runScenario 'Absent' { Test-Absent }
     & $runScenario 'Disable' { Test-Disable $script:timelineRoot }
@@ -1126,15 +1263,20 @@ try {
     & $runScenario 'RejectedClear' { Test-RejectedClear }
     & $runScenario 'RejectedReplace' { Test-RejectedReplace }
     & $runScenario 'SameTitle' { Test-SameTitle }
+    & $runScenario 'ReaderGap' { Test-ReaderGap }
     & $runScenario 'LiveToggle' { Test-LiveToggle }
     & $runScenario 'TrueQuit' { Test-TrueQuit }
     & $runScenario 'HiddenAndCompact' { Test-HiddenAndCompact }
+    }
     if ($scenarioErrors.Count -gt 0) { Add-Check 'runner.completed' $false; $scenarioResults['errors'] = $scenarioErrors }
 } catch {
     Add-Check 'runner.completed' $false
     $scenarioResults['error'] = [ordered]@{ message = $_.Exception.Message; scriptStackTrace = $_.ScriptStackTrace }
 } finally {
     foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    foreach ($child in $childProcesses) {
+        try { if (-not $child.HasExited) { & taskkill /PID $child.Id /T /F 2>&1 | Out-Null } } catch { }
+    }
     foreach ($process in $started) {
         try { if (-not $process.HasExited) { foreach ($id in (Get-ProcessTree $process.Id $rootBase)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } } } catch { }
     }
