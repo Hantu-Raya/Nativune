@@ -20,6 +20,16 @@ public sealed partial class WebHostWindow
     private const string DiscordFixtureArtworkHost = "lh3.googleusercontent.com";
     private static byte[]? s_discordFixturePage;
 
+    // The fixture plays unmuted silent PCM: Chromium pauses muted media while the page is hidden (tray),
+    // which audible YouTube Music playback never hits. Unmuted autoplay needs this policy; fixture runs only.
+    private static void DiscordFixtureBrowserArguments(ref string browserArguments)
+    {
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_FIXTURE_PAGE") != "1") return;
+        browserArguments = string.IsNullOrWhiteSpace(browserArguments)
+            ? "--autoplay-policy=no-user-gesture-required"
+            : browserArguments + " --autoplay-policy=no-user-gesture-required";
+    }
+
     private void InstallDiscordFixturePage(CoreWebView2 core)
     {
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_FIXTURE_PAGE") != "1") return;
@@ -146,11 +156,18 @@ public sealed partial class WebHostWindow
     // profile is written into the served fixture document; the state uses the normal TryHideToTray/SetCompact
     // paths. Files:
     //   ready.json / failed.json        written once after native page + state confirmation (or failure)
-    //   command-snapshot-{start,end,final}  harness request -> diagnostics-<label>.json + state-<label>.json
+    //   command-snapshot-<label>        harness request -> diagnostics-<label>.json + state-<label>.json
+    //                                   (label: 1-32 of [a-z0-9-]; start/end/final plus scenario labels)
     //   command-quit                    harness request -> diagnostics-quit.json, then the normal Quit path
+    //   command-resume                  run the page's own play control (media.play()) via ExecuteScriptAsync
+    //   command-discord-off / -on       ApplyDiscordOptions with Enabled false/true (Settings Save path)
+    //   command-compact / command-full  SetCompact(true) + RequestActivation / SetCompact(false)
+    // Commands are honoured in every fixture run with a valid test prefix, not only bench state runs.
     private const string DiscordBenchProfileMeta = "<meta name=\"nativune-discord-bench-profile\" content=\"\">";
     private static readonly TimeSpan DiscordBenchSetupTimeout = TimeSpan.FromSeconds(50);
-    private static readonly string[] DiscordBenchSnapshotLabels = ["start", "end", "final"];
+    private const string DiscordBenchResumeScript =
+        "(() => { const v = document.querySelector('video'); if (!v) return 'no-media';"
+        + " if (v.paused) v.play().catch(() => {}); return 'ok'; })()";
     private const string DiscordBenchProbeScript =
         "(() => { const m = document.querySelector('meta[name=\"nativune-discord-bench-profile\"]');"
         + " const v = document.querySelector('video');"
@@ -169,7 +186,20 @@ public sealed partial class WebHostWindow
     {
         var profile = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_PROFILE");
         var state = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_STATE");
-        if (profile is null && state is null) return;
+        if (profile is null && state is null)
+        {
+            // Command-only mode: fixture page + valid prefix, no bench state setup.
+            if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
+                return;
+            _discordBenchDirectory = Path.Combine(_root, "data", "discord-bench");
+            _discordBenchDone = true;
+            _discordBenchTimer = _dispatcherQueue.CreateTimer();
+            _discordBenchTimer.Interval = TimeSpan.FromMilliseconds(250);
+            _discordBenchTimer.IsRepeating = true;
+            _discordBenchTimer.Tick += OnDiscordBenchTick;
+            _discordBenchTimer.Start();
+            return;
+        }
         _discordBenchDirectory = Path.Combine(_root, "data", "discord-bench");
         _discordBenchStartedAt = Stopwatch.GetTimestamp();
         try
@@ -226,7 +256,7 @@ public sealed partial class WebHostWindow
         try
         {
             if (!_discordBenchDone) await AdvanceDiscordBenchSetupAsync();
-            ProcessDiscordBenchCommands();
+            await ProcessDiscordBenchCommandsAsync();
         }
         catch (Exception ex)
         {
@@ -330,21 +360,55 @@ public sealed partial class WebHostWindow
         }
     }
 
-    private void ProcessDiscordBenchCommands()
+    private static bool IsDiscordBenchLabel(string label)
+    {
+        if (label.Length is < 1 or > 32) return false;
+        foreach (var c in label)
+            if (c is not ((>= 'a' and <= 'z') or (>= '0' and <= '9') or '-')) return false;
+        return true;
+    }
+
+    private bool TakeDiscordBenchCommand(string name)
+    {
+        var path = Path.Combine(_discordBenchDirectory!, name);
+        if (!File.Exists(path)) return false;
+        File.Delete(path);
+        return true;
+    }
+
+    private async Task ProcessDiscordBenchCommandsAsync()
     {
         var directory = _discordBenchDirectory!;
-        foreach (var label in DiscordBenchSnapshotLabels)
+        if (!Directory.Exists(directory)) return;
+        foreach (var command in Directory.GetFiles(directory, "command-snapshot-*"))
         {
-            var command = Path.Combine(directory, "command-snapshot-" + label);
-            if (!File.Exists(command)) continue;
+            var label = Path.GetFileName(command)["command-snapshot-".Length..];
             File.Delete(command);
+            if (!IsDiscordBenchLabel(label)) continue;
             DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-" + label + ".json"), label);
             DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(directory, "state-" + label + ".json"),
                 DiscordBenchStateJson(label));
         }
-        var quit = Path.Combine(directory, "command-quit");
-        if (!File.Exists(quit)) return;
-        File.Delete(quit);
+        if (TakeDiscordBenchCommand("command-discord-off"))
+        {
+            _settings = _settings with { Discord = _settings.Discord with { Enabled = false } };
+            ApplyDiscordOptions(_settings.Discord);
+        }
+        if (TakeDiscordBenchCommand("command-discord-on"))
+        {
+            _settings = _settings with { Discord = _settings.Discord with { Enabled = true } };
+            ApplyDiscordOptions(_settings.Discord);
+        }
+        if (TakeDiscordBenchCommand("command-compact"))
+        {
+            SetCompact(true);
+            RequestActivation();
+        }
+        if (TakeDiscordBenchCommand("command-full")) SetCompact(false);
+        if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
+            await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
+        if (_closing || _disposed) return;
+        if (!TakeDiscordBenchCommand("command-quit")) return;
         DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-quit.json"), "quit");
         _discordBenchTimer?.Stop();
         _ = ShutdownAsync();

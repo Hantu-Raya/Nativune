@@ -39,10 +39,30 @@ Failure modes caught:
 - saved Open-button preference off still sending a button, or dropping the proven title link (ButtonOff);
 - crash or per-attempt log spam when Discord is absent;
 - after Discord drops and comes back (Reconnect), a cached pre-disconnect card republished on the new connection.
+
+Additional scenarios (hook command files under <root>/data/discord-bench, honoured only by the hook build
+with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.DiscordFixture.cs):
+- ProductionGate: MIN_WRITE override unset (production 15 s). Runs the default timeline through seek, pause,
+  resume, track change and the page-120 s ended stop. Every consecutive pair of non-null SET_ACTIVITY frames
+  must be >= 14.5 s apart, and the ended clear must land within 5 s of the ended moment (page time estimated
+  from the first card, +2 s estimate tolerance): clears are never held back by the write gate.
+- PauseExpiry: PAUSE override 20 s, bench profile Paused (steady paused track A). One clear ~20 s after the
+  first paused card (15-25 s window), no republish while still paused, then command-resume (page media.play())
+  must bring a fresh playing card with timestamps.
+- LiveToggle: command-discord-off / command-discord-on call ApplyDiscordOptions(Enabled false/true), the
+  Settings Save path. Off: a clear, then the connection closes, then no further frames. On: a new connection,
+  READY and a fresh non-null card after that READY.
+- TrueQuit: while track A plays, command-quit. A null SET_ACTIVITY must arrive before the connection closes
+  and the process must exit within 5 s without a force-kill.
+- HiddenAndCompact: bench state Hidden + profile Playing. Hidden: Presence reads continue (~5 s cadence) and
+  the card stays up. command-compact (SetCompact(true) + activation): Compact reads ~1/s and zero Presence
+  reads (no duplicate read stream), no clear, no other track. command-full: Presence reads at ~5 s cadence
+  resume. Read counts come from diagnostics snapshots (command-snapshot-<label>) bounded by boundaryQpc.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff')] [string] $Scenario = 'All',
+    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate',
+        'PauseExpiry', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -156,12 +176,64 @@ function Get-ProcessTree([int] $RootId, [string] $Root) {
     @($ids)
 }
 
-function Start-App([string] $Root) {
+$benchEnvKeys = @('NATIVUNE_TEST_DISCORD_BENCH_PROFILE', 'NATIVUNE_TEST_DISCORD_BENCH_STATE')
+
+# $Override: name -> value; a $null value removes that variable for this launch (e.g. MIN_WRITE for production).
+function Start-App([string] $Root, [hashtable] $Override = @{}) {
     foreach ($entry in $testEnv.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
+    foreach ($key in $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    foreach ($entry in $Override.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
     $process = Start-Process -FilePath $appExe -ArgumentList @('web', '--root', $Root) -WorkingDirectory $appDirectory -PassThru
     $started.Add($process)
     $process
 }
+
+function Get-BenchDirectory([string] $Root) { Join-Path $Root 'data/discord-bench' }
+
+function Send-HookCommand([string] $Root, [string] $Name) {
+    $directory = Get-BenchDirectory $Root
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $directory $Name), 'go')
+    [DateTime]::UtcNow
+}
+
+function Wait-Until([scriptblock] $Condition, [double] $Seconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (& $Condition) { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    [bool] (& $Condition)
+}
+
+# Requests diagnostics-<label>.json and returns it parsed (or $null after 10 s).
+function Get-HookSnapshot([string] $Root, [string] $Label) {
+    $path = Join-Path (Get-BenchDirectory $Root) "diagnostics-$Label.json"
+    [void] (Send-HookCommand $Root "command-snapshot-$Label")
+    if (-not (Wait-Until { Test-Path -LiteralPath $path } 10)) { return $null }
+    Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 8
+}
+
+# Reads started in (Start.boundaryQpc, End.boundaryQpc], counted per mode.
+function Get-ReadCounts($Start, $End) {
+    $counts = [ordered]@{ Compact = 0; Presence = 0; seconds = $null }
+    if (-not $Start -or -not $End) { return $counts }
+    $counts.seconds = [Math]::Round(([double] $End.boundaryQpc - [double] $Start.boundaryQpc) / [double] $End.qpcFrequency, 3)
+    foreach ($read in @($End.reads)) {
+        if ([double] $read.startQpc -gt [double] $Start.boundaryQpc -and [double] $read.startQpc -le [double] $End.boundaryQpc) {
+            $counts[[string] $read.mode]++
+        }
+    }
+    $counts
+}
+
+function Wait-BenchReady([string] $Root, [double] $Seconds = 90) {
+    $directory = Get-BenchDirectory $Root
+    [void] (Wait-Until { (Test-Path -LiteralPath (Join-Path $directory 'ready.json')) -or (Test-Path -LiteralPath (Join-Path $directory 'failed.json')) } $Seconds)
+    Test-Path -LiteralPath (Join-Path $directory 'ready.json')
+}
+
+function Get-FrameEvents($Frames, [string] $Name) { @($Frames | Where-Object { $_.direction -eq 'event' -and $_.json -eq $Name }) }
 
 function Stop-App([Diagnostics.Process] $Process, [string] $Root) {
     if (-not $Process) { return $null }
@@ -593,6 +665,245 @@ function Test-ButtonOff {
     $scenarioResults['ButtonOff'] = [ordered]@{ appPid = $app.Id; seconds = 45; nonNullCount = $nonNull.Count; seededDiscordOpenButton = $false }
 }
 
+function Wait-FirstCard($Server, [double] $Seconds = 90) {
+    $found = @{ utc = $null }
+    [void] (Wait-Until {
+        $first = @(Get-Activities (Read-Frames $Server)) | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
+        if ($first) { $found.utc = $first.Utc; $true } else { $false } } $Seconds)
+    $found.utc
+}
+
+function Wait-UntilUtc([datetime] $Utc) {
+    $wait = ($Utc - [DateTime]::UtcNow).TotalMilliseconds
+    if ($wait -gt 0) { Start-Sleep -Milliseconds ([int] $wait) }
+}
+
+function Test-ProductionGate {
+    # Production write gate (15 s): MIN_WRITE override removed; everything else as Timeline.
+    $root = New-Root 'productiongate'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'productiongate'
+    $app = $null; $alive = $false; $firstUtc = $null
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_MIN_WRITE_SECONDS = $null }
+        $firstUtc = Wait-FirstCard $server
+        if (-not $firstUtc) { throw 'ProductionGate: no non-null SET_ACTIVITY within 90 s.' }
+        # First card ~= page 0 + 1 s debounce; run to page ~135 (after the 120 s ended stop and track C start).
+        Wait-UntilUtc $firstUtc.AddSeconds(134)
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['ProductionGate'] = $frames
+    Copy-AppLog $root 'productiongate'
+    $sets = @(Get-Activities $frames)
+    $nonNull = @($sets | Where-Object { $null -ne $_.Activity })
+    $minGap = [double]::PositiveInfinity
+    for ($i = 1; $i -lt $nonNull.Count; $i++) { $minGap = [Math]::Min($minGap, ($nonNull[$i].Mono - $nonNull[$i - 1].Mono) / 1000) }
+    $firstB = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (Get-Prop $s.Activity 'details') -eq 'Fixture Song B' })
+    $endedClear = if ($firstB -ge 0) { $sets | Select-Object -Skip ($firstB + 1) | Where-Object { $null -eq $_.Activity } | Select-Object -First 1 } else { $null }
+    $endedPage = if ($endedClear) { ($endedClear.Utc - $firstUtc).TotalSeconds + 1 } else { $null }
+    Add-Check 'productionGate.noCrash' $alive
+    Add-Check 'productionGate.cardsSent' ($nonNull.Count -ge 3)
+    Add-Check 'productionGate.coversTrackChange' ($firstB -ge 0)
+    Add-Check 'productionGate.nonNullGapAtLeast14_5s' ($nonNull.Count -ge 2 -and $minGap -ge 14.5)
+    # Ended at page 120 s: clear within 5 s (+2 s page-estimate tolerance either side).
+    Add-Check 'productionGate.endedClearNotGated' ($null -ne $endedPage -and $endedPage -ge 118 -and $endedPage -le 127)
+    $scenarioResults['ProductionGate'] = [ordered]@{
+        appPid = $app.Id; minWriteOverride = $null; setActivityCount = $sets.Count; nonNullCount = $nonNull.Count
+        minNonNullGapSeconds = if ([double]::IsInfinity($minGap)) { $null } else { [Math]::Round($minGap, 3) }
+        estimatedEndedClearPage = if ($null -ne $endedPage) { [Math]::Round($endedPage, 1) } else { $null }
+    }
+}
+
+function Test-PauseExpiry {
+    $root = New-Root 'pauseexpiry'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'pauseexpiry'
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null; $resumeUtc = $null
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
+            NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Paused'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        $firstUtc = Wait-FirstCard $server 60
+        if (-not $firstUtc) { throw 'PauseExpiry: no paused card within 60 s.' }
+        Wait-UntilUtc $firstUtc.AddSeconds(35)
+        $resumeUtc = Send-HookCommand $root 'command-resume'
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object {
+            $null -ne $_.Activity -and $_.Utc -gt $resumeUtc -and $null -ne (Get-Prop $_.Activity 'timestamps') }) } 15)
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['PauseExpiry'] = $frames
+    Copy-AppLog $root 'pauseexpiry'
+    $sets = @(Get-Activities $frames)
+    $firstPaused = $sets | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
+    $beforeResume = @(if ($firstPaused -and $resumeUtc) { $sets | Where-Object { $_.Utc -ge $firstPaused.Utc -and $_.Utc -le $resumeUtc } })
+    $clears = @($beforeResume | Where-Object { $null -eq $_.Activity })
+    $delay = if ($clears.Count -gt 0) { ($clears[0].Utc - $firstPaused.Utc).TotalSeconds } else { $null }
+    $afterClear = @(if ($clears.Count -gt 0) { $beforeResume | Where-Object { $_.Utc -gt $clears[0].Utc } })
+    $pausedCards = @($beforeResume | Where-Object { $null -ne $_.Activity })
+    $resumed = if ($resumeUtc) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $resumeUtc } | Select-Object -First 1 } else { $null }
+    Add-Check 'pauseExpiry.benchReady' $ready
+    Add-Check 'pauseExpiry.noCrash' $alive
+    Add-Check 'pauseExpiry.pausedCardFirst' ($pausedCards.Count -gt 0 -and -not ($pausedCards | Where-Object {
+        (Get-Prop (Get-Prop $_.Activity 'assets') 'small_image') -ne 'pause' -or $null -ne (Get-Prop $_.Activity 'timestamps') }))
+    Add-Check 'pauseExpiry.oneClearAfter20s' ($clears.Count -eq 1 -and $delay -ge 15 -and $delay -le 25)
+    Add-Check 'pauseExpiry.noRepublishWhilePaused' ($clears.Count -eq 1 -and $afterClear.Count -eq 0)
+    Add-Check 'pauseExpiry.freshPlayingCardAfterResume' ($null -ne $resumed -and $null -ne (Get-Prop $resumed.Activity 'timestamps') -and
+        (Get-Prop $resumed.Activity 'details') -eq 'Fixture Song A' -and ($resumed.Utc - $resumeUtc).TotalSeconds -le 15)
+    $scenarioResults['PauseExpiry'] = [ordered]@{
+        appPid = $app.Id; pauseSeconds = 20; profile = 'Paused'; clearDelaySeconds = if ($null -ne $delay) { [Math]::Round($delay, 3) } else { $null }
+        clearsWhilePaused = $clears.Count; setsAfterClearBeforeResume = $afterClear.Count
+        resumeToCardSeconds = if ($resumed) { [Math]::Round(($resumed.Utc - $resumeUtc).TotalSeconds, 3) } else { $null }
+    }
+}
+
+function Test-LiveToggle {
+    $root = New-Root 'livetoggle'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'livetoggle'
+    $app = $null; $alive = $false; $offUtc = $null; $onUtc = $null
+    try {
+        $app = Start-App $root
+        if (-not (Wait-FirstCard $server)) { throw 'LiveToggle: no non-null SET_ACTIVITY within 90 s.' }
+        Start-Sleep -Seconds 5
+        $offUtc = Send-HookCommand $root 'command-discord-off'
+        [void] (Wait-Until { [bool] (Get-FrameEvents (Read-Frames $server) 'disconnected' | Where-Object { (ConvertTo-UtcTime $_.utc) -gt $offUtc }) } 10)
+        Start-Sleep -Seconds 8
+        $onUtc = Send-HookCommand $root 'command-discord-on'
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $onUtc }) } 20)
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['LiveToggle'] = $frames
+    Copy-AppLog $root 'livetoggle'
+    $utcOf = { param($f) ConvertTo-UtcTime $f.utc }
+    $sets = @(Get-Activities $frames)
+    $closed = Get-FrameEvents $frames 'disconnected' | Where-Object { (& $utcOf $_) -gt $offUtc } | Select-Object -First 1
+    $closedUtc = if ($closed) { & $utcOf $closed } else { $null }
+    $offClear = $closed -and [bool] ($sets | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $offUtc -and $_.Utc -le $closedUtc })
+    $offNoise = @(if ($closed -and $onUtc) { $frames | Where-Object { $t = & $utcOf $_; $t -gt $closedUtc -and $t -lt $onUtc -and
+        ($_.direction -eq 'in' -or ($_.direction -eq 'event' -and $_.json -eq 'connected')) } })
+    $reconnect = Get-FrameEvents $frames 'connected' | Where-Object { (& $utcOf $_) -gt $onUtc } | Select-Object -First 1
+    $readyIndex = if ($reconnect) { [Array]::FindIndex([object[]] $frames, [Predicate[object]] { param($f)
+        $f.direction -eq 'out' -and $f.json -like '*"READY"*' -and (ConvertTo-UtcTime $f.utc) -gt $onUtc }) } else { -1 }
+    $readyUtc = if ($readyIndex -ge 0) { & $utcOf $frames[$readyIndex] } else { $null }
+    $freshCard = if ($readyUtc) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $readyUtc } | Select-Object -First 1 } else { $null }
+    Add-Check 'liveToggle.noCrash' $alive
+    Add-Check 'liveToggle.offClearBeforeClose' ([bool] $offClear)
+    Add-Check 'liveToggle.offConnectionClosed' ($null -ne $closed)
+    Add-Check 'liveToggle.offNoFurtherFrames' ($null -ne $closed -and $offNoise.Count -eq 0)
+    Add-Check 'liveToggle.onNewConnectionReady' ($null -ne $reconnect -and $null -ne $readyUtc)
+    Add-Check 'liveToggle.onFreshCard' ($null -ne $freshCard -and (Get-Prop $freshCard.Activity 'details') -eq 'Fixture Song A')
+    $scenarioResults['LiveToggle'] = [ordered]@{
+        appPid = $app.Id; offToCloseSeconds = if ($closedUtc) { [Math]::Round(($closedUtc - $offUtc).TotalSeconds, 3) } else { $null }
+        framesWhileOff = $offNoise.Count; onToCardSeconds = if ($freshCard) { [Math]::Round(($freshCard.Utc - $onUtc).TotalSeconds, 3) } else { $null }
+    }
+}
+
+function Test-TrueQuit {
+    $root = New-Root 'truequit'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'truequit'
+    $app = $null; $quitUtc = $null; $exited = $false; $exitSeconds = $null
+    try {
+        $app = Start-App $root
+        if (-not (Wait-FirstCard $server)) { throw 'TrueQuit: no non-null SET_ACTIVITY within 90 s.' }
+        Start-Sleep -Seconds 5
+        $quitUtc = Send-HookCommand $root 'command-quit'
+        $exited = $app.WaitForExit(5000)
+        if ($exited) { $exitSeconds = ([DateTime]::UtcNow - $quitUtc).TotalSeconds }
+        else { [void] (Stop-App $app $root) }
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['TrueQuit'] = $frames
+    Copy-AppLog $root 'truequit'
+    $sets = @(Get-Activities $frames)
+    $closed = Get-FrameEvents $frames 'disconnected' | Where-Object { (ConvertTo-UtcTime $_.utc) -gt $quitUtc } | Select-Object -First 1
+    $closedUtc = if ($closed) { ConvertTo-UtcTime $closed.utc } else { $null }
+    $cardBeforeQuit = [bool] ($sets | Where-Object { $null -ne $_.Activity -and $_.Utc -lt $quitUtc -and (Get-Prop $_.Activity 'details') -eq 'Fixture Song A' })
+    $quitClear = $closed -and [bool] ($sets | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $quitUtc -and $_.Utc -le $closedUtc })
+    Add-Check 'trueQuit.trackAPlayingBeforeQuit' $cardBeforeQuit
+    Add-Check 'trueQuit.clearBeforeClose' ([bool] $quitClear)
+    Add-Check 'trueQuit.exitWithin5sNoForceKill' $exited
+    $scenarioResults['TrueQuit'] = [ordered]@{
+        appPid = $app.Id; exitedWithoutForceKill = $exited; quitToExitSeconds = if ($null -ne $exitSeconds) { [Math]::Round($exitSeconds, 3) } else { $null }
+        quitToCloseSeconds = if ($closedUtc) { [Math]::Round(($closedUtc - $quitUtc).TotalSeconds, 3) } else { $null }
+    }
+}
+
+function Test-HiddenAndCompact {
+    $root = New-Root 'hiddencompact'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'hiddencompact'
+    $app = $null; $alive = $false; $ready = $false; $snap = [ordered]@{}; $phaseSeconds = 20
+    $readState = { param([string] $Label) $path = Join-Path (Get-BenchDirectory $root) "state-$Label.json"
+        if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw | ConvertFrom-Json } else { $null } }
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Playing'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Hidden' }
+        $ready = Wait-BenchReady $root
+        if (-not $ready) { throw 'HiddenAndCompact: bench state Hidden not ready within 90 s.' }
+        [void] (Wait-FirstCard $server 30)
+        $snap['hidden-start'] = Get-HookSnapshot $root 'hidden-start'
+        Start-Sleep -Seconds $phaseSeconds
+        $snap['hidden-end'] = Get-HookSnapshot $root 'hidden-end'
+        [void] (Send-HookCommand $root 'command-compact')
+        Start-Sleep -Seconds 4
+        $snap['compact-start'] = Get-HookSnapshot $root 'compact-start'
+        Start-Sleep -Seconds $phaseSeconds
+        $snap['compact-end'] = Get-HookSnapshot $root 'compact-end'
+        [void] (Send-HookCommand $root 'command-full')
+        Start-Sleep -Seconds 4
+        $snap['full-start'] = Get-HookSnapshot $root 'full-start'
+        Start-Sleep -Seconds $phaseSeconds
+        $snap['full-end'] = Get-HookSnapshot $root 'full-end'
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['HiddenAndCompact'] = $frames
+    Copy-AppLog $root 'hiddencompact'
+    $hidden = Get-ReadCounts $snap['hidden-start'] $snap['hidden-end']
+    $compact = Get-ReadCounts $snap['compact-start'] $snap['compact-end']
+    $full = Get-ReadCounts $snap['full-start'] $snap['full-end']
+    # ~5 s Presence cadence (+-50 %, plus one boundary read) and ~1 s Compact cadence (+-30 %, plus one).
+    $presenceCadence = { param($c) $null -ne $c.seconds -and $c.Presence -gt 0 -and $c.Presence -ge [Math]::Floor($c.seconds / 5 * 0.5) -and
+        $c.Presence -le [Math]::Ceiling($c.seconds / 5 * 1.5) + 1 }
+    $hiddenState = & $readState 'hidden-start'; $compactState = & $readState 'compact-start'; $fullState = & $readState 'full-start'
+    $sets = @(Get-Activities $frames)
+    $windowStart = if ($snap['hidden-start']) { ConvertTo-UtcTime $snap['hidden-start'].boundaryUtc } else { $null }
+    $windowEnd = if ($snap['full-end']) { ConvertTo-UtcTime $snap['full-end'].boundaryUtc } else { $null }
+    $inWindow = @(if ($windowStart -and $windowEnd) { $sets | Where-Object { $_.Utc -ge $windowStart -and $_.Utc -le $windowEnd } })
+    # A card must be up by the end of the hidden phase (it may first arrive while hidden, after debounce).
+    $hiddenEnd = if ($snap['hidden-end']) { ConvertTo-UtcTime $snap['hidden-end'].boundaryUtc } else { $null }
+    $cardUp = [bool] $windowStart -and [bool] $windowEnd -and [bool] $hiddenEnd -and [bool] ($sets | Where-Object { $null -ne $_.Activity -and $_.Utc -le $hiddenEnd })
+    Add-Check 'hiddenCompact.benchReady' $ready
+    Add-Check 'hiddenCompact.noCrash' $alive
+    Add-Check 'hiddenCompact.hiddenState' ($null -ne $hiddenState -and $hiddenState.appWindowVisible -eq $false -and $hiddenState.compact -eq $false)
+    Add-Check 'hiddenCompact.hiddenPresenceReads5s' ([bool] (& $presenceCadence $hidden))
+    Add-Check 'hiddenCompact.hiddenCardUp' ($cardUp -and -not ($inWindow | Where-Object { $null -eq $_.Activity }))
+    Add-Check 'hiddenCompact.compactState' ($null -ne $compactState -and $compactState.compact -eq $true -and $compactState.windowVisible -eq $true)
+    Add-Check 'hiddenCompact.compactReads1s' ($null -ne $compact.seconds -and $compact.Compact -ge [Math]::Floor($compact.seconds * 0.7) -and
+        $compact.Compact -le [Math]::Ceiling($compact.seconds * 1.3) + 1)
+    Add-Check 'hiddenCompact.noPresenceReadsWhileCompact' ($null -ne $compact.seconds -and $compact.Presence -eq 0)
+    Add-Check 'hiddenCompact.cardContinuity' ($cardUp -and -not ($inWindow | Where-Object {
+        $null -eq $_.Activity -or (Get-Prop $_.Activity 'details') -ne 'Fixture Song A' }))
+    Add-Check 'hiddenCompact.fullState' ($null -ne $fullState -and $fullState.compact -eq $false -and $fullState.windowVisible -eq $true)
+    Add-Check 'hiddenCompact.fullPresenceReads5s' ([bool] (& $presenceCadence $full))
+    $scenarioResults['HiddenAndCompact'] = [ordered]@{
+        appPid = $app.Id; phaseSeconds = $phaseSeconds; hiddenReads = $hidden; compactReads = $compact; fullReads = $full
+        setsInWindow = $inWindow.Count; snapshotsTaken = @($snap.Keys | Where-Object { $snap[$_] }).Count
+    }
+}
+
 [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
 $appVersion = $null
 try {
@@ -605,17 +916,32 @@ try {
     $appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
 
     $timelineRoot = $null
-    if ($Scenario -in 'All', 'Timeline') { $timelineRoot = Test-Timeline }
-    if ($Scenario -in 'All', 'Absent') { Test-Absent }
-    if ($Scenario -in 'All', 'Disable') { Test-Disable $timelineRoot }
-    if ($Scenario -in 'All', 'Migration') { Test-Migration }
-    if ($Scenario -in 'All', 'Reconnect') { Test-Reconnect }
-    if ($Scenario -in 'All', 'ButtonOff') { Test-ButtonOff }
+    $scenarioErrors = [ordered]@{}
+    $runScenario = { param([string] $Name, [scriptblock] $Body)
+        if ($Scenario -notin 'All', $Name) { return }
+        try { & $Body } catch {
+            Add-Check "runner.$Name.completed" $false
+            $scenarioErrors[$Name] = [ordered]@{ message = $_.Exception.Message; scriptStackTrace = $_.ScriptStackTrace
+                position = "$($_.InvocationInfo.PositionMessage)" }
+        }
+    }
+    & $runScenario 'Timeline' { $script:timelineRoot = Test-Timeline }
+    & $runScenario 'Absent' { Test-Absent }
+    & $runScenario 'Disable' { Test-Disable $script:timelineRoot }
+    & $runScenario 'Migration' { Test-Migration }
+    & $runScenario 'Reconnect' { Test-Reconnect }
+    & $runScenario 'ButtonOff' { Test-ButtonOff }
+    & $runScenario 'ProductionGate' { Test-ProductionGate }
+    & $runScenario 'PauseExpiry' { Test-PauseExpiry }
+    & $runScenario 'LiveToggle' { Test-LiveToggle }
+    & $runScenario 'TrueQuit' { Test-TrueQuit }
+    & $runScenario 'HiddenAndCompact' { Test-HiddenAndCompact }
+    if ($scenarioErrors.Count -gt 0) { Add-Check 'runner.completed' $false; $scenarioResults['errors'] = $scenarioErrors }
 } catch {
     Add-Check 'runner.completed' $false
-    $scenarioResults['error'] = $_.Exception.Message
+    $scenarioResults['error'] = [ordered]@{ message = $_.Exception.Message; scriptStackTrace = $_.ScriptStackTrace }
 } finally {
-    foreach ($key in $testEnv.Keys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
     foreach ($process in $started) {
         try { if (-not $process.HasExited) { foreach ($id in (Get-ProcessTree $process.Id $rootBase)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } } } catch { }
     }

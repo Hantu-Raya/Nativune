@@ -205,7 +205,9 @@
   const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
   if (profile === 'Playing' || profile === 'Paused') {
     load(Object.assign({}, tracks.A, { duration: 1800 }));
-    media.muted = true;
+    // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
+    // audible YouTube Music playback never hits. The PCM is silence, so nothing is audible.
+    media.muted = false;
     media.src = silentWav();
     if (profile === 'Playing') play();
     else { position = 60; media.pause(); }

@@ -774,6 +774,9 @@ public sealed partial class WebHostWindow : Window
             var runtimeDirectory = ResolveRuntimeDirectory(_root);
             var browserArguments = BrowserArguments(_settings.SleepInBackground);
             BenchStart(ref browserArguments);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            DiscordFixtureBrowserArguments(ref browserArguments);
+#endif
             var options = new CoreWebView2EnvironmentOptions
             {
                 AreBrowserExtensionsEnabled = true,

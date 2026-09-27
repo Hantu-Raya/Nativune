@@ -610,4 +610,57 @@ const albumFirst = state(withDetails(makePage(), { byline: [['browse/MPREb_album
 assert.equal(albumFirst.artist, 'Artist B'); assert.equal(albumFirst.artistUrl, 'https://music.youtube.com/channel/UCbbbbbbbbbbbbbbbbbbbbbb');
 assert.equal(known.artist, null); assert.equal(known.trackUrl, null);
 
-console.log('PASS: bounded public transport readiness, website-slider seek route, transient seek-clock recovery, unsupported Compact audio commands, single-click actions, and sidebar playlists');
+// Presence-mode equivalence: strip the compact-only regions exactly as CompactPlayback.Script.cs
+// StripCompactOnly does and compare the observation against the Compact read on the same fixtures.
+function stripCompactOnly(text) {
+  const out = []; let skipping = false;
+  for (const rawLine of text.split('\n')) {
+    const marker = rawLine.trim();
+    if (marker === '// @compact-only-begin') { assert.equal(skipping, false, 'nested compact-only region'); skipping = true; continue; }
+    if (marker === '// @compact-only-end') { assert.equal(skipping, true, 'unopened compact-only region'); skipping = false; continue; }
+    if (!skipping) out.push(rawLine);
+  }
+  assert.equal(skipping, false, 'unclosed compact-only region');
+  return out.join('\n').replace(/\n+$/, '');
+}
+const presenceScript = stripCompactOnly(script);
+assert.ok(presenceScript.length < script.length && !presenceScript.includes('@compact-only'));
+function presenceState(page) {
+  const context = {
+    document: page.document, window: page.window, location: page.location,
+    HTMLElement, HTMLMediaElement, URL, Event,
+    getComputedStyle: element => ({ display: 'block', visibility: 'visible', color: element.visualColor }),
+  };
+  const req = request(page, 'state');
+  return vm.runInNewContext(`(() => { const request = ${JSON.stringify(req)};\n${presenceScript}\n})()`, context, { timeout: 1000 });
+}
+// Action-capability fields a presence read never computes, with their unavailable values.
+const presenceAbsent = { liked: null, disliked: null, shuffle: null, canLike: false, canDislike: false, canShuffle: false, canSeek: false };
+const presenceCases = {
+  default: () => makePage(),
+  paused: () => makePage({ paused: true }),
+  seeking: () => makePage({ seeking: true }),
+  noTrack: () => makePage({ hasMedia: false }),
+  nonWatchHref: () => makePage({ href: 'https://music.youtube.com/playlist?list=PLfixture' }),
+  bylineAlbumTwoArtists: () => withDetails(makePage(), { byline: [[artistA, 'Artist A'], [artistB, 'Artist B'], ['browse/MPREb_album01', 'Album A']] }),
+  provenTitleLink: () => withDetails(makePage(), { byline: [[artistA, 'Artist A']], titleLinks: [[watchLink, 'Track title']] }),
+  unprovenTitleLink: () => withDetails(makePage(), { byline: [[artistA, 'Artist A']], titleLinks: [[watchLink, 'Other title']] }),
+  adShowing: () => withDetails(makePage(), { titleLinks: [[watchLink, 'Track title']], adShowing: true }),
+};
+for (const [name, make] of Object.entries(presenceCases)) {
+  const compactRead = JSON.parse(JSON.stringify(state(make())));
+  const presenceRead = JSON.parse(JSON.stringify(presenceState(make())));
+  if (compactRead.code !== 'state') { assert.deepEqual(presenceRead, compactRead, name); continue; }
+  assert.equal(presenceRead.code, 'state', name);
+  for (const [key, value] of Object.entries(presenceAbsent)) assert.equal(presenceRead[key], value, `${name}.${key}`);
+  const observation = read => Object.fromEntries(Object.entries(read).filter(([key]) => !(key in presenceAbsent)));
+  assert.deepEqual(observation(presenceRead), observation(compactRead), name);
+}
+assert.equal(state(presenceCases.noTrack()).code, 'unavailable');
+assert.equal(presenceState(presenceCases.provenTitleLink()).trackUrl, watchLink);
+assert.equal(presenceState(presenceCases.adShowing()).trackUrl, null);
+assert.equal(presenceState(presenceCases.bylineAlbumTwoArtists()).artist, 'Artist A, Artist B');
+assert.equal(presenceState(presenceCases.paused()).paused, true);
+assert.equal(presenceState(presenceCases.nonWatchHref()).videoId, null);
+
+console.log('PASS: bounded public transport readiness, website-slider seek route, transient seek-clock recovery, unsupported Compact audio commands, single-click actions, sidebar playlists, and presence-mode read equivalence');
