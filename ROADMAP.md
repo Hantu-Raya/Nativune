@@ -9,6 +9,11 @@ This roadmap names areas for future work; it is not a release schedule or a prom
 - Measure long-session stability and complete-process resource use. A short benchmark (`scripts/bench-perf.ps1`) exists; long sessions and signed-in use are not yet measured.
 - Review accessibility, keyboard and screen-reader use, and high-contrast appearance.
 
+## Planned features
+
+- **OBS overlay.** An optional "now playing" overlay that OBS Studio can add as a source, showing the current song, artist, artwork and progress. It would be served only on this PC, off by default, and share only the song details the Discord status already reads.
+- **Time-synced lyrics.** Implemented as the opt-in Barebones Better Lyrics, a GPL-3.0 fork of [Better Lyrics](https://github.com/better-lyrics/better-lyrics) 2.4.1 stripped to synced lyrics and translation, shipped separately from the MIT app with its source beside each release. Off by default; pending release.
+
 ## Known limitations
 
 - Compatibility depends on YouTube Music's public website UI, which may change.

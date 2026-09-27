@@ -33,6 +33,20 @@ uBlock Origin Lite 2026.907.2003
   unpacked extension source at .tools/ubol/2026.907.2003/LICENSE.txt
 - Bundled only in the project's configured privacy-only mode.
 
+Barebones Better Lyrics 2.4.1.1
+- A modified version of Better Lyrics 2.4.1
+  (https://github.com/better-lyrics/better-lyrics), stripped to synced lyrics
+  and translation. Modified by Hantu-Raya for Nativune, 2026.
+- License: GNU General Public License version 3, included at
+  licenses/BarebonesBetterLyrics-GPL-3.0.txt, with copyright and bundled
+  dependency notices (MIT) at licenses/BarebonesBetterLyrics-NOTICE.txt.
+- It is a separate program from Nativune and is not covered by Nativune's MIT
+  License. It is loaded only when the user turns on Lyrics in Settings.
+- Corresponding source: barebones-better-lyrics-<version>-source.zip, published
+  beside each Nativune release, and
+  https://github.com/Hantu-Raya/barebones-better-lyrics at the commit pinned in
+  release-inputs.json.
+
 Discord symbol (the "Clyde" logo)
 - Source: Discord's official brand kit, https://discord.com/branding
   (white symbol download, Discord-Symbol-White.svg).

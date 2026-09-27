@@ -868,6 +868,10 @@ public sealed partial class WebHostWindow : Window
             }, _settings.BlockAds, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
+            // Optional lyrics: never throws for lyrics problems, so Music and uBO Lite continue regardless.
+            _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, _settings.BetterLyricsEnabled, lifetimeToken);
+            if (!CanContinueInitialization(lifetimeToken))
+                return;
 
             _configuringPrivacy = false;
             core.NavigationCompleted += (_, args) => OnNavigationCompleted(args);
@@ -1399,6 +1403,8 @@ public sealed partial class WebHostWindow : Window
             return applied ? null : error;
         }, installed, startupState, () => _statusDetailsText, _root);
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
+        dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
+        dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
         if (discordPage)
             dialog.SelectDiscordPage();
         _settingsDialog = dialog;
@@ -1427,6 +1433,7 @@ public sealed partial class WebHostWindow : Window
                 var adSettingChanged = _settings.BlockAds != dialog.Result.BlockAds;
                 var restoreChanged = _settings.RestoreSection != dialog.Result.RestoreSection;
                 var trayChanged = _settings.TrayEnabled != dialog.Result.TrayEnabled;
+                var lyricsChanged = _settings.BetterLyricsEnabled != dialog.Result.BetterLyricsEnabled;
                 _settings = _settings with
                 {
                     Shortcuts = dialog.Result.Shortcuts,
@@ -1445,6 +1452,12 @@ public sealed partial class WebHostWindow : Window
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
                     SetTrayEnabled(dialog.Result.TrayEnabled);
+                if (lyricsChanged)
+                {
+                    _settings = _settings with { BetterLyricsEnabled = dialog.Result.BetterLyricsEnabled };
+                    if (!dialog.Result.BetterLyricsEnabled)
+                        await DisableLyricsNowAsync();
+                }
                 string? startupError = null;
                 if (ReleaseUpdater.IsInstalledBuild(_root))
                 {
@@ -1474,6 +1487,8 @@ public sealed partial class WebHostWindow : Window
                 CaptureSettings();
                 if (startupError is not null)
                     SetStatus(startupError, isError: true);
+                else if (lyricsChanged && _settings.BetterLyricsEnabled)
+                    SetStatus("Settings saved. Lyrics turn on after you restart Nativune.");
                 else if (restoreChanged)
                     SetStatus(_settings.RestoreSection
                         ? "Settings saved. Remembering Home or Library only. The website still owns account, queue and autoplay behavior."
@@ -2168,6 +2183,7 @@ public sealed partial class WebHostWindow : Window
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
+        try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
         // Clear presence while the module can still write (bounded to about 1 s internally).
         try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }

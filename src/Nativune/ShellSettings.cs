@@ -28,6 +28,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public AutostartMode AutostartMode { get; init; } = AutostartMode.Tray;
     // Opt-in Discord Rich Presence (Settings > Discord). Off by default; versions before 7 load off.
     public DiscordPresenceOptions Discord { get; init; } = DiscordPresenceOptions.Default;
+    // Opt-in Barebones Better Lyrics (Settings > Lyrics). Off by default; missing loads off.
+    public bool BetterLyricsEnabled { get; init; }
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -217,7 +219,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             {
                 StatusLine = Enum.IsDefined(settings.Discord.StatusLine) ? settings.Discord.StatusLine
                     : DiscordStatusLine.Artist
-            }
+            },
+            BetterLyricsEnabled = settings.BetterLyricsEnabled
         };
     }
 
@@ -280,7 +283,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
         AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
-        bool DiscordOpenButton = true, bool DiscordShowAuthor = true)
+        bool DiscordOpenButton = true, bool DiscordShowAuthor = true, bool BetterLyricsEnabled = false)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -306,7 +309,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             Discord = new DiscordPresenceOptions(Version >= CurrentVersion && DiscordPresence,
                 Enum.IsDefined((Nativune.DiscordStatusLine)DiscordStatusLine)
                     ? (Nativune.DiscordStatusLine)DiscordStatusLine : Nativune.DiscordStatusLine.Artist,
-                DiscordOpenButton, DiscordShowAuthor)
+                DiscordOpenButton, DiscordShowAuthor),
+            BetterLyricsEnabled = BetterLyricsEnabled
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -317,6 +321,6 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
                 settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
                 settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton,
-                settings.Discord.ShowAuthor);
+                settings.Discord.ShowAuthor, settings.BetterLyricsEnabled);
     }
 }

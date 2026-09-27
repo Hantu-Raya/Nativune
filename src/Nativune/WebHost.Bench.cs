@@ -14,6 +14,12 @@ public sealed partial class WebHostWindow
 {
     private const string BenchMediaScript =
         "(()=>{const v=document.querySelector('video');if(!v)return {playing:false,paused:null,currentTime:null,duration:null};return {playing:!v.paused&&!v.ended,paused:v.paused,currentTime:Number.isFinite(v.currentTime)?v.currentTime:null,duration:Number.isFinite(v.duration)?v.duration:null};})()";
+    private const string BenchPageStateScript =
+        "(()=>{const v=document.querySelector('video');const u=new URL(location.href);" +
+        "return {v:u.searchParams.get('v'),list:u.searchParams.get('list'),t:v&&Number.isFinite(v.currentTime)?v.currentTime:null," +
+        "paused:v?v.paused:null,ready:v?v.readyState:null,elements:document.getElementsByTagName('*').length,path:u.pathname};})()";
+    private UiDispatcherQueueTimer? _benchStatsTimer;
+    private bool _benchStatsPending;
     private static readonly TimeSpan BenchMediaDetectTimeout = TimeSpan.FromSeconds(120);
     private readonly record struct BenchMediaState(bool? Paused, double? CurrentTime, double? Duration, bool Playing);
 
@@ -52,6 +58,8 @@ public sealed partial class WebHostWindow
 
     partial void BenchMuteOutput()
     {
+        if (_browserHost is { } observedHost)
+            LyricsBenchObserveMainView(observedHost.Core);
         if (!BenchHooks.MuteOutput) return;
         _desiredOutputVolume = 0;
         QueueOutputAudioRequest(CaptureOutputAudioProcesses(), volume: 0);
@@ -101,6 +109,8 @@ public sealed partial class WebHostWindow
             _benchMediaPollTimer?.Stop();
             _benchScheduleTimer?.Stop();
             _benchPresentationTimer?.Stop();
+            _benchStatsTimer?.Stop();
+            _lyricsBenchTimer?.Stop();
         }
         catch (Exception) { }
     }
@@ -191,6 +201,15 @@ public sealed partial class WebHostWindow
         _benchAnchorStarted = true;
         _benchAnchorTimestamp = Stopwatch.GetTimestamp();
         BenchHooks.Anchor(source);
+        if (BenchHooks.StatsSeconds > 0)
+        {
+            _benchStatsTimer = _dispatcherQueue.CreateTimer();
+            _benchStatsTimer.Interval = TimeSpan.FromSeconds(BenchHooks.StatsSeconds);
+            _benchStatsTimer.IsRepeating = true;
+            _benchStatsTimer.Tick += OnBenchStatsTick;
+            _benchStatsTimer.Start();
+            OnBenchStatsTick(null, EventArgs.Empty);
+        }
         if (BenchHooks.Schedule.Count == 0) return;
 
         _benchScheduleTimer = _dispatcherQueue.CreateTimer();
@@ -258,6 +277,10 @@ public sealed partial class WebHostWindow
                     _benchScheduleTimer?.Stop();
                     _ = ShutdownAsync();
                     break;
+                default:
+                    // Lyrics E2E actions: see WebHost.LyricsBench.cs.
+                    await LyricsBenchRunActionAsync(scheduled.Action);
+                    break;
             }
         }
         catch (Exception)
@@ -267,6 +290,31 @@ public sealed partial class WebHostWindow
         {
             _benchSchedulePending = false;
         }
+    }
+
+    private async void OnBenchStatsTick(object? sender, object args)
+    {
+        if (_closing || _disposed)
+        {
+            _benchStatsTimer?.Stop();
+            return;
+        }
+        if (_benchStatsPending || _browserHost is null) return;
+        _benchStatsPending = true;
+        try
+        {
+            var page = JsonDocument.Parse(await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchPageStateScript).AsTask())).RootElement.Clone();
+            BenchHooks.Event("page-stats", ("page", page));
+        }
+        catch (Exception ex) { BenchHooks.Event("page-stats-error", ("error", ex.GetType().Name)); }
+        finally { _benchStatsPending = false; }
+    }
+
+    private static async Task<string> BenchWithTimeout(Task<string> task, int seconds = 10)
+    {
+        var finished = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(seconds)));
+        if (finished != task) throw new TimeoutException("bench call timed out");
+        return await task;
     }
 
     private async Task<bool> WaitForBenchVisibilityAsync(bool visible)
@@ -285,7 +333,7 @@ public sealed partial class WebHostWindow
         if (_browserHost is null) return new(null, null, null, false);
         try
         {
-            var result = await _browserHost.Core.ExecuteScriptAsync(BenchMediaScript);
+            var result = await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchMediaScript).AsTask(), 5);
             return ParseBenchMediaState(result);
         }
         catch (Exception)

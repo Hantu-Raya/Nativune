@@ -21,5 +21,24 @@
     "treeSha256": "2e92dfb95313b6ab56f864e1a8167329bab60e1a5be71874eb012498e93b6206",
     "fileCount": 924,
     "totalBytes": 35286246
+  },
+  "node": {
+    "version": "24.21.0",
+    "archiveName": "node-v24.21.0-win-x64.zip",
+    "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+    "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip"
+  },
+  "betterLyrics": {
+    "name": "Barebones Better Lyrics",
+    "version": "2.4.1.1",
+    "extensionId": "ogodmldcmpbfeekmejkeppchklblochl",
+    "sourceRepo": "https://github.com/Hantu-Raya/barebones-better-lyrics",
+    "upstream": "https://github.com/better-lyrics/better-lyrics",
+    "upstreamTag": "v2.4.1",
+    "upstreamCommit": "6e886ef7b19ce20704ebdb36eea2b8891cadff83",
+    "sourceCommit": "78819c71a1427ad285c9bbf0ece903c0ed925731",
+    "treeSha256": "5de7b66bbba578752fa05b1c00dcba5378d1b6e6fc793198eec907964aa4495b",
+    "fileCount": 43,
+    "totalBytes": 431945
   }
 }
