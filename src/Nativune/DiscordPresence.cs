@@ -376,6 +376,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
 
         string? lastSent = null;          // what Discord currently shows for this connection (null = nothing)
         string? pendingNonce = null;
+        var pendingIsClear = false;      // the pending write is itself a clear; do not answer it with another clear
         long pendingDeadline = 0;
         long lastNormalWrite = long.MinValue / 2;
         string? desiredPrevious = null;
@@ -410,13 +411,16 @@ internal sealed class DiscordPresence : IAsyncDisposable
                 if (desired is null)
                 {
                     burstStart = null;
-                    if (lastSent is not null || pendingNonce is not null)
+                    // Send exactly one clear: only when Discord shows (or is about to show) a card. A pending clear
+                    // already covers it; re-clearing on every wakeup (signal, stale ack) was a self-sustaining loop.
+                    if (lastSent is not null || (pendingNonce is not null && !pendingIsClear))
                     {
                         // Priority clear: bypasses debounce and the write gate, retires any pending normal nonce.
                         pendingNonce = await connection.SendActivityAsync(null, _environment.ProcessId, ct).ConfigureAwait(false);
                         if (pendingNonce is null) return false;
                         pendingDeadline = Environment.TickCount64 + AckTimeoutMs;
                         lastSent = null;
+                        pendingIsClear = true;
                     }
                 }
                 else if (!string.Equals(desired, lastSent, StringComparison.Ordinal))
@@ -428,6 +432,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                         if (pendingNonce is null) return false;
                         pendingDeadline = Environment.TickCount64 + AckTimeoutMs;
                         lastSent = desired; // a rejected payload is not resent until the desired payload changes
+                        pendingIsClear = false;
                         lastNormalWrite = Environment.TickCount64;
                         burstStart = null;
                     }
