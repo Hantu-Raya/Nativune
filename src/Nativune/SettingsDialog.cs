@@ -328,7 +328,8 @@ public sealed partial class SettingsDialog : Window
             RestoreSection = RestoreSectionCheckBox.IsChecked == true,
             AutostartMode = SelectedAutostartMode(),
             Discord = new DiscordPresenceOptions(DiscordPresenceCheckBox.IsChecked == true,
-                SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true),
+                SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true,
+                DiscordShowAuthorCheckBox.IsChecked == true),
             Shortcuts = bindings
         };
         (StartWithWindows, StartupChange) = ResolveStartupChange();
@@ -445,6 +446,7 @@ public sealed partial class SettingsDialog : Window
         DiscordStatusLineComboBox.SelectedIndex = (int)(Enum.IsDefined(initial.Discord.StatusLine)
             ? initial.Discord.StatusLine : DiscordStatusLine.Artist);
         DiscordOpenButtonCheckBox.IsChecked = initial.Discord.ShowOpenButton;
+        DiscordShowAuthorCheckBox.IsChecked = initial.Discord.ShowAuthor;
         _discordStatus = initial.Discord.Enabled ? DiscordPresenceStatus.Connecting : DiscordPresenceStatus.Off;
         UpdateDiscordControls(announce: false);
         DiscordPresenceCheckBox.Checked += (_, _) => UpdateDiscordControls(announce: true);
@@ -467,6 +469,7 @@ public sealed partial class SettingsDialog : Window
         var on = DiscordPresenceCheckBox.IsChecked == true;
         DiscordStatusLineComboBox.IsEnabled = on;
         DiscordOpenButtonCheckBox.IsEnabled = on;
+        DiscordShowAuthorCheckBox.IsEnabled = on;
         var text = on == _initial.Discord.Enabled
             ? DiscordStatusMessage(_discordStatus)
             : on ? "Turns on after Save" : "Turns off after Save";

@@ -96,11 +96,11 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
     ![The right end of the Nativune toolbar: volume, pause timer and More, then the blurple Discord button (on), the update indicator and the window buttons](assets/screenshots/discord/toolbar-discord-on.png)
 
-  - **More options in Settings › Discord.** Right-click the Discord button and choose **Discord settings…**, or use **More › Discord settings…**, to open Settings directly on the Discord page. There you choose the status line (Artist, Song title or App only) and whether to add an **Open in YouTube Music** button.
+  - **More options in Settings › Discord.** Right-click the Discord button and choose **Discord settings…**, or use **More › Discord settings…**, to open Settings directly on the Discord page. There you choose the status line (Artist, Song title or App only), whether to add an **Open in YouTube Music** button, and whether the cover's hover text includes the author.
 
     ![Settings › Discord: Show what I'm playing on Discord (on), the disclosure of what is shared, the Status line shows menu set to Artist, and the Open in YouTube Music button option](assets/screenshots/discord/settings-discord.png)
 
-  - **What the card shows:** song title, artist, album art, a time bar while playing, a pause badge while paused (cleared after 10 minutes paused) and a repeat-one badge. Clicking the song title opens that song on YouTube Music, and the optional button does the same; both appear only when Nativune can confirm the playing song's link. Hovering the art shows "Nativune <version> · by Hantu-Raya", and clicking it opens this repository.
+  - **What the card shows:** song title, artist, album art, a time bar while playing, a pause badge while paused (cleared after 10 minutes paused) and a repeat-one badge. Clicking the song title opens that song on YouTube Music, and the optional button does the same; both appear only when Nativune can confirm the playing song's link. Hovering the art shows "Nativune <version> · by Hantu-Raya" (or just "Nativune <version>" if you turn the author off in Settings › Discord), and clicking it opens this repository.
   - The status keeps working while Nativune is hidden in the tray or in Compact, and clears when playback ends, when you turn it off and when you quit.
   - **Limitations:** the Discord desktop app must be running; it works only with the English site language, like Compact; during an ad the status may briefly show or drop the song; and Discord's own activity privacy settings decide who sees it.
 - **Per-user installer** with SHA-256 checksums. It does not need administrator rights to install Nativune itself.
