@@ -41,6 +41,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
     private bool _stopped;
     private volatile DiscordPresenceStatus _status = DiscordPresenceStatus.Off;
     private volatile bool _ready;
+    private int _epoch; // advances at every READY and connection loss; written under _gate
 
     internal DiscordPresence(DiscordPresenceEnvironment environment)
     {
@@ -51,6 +52,10 @@ internal sealed class DiscordPresence : IAsyncDisposable
     internal DiscordPresenceStatus Status => _status;
 
     internal bool NeedsSnapshot => _ready && _options.Enabled && !_stopped;
+
+    // Captured by the host when a page read starts and passed back to Observe, so a read that was
+    // in flight across a disconnect/READY is rejected atomically instead of restoring the old song.
+    internal int ConnectionEpoch => Volatile.Read(ref _epoch);
 
     internal event EventHandler? StatusChanged;
 
@@ -91,11 +96,12 @@ internal sealed class DiscordPresence : IAsyncDisposable
         }
     }
 
-    internal void Observe(DiscordTrackObservation? observation)
+    internal void Observe(DiscordTrackObservation? observation, int? epoch = null)
     {
         lock (_gate)
         {
             if (_stopped || !_options.Enabled || _session is not { StopRequested: false } session) return;
+            if (epoch is { } started && started != _epoch) return;
             if (observation is null)
                 ForgetTrackLocked();
             else
@@ -307,6 +313,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                         if (session.StopRequested) break;
                         session.Ready = true;
                         _ready = true;
+                        _epoch++;
                         ForgetTrackLocked(); // publish only observations received after this READY
                     }
                     SetStatus(session, DiscordPresenceStatus.Connected);
@@ -323,6 +330,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                             if (ReferenceEquals(_session, session))
                             {
                                 _ready = false;
+                                _epoch++;
                                 ForgetTrackLocked(); // a pre-disconnect song must never be republished on reconnect
                             }
                         }

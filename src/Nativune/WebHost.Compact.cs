@@ -244,14 +244,15 @@ public sealed partial class WebHostWindow
         _lastCompactReadAt = Environment.TickCount64;
         var generation = _compactGeneration;
         var presenceGeneration = _presenceGeneration;
+        var presenceEpoch = _discord?.ConnectionEpoch ?? 0;
         try
         {
             var read = await controls.ReadPlaybackStateAsync();
-            DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration);
+            DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration, presenceEpoch);
         }
         catch (Exception)
         {
-            DeliverPlaybackSnapshot(null, compact, generation, presenceGeneration);
+            DeliverPlaybackSnapshot(null, compact, generation, presenceGeneration, presenceEpoch);
         }
         finally
         {
@@ -260,18 +261,20 @@ public sealed partial class WebHostWindow
     }
 
     // Each consumer accepts the result only if its own generation is still current. Reads made
-    // for presence demand alone (compact false) never reach Compact UI.
+    // for presence demand alone (compact false) never reach Compact UI. Presence also rejects a
+    // read that started on an earlier Discord connection (checked atomically inside Observe).
     private void DeliverPlaybackSnapshot(CompactPlaybackState? state, bool compact,
-        int generation, int presenceGeneration)
+        int generation, int presenceGeneration, int presenceEpoch)
     {
-        if (PresenceReadActive && presenceGeneration == _presenceGeneration)
-            ApplyPresenceSnapshot(state);
+        if (PresenceReadActive && presenceGeneration == _presenceGeneration
+            && presenceEpoch == _discord?.ConnectionEpoch)
+            ApplyPresenceSnapshot(state, presenceEpoch);
         if (compact && CompactActive && generation == _compactGeneration)
             ApplyCompactSnapshot(state);
     }
 
     // Null means no coherent player (or a failed read): hold briefly, then drop.
-    private void ApplyPresenceSnapshot(CompactPlaybackState? state)
+    private void ApplyPresenceSnapshot(CompactPlaybackState? state, int epoch)
     {
         if (state is null)
         {
@@ -280,7 +283,7 @@ public sealed partial class WebHostWindow
         }
         _presenceUnavailableSince = -1;
         _presenceHasState = true;
-        ObserveDiscord(state);
+        ObserveDiscord(state, epoch);
     }
 
     private void ApplyCompactSnapshot(CompactPlaybackState? state)

@@ -30,13 +30,13 @@ public sealed partial class WebHostWindow
         RefreshSharedReader();
     }
 
-    private void ObserveDiscord(CompactPlaybackState? state)
+    private void ObserveDiscord(CompactPlaybackState? state, int epoch)
     {
         var discord = _discord;
         if (discord is null) return;
         if (state is null)
         {
-            discord.Observe(null);
+            discord.Observe(null, epoch);
             return;
         }
         discord.Observe(new DiscordTrackObservation(
@@ -54,7 +54,7 @@ public sealed partial class WebHostWindow
             state.Seeking,
             state.PlaybackRate,
             Environment.TickCount64,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow), epoch);
     }
 
     private void InvalidateDiscord()
