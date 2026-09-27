@@ -61,11 +61,16 @@ public sealed partial class WebHostWindow
         _discordPresenceItem.IsChecked = enabled;
 
         if (DiscordButton.Content is BitmapIcon icon)
-            icon.Foreground = enabled && !ShellTheme.IsHighContrast
-                ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x58, 0x65, 0xF2))
-                : null;
+        {
+            // Off / high contrast: remove the local value so the button template's state-aware brush applies.
+            if (enabled && !ShellTheme.IsHighContrast)
+                icon.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x58, 0x65, 0xF2));
+            else
+                icon.ClearValue(IconElement.ForegroundProperty);
+        }
         _settingsDialog?.SetDiscordStatus(status);
     }
+
     private void ObserveDiscord(CompactPlaybackState? state, int epoch)
     {
         var discord = _discord;

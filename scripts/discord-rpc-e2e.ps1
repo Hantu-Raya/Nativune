@@ -56,6 +56,9 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
   'nativune' fallback (a transient missing-art sample must not erase A's art from the stale-art guard); B's
   shared art may appear only >= 3 s later. At 40 s B's art becomes a loadable URL longer than 256 characters:
   no large_image may exceed 256 characters, and the card falls back to 'nativune'.
+- RejectedReplace: profile ArtGap, fake server -Mode ErrorOnFirstReplacement. Track A's card is accepted, then its
+  missing-art replacement (page 12 s) is rejected, so Discord may still show the previous card: the app must send
+  one clear within 3 s, must not resend the rejected payload, and must publish track B's card when it starts.
 - RejectedClear: PAUSE override 20 s, profile Paused, fake server -Mode ErrorOnFirstClear. The pause-expiry
   clear is answered with ERROR, so Discord may still show the card: the app must drop the connection (Discord
   removes a closed client's activity), reconnect, and publish no card while still paused and expired.
@@ -75,7 +78,7 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 [CmdletBinding()]
 param(
     [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate',
-        'PauseExpiry', 'ArtGap', 'RejectedClear', 'SameTitle', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
+        'PauseExpiry', 'ArtGap', 'RejectedClear', 'RejectedReplace', 'SameTitle', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -874,6 +877,43 @@ function Test-RejectedClear {
     }
 }
 
+function Test-RejectedReplace {
+    $root = New-Root 'rejectedreplace'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'rejectedreplace' 'ErrorOnFirstReplacement'
+    $app = $null; $alive = $false; $ready = $false
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'ArtGap'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object {
+            $null -ne $_.Activity -and (Get-Prop $_.Activity 'details') -eq 'Fixture Song B' }) } 60)
+        Start-Sleep -Seconds 3
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['RejectedReplace'] = $frames
+    Copy-AppLog $root 'rejectedreplace'
+    $sets = @(Get-Activities $frames)
+    $errorFrame = @($frames | Where-Object { $_.direction -eq 'out' -and $_.json -match '"evt":"ERROR"' }) | Select-Object -First 1
+    $errorUtc = if ($errorFrame) { ConvertTo-UtcTime $errorFrame.utc } else { $null }
+    $rejected = if ($errorUtc) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -le $errorUtc } | Select-Object -Last 1 } else { $null }
+    $after = @(if ($errorUtc) { $sets | Where-Object { $_.Utc -gt $errorUtc } })
+    $rejectedJson = if ($rejected) { $rejected.Activity | ConvertTo-Json -Depth 16 -Compress } else { $null }
+    Add-Check 'rejectedReplace.benchReady' $ready
+    Add-Check 'rejectedReplace.noCrash' $alive
+    Add-Check 'rejectedReplace.replacementRejected' ($null -ne $errorUtc -and $null -ne $rejected)
+    Add-Check 'rejectedReplace.clearAfterRejection' ($after.Count -gt 0 -and $null -eq $after[0].Activity -and ($after[0].Utc - $errorUtc).TotalSeconds -le 3)
+    Add-Check 'rejectedReplace.rejectedPayloadNotResent' ($null -ne $rejectedJson -and -not ($after | Where-Object {
+        $null -ne $_.Activity -and ($_.Activity | ConvertTo-Json -Depth 16 -Compress) -eq $rejectedJson }))
+    Add-Check 'rejectedReplace.nextSongPublished' ([bool] ($after | Where-Object { $null -ne $_.Activity -and (Get-Prop $_.Activity 'details') -eq 'Fixture Song B' }))
+    $scenarioResults['RejectedReplace'] = [ordered]@{
+        appPid = $app.Id; setsAfterRejection = @($after | ForEach-Object { if ($null -eq $_.Activity) { 'clear' } else { Get-Prop $_.Activity 'details' } })
+        rejectionToFirstSendSeconds = if ($after.Count) { [Math]::Round(($after[0].Utc - $errorUtc).TotalSeconds, 3) } else { $null }
+    }
+}
+
 function Test-SameTitle {
     $root = New-Root 'sametitle'
     Write-Settings $root $true
@@ -1084,6 +1124,7 @@ try {
     & $runScenario 'PauseExpiry' { Test-PauseExpiry }
     & $runScenario 'ArtGap' { Test-ArtGap }
     & $runScenario 'RejectedClear' { Test-RejectedClear }
+    & $runScenario 'RejectedReplace' { Test-RejectedReplace }
     & $runScenario 'SameTitle' { Test-SameTitle }
     & $runScenario 'LiveToggle' { Test-LiveToggle }
     & $runScenario 'TrueQuit' { Test-TrueQuit }

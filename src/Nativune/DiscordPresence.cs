@@ -411,6 +411,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
         long desiredChangedAt = 0;
         long? burstStart = null;
         var loggedRejection = false;
+        var clearAfterRejection = false; // a replacement card was rejected; Discord may still show the previous one
         var minWriteMs = (long)_environment.MinWriteInterval.TotalMilliseconds;
 
         Task? signalWait = null;
@@ -436,9 +437,23 @@ internal sealed class DiscordPresence : IAsyncDisposable
                 }
 
                 long? wakeAt = changesAt;
-                if (desired is null)
+                if (clearAfterRejection && desired is not null)
+                {
+                    // A rejected card leaves Discord showing the previous one (or nothing). Clear it once; lastSent
+                    // keeps the rejected payload so it is not resent until the desired card changes.
+                    if (pendingNonce is null)
+                    {
+                        pendingNonce = await connection.SendActivityAsync(null, _environment.ProcessId, ct).ConfigureAwait(false);
+                        if (pendingNonce is null) return false;
+                        pendingDeadline = Environment.TickCount64 + AckTimeoutMs;
+                        pendingIsClear = true;
+                        clearAfterRejection = false;
+                    }
+                }
+                else if (desired is null)
                 {
                     burstStart = null;
+                    clearAfterRejection = false;
                     // Send exactly one clear: only when Discord shows (or is about to show) a card. A pending clear
                     // already covers it; re-clearing on every wakeup (signal, stale ack) was a self-sustaining loop.
                     if (lastSent is not null || (pendingNonce is not null && !pendingIsClear))
@@ -508,6 +523,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                                     AppLog.Write(LogCategory, "discord: clear rejected; reconnecting");
                                     return false;
                                 }
+                                clearAfterRejection = true; // a rejected replacement: clear the previous card
                             }
                             else
                             {

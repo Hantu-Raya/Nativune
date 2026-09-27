@@ -124,6 +124,24 @@ function Find-MenuItem([int] $ProcessId, [string] $Like) {
         foreach ($m in $menuItems) { if ($m.Current.Name -like $Like) { return $m } }
     }
 }
+# Counts white-ish and Discord-Blurple pixels inside the element's bounds on a PrintWindow capture.
+function Measure-IconColors([IntPtr] $Hwnd, $Element, [string] $Name) {
+    $shot = Save-Shot $Hwnd "$Name-window"
+    $full = [System.Drawing.Bitmap]::FromFile($shot.file)
+    $fr = New-Object DShot+RECT; [void][DShot]::DwmGetWindowAttribute($Hwnd, 9, [ref] $fr, 16)
+    $b = $Element.Current.BoundingRectangle
+    $white = 0; $blurple = 0; $inset = 5 # skip the focus rectangle / border
+    for ($x = [int] ($b.Left - $fr.Left) + $inset; $x -lt [int] ($b.Right - $fr.Left) - $inset; $x++) {
+        for ($y = [int] ($b.Top - $fr.Top) + $inset; $y -lt [int] ($b.Bottom - $fr.Top) - $inset; $y++) {
+            if ($x -lt 0 -or $y -lt 0 -or $x -ge $full.Width -or $y -ge $full.Height) { continue }
+            $p = $full.GetPixel($x, $y)
+            if ($p.R -ge 200 -and $p.G -ge 200 -and $p.B -ge 200) { $white++ }
+            elseif ([Math]::Abs($p.R - 0x58) -le 30 -and [Math]::Abs($p.G - 0x65) -le 30 -and [Math]::Abs($p.B - 0xF2) -le 30) { $blurple++ }
+        }
+    }
+    $full.Dispose(); Remove-Item -LiteralPath $shot.file
+    [ordered]@{ white = $white; blurple = $blurple }
+}
 function Describe($El) {
     if (-not $El) { return $null }
     $c = $El.Current
@@ -150,15 +168,24 @@ try {
     Start-Sleep -Seconds 3
     $toolbar = [ordered]@{ initial = Describe $discordButton; initialSaved = Read-SavedDiscord }
     $shots['toolbarOff'] = Save-ToolbarCrop $mainHwnd 'toolbar-discord-off'
+    $toolbar['initialColors'] = Measure-IconColors $mainHwnd $discordButton 'color-initial'
     (Get-Pattern $discordButton ([System.Windows.Automation.InvokePattern])).Invoke()
     $toolbar['onName'] = Wait-Until { $n = $discordButton.Current.Name; if ($n -like 'Discord: on*') { $n } } 'Discord button on' 10
     Start-Sleep -Seconds 2
     $toolbar['onSaved'] = Wait-Until { if ((Read-SavedDiscord) -eq $true) { 'true' } } 'saved DiscordPresence=true' 10
     $toolbar['on'] = Describe $discordButton
     $shots['toolbarOn'] = Save-ToolbarCrop $mainHwnd 'toolbar-discord-on'
+    $toolbar['onColors'] = Measure-IconColors $mainHwnd $discordButton 'color-on'
     (Get-Pattern $discordButton ([System.Windows.Automation.InvokePattern])).Invoke()
     $toolbar['offName'] = Wait-Until { $n = $discordButton.Current.Name; if ($n -eq 'Discord: off') { $n } } 'Discord button off' 10
     $toolbar['offSaved'] = Wait-Until { if ((Read-SavedDiscord) -eq $false) { 'false' } } 'saved DiscordPresence=false' 10
+    Start-Sleep -Milliseconds 800
+    $shots['toolbarOffAfterToggle'] = Save-ToolbarCrop $mainHwnd 'toolbar-discord-off-after-toggle'
+    $toolbar['offAfterToggleColors'] = Measure-IconColors $mainHwnd $discordButton 'color-off-after'
+    # Off (initially and after toggling back) must be the white template brush; on must be Blurple.
+    $toolbar['colorsOk'] = $toolbar.initialColors.white -ge 20 -and $toolbar.initialColors.blurple -eq 0 -and
+        $toolbar.onColors.blurple -ge 20 -and $toolbar.offAfterToggleColors.white -ge 20 -and $toolbar.offAfterToggleColors.blurple -eq 0
+    if (-not $toolbar['colorsOk']) { $missing.Add('toolbarIconColors') }
     $report['toolbar'] = $toolbar
     [void][DShot]::SetWindowPos($mainHwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP)
 
