@@ -17,8 +17,9 @@ internal static class DiscordActivity
     // characters); longer artwork URLs fall back to the app asset. 256 leaves margin.
     private const int MaxLargeImageChars = 256;
     private const string RepositoryUrl = "https://github.com/Hantu-Raya/Nativune"; // fixed constant, not page data
-    // App hover caption: immutable for the process, so normalized once.
-    private static readonly string? LargeText = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
+    // App hover captions: immutable for the process, so normalized once.
+    private static readonly string? LargeTextWithAuthor = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
+    private static readonly string? LargeTextAppOnly = NormalizeText(AppVersion.DisplayName, "");
 
     internal static string? BuildActivityJson(DiscordTrackObservation o, DiscordPresenceOptions options, string? artwork, DateTimeOffset? start, double durationSeconds)
     {
@@ -27,7 +28,7 @@ internal static class DiscordActivity
         var state = NormalizeText(o.Artist, "Artist: ");
         var trackUrl = IsAllowedMusicLink(o.TrackUrl) ? o.TrackUrl : null;
         var artistUrl = state is not null && IsAllowedMusicLink(o.ArtistUrl) ? o.ArtistUrl : null;
-        var largeText = LargeText;
+        var largeText = options.ShowAuthor ? LargeTextWithAuthor : LargeTextAppOnly;
         var displayType = options.StatusLine switch
         {
             DiscordStatusLine.Title => 2,

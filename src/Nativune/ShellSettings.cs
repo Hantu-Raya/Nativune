@@ -280,7 +280,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
         AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
-        bool DiscordOpenButton = true)
+        bool DiscordOpenButton = true, bool DiscordShowAuthor = true)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -306,7 +306,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             Discord = new DiscordPresenceOptions(Version >= CurrentVersion && DiscordPresence,
                 Enum.IsDefined((Nativune.DiscordStatusLine)DiscordStatusLine)
                     ? (Nativune.DiscordStatusLine)DiscordStatusLine : Nativune.DiscordStatusLine.Artist,
-                DiscordOpenButton)
+                DiscordOpenButton, DiscordShowAuthor)
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -316,6 +316,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
                 settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
-                settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton);
+                settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton,
+                settings.Discord.ShowAuthor);
     }
 }
