@@ -154,6 +154,8 @@ function Get-RobustSpread([double[]] $Values) {
     $m = Get-Median $Values
     1.4826 * (Get-Median @($Values | ForEach-Object { [Math]::Abs($_ - $m) }))
 }
+function Get-Sum($Values) { $total = 0.0; foreach ($v in @($Values)) { if ($null -ne $v) { $total += [double] $v } }; $total }
+function Get-Max($Values) { $v = @(@($Values) | Where-Object { $null -ne $_ }); if ($v.Count -eq 0) { return $null }; ($v | Measure-Object -Maximum).Maximum }
 function Get-Stats([double[]] $Values) {
     $v = @($Values)
     if ($v.Count -eq 0) { return [ordered]@{ mean = $null; max = $null; first = $null; last = $null; delta = $null } }
@@ -366,7 +368,7 @@ function Invoke-Run($Cell, $Build, [int] $Pair, [int] $Attempt, [string] $Condit
             inWindowInvalid = @($in | Where-Object { $_.completed -and -not $_.valid }).Count
             inWindowIncomplete = @($in | Where-Object { -not $_.completed }).Count
             inWindowByMode = [ordered]@{ Compact = @($in | Where-Object { $_.mode -eq 'Compact' }).Count; Presence = @($in | Where-Object { $_.mode -eq 'Presence' }).Count }
-            inWindowScriptChars = [long] (($in | Measure-Object -Property scriptChars -Sum).Sum)
+            inWindowScriptChars = [long] (Get-Sum @($in | ForEach-Object { $_.scriptChars }))
         }
     }
 
@@ -392,7 +394,7 @@ function Invoke-Run($Cell, $Build, [int] $Pair, [int] $Attempt, [string] $Condit
         if ($windowQpc -and $null -ne $windowQpc[1]) {
             if ($enabled) {
                 if ($writes.connections -ne 1) { $problems.Add("ON expected exactly one connection, saw $($writes.connections)") }
-                $c = @($summary.connections)[0]
+                $c = @($summary.connections) | Select-Object -First 1
                 if ($c) {
                     $readyQpc = Get-Prop (Get-Prop $c 'ready') 'qpc'
                     $discQpc = Get-Prop (Get-Prop $c 'disconnected') 'qpc'
@@ -406,8 +408,8 @@ function Invoke-Run($Cell, $Build, [int] $Pair, [int] $Attempt, [string] $Condit
         }
     }
     if ($samples.Count -ne $MeasureSeconds + 1) { $problems.Add("expected $($MeasureSeconds + 1) samples, got $($samples.Count)") }
-    foreach ($pair in @(@('start', $startEvidence), @('end', $endEvidence))) {
-        if ($samples.Count -gt 0 -and -not (Test-StateEvidence $pair[1] $Cell.state)) { $problems.Add("state evidence at $($pair[0]) does not match $($Cell.state)") }
+    foreach ($boundary in @(@('start', $startEvidence), @('end', $endEvidence))) {
+        if ($samples.Count -gt 0 -and -not (Test-StateEvidence $boundary[1] $Cell.state)) { $problems.Add("state evidence at $($boundary[0]) does not match $($Cell.state)") }
     }
     $expectedSize = if ($Cell.state -eq 'Compact') { @(800, 180) } elseif ($Cell.state -eq 'Full') { @(1280, 800) } else { $null }
     $sizeMatches = if ($expectedSize -and $readyEvidence) { (Get-Prop $readyEvidence 'width') -eq $expectedSize[0] -and (Get-Prop $readyEvidence 'height') -eq $expectedSize[1] } else { $null }
@@ -426,7 +428,7 @@ function Invoke-Run($Cell, $Build, [int] $Pair, [int] $Attempt, [string] $Condit
         workingSetMB = Get-Stats @($samples | ForEach-Object { $_.workingSetBytes / 1e6 })
         handles = Get-Stats @($samples | Where-Object { $null -ne $_.handles } | ForEach-Object { [double] $_.handles })
         threads = Get-Stats @($samples | Where-Object { $null -ne $_.threads } | ForEach-Object { [double] $_.threads })
-        processCountMax = ($samples | ForEach-Object { $_.processes } | Measure-Object -Maximum).Maximum
+        processCountMax = Get-Max @($samples | ForEach-Object { $_.processes })
         processes = @($identities.Values)
         reads = $reads; writes = $writes; frameLines = $allFrames.Count
         samples = $samples; processSamples = $processSamples
@@ -471,8 +473,8 @@ try {
         }
     }
 } catch {
-    Write-Host "Benchmark aborted: $($_.Exception.Message)"
-    $blocked.Add('aborted: ' + $_.Exception.Message)
+    Write-Host "Benchmark aborted: $($_.Exception.Message)`n$($_.ScriptStackTrace)"
+    $blocked.Add('aborted: ' + $_.Exception.Message + ' @ ' + (($_.ScriptStackTrace -split "`n") | Select-Object -First 1))
 } finally {
     foreach ($key in $envKeys) { [Environment]::SetEnvironmentVariable($key, $savedEnv[$key], 'Process') }
     foreach ($process in $started) { try { if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } } catch { } }
@@ -505,7 +507,7 @@ $cellReports = @(foreach ($cell in $cells) {
         $comparison = [ordered]@{}
         foreach ($m in $metricNames) {
             $r = $perBuild.R.metrics[$m]; $c = $perBuild.C.metrics[$m]; $x = $floors[$m]
-            $noise = (@($r.offRange, $c.offRange, 2 * $r.robustSpread, 2 * $c.robustSpread) | Measure-Object -Maximum).Maximum
+            $noise = Get-Max @($r.offRange, $c.offRange, 2 * $r.robustSpread, 2 * $c.robustSpread)
             $improvement = $r.medianDelta - $c.medianDelta
             $paired = @(for ($i = 0; $i -lt $Pairs; $i++) { $r.deltas[$i] - $c.deltas[$i] })
             $positive = @($paired | Where-Object { $_ -gt 0 }).Count
