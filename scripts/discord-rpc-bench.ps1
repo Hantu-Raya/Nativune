@@ -69,7 +69,9 @@ param(
     [ValidateRange(1, 50)] [int] $Pairs = 4,
     [ValidateRange(0, 3600)] [int] $WarmupSeconds = 30,
     [ValidateRange(2, 3600)] [int] $MeasureSeconds = 120,
-    [string] $OutputDirectory = 'artifacts/discord-rpc/bench-v2'
+    [string] $OutputDirectory = 'artifacts/discord-rpc/bench-v2',
+    # Rebuild bench.json from an existing run directory's runs/*/run.json without launching anything.
+    [string] $SummarizeRunDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -89,31 +91,47 @@ function Resolve-AppDirectory([string] $Path) {
     (Resolve-Path -LiteralPath $full).Path
 }
 $builds = [Collections.Generic.List[object]]::new()
-$baselineDir = Resolve-AppDirectory $BaselineAppDirectory
-$candidateDir = Resolve-AppDirectory $CandidateAppDirectory
-if ($baselineDir) { $builds.Add([ordered]@{ label = 'R'; directory = $baselineDir }) }
-if ($candidateDir) { $builds.Add([ordered]@{ label = 'C'; directory = $candidateDir }) }
-if ($builds.Count -eq 0) { throw 'Pass -BaselineAppDirectory and/or -CandidateAppDirectory (published hook builds).' }
-if ($builds.Count -eq 2 -and $baselineDir -eq $candidateDir) { throw 'Baseline and candidate directories must differ.' }
-foreach ($b in $builds) {
-    $b.hashes = [ordered]@{}
-    foreach ($file in 'Nativune.exe', 'Nativune.dll') {
-        $path = Join-Path $b.directory $file
-        if (Test-Path -LiteralPath $path) { $b.hashes[$file] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+$summaryRuns = $null
+if ($SummarizeRunDirectory) {
+    $summaryDir = if ([IO.Path]::IsPathRooted($SummarizeRunDirectory)) { $SummarizeRunDirectory } else { Join-Path $repo $SummarizeRunDirectory }
+    $summaryDir = (Resolve-Path -LiteralPath $summaryDir).Path
+    $summaryRuns = @(Get-ChildItem -LiteralPath (Join-Path $summaryDir 'runs') -Directory | ForEach-Object {
+        $j = Join-Path $_.FullName 'run.json'
+        if (Test-Path -LiteralPath $j -PathType Leaf) { Get-Content -Raw -LiteralPath $j | ConvertFrom-Json -Depth 32 -AsHashtable } })
+    if ($summaryRuns.Count -eq 0) { throw "No runs/*/run.json in $summaryDir." }
+    foreach ($label in 'R', 'C') { if (@($summaryRuns | Where-Object { $_.build -eq $label }).Count) { $builds.Add([ordered]@{ label = $label; directory = $null; hashes = $null; productVersion = $null }) } }
+    $State = if (@($summaryRuns.state | Sort-Object -Unique).Count -eq 1) { $summaryRuns[0].state } else { 'All' }
+    $Workload = if (@($summaryRuns.workload | Sort-Object -Unique).Count -eq 1) { $summaryRuns[0].workload } else { 'All' }
+    if (-not $PSBoundParameters.ContainsKey('Pairs')) { $Pairs = [int] ($summaryRuns | Measure-Object -Property pair -Maximum).Maximum }
+    $override = $Pairs -ne 4 -or $WarmupSeconds -ne 30 -or $MeasureSeconds -ne 120
+    $protocolVersion = if ($override) { '2-override' } else { '2' }
+} else {
+    $baselineDir = Resolve-AppDirectory $BaselineAppDirectory
+    $candidateDir = Resolve-AppDirectory $CandidateAppDirectory
+    if ($baselineDir) { $builds.Add([ordered]@{ label = 'R'; directory = $baselineDir }) }
+    if ($candidateDir) { $builds.Add([ordered]@{ label = 'C'; directory = $candidateDir }) }
+    if ($builds.Count -eq 0) { throw 'Pass -BaselineAppDirectory and/or -CandidateAppDirectory (published hook builds).' }
+    if ($builds.Count -eq 2 -and $baselineDir -eq $candidateDir) { throw 'Baseline and candidate directories must differ.' }
+    foreach ($b in $builds) {
+        $b.hashes = [ordered]@{}
+        foreach ($file in 'Nativune.exe', 'Nativune.dll') {
+            $path = Join-Path $b.directory $file
+            if (Test-Path -LiteralPath $path) { $b.hashes[$file] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+        }
+        $b.productVersion = (Get-Item -LiteralPath (Join-Path $b.directory 'Nativune.exe')).VersionInfo.ProductVersion
     }
-    $b.productVersion = (Get-Item -LiteralPath (Join-Path $b.directory 'Nativune.exe')).VersionInfo.ProductVersion
 }
 
 $states = if ($State -eq 'All') { @('Full', 'Hidden', 'Compact') } else { @($State) }
 $workloads = if ($Workload -eq 'All') { @('Playing', 'Paused', 'Empty') } else { @($Workload) }
 $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $repo $OutputDirectory }
-$runId = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N')
-$runDirectory = Join-Path $outputRoot $runId
+$runId = if ($summaryRuns) { Split-Path -Leaf $summaryDir } else { [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '-' + [guid]::NewGuid().ToString('N') }
+$runDirectory = if ($summaryRuns) { $summaryDir } else { Join-Path $outputRoot $runId }
 $rootBase = Join-Path $repo ".cache/discord-rpc-bench/$runId"
 $ubolVersion = [regex]::Match((Get-Content -Raw (Join-Path $repo 'src/Nativune/BrowserPrivacy.cs')), 'ExtensionVersion\s*=\s*"([^"]+)"').Groups[1].Value
 if (-not $ubolVersion) { throw 'Could not read BrowserPrivacy.ExtensionVersion.' }
 $ubolSource = Join-Path $repo ".tools/ubol/$ubolVersion"
-if (-not (Test-Path -LiteralPath (Join-Path $ubolSource 'manifest.json') -PathType Leaf)) { throw "uBO Lite $ubolVersion is missing at $ubolSource." }
+if (-not $summaryRuns -and -not (Test-Path -LiteralPath (Join-Path $ubolSource 'manifest.json') -PathType Leaf)) { throw "uBO Lite $ubolVersion is missing at $ubolSource." }
 $clientId = '100000000000000001'
 $envKeys = @('NATIVUNE_TEST_DISCORD_PIPE_PREFIX', 'NATIVUNE_TEST_DISCORD_CLIENT_ID', 'NATIVUNE_TEST_DISCORD_FIXTURE_PAGE',
     'NATIVUNE_TEST_DISCORD_MIN_WRITE_SECONDS', 'NATIVUNE_TEST_DISCORD_PAUSE_SECONDS',
@@ -451,6 +469,23 @@ $scheduleLog = [Collections.Generic.List[string]]::new()
 [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
 $exitCode = 0
 try {
+  if ($summaryRuns) {
+    # Replay: a pair attempt is scored only when all of its runs are valid (same rule as the live loop).
+    foreach ($cell in $cells) {
+        $cellKey = "$($cell.workload)/$($cell.state)"
+        $cellRuns = @($summaryRuns | Where-Object { $_.workload -eq $cell.workload -and $_.state -eq $cell.state } | Sort-Object { $_.pair }, { $_.attempt })
+        foreach ($r in $cellRuns) { $allRuns.Add($r); $scheduleLog.Add("$cellKey p$($r.pair) a$($r.attempt) $($r.build) $($r.condition) (replayed)") }
+        for ($pair = 1; $pair -le $Pairs; $pair++) {
+            $pairOk = $false
+            foreach ($attempt in @($cellRuns | Where-Object { $_.pair -eq $pair } | ForEach-Object { $_.attempt } | Sort-Object -Unique)) {
+                $pairRuns = @($cellRuns | Where-Object { $_.pair -eq $pair -and $_.attempt -eq $attempt })
+                if ($pairRuns.Count -eq 2 * $builds.Count -and @($pairRuns | Where-Object { -not $_.valid }).Count -eq 0) {
+                    foreach ($r in $pairRuns) { $scored.Add($r) }; $pairOk = $true; break }
+            }
+            if (-not $pairOk) { $blocked.Add($cellKey); break }
+        }
+    }
+  } else {
     foreach ($cell in $cells) {
         $cellKey = "$($cell.workload)/$($cell.state)"
         for ($pair = 1; $pair -le $Pairs; $pair++) {
@@ -472,6 +507,7 @@ try {
             if (-not $pairOk) { $blocked.Add($cellKey); break }
         }
     }
+  }
 } catch {
     Write-Host "Benchmark aborted: $($_.Exception.Message)`n$($_.ScriptStackTrace)"
     $blocked.Add('aborted: ' + $_.Exception.Message + ' @ ' + (($_.ScriptStackTrace -split "`n") | Select-Object -First 1))
@@ -507,7 +543,8 @@ $cellReports = @(foreach ($cell in $cells) {
         $comparison = [ordered]@{}
         foreach ($m in $metricNames) {
             $r = $perBuild.R.metrics[$m]; $c = $perBuild.C.metrics[$m]; $x = $floors[$m]
-            $noise = Get-Max @($r.offRange, $c.offRange, 2 * $r.robustSpread, 2 * $c.robustSpread)
+            # Parenthesize products: ',' binds tighter than '*' (otherwise array replication -> UInt32 conversion error).
+            $noise = Get-Max @($r.offRange, $c.offRange, (2 * $r.robustSpread), (2 * $c.robustSpread))
             $improvement = $r.medianDelta - $c.medianDelta
             $paired = @(for ($i = 0; $i -lt $Pairs; $i++) { $r.deltas[$i] - $c.deltas[$i] })
             $positive = @($paired | Where-Object { $_ -gt 0 }).Count

@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace Nativune;
 
-internal static partial class CompactPlayback
+internal static class CompactPlayback
 {
     internal const int MaxScriptResultLength = 8192;
     private const int MaxTitleLength = 512;
@@ -17,10 +17,6 @@ internal static partial class CompactPlayback
 
     internal static string BuildScript(string mode, string? command, string href,
         long notAfterUnixMs, double? value = null, string? expectedStateSignature = null)
-        => ComposeScript(CompactJavaScript, mode, command, href, notAfterUnixMs, value, expectedStateSignature);
-
-    private static string ComposeScript(string body, string mode, string? command, string href,
-        long notAfterUnixMs, double? value, string? expectedStateSignature)
     {
         var request = JsonSerializer.Serialize(new
         {
@@ -31,7 +27,7 @@ internal static partial class CompactPlayback
             value,
             expectedStateSignature
         });
-        return "(() => { const request = " + request + ";\n" + body + "\n})()";
+        return "(() => { const request = " + request + ";\n" + CompactJavaScript + "\n})()";
     }
 
     // Item identity only: artwork loads late and signed-in duration can change while the same item
@@ -375,7 +371,6 @@ try {
     if (!layoutVisible(playPause) || !layoutVisible(previousButton) || !layoutVisible(nextButton)) return null;
     return {group:groups[0], playPause, previous:previousButton, next:nextButton};
   };
-  // @compact-only-begin
   const trackFor = slider => {
     const tracks = Array.from(slider.querySelectorAll('[id="sliderBar"]'));
     // The public slider owns accessibility; its visible decorative progress child is aria-hidden.
@@ -385,7 +380,6 @@ try {
       || rect.width <= 0 || rect.height <= 0) return null;
     return {element:tracks[0], rect};
   };
-  // @compact-only-end
   const rangeFor = slider => {
     const min = attrNumber(slider, 'aria-valuemin');
     const max = attrNumber(slider, 'aria-valuemax');
@@ -543,7 +537,6 @@ try {
     const metadata = metadataFor(acquired);
     return {clock, metadata, seek};
   };
-  // @compact-only-begin
   // Validates a seek in the website slider's own seconds; the site maps it to media.
   const seekSnapshot = (acquired, targetElement, target) => {
     if (window !== window.top || location.origin !== 'https://music.youtube.com')
@@ -568,21 +561,15 @@ try {
       return {error:'invalid-value'};
     return {};
   };
-  // @compact-only-end
   const state = () => {
     const acquired = acquire(), media = acquired && stateMediaFor(acquired);
     if (!acquired || !media) return result('unavailable');
     const transport = transportForBar(acquired.bar);
     if (!transport || !enabled(transport.playPause)) return result('unavailable');
-    const unavailable = {status:'unavailable'};
-    let like = unavailable, dislike = unavailable, shuffle = unavailable;
-    // Presence reads skip the action-capability scans; those fields stay unavailable.
-    // @compact-only-begin
-    like = choose(buttonsFor(acquired, 'like'));
-    dislike = choose(buttonsFor(acquired, 'dislike'));
-    shuffle = choose(buttonsFor(acquired, 'shuffle'));
-    // @compact-only-end
+    const like = choose(buttonsFor(acquired, 'like'));
+    const dislike = choose(buttonsFor(acquired, 'dislike'));
     const repeat = choose(buttonsFor(acquired, 'repeat'));
+    const shuffle = choose(buttonsFor(acquired, 'shuffle'));
     const seek = choose(acquired.seekSliders, true);
     const {clock, metadata} = signedStateFor(acquired, media, seek);
     if (!metadata) return result('unavailable');
@@ -595,9 +582,7 @@ try {
     const repeatState = repeatLabel === 'repeat off' ? 'off' : repeatLabel === 'repeat all' ? 'all'
       : repeatLabel === 'repeat one' ? 'one' : null;
     const liked = pressed(like), disliked = pressed(dislike);
-    let shuffleActive = null;
-    // @compact-only-begin
-    shuffleActive = (() => {
+    const shuffleActive = (() => {
       if (shuffle.status !== 'ok') return null;
       const explicit = pressed(shuffle);
       if (explicit !== null) return explicit;
@@ -613,12 +598,8 @@ try {
       return color === 'rgb(255, 255, 255)' ? true
         : color === 'rgb(144, 144, 144)' ? false : null;
     })();
-    // @compact-only-end
     const seekRange = clock.range;
-    let seekTrack = null;
-    // @compact-only-begin
-    seekTrack = seek.status === 'ok' ? trackFor(seek.element) : null;
-    // @compact-only-end
+    const seekTrack = seek.status === 'ok' ? trackFor(seek.element) : null;
     const canSeek = clock.duration > 0 && seek.status === 'ok' && !!seekRange && !!seekTrack
       && !media.seeking && clock.confirmed && !clock.mismatch;
     const clockMismatch = clock.mismatch;
@@ -636,7 +617,6 @@ try {
       playbackRate:finite(acquired.element.playbackRate) && acquired.element.playbackRate > 0
         && acquired.element.playbackRate <= 16 ? acquired.element.playbackRate : null};
   };
-  // @compact-only-begin
   const transportReady = () => {
     const bars = requestDocument.querySelectorAll('ytmusic-player-bar');
     if (bars.length !== 1 || !isPresent(bars[0])) return result('unavailable');
@@ -704,9 +684,7 @@ try {
     return result('requested');
   };
   if (request.mode === 'ready') return transportReady();
-  // @compact-only-end
   if (request.mode === 'state') return state();
-  // @compact-only-begin
   if (request.mode === 'playlists') return playlists();
   if (request.mode === 'action' && request.command === 'play-playlist') return playPlaylist();
   if (request.mode !== 'action' || !['like','dislike','repeat','shuffle','seek'].includes(request.command))
@@ -766,8 +744,6 @@ try {
   try { HTMLElement.prototype.click.call(finalButton); }
   catch { return result('script-error'); }
   return result('requested');
-  // @compact-only-end
-  return result('unsupported-command');
 } catch {
   return {code:'script-error', dispatched, observed:false, noOp:false};
 }

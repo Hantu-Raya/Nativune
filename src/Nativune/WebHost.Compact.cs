@@ -40,8 +40,8 @@ public sealed partial class WebHostWindow
     private bool PresenceReadActive => _discord?.NeedsSnapshot == true
         && !_closing && !_disposed && !_playerSuspended;
 
-    // Who needs the shared playback reader. Compact takes precedence: its full read also feeds
-    // presence, so there is only ever one read per tick.
+    // Which consumer needs the shared playback reader (sets cadence and delivery; every demand runs
+    // the same full read). Compact takes precedence and also feeds presence: one read per tick.
     private enum ReaderDemand { None, Presence, Compact }
 
     private ReaderDemand CurrentReaderDemand => CompactActive ? ReaderDemand.Compact
@@ -223,8 +223,8 @@ public sealed partial class WebHostWindow
         else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord();
     }
 
-    // One shared read per tick. Compact demand runs the full read and feeds both consumers; presence
-    // demand alone runs the read-only presence script, whose results never reach Compact UI.
+    // One shared full read per tick. The captured compact flag decides whether the result also
+    // reaches Compact UI; presence-only demand delivers to presence alone.
     private async Task ReadPlaybackStateAsync()
     {
         var demand = CurrentReaderDemand;
@@ -246,8 +246,7 @@ public sealed partial class WebHostWindow
         var presenceGeneration = _presenceGeneration;
         try
         {
-            var read = await controls.ReadPlaybackStateAsync(
-                compact ? PlaybackReadMode.Compact : PlaybackReadMode.Presence);
+            var read = await controls.ReadPlaybackStateAsync();
             DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration);
         }
         catch (Exception)
@@ -260,8 +259,8 @@ public sealed partial class WebHostWindow
         }
     }
 
-    // Each consumer accepts the result only if its own generation is still current. Presence-mode
-    // results (compact false) never reach Compact UI.
+    // Each consumer accepts the result only if its own generation is still current. Reads made
+    // for presence demand alone (compact false) never reach Compact UI.
     private void DeliverPlaybackSnapshot(CompactPlaybackState? state, bool compact,
         int generation, int presenceGeneration)
     {

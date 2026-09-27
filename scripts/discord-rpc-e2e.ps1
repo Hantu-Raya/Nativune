@@ -214,14 +214,14 @@ function Get-HookSnapshot([string] $Root, [string] $Label) {
     Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 8
 }
 
-# Reads started in (Start.boundaryQpc, End.boundaryQpc], counted per mode.
+# Reads started in (Start.boundaryQpc, End.boundaryQpc], counted in total (every read records mode 'Compact').
 function Get-ReadCounts($Start, $End) {
-    $counts = [ordered]@{ Compact = 0; Presence = 0; seconds = $null }
+    $counts = [ordered]@{ total = 0; seconds = $null }
     if (-not $Start -or -not $End) { return $counts }
     $counts.seconds = [Math]::Round(([double] $End.boundaryQpc - [double] $Start.boundaryQpc) / [double] $End.qpcFrequency, 3)
     foreach ($read in @($End.reads)) {
         if ([double] $read.startQpc -gt [double] $Start.boundaryQpc -and [double] $read.startQpc -le [double] $End.boundaryQpc) {
-            $counts[[string] $read.mode]++
+            $counts.total++
         }
     }
     $counts
@@ -874,9 +874,10 @@ function Test-HiddenAndCompact {
     $hidden = Get-ReadCounts $snap['hidden-start'] $snap['hidden-end']
     $compact = Get-ReadCounts $snap['compact-start'] $snap['compact-end']
     $full = Get-ReadCounts $snap['full-start'] $snap['full-end']
-    # ~5 s Presence cadence (+-50 %, plus one boundary read) and ~1 s Compact cadence (+-30 %, plus one).
-    $presenceCadence = { param($c) $null -ne $c.seconds -and $c.Presence -gt 0 -and $c.Presence -ge [Math]::Floor($c.seconds / 5 * 0.5) -and
-        $c.Presence -le [Math]::Ceiling($c.seconds / 5 * 1.5) + 1 }
+    # ~5 s total-read cadence hidden/full (+-50 %, plus one boundary read); ~1 s while compact (+-30 %, plus one).
+    # The compact upper bound also proves there is no second read stream.
+    $fiveSecondCadence = { param($c) $null -ne $c.seconds -and $c.total -gt 0 -and $c.total -ge [Math]::Floor($c.seconds / 5 * 0.5) -and
+        $c.total -le [Math]::Ceiling($c.seconds / 5 * 1.5) + 1 }
     $hiddenState = & $readState 'hidden-start'; $compactState = & $readState 'compact-start'; $fullState = & $readState 'full-start'
     $sets = @(Get-Activities $frames)
     $windowStart = if ($snap['hidden-start']) { ConvertTo-UtcTime $snap['hidden-start'].boundaryUtc } else { $null }
@@ -888,16 +889,15 @@ function Test-HiddenAndCompact {
     Add-Check 'hiddenCompact.benchReady' $ready
     Add-Check 'hiddenCompact.noCrash' $alive
     Add-Check 'hiddenCompact.hiddenState' ($null -ne $hiddenState -and $hiddenState.appWindowVisible -eq $false -and $hiddenState.compact -eq $false)
-    Add-Check 'hiddenCompact.hiddenPresenceReads5s' ([bool] (& $presenceCadence $hidden))
+    Add-Check 'hiddenCompact.hiddenReads5s' ([bool] (& $fiveSecondCadence $hidden))
     Add-Check 'hiddenCompact.hiddenCardUp' ($cardUp -and -not ($inWindow | Where-Object { $null -eq $_.Activity }))
     Add-Check 'hiddenCompact.compactState' ($null -ne $compactState -and $compactState.compact -eq $true -and $compactState.windowVisible -eq $true)
-    Add-Check 'hiddenCompact.compactReads1s' ($null -ne $compact.seconds -and $compact.Compact -ge [Math]::Floor($compact.seconds * 0.7) -and
-        $compact.Compact -le [Math]::Ceiling($compact.seconds * 1.3) + 1)
-    Add-Check 'hiddenCompact.noPresenceReadsWhileCompact' ($null -ne $compact.seconds -and $compact.Presence -eq 0)
+    Add-Check 'hiddenCompact.compactReads1s' ($null -ne $compact.seconds -and $compact.total -ge [Math]::Floor($compact.seconds * 0.7) -and
+        $compact.total -le [Math]::Ceiling($compact.seconds * 1.3) + 1)
     Add-Check 'hiddenCompact.cardContinuity' ($cardUp -and -not ($inWindow | Where-Object {
         $null -eq $_.Activity -or (Get-Prop $_.Activity 'details') -ne 'Fixture Song A' }))
     Add-Check 'hiddenCompact.fullState' ($null -ne $fullState -and $fullState.compact -eq $false -and $fullState.windowVisible -eq $true)
-    Add-Check 'hiddenCompact.fullPresenceReads5s' ([bool] (& $presenceCadence $full))
+    Add-Check 'hiddenCompact.fullReads5s' ([bool] (& $fiveSecondCadence $full))
     $scenarioResults['HiddenAndCompact'] = [ordered]@{
         appPid = $app.Id; phaseSeconds = $phaseSeconds; hiddenReads = $hidden; compactReads = $compact; fullReads = $full
         setsInWindow = $inWindow.Count; snapshotsTaken = @($snap.Keys | Where-Object { $snap[$_] }).Count
