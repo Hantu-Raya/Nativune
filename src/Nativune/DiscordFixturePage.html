@@ -51,6 +51,8 @@
     Playing  track A (duration 1800 s) playing from 0, clock progressing, no timeline events
     Paused   track A (duration 1800 s) paused at 60 s, not ended, clock fixed
     Empty    no coherent player item: empty title/byline/artwork/title link, media without source
+    ArtGap   track A playing with loaded art; 12 s art becomes unloadable (reader reports no art) while A still
+             plays; 24 s track B starts with track A's (loaded) art URL. B's first card must not show that art.
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -211,6 +213,14 @@
     media.src = silentWav();
     if (profile === 'Playing') play();
     else { position = 60; media.pause(); }
+    setInterval(tick, 250);
+  } else if (profile === 'ArtGap') {
+    load(tracks.A);
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    play();
+    setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-missing=w544-h544'), 12000);
+    setTimeout(() => { load(tracks.B); play(); }, 24000);
     setInterval(tick, 250);
   } else if (profile === 'Empty') {
     titleLink.remove();

@@ -17,8 +17,8 @@
     <!-- Full-window command bar, which is also the title bar: Windows draws the minimize, maximize and
          close buttons over CaptionButtonsColumn and the empty TitleDragRegion moves the window.
          Left: window mode, then browser navigation. Right: app output, pause timer and the More
-         overflow, then the update indicator. Website playback stays with the site's own player bar
-         and the More menu. -->
+         overflow | Discord and update indicators beside the caption buttons. Website playback stays
+         with the site's own player bar and the More menu. -->
     <Border x:Name="ToolbarHost"
             Grid.Row="0"
             Background="{ThemeResource SurfaceBrush}"
@@ -114,7 +114,7 @@
                   Content="Home" />
         </StackPanel>
 
-        <!-- App output, pause timer and the More overflow, then the update indicator at the far right. -->
+        <!-- App output, pause timer and the More overflow | Discord and update at the far right. -->
         <StackPanel Grid.Column="2"
                     Orientation="Horizontal"
                     Spacing="4"
@@ -168,6 +168,18 @@
                   ToolTipService.ToolTip="More commands and settings (F10 or Alt+M)"
                   Content="More" />
           <Rectangle Style="{StaticResource ToolbarSeparatorStyle}" />
+          <Button x:Name="DiscordButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="Discord: off"
+                  AutomationProperties.HelpText="Discord Rich Presence is off. Right-click for Discord settings."
+                  ToolTipService.ToolTip="Discord Rich Presence is off. Right-click for Discord settings."
+                  Content="Discord">
+            <Button.ContextFlyout>
+              <MenuFlyout>
+                <MenuFlyoutItem x:Name="DiscordSettingsContextItem" Text="Discord settings…" />
+              </MenuFlyout>
+            </Button.ContextFlyout>
+          </Button>
           <Button x:Name="UpdateButton"
                   Style="{StaticResource ToolbarButtonStyle}"
                   AutomationProperties.Name="Check for Nativune updates"

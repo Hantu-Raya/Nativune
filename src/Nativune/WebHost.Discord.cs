@@ -1,3 +1,8 @@
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+
 namespace Nativune;
 
 public sealed partial class WebHostWindow
@@ -20,16 +25,47 @@ public sealed partial class WebHostWindow
             return;
         }
         if (_disposed || _discord is null) return;
-        _settingsDialog?.SetDiscordStatus(_discord.Status);
+        RefreshDiscordSurfaces();
         RefreshSharedReader();
     }
 
     private void ApplyDiscordOptions(DiscordPresenceOptions options)
     {
         _discord?.ApplyOptions(options);
+        RefreshDiscordSurfaces();
         RefreshSharedReader();
     }
 
+    private void RefreshDiscordSurfaces()
+    {
+        if (_disposed) return;
+        var enabled = _settings.Discord.Enabled;
+        var status = _discord?.Status ?? DiscordPresenceStatus.Off;
+        var connection = status switch
+        {
+            DiscordPresenceStatus.Connected => "connected",
+            DiscordPresenceStatus.DiscordAbsent => "waiting for the Discord app",
+            DiscordPresenceStatus.Connecting => "connecting to Discord",
+            DiscordPresenceStatus.Error => "connection error",
+            DiscordPresenceStatus.Unavailable => "unavailable in this build",
+            _ => "waiting for the Discord app"
+        };
+        var state = enabled ? $"on, {connection}" : "off";
+        var name = $"Discord: {state}";
+        var description = enabled
+            ? $"Discord Rich Presence is on; {connection}. Right-click for Discord settings."
+            : "Discord Rich Presence is off. Right-click for Discord settings.";
+        AutomationProperties.SetName(DiscordButton, name);
+        AutomationProperties.SetHelpText(DiscordButton, description);
+        ToolTipService.SetToolTip(DiscordButton, description);
+        _discordPresenceItem.IsChecked = enabled;
+
+        if (DiscordButton.Content is BitmapIcon icon)
+            icon.Foreground = enabled && !ShellTheme.IsHighContrast
+                ? new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x58, 0x65, 0xF2))
+                : null;
+        _settingsDialog?.SetDiscordStatus(status);
+    }
     private void ObserveDiscord(CompactPlaybackState? state, int epoch)
     {
         var discord = _discord;

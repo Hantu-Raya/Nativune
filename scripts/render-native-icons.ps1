@@ -33,11 +33,11 @@ $svgNamespace = 'http://www.w3.org/2000/svg'
 $allowedElements = @('svg', 'title', 'g', 'path', 'rect', 'circle')
 $allowedAttributes = @(
     'viewBox', 'width', 'height', 'role', 'aria-labelledby', 'color', 'id',
-    'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+    'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'transform',
     'd', 'x', 'y', 'rx', 'ry', 'cx', 'cy', 'r'
 )
 $iconNames = @(
-    'app-mark', 'back', 'cancel-timer', 'close', 'compact', 'dislike',
+    'app-mark', 'back', 'cancel-timer', 'close', 'compact', 'discord', 'dislike',
     'dislike-filled', 'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
     'like', 'like-filled', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
     'play', 'playlist', 'previous', 'quit-timer', 'quit', 'repeat-one', 'repeat',
@@ -150,7 +150,7 @@ function Assert-SafeSvg([string] $path) {
                     switch ($reader.LocalName) {
                         'viewBox' { if ($localName -ne 'svg' -or $reader.Value -ne '0 0 24 24') { Fail "viewBox must remain 0 0 24 24: $path" } }
                         'role' { if ($localName -ne 'svg' -or $reader.Value -ne 'img') { Fail "role must remain img on the root svg: $path" } }
-                        'fill' { if ($reader.Value -notmatch '^(none|currentColor|#[0-9a-f]{6}([0-9a-f]{2})?)$') { Fail "unsupported fill value: $path" } }
+                        'fill' { if ($reader.Value -notmatch '(?i)^(none|currentColor|#[0-9a-f]{6}([0-9a-f]{2})?)$') { Fail "unsupported fill value: $path" } }
                         'stroke' { if ($reader.Value -notmatch '^(none|currentColor|#[0-9a-f]{6}([0-9a-f]{2})?)$') { Fail "unsupported stroke value: $path" } }
                         'color' { if ($reader.Value -notmatch '^#[0-9a-f]{6}([0-9a-f]{2})?$') { Fail "unsupported color value: $path" } }
                         'stroke-width' { if ($reader.Value -ne '2') { Fail "stroke width must remain 2: $path" } }
@@ -158,6 +158,7 @@ function Assert-SafeSvg([string] $path) {
                         'stroke-linejoin' { if ($reader.Value -ne 'round') { Fail "stroke linejoin must remain round: $path" } }
                         'aria-labelledby' { if ($localName -ne 'svg' -or $reader.Value -ne 'title') { Fail "aria-labelledby must target the supplied title: $path" } }
                         'id' { if ($localName -ne 'title' -or $reader.Value -ne 'title') { Fail "only the supplied title id is allowed: $path" } }
+                        'transform' { if ($localName -ne 'g' -or $reader.Value -ne 'translate(2 4.4196) scale(0.157925)') { Fail "unsupported transform: $path" } }
                     }
                 }
                 $reader.MoveToElement() | Out-Null
@@ -237,7 +238,7 @@ $expectedFiles = @($iconNames | ForEach-Object { '{0}.svg' -f $_ })
 $actualFiles = @($files.Name | Sort-Object)
 $expectedSorted = @($expectedFiles | Sort-Object)
 if ($actualFiles.Count -ne $expectedSorted.Count -or (Compare-Object $actualFiles $expectedSorted)) {
-    Fail 'mask directory must contain exactly the 43 active SVG filenames (historical notification masks live outside this input)'
+    Fail 'mask directory must contain exactly the 44 active SVG filenames (historical notification masks live outside this input)'
 }
 foreach ($file in $files) {
     if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

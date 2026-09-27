@@ -47,8 +47,13 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
   must be >= 14.5 s apart, and the ended clear must land within 5 s of the ended moment (page time estimated
   from the first card, +2 s estimate tolerance): clears are never held back by the write gate.
 - PauseExpiry: PAUSE override 20 s, bench profile Paused (steady paused track A). One clear ~20 s after the
-  first paused card (15-25 s window), no republish while still paused, then command-resume (page media.play())
-  must bring a fresh playing card with timestamps.
+  first paused card (15-25 s window), no republish while still paused. Then Discord drops and comes back while
+  still paused: the new connection must not republish the expired paused card (the pause deadline survives a
+  reconnect). Then command-resume (page media.play()) must bring a fresh playing card with timestamps.
+- ArtGap: bench profile ArtGap. Track A plays with loaded art, its art becomes unloadable (the reader reports
+  no art) at page 12 s, and track B starts at 24 s with track A's art URL. B's first card must use the
+  'nativune' fallback (a transient missing-art sample must not erase A's art from the stale-art guard); B's
+  shared art may appear only >= 3 s later.
 - LiveToggle: command-discord-off / command-discord-on call ApplyDiscordOptions(Enabled false/true), the
   Settings Save path. Off: a clear, then the connection closes, then no further frames. On: a new connection,
   READY and a fresh non-null card after that READY.
@@ -62,7 +67,7 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 [CmdletBinding()]
 param(
     [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate',
-        'PauseExpiry', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
+        'PauseExpiry', 'ArtGap', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
@@ -721,23 +726,33 @@ function Test-PauseExpiry {
     $root = New-Root 'pauseexpiry'
     Write-Settings $root $true
     $server = Start-FakeServer 'pauseexpiry'
-    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null; $resumeUtc = $null
+    $server2 = $null
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null; $resumeUtc = $null; $reconnectUtc = $null
     try {
         $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
             NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Paused'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
         $ready = Wait-BenchReady $root
         $firstUtc = Wait-FirstCard $server 60
         if (-not $firstUtc) { throw 'PauseExpiry: no paused card within 60 s.' }
-        Wait-UntilUtc $firstUtc.AddSeconds(35)
+        Wait-UntilUtc $firstUtc.AddSeconds(32)
+        # Still paused and already expired: drop Discord and bring it back on a new connection.
+        Stop-FakeServer $server
+        Start-Sleep -Seconds 1
+        $server2 = Start-FakeServer 'pauseexpiry-2'
+        [void] (Wait-Until { [bool] (@(Read-Frames $server2) | Where-Object { $_.json -eq 'connected' }) } 30)
+        $reconnectUtc = [DateTime]::UtcNow
+        # Two page reads (5 s cadence) + debounce + write gate: a republished card would land in this window.
+        Start-Sleep -Seconds 15
         $resumeUtc = Send-HookCommand $root 'command-resume'
-        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object {
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server2)) | Where-Object {
             $null -ne $_.Activity -and $_.Utc -gt $resumeUtc -and $null -ne (Get-Prop $_.Activity 'timestamps') }) } 15)
         $alive = -not $app.HasExited
         [void] (Stop-App $app $root)
         Start-Sleep -Seconds 2
-    } finally { Stop-FakeServer $server }
+    } finally { Stop-FakeServer $server; Stop-FakeServer $server2 }
     $frames = Read-Frames $server
-    $framesByScenario['PauseExpiry'] = $frames
+    $frames2 = Read-Frames $server2
+    $framesByScenario['PauseExpiry'] = [ordered]@{ first = $frames; second = $frames2 }
     Copy-AppLog $root 'pauseexpiry'
     $sets = @(Get-Activities $frames)
     $firstPaused = $sets | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
@@ -746,19 +761,58 @@ function Test-PauseExpiry {
     $delay = if ($clears.Count -gt 0) { ($clears[0].Utc - $firstPaused.Utc).TotalSeconds } else { $null }
     $afterClear = @(if ($clears.Count -gt 0) { $beforeResume | Where-Object { $_.Utc -gt $clears[0].Utc } })
     $pausedCards = @($beforeResume | Where-Object { $null -ne $_.Activity })
-    $resumed = if ($resumeUtc) { $sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $resumeUtc } | Select-Object -First 1 } else { $null }
+    $resumed = if ($resumeUtc) { @(Get-Activities $frames2) | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $resumeUtc } | Select-Object -First 1 } else { $null }
+    $republished = @(if ($resumeUtc) { @(Get-Activities $frames2) | Where-Object { $null -ne $_.Activity -and $_.Utc -le $resumeUtc } })
     Add-Check 'pauseExpiry.benchReady' $ready
     Add-Check 'pauseExpiry.noCrash' $alive
     Add-Check 'pauseExpiry.pausedCardFirst' ($pausedCards.Count -gt 0 -and -not ($pausedCards | Where-Object {
         (Get-Prop (Get-Prop $_.Activity 'assets') 'small_image') -ne 'pause' -or $null -ne (Get-Prop $_.Activity 'timestamps') }))
     Add-Check 'pauseExpiry.oneClearAfter20s' ($clears.Count -eq 1 -and $delay -ge 15 -and $delay -le 25)
     Add-Check 'pauseExpiry.noRepublishWhilePaused' ($clears.Count -eq 1 -and $afterClear.Count -eq 0)
+    Add-Check 'pauseExpiry.reconnected' ($null -ne $reconnectUtc)
+    Add-Check 'pauseExpiry.noRepublishAfterReconnect' ($null -ne $reconnectUtc -and $republished.Count -eq 0)
     Add-Check 'pauseExpiry.freshPlayingCardAfterResume' ($null -ne $resumed -and $null -ne (Get-Prop $resumed.Activity 'timestamps') -and
         (Get-Prop $resumed.Activity 'details') -eq 'Fixture Song A' -and ($resumed.Utc - $resumeUtc).TotalSeconds -le 15)
     $scenarioResults['PauseExpiry'] = [ordered]@{
         appPid = $app.Id; pauseSeconds = 20; profile = 'Paused'; clearDelaySeconds = if ($null -ne $delay) { [Math]::Round($delay, 3) } else { $null }
         clearsWhilePaused = $clears.Count; setsAfterClearBeforeResume = $afterClear.Count
+        cardsOnNewConnectionBeforeResume = $republished.Count
         resumeToCardSeconds = if ($resumed) { [Math]::Round(($resumed.Utc - $resumeUtc).TotalSeconds, 3) } else { $null }
+    }
+}
+
+function Test-ArtGap {
+    $root = New-Root 'artgap'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'artgap'
+    $app = $null; $alive = $false; $ready = $false
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'ArtGap'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object {
+            $null -ne $_.Activity -and (Get-Prop $_.Activity 'details') -eq 'Fixture Song B' }) } 60)
+        Start-Sleep -Seconds 8
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['ArtGap'] = $frames
+    Copy-AppLog $root 'artgap'
+    $sharedArt = 'https://lh3.googleusercontent.com/fixture-a=w544-h544'
+    $cards = @(Get-Activities $frames | Where-Object { $null -ne $_.Activity })
+    $image = { param($s) Get-Prop (Get-Prop $s.Activity 'assets') 'large_image' }
+    $a = @($cards | Where-Object { (Get-Prop $_.Activity 'details') -eq 'Fixture Song A' })
+    $b = @($cards | Where-Object { (Get-Prop $_.Activity 'details') -eq 'Fixture Song B' })
+    Add-Check 'artGap.noCrash' $alive
+    Add-Check 'artGap.benchReady' $ready
+    Add-Check 'artGap.trackAArtThenFallback' ($a.Count -ge 2 -and (& $image $a[0]) -eq $sharedArt -and
+        [bool] ($a | Where-Object { (& $image $_) -eq 'nativune' }))
+    Add-Check 'artGap.firstBCardWithoutSharedArt' ($b.Count -gt 0 -and (& $image $b[0]) -eq 'nativune')
+    Add-Check 'artGap.sharedArtOnlyAfter3s' ($b.Count -gt 0 -and -not ($b | Where-Object {
+        (& $image $_) -eq $sharedArt -and $_.Mono -lt ($b[0].Mono + 2500) }))
+    $scenarioResults['ArtGap'] = [ordered]@{
+        appPid = $app.Id; trackACards = @($a | ForEach-Object { & $image $_ }); trackBCards = @($b | ForEach-Object { & $image $_ })
     }
 }
 
@@ -933,6 +987,7 @@ try {
     & $runScenario 'ButtonOff' { Test-ButtonOff }
     & $runScenario 'ProductionGate' { Test-ProductionGate }
     & $runScenario 'PauseExpiry' { Test-PauseExpiry }
+    & $runScenario 'ArtGap' { Test-ArtGap }
     & $runScenario 'LiveToggle' { Test-LiveToggle }
     & $runScenario 'TrueQuit' { Test-TrueQuit }
     & $runScenario 'HiddenAndCompact' { Test-HiddenAndCompact }

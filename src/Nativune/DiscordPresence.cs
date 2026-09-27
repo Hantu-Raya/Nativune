@@ -31,7 +31,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
     // Guarded by _gate.
     private DiscordPresenceOptions _options = DiscordPresenceOptions.Default;
     private DiscordTrackObservation? _observation;
-    private string? _itemTitle, _itemTrackUrl, _itemArt, _previousItemArt;
+    private string? _itemTitle, _itemTrackUrl, _itemArt, _itemLastArt, _previousItemArt;
     private long _itemArtSinceMs; // monotonic start of the current item's continuous run on _itemArt
     private long? _pausedSinceMs;
     private DateTimeOffset? _anchorStart;
@@ -136,9 +136,16 @@ internal sealed class DiscordPresence : IAsyncDisposable
 
     private void ForgetTrackLocked()
     {
-        _observation = null;
-        _itemTitle = _itemTrackUrl = _itemArt = _previousItemArt = null;
+        ForgetObservationLocked();
+        _itemTitle = _itemTrackUrl = _itemArt = _itemLastArt = _previousItemArt = null;
         _pausedSinceMs = null;
+    }
+
+    // Connection loss and READY: drop the cached observation (only a post-READY one may be published) but
+    // keep item identity, so a pause keeps its original deadline and the stale-art guard keeps its history.
+    private void ForgetObservationLocked()
+    {
+        _observation = null;
         _anchorStart = null;
     }
 
@@ -149,7 +156,10 @@ internal sealed class DiscordPresence : IAsyncDisposable
             || (_itemTrackUrl is not null && o.TrackUrl is not null && !string.Equals(_itemTrackUrl, o.TrackUrl, StringComparison.Ordinal));
         if (itemChanged)
         {
-            _previousItemArt = _itemArt; // never carry the prior item's art into the new item right away
+            // Never carry the prior item's art into the new item right away; use its last loaded art so a
+            // transient missing-art sample cannot erase that history.
+            _previousItemArt = _itemLastArt;
+            _itemLastArt = null;
             _itemTitle = o.Title;
             _itemTrackUrl = o.TrackUrl;
             _anchorStart = null;
@@ -160,6 +170,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
         }
         if (itemChanged || !string.Equals(_itemArt, o.ArtworkUrl, StringComparison.Ordinal)) _itemArtSinceMs = nowMs;
         _itemArt = o.ArtworkUrl;
+        if (o.ArtworkUrl is not null) _itemLastArt = o.ArtworkUrl;
 
         // Pause deadline starts at the first paused observation of an item; late metadata does not restart it.
         // An ended item clears immediately (BuildDesired); it never starts the pause deadline.
@@ -314,7 +325,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                         session.Ready = true;
                         _ready = true;
                         _epoch++;
-                        ForgetTrackLocked(); // publish only observations received after this READY
+                        ForgetObservationLocked(); // publish only observations received after this READY
                     }
                     SetStatus(session, DiscordPresenceStatus.Connected);
                     RaiseStatusChanged(); // prompt the host for a fresh observation (NeedsSnapshot is now true)
@@ -331,7 +342,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                             {
                                 _ready = false;
                                 _epoch++;
-                                ForgetTrackLocked(); // a pre-disconnect song must never be republished on reconnect
+                                ForgetObservationLocked(); // a pre-disconnect song must never be republished on reconnect
                             }
                         }
                     }

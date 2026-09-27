@@ -88,7 +88,7 @@ public sealed partial class WebHostWindow
         CompactView.CommandRequested += (command, value) => _ = ExecuteCompactCommandAsync(command, value);
         CompactView.ReturnToFullRequested += () => SetCompact(false);
         CompactView.UpdateRequested += OnUpdateButtonClick;
-        CompactView.SettingsRequested += ShowSettings;
+        CompactView.SettingsRequested += () => ShowSettings();
         CompactView.WhatsNewRequested += () =>
         {
             if (_pendingWhatsNewVersion is { } version)

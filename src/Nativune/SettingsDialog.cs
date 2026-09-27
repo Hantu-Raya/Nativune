@@ -451,6 +451,8 @@ public sealed partial class SettingsDialog : Window
         DiscordPresenceCheckBox.Unchecked += (_, _) => UpdateDiscordControls(announce: true);
     }
 
+    internal void SelectDiscordPage() => Nav.SelectedItem = DiscordNavItem;
+
     // Called by the owner with the live presence state; the text never contains track data.
     internal void SetDiscordStatus(DiscordPresenceStatus status)
     {

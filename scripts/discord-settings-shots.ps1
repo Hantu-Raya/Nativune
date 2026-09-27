@@ -2,9 +2,12 @@ param(
     [string] $App = '.cache/build/pub-feature/Nativune.exe',
     [string] $OutputDirectory = 'artifacts/discord-rpc/settings'
 )
-# PR evidence for Settings > Discord. Runs a disposable root (never data/), opens Settings through
-# UI Automation only (no mouse/keyboard), captures the Settings window with PrintWindow and records
-# the accessibility properties of the Discord controls. Exit 1 when an expected control is missing.
+# PR evidence for the Discord toolbar toggle and Settings > Discord. Runs a disposable root (never data/),
+# drives the app through UI Automation only (no mouse/keyboard), captures windows with PrintWindow and records
+# the accessibility properties of the Discord controls. Toolbar: the top-right Discord button toggles the saved
+# setting (checked in settings.json) and announces on/off; More > "Discord settings…" opens Settings directly on
+# the Discord page. Turning the toggle on uses the real Discord pipe of this machine for a few seconds with no
+# song playing (signed-out Home page), so no activity card is shown. Exit 1 when an expected control is missing.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
@@ -103,6 +106,24 @@ function Save-Shot([IntPtr] $Hwnd, [string] $Name) {
     $size = "$($out.Width)x$($out.Height)"; $out.Dispose()
     [ordered]@{ file = $file; printed = $ok; pixels = $size }
 }
+function Save-ToolbarCrop([IntPtr] $Hwnd, [string] $Name, [int] $Width = 420, [int] $Height = 49) {
+    $shot = Save-Shot $Hwnd "$Name-window"
+    $full = [System.Drawing.Bitmap]::FromFile($shot.file)
+    $w = [Math]::Min($Width, $full.Width)
+    $crop = $full.Clone([System.Drawing.Rectangle]::new($full.Width - $w, 0, $w, [Math]::Min($Height, $full.Height)), $full.PixelFormat)
+    $full.Dispose(); Remove-Item -LiteralPath $shot.file
+    $file = Join-Path $outDir "$Name.png"; $crop.Save($file, [System.Drawing.Imaging.ImageFormat]::Png)
+    $size = "$($crop.Width)x$($crop.Height)"; $crop.Dispose()
+    [ordered]@{ file = $file; printed = $shot.printed; pixels = $size }
+}
+function Read-SavedDiscord { ([IO.File]::ReadAllText((Join-Path $data 'settings.json')) | ConvertFrom-Json).DiscordPresence }
+function Find-MenuItem([int] $ProcessId, [string] $Like) {
+    $pidCond = New-Object System.Windows.Automation.PropertyCondition ($AE::ProcessIdProperty), $ProcessId
+    foreach ($el in $AE::RootElement.FindAll($Scope::Children, $pidCond)) {
+        $menuItems = $el.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem))
+        foreach ($m in $menuItems) { if ($m.Current.Name -like $Like) { return $m } }
+    }
+}
 function Describe($El) {
     if (-not $El) { return $null }
     $c = $El.Current
@@ -116,33 +137,50 @@ $ids = 'DiscordNavItem', 'DiscordPresenceCheckBox', 'DiscordStatusLineComboBox',
 $report = [ordered]@{ command = $commandLine; runId = $runId; app = $appExe; appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion }
 $missing = New-Object System.Collections.Generic.List[string]
 $shots = [ordered]@{}
-$proc = $null; $settingsHwnd = [IntPtr]::Zero
+$proc = $null; $settingsHwnd = [IntPtr]::Zero; $mainHwnd = [IntPtr]::Zero
 try {
     $proc = Start-Process -FilePath $appExe -ArgumentList @('web', '--root', "`"$root`"") -PassThru
     $mainHwnd = Wait-Until { $h = [DShot]::Find([uint32] $proc.Id, $null); if ($h -ne [IntPtr]::Zero) { $h } } 'main window' 60
     $main = $AE::FromHandle($mainHwnd)
+    [void][DShot]::SetWindowPos($mainHwnd, $HWND_TOPMOST, 0, 0, 0, 0, $SWP)
 
-    # Open Settings: More button -> "Settings…" menu item (flyout items live in a popup, search from desktop root scoped by pid).
+    # Toolbar toggle (top right, beside the update indicator).
+    $discordButton = Find-Element $main 'AutomationId' 'DiscordButton' 30
+    if (-not $discordButton) { $missing.Add('DiscordButton'); throw 'Discord toolbar button not found.' }
+    Start-Sleep -Seconds 3
+    $toolbar = [ordered]@{ initial = Describe $discordButton; initialSaved = Read-SavedDiscord }
+    $shots['toolbarOff'] = Save-ToolbarCrop $mainHwnd 'toolbar-discord-off'
+    (Get-Pattern $discordButton ([System.Windows.Automation.InvokePattern])).Invoke()
+    $toolbar['onName'] = Wait-Until { $n = $discordButton.Current.Name; if ($n -like 'Discord: on*') { $n } } 'Discord button on' 10
+    Start-Sleep -Seconds 2
+    $toolbar['onSaved'] = Wait-Until { if ((Read-SavedDiscord) -eq $true) { 'true' } } 'saved DiscordPresence=true' 10
+    $toolbar['on'] = Describe $discordButton
+    $shots['toolbarOn'] = Save-ToolbarCrop $mainHwnd 'toolbar-discord-on'
+    (Get-Pattern $discordButton ([System.Windows.Automation.InvokePattern])).Invoke()
+    $toolbar['offName'] = Wait-Until { $n = $discordButton.Current.Name; if ($n -eq 'Discord: off') { $n } } 'Discord button off' 10
+    $toolbar['offSaved'] = Wait-Until { if ((Read-SavedDiscord) -eq $false) { 'false' } } 'saved DiscordPresence=false' 10
+    $report['toolbar'] = $toolbar
+    [void][DShot]::SetWindowPos($mainHwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP)
+
+    # More menu: the Discord toggle item and "Discord settings…", which opens Settings on the Discord page.
     $more = Find-Element $main 'AutomationId' 'MoreButton' 30
     if (-not $more) { $more = Find-Element $main 'Name' 'More commands and settings' 5 }
     if (-not $more) { $missing.Add('MoreButton'); throw 'More button not found.' }
     (Get-Pattern $more ([System.Windows.Automation.InvokePattern])).Invoke()
-    $pidCond = New-Object System.Windows.Automation.PropertyCondition ($AE::ProcessIdProperty), $proc.Id
-    $item = Wait-Until {
-        foreach ($el in $AE::RootElement.FindAll($Scope::Children, $pidCond)) {
-            $menuItems = $el.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::MenuItem))
-            foreach ($m in $menuItems) { if ($m.Current.Name -like 'Settings*') { return $m } }
-        }
-    } 'Settings menu item' 15
+    $toggleItem = Wait-Until { Find-MenuItem $proc.Id "Show what I'm playing on Discord" } 'Discord toggle menu item' 15
+    $report['moreToggleItem'] = [ordered]@{ name = $toggleItem.Current.Name
+        toggleState = (Get-Pattern $toggleItem ([System.Windows.Automation.TogglePattern])).Current.ToggleState.ToString() }
+    $item = Wait-Until { Find-MenuItem $proc.Id 'Discord settings*' } 'Discord settings menu item' 15
     (Get-Pattern $item ([System.Windows.Automation.InvokePattern])).Invoke()
 
     $settingsHwnd = Wait-Until { $h = [DShot]::Find([uint32] $proc.Id, 'Settings'); if ($h -ne [IntPtr]::Zero) { $h } } 'Settings window' 30
     [void][DShot]::SetWindowPos($settingsHwnd, $HWND_TOPMOST, 0, 0, 0, 0, $SWP)
     $dlg = $AE::FromHandle($settingsHwnd)
 
+    # Opened from "Discord settings…": the Discord page must already be selected.
     $nav = Find-Element $dlg 'AutomationId' 'DiscordNavItem'
     if (-not $nav) { $missing.Add('DiscordNavItem'); throw 'Discord nav item not found.' }
-    (Get-Pattern $nav ([System.Windows.Automation.SelectionItemPattern])).Select()
+    $report['openedOnDiscordPage'] = (Get-Pattern $nav ([System.Windows.Automation.SelectionItemPattern])).Current.IsSelected
     Start-Sleep -Milliseconds 1200
 
     $els = [ordered]@{}
@@ -171,6 +209,8 @@ try {
         openButtonEnabledWhenOn = [bool] $on['DiscordOpenButtonCheckBox'].IsEnabled
         unsavedStatusMentionsSave = [string] $on['statusText'] -like '*Turns on after Save*'
     }
+    if (-not $report['openedOnDiscordPage']) { $missing.Add('openedOnDiscordPage') }
+    if ($report['moreToggleItem'].toggleState -ne 'Off') { $missing.Add('moreToggleItemOff') }
 
     $cancel = Find-Element $dlg 'AutomationId' 'CancelButton' 5
     if ($cancel) { (Get-Pattern $cancel ([System.Windows.Automation.InvokePattern])).Invoke() } else { $missing.Add('CancelButton') }
@@ -181,6 +221,7 @@ catch {
 }
 finally {
     if ($settingsHwnd -ne [IntPtr]::Zero) { [void][DShot]::SetWindowPos($settingsHwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP) }
+    if ($mainHwnd -ne [IntPtr]::Zero) { [void][DShot]::SetWindowPos($mainHwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP) }
     if ($proc) {
         if (-not $proc.HasExited) { [void]$proc.CloseMainWindow(); [void]$proc.WaitForExit(8000) }
         if (-not $proc.HasExited) { & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null }
@@ -198,4 +239,4 @@ if ($missing.Count -or $report.Contains('error')) {
     Write-Error "Discord settings capture failed: $($report['error']) missing=[$($missing -join ', ')]" -ErrorAction Continue
     exit 1
 }
-"Wrote $($shots['off'].file), $($shots['on'].file) and settings-a11y.json"
+"Wrote $(@($shots.Values | ForEach-Object { $_.file }) -join ', ') and settings-a11y.json"
