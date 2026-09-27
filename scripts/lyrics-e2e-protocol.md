@@ -81,7 +81,7 @@ Second amendment, after the first run on the fixed fork (`style-green/20260927T2
 - (c) The harness Lyrics-tab click now sends mousemove, pointerdown, mousedown, pointerup, mouseup and click at the tab's centre coordinates, as a real mouse click does. This applies to every arm. Reason:
   - YouTube Music's input-modality code (`music_polymer_inlined_html.js`, build `1dea707a`) starts in keyboard mode (no `no-focus-outline`). It switches to mouse mode (adds `no-focus-outline`) only on a window `click`/`mousemove` with `clientX`/`clientY` > 0.
   - The earlier `click()` had coordinates 0,0, so the class depended on the physical pointer position over each window.
-  - Diagnostic run `style-diag/20260927T220920Z`: S lacked the class at 6 s, before any action, while C2 and C3 had it.
+  - Diagnostic run `style-diag/20260927T220920Z` (under `.cache/`, not kept): S lacked the class at 6 s, before any action, while C2 and C3 had it.
   - The fork has no mouse, keyboard or focus writes outside its own lyric elements.
 - The remaining `html.no-focus-outline` and `--ytmusic-*focus*` differences are **not** excluded; they must match or the scenario fails.
 
