@@ -14,6 +14,8 @@ internal static class DiscordActivity
     private const string ButtonLabel = "Open in YouTube Music";
     private const string FallbackLargeImage = "nativune";
     private const string RepositoryUrl = "https://github.com/Hantu-Raya/Nativune"; // fixed constant, not page data
+    // App hover caption: immutable for the process, so normalized once.
+    private static readonly string? LargeText = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
 
     internal static string? BuildActivityJson(DiscordTrackObservation o, DiscordPresenceOptions options, string? artwork, DateTimeOffset? start, double durationSeconds)
     {
@@ -22,7 +24,7 @@ internal static class DiscordActivity
         var state = NormalizeText(o.Artist, "Artist: ");
         var trackUrl = IsAllowedMusicLink(o.TrackUrl) ? o.TrackUrl : null;
         var artistUrl = state is not null && IsAllowedMusicLink(o.ArtistUrl) ? o.ArtistUrl : null;
-        var largeText = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
+        var largeText = LargeText;
         var displayType = options.StatusLine switch
         {
             DiscordStatusLine.Title => 2,

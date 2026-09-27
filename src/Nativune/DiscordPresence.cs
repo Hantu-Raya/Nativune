@@ -36,6 +36,9 @@ internal sealed class DiscordPresence : IAsyncDisposable
     private long? _pausedSinceMs;
     private DateTimeOffset? _anchorStart;
     private double _anchorDuration;
+    // Single-entry render cache: the last render inputs and the JSON they produced. Reset with the track state.
+    private RenderKey? _renderKey;
+    private string? _renderJson;
     private Session? _session;
     private Task? _stopTask;
     private bool _stopped;
@@ -134,6 +137,8 @@ internal sealed class DiscordPresence : IAsyncDisposable
         _itemTitle = _itemTrackUrl = _itemArt = _previousItemArt = null;
         _pausedSinceMs = null;
         _anchorStart = null;
+        _renderKey = null;
+        _renderJson = null;
     }
 
     private void TrackLocked(DiscordTrackObservation o, long nowMs)
@@ -210,7 +215,14 @@ internal sealed class DiscordPresence : IAsyncDisposable
                     else changesAtMs = changesAtMs is long c ? Math.Min(c, acceptAt) : acceptAt;
                 }
             }
-            return DiscordActivity.BuildActivityJson(o, _options, art, o.Paused ? null : _anchorStart, _anchorDuration);
+            var start = o.Paused ? null : _anchorStart;
+            // The app caption is process-constant (DiscordActivity.LargeText), so it needs no key field.
+            var key = new RenderKey(o.Title, o.Artist, o.TrackUrl, o.ArtistUrl, art, o.Paused, o.RepeatOne,
+                _options.StatusLine, _options.ShowOpenButton, start, start is null ? 0 : _anchorDuration);
+            if (_renderKey is RenderKey last && last == key) return _renderJson;
+            _renderJson = DiscordActivity.BuildActivityJson(o, _options, art, start, _anchorDuration);
+            _renderKey = key;
+            return _renderJson;
         }
     }
 
@@ -492,6 +504,13 @@ internal sealed class DiscordPresence : IAsyncDisposable
     }
 
     // ---------- Nested types ----------
+
+    // Every input BuildActivityJson reads; compared field by field (record struct equality, ordinal strings).
+    // Position/SampleUtc are deliberately absent: they only matter through the anchor.
+    private readonly record struct RenderKey(
+        string? Title, string? Artist, string? TrackUrl, string? ArtistUrl, string? Art,
+        bool Paused, bool RepeatOne, DiscordStatusLine StatusLine, bool ShowOpenButton,
+        DateTimeOffset? Start, double Duration);
 
     private sealed class Session
     {
