@@ -7,6 +7,6 @@ internal sealed record CompactPlaybackState(
     bool CanSeek, bool CanLike, bool CanDislike, bool CanRepeat, bool CanShuffle,
     bool? Shuffle = null, bool ClockMismatch = false, string? VideoId = null,
     bool ClockConfirmed = false, double? MediaDuration = null, bool WebsiteClock = false,
-    double? MediaPosition = null, string? Artist = null, string? Album = null, string? ArtistUrl = null,
-    string? AlbumUrl = null, string? TrackUrl = null, bool Ended = false, bool Seeking = false,
+    double? MediaPosition = null, string? Artist = null, string? ArtistUrl = null,
+    string? TrackUrl = null, bool Ended = false, bool Seeking = false,
     double? PlaybackRate = null);

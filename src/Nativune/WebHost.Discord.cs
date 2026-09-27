@@ -42,11 +42,9 @@ public sealed partial class WebHostWindow
         discord.Observe(new DiscordTrackObservation(
             state.Title,
             state.Artist,
-            state.Album,
             state.ArtworkUrl,
             state.TrackUrl,
             state.ArtistUrl,
-            state.AlbumUrl,
             state.Paused,
             string.Equals(state.Repeat, "one", StringComparison.Ordinal),
             state.Position,

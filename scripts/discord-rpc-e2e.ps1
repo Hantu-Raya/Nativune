@@ -14,29 +14,40 @@ repository WebView2 runtime copied into the fresh root the app uses the register
 -CopyWebView2Runtime copies .tools/webview2 (about 800 MB) into the root instead.
 
 Fixture page timeline (src/Nativune/DiscordFixturePage.html), seconds after page load:
-  0 track A playing (Fixture Song A / Fixture Artist / Fixture Album, 210 s); 25 seek to 100 s;
-  45 pause; 60 resume; 80 track B (Fixture Song B / Second Artist / Second Album, 185 s);
-  100 repeat-one on; 120 stop (ended).
+  0 track A playing (Fixture Song A / Fixture Artist, 210 s); 25 seek to 100 s; 45 pause; 60 resume;
+  65-75 synthetic ad window; 80 track B (Fixture Song B / Second Artist, 185 s, SAME artwork URL as track A);
+  100 repeat-one on (stays on); 120 stop (ended); 125 track C (Fixture Song C / Third Artist, 240 s) with
+  unloadable artwork (card must use the 'nativune' fallback); 137 artwork loads; 147-162 title link unproven
+  (147 mismatched link text, 152 invalid candidate href, 157 link removed) while the route still names the
+  song; 162 link restored; 172 pause with repeat-one on; 182 resume; 192 stop (ended). Every byline carries a
+  unique album canary (AlbumCanaryQ7a/b/c, browse/MPREb_albumCanaryQ7*) that must never leave the app.
 
 Failure modes caught:
 - presence off by default is ignored, or Disable still opens IPC connections;
 - wrong or missing handshake client_id / version, SET_ACTIVITY before READY;
-- wrong activity type (not Listening = 2), missing/incorrect title, artist, album tooltip or artwork;
+- wrong activity type (not Listening = 2), missing/incorrect title, artist or artwork; cover hover text not
+  "Nativune <version> · by Hantu-Raya" or cover link not the Nativune repository on any card (fallback too);
+  shared album art between consecutive tracks suppressed for the whole second track; missing-art fallback
+  never published or never recovered; album name/URL leaked into any outbound field;
 - progress bar missing while playing, wrong length, not re-anchored after a seek;
-- timestamps kept while paused, missing pause badge, no republish on resume;
-- stale track A content after the track change, missing repeat-one badge;
+- timestamps kept while paused, missing or wrongly worded pause/repeat badge, repeat-one winning over pause,
+  any small_url, no republish on resume;
+- stale track A content after the track change;
 - ended playback or app exit not clearing the activity;
-- wrong pid, unproven details_url/buttons, per-tick write spam (below the test min-write interval);
-- crash or per-attempt log spam when Discord is absent.
+- wrong pid, unproven details_url/buttons (ad window, unproven title link), song links not returning together,
+  per-tick write spam (below the test min-write interval);
+- saved Open-button preference off still sending a button, or dropping the proven title link (ButtonOff);
+- crash or per-attempt log spam when Discord is absent;
+- after Discord drops and comes back (Reconnect), a cached pre-disconnect card republished on the new connection.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration')] [string] $Scenario = 'All',
+    [ValidateSet('All', 'Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff')] [string] $Scenario = 'All',
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
     [switch] $KeepRoot,
-    [int] $TimelineSeconds = 140
+    [int] $TimelineSeconds = 215
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -75,7 +86,7 @@ $started = [Collections.Generic.List[Diagnostics.Process]]::new()
 
 function Add-Check([string] $Name, [bool] $Passed) { $checks[$Name] = $Passed }
 
-function Write-Settings([string] $Root, [bool] $Enabled) {
+function Write-Settings([string] $Root, [bool] $Enabled, [bool] $OpenButton = $true) {
     $data = Join-Path $Root 'data'
     [IO.Directory]::CreateDirectory($data) | Out-Null
     # ShellSettings defaults (src/Nativune/ShellSettings.cs); automatic update checks and background
@@ -86,7 +97,7 @@ function Write-Settings([string] $Root, [bool] $Enabled) {
         CompactX = 100; CompactY = 100; CompactWidth = 800; CompactHeight = 180; CompactDpi = 96
         SleepInBackground = $false; StartCompact = $false; AutoCheckUpdates = $false
         OutputVolume = 1.0; BlockAds = $false
-        DiscordPresence = $Enabled; DiscordStatusLine = 0; DiscordOpenButton = $true
+        DiscordPresence = $Enabled; DiscordStatusLine = 0; DiscordOpenButton = $OpenButton
     }
     [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 }
@@ -180,6 +191,16 @@ function ConvertTo-UtcTime($Value) {
     $Value.ToUniversalTime()
 }
 
+$repoUrl = 'https://github.com/Hantu-Raya/Nativune'
+# AppVersion.DisplayName of the tested artifact: ProductVersion minus only +metadata (prerelease kept).
+function Get-ExpectedCaption { "Nativune $(("$appVersion") -replace '\+.*$', '') $([char] 0x00B7) by Hantu-Raya" }
+function Test-CoverIdentity($Activity) {
+    $assets = Get-Prop $Activity 'assets'
+    [bool] $appVersion -and (Get-Prop $assets 'large_text') -ceq (Get-ExpectedCaption) -and (Get-Prop $assets 'large_url') -ceq $repoUrl
+}
+# The fixture's album anchors carry unique canaries; none may reach any outbound activity field.
+function Test-NoAlbumCanary($Activity) { ($Activity | ConvertTo-Json -Depth 16 -Compress) -notmatch 'albumCanary|MPREb_' }
+
 function Get-Activities($Frames) {
     $list = @()
     foreach ($frame in $Frames) {
@@ -228,9 +249,15 @@ function Test-Timeline {
     Add-Check 'timeline.activitySent' ($nonNull.Count -gt 0)
     Add-Check 'timeline.typeListening' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object { (Get-Prop $_.Activity 'type') -ne 2 }))
     Add-Check 'timeline.pidIsApp' ($sets.Count -gt 0 -and -not ($sets | Where-Object { [int] $_.Pid -ne $app.Id }))
-    Add-Check 'timeline.trackAFields' ($a.Count -gt 0 -and -not ($a | Where-Object {
-        (Get-Prop $_.Activity 'state') -ne 'Fixture Artist' -or (Get-Prop (& $assets $_.Activity) 'large_text') -ne 'Fixture Album' }))
-    Add-Check 'timeline.trackAArtwork' ($a.Count -gt 0 -and (Get-Prop (& $assets $a[0].Activity) 'large_image') -eq 'https://lh3.googleusercontent.com/fixture-a=w544-h544')
+    Add-Check 'timeline.trackAFields' ($a.Count -gt 0 -and -not ($a | Where-Object { (Get-Prop $_.Activity 'state') -ne 'Fixture Artist' }))
+    $sharedArt = 'https://lh3.googleusercontent.com/fixture-a=w544-h544'
+    Add-Check 'timeline.trackAArtwork' ($a.Count -gt 0 -and (Get-Prop (& $assets $a[0].Activity) 'large_image') -eq $sharedArt)
+    # Cover (large image) hover text and link identify the app, not the album, on every non-null card.
+    Add-Check 'timeline.coverHoverAppInfo' ([bool] $appVersion -and $nonNull.Count -gt 0 -and -not ($nonNull | Where-Object {
+        (Get-Prop (& $assets $_.Activity) 'large_text') -cne (Get-ExpectedCaption) }))
+    Add-Check 'timeline.coverLinksRepo' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object {
+        (Get-Prop (& $assets $_.Activity) 'large_url') -cne $repoUrl }))
+    Add-Check 'timeline.noAlbumCanaryOutbound' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object { -not (Test-NoAlbumCanary $_.Activity) }))
 
     $aPlaying = @($a | Where-Object { $null -ne (& $ts $_.Activity) })
     $spans = @($aPlaying | ForEach-Object { [double] (Get-Prop (& $ts $_.Activity) 'end') - [double] (Get-Prop (& $ts $_.Activity) 'start') })
@@ -243,19 +270,31 @@ function Test-Timeline {
     Add-Check 'timeline.seekReanchors' $seekShift
 
     $pauseIndex = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isA $s) -and (Get-Prop (& $assets $s.Activity) 'small_image') -eq 'pause' })
-    Add-Check 'timeline.pauseBadge' ($pauseIndex -ge 0)
+    Add-Check 'timeline.pauseBadge' ($pauseIndex -ge 0 -and (Get-Prop (& $assets $sets[$pauseIndex].Activity) 'small_text') -ceq 'Paused')
     Add-Check 'timeline.pauseNoTimestamps' ($pauseIndex -ge 0 -and $null -eq (& $ts $sets[$pauseIndex].Activity))
     $resumed = $pauseIndex -ge 0 -and [bool] ($sets | Select-Object -Skip ($pauseIndex + 1) | Where-Object {
         $null -ne $_.Activity -and (& $isA $_) -and $null -ne (& $ts $_.Activity) })
     Add-Check 'timeline.resumeTimestamps' $resumed
 
     Add-Check 'timeline.trackBFields' ($b.Count -gt 0 -and -not ($b | Where-Object {
-        (Get-Prop $_.Activity 'state') -ne 'Second Artist' -or (Get-Prop (& $assets $_.Activity) 'large_text') -ne 'Second Album' -or
-        (Get-Prop (& $assets $_.Activity) 'large_image') -ne 'https://lh3.googleusercontent.com/fixture-b=w544-h544' }))
+        (Get-Prop $_.Activity 'state') -ne 'Second Artist' -or (Get-Prop (& $assets $_.Activity) 'large_image') -notin @($sharedArt, 'nativune') }))
     $firstB = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isB $s) })
-    Add-Check 'timeline.noStaleTrackAAfterB' ($firstB -ge 0 -and -not ($sets | Select-Object -Skip $firstB | Where-Object { $null -ne $_.Activity -and (& $isA $_) }))
+    # Track B shares track A's artwork URL. The app may show the 'nativune' fallback right after the title change
+    # (previous-item art protection), but must publish the shared art once track B has kept it for >= 3 s.
+    Add-Check 'timeline.sameAlbumArtShown' ($firstB -ge 0 -and [bool] ($b | Where-Object {
+        $_.Mono -ge ($sets[$firstB].Mono + 3000) -and (Get-Prop (& $assets $_.Activity) 'large_image') -eq $sharedArt }))
+    # Artwork is identical across A and B, so staleness is judged by title and artist only.
+    Add-Check 'timeline.noStaleTrackAAfterB' ($firstB -ge 0 -and -not ($sets | Select-Object -Skip $firstB | Where-Object {
+        $null -ne $_.Activity -and ((& $isA $_) -or (Get-Prop $_.Activity 'state') -eq 'Fixture Artist') }))
     $repeatIndex = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isB $s) -and (Get-Prop (& $assets $s.Activity) 'small_image') -eq 'repeat-one' })
-    Add-Check 'timeline.repeatOneBadge' ($repeatIndex -ge 0)
+    Add-Check 'timeline.repeatOneBadge' ($repeatIndex -ge 0 -and (Get-Prop (& $assets $sets[$repeatIndex].Activity) 'small_text') -ceq 'Repeat one')
+    # Exact badge wording everywhere, no small_url, and no badge invented for ordinary playback (track A playing).
+    Add-Check 'timeline.badgeTextExact' (-not ($nonNull | Where-Object {
+        $image = Get-Prop (& $assets $_.Activity) 'small_image'; $text = Get-Prop (& $assets $_.Activity) 'small_text'
+        ($image -eq 'pause' -and $text -cne 'Paused') -or ($image -eq 'repeat-one' -and $text -cne 'Repeat one') -or
+            ($image -notin @($null, 'pause', 'repeat-one')) -or ($null -eq $image -and $null -ne $text) }))
+    Add-Check 'timeline.noSmallUrl' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object { $null -ne (Get-Prop (& $assets $_.Activity) 'small_url') }))
+    Add-Check 'timeline.noBadgeWhilePlainPlaying' ($aPlaying.Count -gt 0 -and -not ($aPlaying | Where-Object { $null -ne (Get-Prop (& $assets $_.Activity) 'small_image') }))
     # Fixture ends at page time 120 s (repeat-one at 100 s): the first null after the repeat-one frame must
     # arrive within 25 s of it, and no track-B pause-badge card may follow the repeat-one frame.
     $endedClear = $false
@@ -269,17 +308,17 @@ function Test-Timeline {
     Add-Check 'timeline.endedClears' $endedClear
     Add-Check 'timeline.finalClear' ($sets.Count -gt 0 -and $null -eq $sets[-1].Activity)
 
-    $allowedTrackUrls = @('https://music.youtube.com/watch?v=fixtureSngA', 'https://music.youtube.com/watch?v=fixtureSngB')
+    $allowedTrackUrls = @('https://music.youtube.com/watch?v=fixtureSngA', 'https://music.youtube.com/watch?v=fixtureSngB',
+        'https://music.youtube.com/watch?v=fixtureSngC')
     $detailsUrls = @($nonNull | ForEach-Object { Get-Prop $_.Activity 'details_url' } | Where-Object { $_ } | Select-Object -Unique)
     $buttons = @($nonNull | ForEach-Object { Get-Prop $_.Activity 'buttons' } | Where-Object { $_ })
     $buttonUrls = @($buttons | ForEach-Object { $_ } | ForEach-Object { Get-Prop $_ 'url' })
     Add-Check 'timeline.linksOnlyProvenTrack' (-not ($detailsUrls + $buttonUrls | Where-Object { $_ -notin $allowedTrackUrls }))
     Add-Check 'timeline.atMostOneButton' (-not ($nonNull | Where-Object { @(Get-Prop $_.Activity 'buttons').Where({ $_ }).Count -gt 1 }))
 
-    # Link ids come from the fixture page itself (byline anchors, in track order A then B).
+    # Link ids come from the fixture page itself (byline anchors, in track order A, B, C).
     $fixtureHtml = Get-Content -LiteralPath (Join-Path $repo 'src/Nativune/DiscordFixturePage.html') -Raw
     $channelIds = @([regex]::Matches($fixtureHtml, 'channel/(UC[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
-    $albumIds = @([regex]::Matches($fixtureHtml, 'browse/(MPREb[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
     $readyUtc = if ($readyIndex -ge 0) { ConvertTo-UtcTime $frames[$readyIndex].utc } else { $null }
     # The fixture timeline is in PAGE time (ad-showing 65-75 s after page load), but the page loads several
     # seconds after READY. Estimate the READY->page offset from events with known page times: track B starts at
@@ -304,8 +343,6 @@ function Test-Timeline {
     Add-Check 'timeline.trackADetailsUrlAndButton' ($aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object { -not (& $hasTrackLinks $_ $urlA) }))
     Add-Check 'timeline.trackAStateUrl' ($channelIds.Count -ge 1 -and $aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object {
         (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[0])" }))
-    Add-Check 'timeline.trackALargeUrl' ($albumIds.Count -ge 1 -and $aOutsideAd.Count -gt 0 -and -not ($aOutsideAd | Where-Object {
-        (Get-Prop (& $assets $_.Activity) 'large_url') -ne "https://music.youtube.com/browse/$($albumIds[0])" }))
     $linkless = { param($s) -not (Get-Prop $s.Activity 'details_url') -and @(Get-Prop $s.Activity 'buttons' | Where-Object { $_ }).Count -eq 0 }
     $adSets = @(); $adOk = $false
     if ($null -ne $adOffset) {
@@ -315,14 +352,46 @@ function Test-Timeline {
         $adSets = @($nonNull | Where-Object { $_.Utc -ge $winStart -and $_.Utc -le $winEnd })
         $restoreAfter = $readyUtc.AddSeconds($adEnd + $adOffset + $minWriteSeconds + $debounceSeconds)
         $afterAd = $nonNull | Where-Object { $_.Utc -gt $restoreAfter } | Select-Object -First 1
-        $adOk = $adSets.Count -gt 0 -and -not ($adSets | Where-Object { -not (& $linkless $_) }) -and
+        # Song links (details_url, button) are suppressed; the repository cover link and the fixture's independently
+        # valid artist link may remain. This does not prove all links or all ad metadata are suppressed.
+        $artistUrls = @($channelIds | ForEach-Object { "https://music.youtube.com/channel/$_" })
+        $adOk = $adSets.Count -gt 0 -and -not ($adSets | Where-Object {
+                -not (& $linkless $_) -or (Get-Prop (& $assets $_.Activity) 'large_url') -cne $repoUrl -or
+                ($null -ne (Get-Prop $_.Activity 'state_url') -and (Get-Prop $_.Activity 'state_url') -notin $artistUrls) }) -and
             $null -ne $afterAd -and ((& $hasTrackLinks $afterAd $urlA) -or (& $hasTrackLinks $afterAd $urlB))
     }
-    Add-Check 'timeline.adWindowNoLinks' $adOk
+    Add-Check 'timeline.adWindowNoSongLinks' $adOk
     Add-Check 'timeline.trackBDetailsUrlAndButton' ($b.Count -gt 0 -and -not ($b | Where-Object { -not (& $hasTrackLinks $_ $urlB) }))
-    Add-Check 'timeline.trackBStateAndLargeUrl' ($channelIds.Count -ge 2 -and $albumIds.Count -ge 2 -and $b.Count -gt 0 -and -not ($b | Where-Object {
-        (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[1])" -or
-        (Get-Prop (& $assets $_.Activity) 'large_url') -ne "https://music.youtube.com/browse/$($albumIds[1])" }))
+    Add-Check 'timeline.trackBStateUrl' ($channelIds.Count -ge 2 -and $b.Count -gt 0 -and -not ($b | Where-Object {
+        (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[1])" }))
+
+    # Track C (page 125-192): missing artwork -> 'nativune' fallback (same caption/repo link) -> recovery at 137.
+    $isC = { param($s) (Get-Prop $s.Activity 'details') -eq 'Fixture Song C' }
+    $c = @($nonNull | Where-Object { & $isC $_ }); $urlC = 'https://music.youtube.com/watch?v=fixtureSngC'
+    $artB = 'https://lh3.googleusercontent.com/fixture-b=w544-h544'
+    Add-Check 'timeline.trackCFields' ($channelIds.Count -ge 3 -and $c.Count -gt 0 -and -not ($c | Where-Object {
+        (Get-Prop $_.Activity 'state') -ne 'Third Artist' -or (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[2])" -or
+            (Get-Prop (& $assets $_.Activity) 'large_image') -notin @('nativune', $artB) }))
+    $fallbackC = @($c | Where-Object { (Get-Prop (& $assets $_.Activity) 'large_image') -eq 'nativune' })
+    Add-Check 'timeline.missingArtFallbackPublished' ($fallbackC.Count -gt 0 -and -not ($fallbackC | Where-Object { -not (Test-CoverIdentity $_.Activity) }))
+    Add-Check 'timeline.missingArtRecovers' ($fallbackC.Count -gt 0 -and [bool] ($c | Where-Object {
+        $_.Mono -gt $fallbackC[0].Mono -and (Get-Prop (& $assets $_.Activity) 'large_image') -eq $artB -and (Test-CoverIdentity $_.Activity) }))
+    # Unproven title link (page 147-162, outside the ad window; route still /watch?v=fixtureSngC): title, artist link
+    # and cover identity stay, details_url and button are absent; song links only ever appear or vanish together.
+    $cLinkless = @($c | Where-Object { & $linkless $_ })
+    $unprovenOk = $false
+    if ($null -ne $adOffset -and $cLinkless.Count -gt 0) {
+        $uStart = $readyUtc.AddSeconds(147 + $adOffset - 2); $uEnd = $readyUtc.AddSeconds(162 + $adOffset + $minWriteSeconds + $debounceSeconds + 3)
+        $unprovenOk = -not ($cLinkless | Where-Object { $_.Utc -lt $uStart -or $_.Utc -gt $uEnd -or -not (Test-CoverIdentity $_.Activity) })
+    }
+    Add-Check 'timeline.unprovenTitleNoSongLinks' $unprovenOk
+    Add-Check 'timeline.songLinksTogether' ($c.Count -gt 0 -and -not ($c | Where-Object { -not (& $linkless $_) -and -not (& $hasTrackLinks $_ $urlC) }))
+    Add-Check 'timeline.songLinksReturn' ($cLinkless.Count -gt 0 -and [bool] ($c | Where-Object { $_.Mono -gt $cLinkless[-1].Mono -and (& $hasTrackLinks $_ $urlC) }))
+    # Pause at page 172 while repeat-one is on: the pause badge wins; resume brings repeat-one back.
+    $cPause = @($c | Where-Object { (Get-Prop (& $assets $_.Activity) 'small_image') -eq 'pause' })
+    Add-Check 'timeline.pauseOverRepeatOne' ($cPause.Count -gt 0 -and -not ($cPause | Where-Object {
+        (Get-Prop (& $assets $_.Activity) 'small_text') -cne 'Paused' -or $null -ne (& $ts $_.Activity) }) -and [bool] ($c | Where-Object {
+        $_.Mono -gt $cPause[-1].Mono -and (Get-Prop (& $assets $_.Activity) 'small_image') -eq 'repeat-one' -and $null -ne (& $ts $_.Activity) }))
 
     $minGapSeconds = [double]::PositiveInfinity
     for ($i = 1; $i -lt $nonNull.Count; $i++) { $minGapSeconds = [Math]::Min($minGapSeconds, ($nonNull[$i].Mono - $nonNull[$i - 1].Mono) / 1000) }
@@ -333,6 +402,8 @@ function Test-Timeline {
         setActivityCount = $sets.Count; nonNullCount = $nonNull.Count; clearCount = $sets.Count - $nonNull.Count
         minNonNullGapSeconds = if ([double]::IsInfinity($minGapSeconds)) { $null } else { [Math]::Round($minGapSeconds, 3) }
         observedDetailsUrls = $detailsUrls; observedButtonCount = $buttons.Count; adWindowActivityCount = $adSets.Count
+        trackCActivityCount = $c.Count; trackCFallbackCount = $fallbackC.Count; trackCUnprovenCount = $cLinkless.Count
+        expectedCaption = Get-ExpectedCaption
         adWindowOffsetSeconds = if ($null -ne $adOffset) { [Math]::Round($adOffset, 3) } else { $null }
         adWindowMethod = 'offset = min(firstTrackB - 80 s, firstResume - 60 s) - 1 s debounce (READY-relative); window = page 65-75 s + offset'
         timestampUnitAssumption = 'unix seconds (contract ToDiscordWireTimestamp; real-client check pending)'
@@ -420,6 +491,108 @@ function Test-Migration {
     $scenarioResults['Migration'] = [ordered]@{ appPid = $app.Id; seconds = 30; seededVersion = 6; connections = $connections }
 }
 
+function Test-Reconnect {
+    # Discord drops mid-song and comes back: the first card on the new connection must come from a page
+    # observation made after the new READY, never the cached pre-disconnect card.
+    $root = New-Root 'reconnect'
+    Write-Settings $root $true
+    $server1 = Start-FakeServer 'reconnect-1'
+    $server2 = $null; $app = $null; $alive = $false; $firstUtc = $null
+    try {
+        $app = Start-App $root
+        $deadline = [DateTime]::UtcNow.AddSeconds(90)
+        while ([DateTime]::UtcNow -lt $deadline -and -not $firstUtc) {
+            Start-Sleep -Seconds 1
+            $first = @(Get-Activities (Read-Frames $server1)) | Where-Object { $null -ne $_.Activity } | Select-Object -First 1
+            if ($first) { $firstUtc = $first.Utc }
+        }
+        if (-not $firstUtc) { throw 'Reconnect: no non-null SET_ACTIVITY on the first connection within 90 s.' }
+        # First card lands about page 0 + debounce (1 s), so page time ~= now - firstUtc + 1.
+        $untilPage = { param([double] $Page) $wait = ($firstUtc.AddSeconds($Page - 1) - [DateTime]::UtcNow).TotalSeconds
+            if ($wait -gt 0) { Start-Sleep -Milliseconds ([int] ($wait * 1000)) } }
+        & $untilPage 35
+        Stop-FakeServer $server1
+        Start-Sleep -Seconds 15
+        $server2 = Start-FakeServer 'reconnect-2'
+        & $untilPage 75
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server1; Stop-FakeServer $server2 }
+    $frames1 = Read-Frames $server1; $frames2 = Read-Frames $server2
+    $framesByScenario['Reconnect'] = [ordered]@{ first = $frames1; second = $frames2 }
+    Copy-AppLog $root 'reconnect'
+
+    $sets1 = @(Get-Activities $frames1); $sets2 = @(Get-Activities $frames2)
+    $handshake2 = [bool] ($frames2 | Where-Object { $_.direction -eq 'in' -and $_.opcode -eq 0 })
+    $connected2 = @($frames2 | Where-Object { $_.json -eq 'connected' }).Count
+    Add-Check 'reconnect.reconnected' ($connected2 -ge 1 -and $handshake2)
+    Add-Check 'reconnect.noCrash' $alive
+
+    # Freshness of the first SET_ACTIVITY on the second connection. Page timeline: seek to 100 s at page 25,
+    # pause at 45 (position 120), resume at 60, track B at 80. The last playing track-A card before the drop has
+    # start = page0 - 75; a fresh playing track-A card after resume has start = page0 - 60 (the 15 s pause shifts
+    # it by +15); track B has start = page0 + 80 = staleStart + 155. Tolerance: 5 s on start (debounce, 1 s poll
+    # jitter, rounding). A pause card is accepted only if sent in estimated page time [40, 68] (the pause window
+    # 45-60 widened by 5 s before and debounce + min-write + 5 s after; page time is estimated from the first card).
+    $isA = { param($s) (Get-Prop $s.Activity 'details') -eq 'Fixture Song A' }
+    $staleStart = @($sets1 | Where-Object { $null -ne $_.Activity -and (& $isA $_) -and $null -ne (Get-Prop $_.Activity 'timestamps') } |
+        ForEach-Object { [double] (Get-Prop (Get-Prop $_.Activity 'timestamps') 'start') }) | Select-Object -Last 1
+    $firstSet2 = $sets2 | Select-Object -First 1
+    $fresh = $false; $verdict = 'no-activity'; $pageAtSend = $null
+    if ($firstSet2) {
+        $pageAtSend = ($firstSet2.Utc - $firstUtc).TotalSeconds + 1
+        $act = $firstSet2.Activity
+        $stamps = Get-Prop $act 'timestamps'
+        if ($null -eq $act) { $fresh = $true; $verdict = 'clear' }
+        elseif ($null -eq $stamps) {
+            $isPause = (Get-Prop (Get-Prop $act 'assets') 'small_image') -eq 'pause'
+            $fresh = $isPause -and (& $isA $firstSet2) -and $pageAtSend -ge 40 -and $pageAtSend -le 68
+            $verdict = if ($isPause) { 'pause-card' } else { 'card-without-timestamps' }
+        } elseif ($null -ne $staleStart) {
+            $start = [double] (Get-Prop $stamps 'start')
+            $details = Get-Prop $act 'details'
+            $expected = if ($details -eq 'Fixture Song A') { $staleStart + 15 } elseif ($details -eq 'Fixture Song B') { $staleStart + 155 } else { $null }
+            $fresh = $null -ne $expected -and [Math]::Abs($start - $expected) -le 5 -and $pageAtSend -ge 58
+            $verdict = 'playing-card'
+        }
+    }
+    Add-Check 'reconnect.firstActivityIsFresh' $fresh
+    $scenarioResults['Reconnect'] = [ordered]@{
+        appPid = $app.Id; firstConnectionSets = $sets1.Count; secondConnectionSets = $sets2.Count; secondConnections = $connected2
+        firstActivityOnReconnect = $verdict
+        estimatedPageAtFirstReconnectSend = if ($null -ne $pageAtSend) { [Math]::Round($pageAtSend, 1) } else { $null }
+        freshnessRule = 'clear; or track-A pause card at est. page 40-68; or playing card with start within 5 s of (last pre-drop track-A start + 15 s) for A / + 155 s for B'
+    }
+}
+
+function Test-ButtonOff {
+    # Saved DiscordOpenButton = false: the proven title link (details_url) stays, no button is ever sent, and the
+    # artist and cover destinations are unchanged. Track A plays with a proven link from page 0 to the 45 s pause.
+    $root = New-Root 'buttonoff'
+    Write-Settings $root $true $false
+    $server = Start-FakeServer 'buttonoff'
+    $app = $null; $alive = $false
+    try {
+        $app = Start-App $root
+        Start-Sleep -Seconds 45
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['ButtonOff'] = $frames
+    Copy-AppLog $root 'buttonoff'
+    $nonNull = @(Get-Activities $frames | Where-Object { $null -ne $_.Activity })
+    $a = @($nonNull | Where-Object { (Get-Prop $_.Activity 'details') -eq 'Fixture Song A' })
+    Add-Check 'buttonOff.noCrash' $alive
+    Add-Check 'buttonOff.detailsUrlPresent' ([bool] ($a | Where-Object { (Get-Prop $_.Activity 'details_url') -ceq 'https://music.youtube.com/watch?v=fixtureSngA' }))
+    Add-Check 'buttonOff.noButtons' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object { @(Get-Prop $_.Activity 'buttons' | Where-Object { $_ }).Count -gt 0 }))
+    Add-Check 'buttonOff.artistAndCoverUnchanged' ($a.Count -gt 0 -and -not ($a | Where-Object {
+        (Get-Prop $_.Activity 'state_url') -ne 'https://music.youtube.com/channel/UCfixtureArtist000000001' -or -not (Test-CoverIdentity $_.Activity) }))
+    $scenarioResults['ButtonOff'] = [ordered]@{ appPid = $app.Id; seconds = 45; nonNullCount = $nonNull.Count; seededDiscordOpenButton = $false }
+}
+
 [IO.Directory]::CreateDirectory($runDirectory) | Out-Null
 $appVersion = $null
 try {
@@ -436,6 +609,8 @@ try {
     if ($Scenario -in 'All', 'Absent') { Test-Absent }
     if ($Scenario -in 'All', 'Disable') { Test-Disable $timelineRoot }
     if ($Scenario -in 'All', 'Migration') { Test-Migration }
+    if ($Scenario -in 'All', 'Reconnect') { Test-Reconnect }
+    if ($Scenario -in 'All', 'ButtonOff') { Test-ButtonOff }
 } catch {
     Add-Check 'runner.completed' $false
     $scenarioResults['error'] = $_.Exception.Message
@@ -454,7 +629,7 @@ try {
 }
 
 # Count failures explicitly: piping the values into Where-Object yields a single $false for one failed check,
-# and -not $false is $true, which is how a failed check (timeline.adWindowNoLinks) once reported passed=true.
+# and -not $false is $true, which is how a failed check (timeline.adWindowNoLinks, now adWindowNoSongLinks) once reported passed=true.
 $failedChecks = @($checks.Keys | Where-Object { -not $checks[$_] })
 $passed = $checks.Count -gt 0 -and $failedChecks.Count -eq 0
 $report = [ordered]@{

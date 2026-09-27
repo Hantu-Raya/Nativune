@@ -37,6 +37,8 @@ internal sealed class DiscordPresence : IAsyncDisposable
     private const int MaxTextChars = 128, MaxTextBytes = 128, MaxLinkChars = 512;
     private const string ButtonLabel = "Open in YouTube Music";
     private const string FallbackLargeImage = "nativune";
+    private const string RepositoryUrl = "https://github.com/Hantu-Raya/Nativune"; // fixed constant, not page data
+    private const long SharedArtStableMs = 3000;
     private static readonly int[] BackoffSeconds = [2, 5, 10, 30, 60];
     private static readonly JsonDocumentOptions ParseOptions = new() { MaxDepth = MaxJsonDepth };
 
@@ -48,6 +50,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
     private DiscordPresenceOptions _options = DiscordPresenceOptions.Default;
     private DiscordTrackObservation? _observation;
     private string? _itemTitle, _itemTrackUrl, _itemArt, _previousItemArt;
+    private long _itemArtSinceMs; // monotonic start of the current item's continuous run on _itemArt
     private long? _pausedSinceMs;
     private DateTimeOffset? _anchorStart;
     private double _anchorDuration;
@@ -158,7 +161,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
             || (_itemTrackUrl is not null && o.TrackUrl is not null && !string.Equals(_itemTrackUrl, o.TrackUrl, StringComparison.Ordinal));
         if (itemChanged)
         {
-            _previousItemArt = _itemArt; // never carry the prior item's art into the new item
+            _previousItemArt = _itemArt; // never carry the prior item's art into the new item right away
             _itemTitle = o.Title;
             _itemTrackUrl = o.TrackUrl;
             _anchorStart = null;
@@ -167,6 +170,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
         {
             _itemTrackUrl = o.TrackUrl;
         }
+        if (itemChanged || !string.Equals(_itemArt, o.ArtworkUrl, StringComparison.Ordinal)) _itemArtSinceMs = nowMs;
         _itemArt = o.ArtworkUrl;
 
         // Pause deadline starts at the first paused observation of an item; late metadata does not restart it.
@@ -209,8 +213,21 @@ internal sealed class DiscordPresence : IAsyncDisposable
                 if (nowMs >= expiry) return null;
                 changesAtMs = expiry;
             }
-            var art = CompactArtwork.IsAllowedUrl(o.ArtworkUrl)
-                && !string.Equals(o.ArtworkUrl, _previousItemArt, StringComparison.Ordinal) ? o.ArtworkUrl : null;
+            string? art = null;
+            if (CompactArtwork.IsAllowedUrl(o.ArtworkUrl))
+            {
+                if (!string.Equals(o.ArtworkUrl, _previousItemArt, StringComparison.Ordinal))
+                {
+                    art = o.ArtworkUrl;
+                }
+                else
+                {
+                    // Same art as the previous item (e.g. same album): accept once stable on the new item.
+                    var acceptAt = _itemArtSinceMs + SharedArtStableMs;
+                    if (nowMs >= acceptAt) art = o.ArtworkUrl;
+                    else changesAtMs = changesAtMs is long c ? Math.Min(c, acceptAt) : acceptAt;
+                }
+            }
             return BuildActivityJson(o, _options, art, o.Paused ? null : _anchorStart, _anchorDuration);
         }
     }
@@ -222,10 +239,9 @@ internal sealed class DiscordPresence : IAsyncDisposable
         var details = NormalizeText(o.Title, "Track: ");
         if (details is null) return null; // a missing title clears rather than manufacturing a song
         var state = NormalizeText(o.Artist, "Artist: ");
-        var album = NormalizeText(o.Album, "Album: ");
         var trackUrl = IsAllowedMusicLink(o.TrackUrl) ? o.TrackUrl : null;
         var artistUrl = state is not null && IsAllowedMusicLink(o.ArtistUrl) ? o.ArtistUrl : null;
-        var albumUrl = IsAllowedMusicLink(o.AlbumUrl) ? o.AlbumUrl : null;
+        var largeText = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
         var displayType = options.StatusLine switch
         {
             DiscordStatusLine.Title => 2,
@@ -252,8 +268,8 @@ internal sealed class DiscordPresence : IAsyncDisposable
             }
             w.WriteStartObject("assets");
             w.WriteString("large_image", artwork ?? FallbackLargeImage);
-            if (album is not null) w.WriteString("large_text", album);
-            if (album is not null && albumUrl is not null) w.WriteString("large_url", albumUrl);
+            if (largeText is not null) w.WriteString("large_text", largeText);
+            w.WriteString("large_url", RepositoryUrl);
             if (o.Paused)
             {
                 w.WriteString("small_image", "pause");
@@ -445,6 +461,7 @@ internal sealed class DiscordPresence : IAsyncDisposable
                         if (session.StopRequested) break;
                         session.Ready = true;
                         _ready = true;
+                        ForgetTrackLocked(); // publish only observations received after this READY
                     }
                     SetStatus(session, DiscordPresenceStatus.Connected);
                     RaiseStatusChanged(); // prompt the host for a fresh observation (NeedsSnapshot is now true)
@@ -457,7 +474,11 @@ internal sealed class DiscordPresence : IAsyncDisposable
                         lock (_gate)
                         {
                             session.Ready = false;
-                            if (ReferenceEquals(_session, session)) _ready = false;
+                            if (ReferenceEquals(_session, session))
+                            {
+                                _ready = false;
+                                ForgetTrackLocked(); // a pre-disconnect song must never be republished on reconnect
+                            }
                         }
                     }
                 }

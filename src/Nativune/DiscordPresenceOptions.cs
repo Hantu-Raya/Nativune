@@ -28,11 +28,9 @@ internal enum DiscordPresenceStatus
 internal sealed record DiscordTrackObservation(
     string Title,
     string? Artist,
-    string? Album,
     string? ArtworkUrl,
     string? TrackUrl,
     string? ArtistUrl,
-    string? AlbumUrl,
     bool Paused,
     bool RepeatOne,
     double? PositionSeconds,

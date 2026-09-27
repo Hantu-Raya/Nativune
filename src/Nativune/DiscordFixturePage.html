@@ -13,9 +13,10 @@
   This proves app plumbing and the DOM contract, not that the live site still matches it.
 
   Deterministic timeline, seconds after page load:
-    0   track A playing: "Fixture Song A" / Fixture Artist / Fixture Album, 210 s, position 0,
+    0   track A playing: "Fixture Song A" / Fixture Artist, 210 s, position 0,
         artwork https://lh3.googleusercontent.com/fixture-a=w544-h544, URL /watch?v=fixtureSngA,
-        artist channel/UCfixtureArtist000000001, album browse/MPREb_fixtureAlbum01,
+        artist channel/UCfixtureArtist000000001, album canary anchor "AlbumCanaryQ7a" ->
+        browse/MPREb_albumCanaryQ7a (the e2e asserts no album canary text/URL leaves the app),
         hidden ytmusic-player a.ytp-title-link -> https://music.youtube.com/watch?v=fixtureSngA
    25   seek track A to 100 s
    45   pause
@@ -23,11 +24,24 @@
    65   ad window: .html5-video-player gains class ad-showing, ytp-title-link text "Advertisement"
         (trackUrl must read null)
    75   ad window ends: ad-showing removed, ytp-title-link text restored to the current title
-   80   track B playing: "Fixture Song B" / Second Artist / Second Album, 185 s, position 0,
-        artwork https://lh3.googleusercontent.com/fixture-b=w544-h544, URL /watch?v=fixtureSngB,
-        artist channel/UCsecondArtist0000000001, album browse/MPREb_secondAlbum01, title link fixtureSngB
-  100   repeat-one on (button label "Repeat one")
+   80   track B playing: "Fixture Song B" / Second Artist, 185 s, position 0,
+        artwork https://lh3.googleusercontent.com/fixture-a=w544-h544 (the SAME URL as track A, so
+        consecutive songs share album art), URL /watch?v=fixtureSngB,
+        artist channel/UCsecondArtist0000000001, album canary "AlbumCanaryQ7b", title link fixtureSngB
+  100   repeat-one on (button label "Repeat one"; stays on for the rest of the page)
   120   stop: media ended (loop off, currentTime = duration, paused), clock at the end
+  125   track C playing: "Fixture Song C" / Third Artist, 240 s, URL /watch?v=fixtureSngC,
+        artist channel/UCthirdArtist00000000001, album canary "AlbumCanaryQ7c", title link fixtureSngC,
+        artwork https://lh3.googleusercontent.com/fixture-missing=w544-h544 (403 from the fixture
+        server, so it never loads: the card must fall back to large_image "nativune")
+  137   artwork recovers: https://lh3.googleusercontent.com/fixture-b=w544-h544 (loads)
+  147   unproven title link (route still /watch?v=fixtureSngC): link text "Some Other Song"
+  152   link text restored, href invalid candidate https://example.invalid/watch?v=fixtureSngC
+  157   title link element removed from the player
+  162   title link restored (text + href fixtureSngC): song links return
+  172   pause while repeat-one is on ("Paused" badge must win over "Repeat one")
+  182   resume (repeat-one badge again)
+  192   stop: media ended as at 120
   The fixture clock advances only by the media element's own currentTime progress.
 -->
 <style>
@@ -82,15 +96,19 @@
   const tracks = {
     A: { id: 'fixtureSngA', title: 'Fixture Song A', duration: 210,
       artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
-      byline: '<a class="yt-simple-endpoint" href="channel/UCfixtureArtist000000001">Fixture Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_fixtureAlbum01">Fixture Album</a> \u2022 2026' },
+      byline: '<a class="yt-simple-endpoint" href="channel/UCfixtureArtist000000001">Fixture Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7a">AlbumCanaryQ7a</a> \u2022 2026' },
     B: { id: 'fixtureSngB', title: 'Fixture Song B', duration: 185,
-      artwork: 'https://lh3.googleusercontent.com/fixture-b=w544-h544',
-      byline: '<a class="yt-simple-endpoint" href="channel/UCsecondArtist0000000001">Second Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_secondAlbum01">Second Album</a> \u2022 2026' }
+      artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCsecondArtist0000000001">Second Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7b">AlbumCanaryQ7b</a> \u2022 2026' },
+    C: { id: 'fixtureSngC', title: 'Fixture Song C', duration: 240,
+      artwork: 'https://lh3.googleusercontent.com/fixture-missing=w544-h544',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCthirdArtist00000000001">Third Artist</a> \u2022 <a class="yt-simple-endpoint" href="browse/MPREb_albumCanaryQ7c">AlbumCanaryQ7c</a> \u2022 2026' }
   };
   const $ = selector => document.querySelector(selector);
   const media = $('#media'), slider = $('#progress-bar'), timeInfo = $('.time-info');
   const playButton = $('#play-pause-button');
-  const videoPlayer = $('ytmusic-player .html5-video-player'), titleLink = $('ytmusic-player a.ytp-title-link');
+  const videoPlayer = $('ytmusic-player .html5-video-player');
+  const titleLink = $('ytmusic-player a.ytp-title-link');
   let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
 
   // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
@@ -143,6 +161,15 @@
   };
   const play = () => media.play().catch(() => {});
 
+  const stop = () => {
+    ended = true;
+    media.loop = false;
+    position = track.duration;
+    if (Number.isFinite(media.duration)) media.currentTime = media.duration;
+    media.pause();
+  };
+  const setArt = url => { $('#bar-art').src = url; $('#large-art').src = url; };
+
   const timeline = [
     [25, () => { position = 100; }],
     [45, () => media.pause()],
@@ -151,13 +178,20 @@
     [75, () => { videoPlayer.classList.remove('ad-showing'); titleLink.textContent = track.title; }],
     [80, () => { load(tracks.B); play(); }],
     [100, () => $('#repeat').setAttribute('aria-label', 'Repeat one')],
-    [120, () => {
-      ended = true;
-      media.loop = false;
-      position = track.duration;
-      if (Number.isFinite(media.duration)) media.currentTime = media.duration;
-      media.pause();
-    }]
+    [120, stop],
+    [125, () => { ended = false; media.loop = true; media.currentTime = 0; lastMediaTime = 0; load(tracks.C); play(); }],
+    [137, () => setArt('https://lh3.googleusercontent.com/fixture-b=w544-h544')],
+    [147, () => { titleLink.textContent = 'Some Other Song'; }],
+    [152, () => { titleLink.textContent = track.title; titleLink.href = 'https://example.invalid/watch?v=' + track.id; }],
+    [157, () => titleLink.remove()],
+    [162, () => {
+      videoPlayer.appendChild(titleLink);
+      titleLink.href = 'https://music.youtube.com/watch?v=' + track.id;
+      titleLink.textContent = track.title;
+    }],
+    [172, () => media.pause()],
+    [182, () => play()],
+    [192, stop]
   ];
 
   load(tracks.A);

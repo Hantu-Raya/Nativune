@@ -91,9 +91,8 @@ internal static class CompactPlayback
             state = new CompactPlaybackState(title, artworkUrl, paused, position, duration,
                 liked, disliked, repeat, canSeek, canLike, canDislike, canRepeat, canShuffle,
                 shuffle, clockMismatch, videoId, clockConfirmed, mediaDuration, websiteClock,
-                mediaPosition, OptionalText(root, "artist"), OptionalText(root, "album"),
+                mediaPosition, OptionalText(root, "artist"),
                 OptionalUrl(root, "artistUrl", ChannelPrefix, 24, "UC"),
-                OptionalUrl(root, "albumUrl", BrowsePrefix, 0, "MPREb_"),
                 OptionalUrl(root, "trackUrl", WatchPrefix, 11, null),
                 OptionalFlag(root, "ended"), OptionalFlag(root, "seeking"), OptionalRate(root));
             return true;
@@ -184,7 +183,6 @@ internal static class CompactPlayback
     }
 
     private const string ChannelPrefix = "https://music.youtube.com/channel/";
-    private const string BrowsePrefix = "https://music.youtube.com/browse/";
     private const string WatchPrefix = "https://music.youtube.com/watch?v=";
 
     private static string? OptionalText(JsonElement root, string name)
@@ -497,7 +495,7 @@ try {
   };
   // Optional public track details; any malformed part is omitted without failing the state read.
   const detailsFor = (acquired, title) => {
-    const details = {artist:null, album:null, artistUrl:null, albumUrl:null, trackUrl:null};
+    const details = {artist:null, artistUrl:null, trackUrl:null};
     const text = element => {
       const value = typeof element.textContent === 'string' ? element.textContent.trim() : '';
       return value.length > 0 && value.length <= 256 ? value : null;
@@ -506,13 +504,11 @@ try {
     if (bylines.length === 1) {
       const anchors = Array.from(bylines[0].querySelectorAll('a'));
       if (anchors.length <= 16) {
-        const artists = [], albums = [];
+        const artists = [];
         for (const anchor of anchors) {
           const href = anchor.getAttribute('href') || '';
-          let match = /^channel\/(UC[A-Za-z0-9_-]{22})$/.exec(href);
-          if (match) { const name = text(anchor); if (name) artists.push({name, id:match[1]}); continue; }
-          match = /^browse\/(MPREb_[A-Za-z0-9_-]+)$/.exec(href);
-          if (match && match[1].length <= 64) albums.push({name:text(anchor), id:match[1]});
+          const match = /^channel\/(UC[A-Za-z0-9_-]{22})$/.exec(href);
+          if (match) { const name = text(anchor); if (name) artists.push({name, id:match[1]}); }
         }
         if (artists.length > 0) {
           const joined = artists.map(a => a.name).join(', ');
@@ -520,10 +516,6 @@ try {
             details.artist = joined;
             details.artistUrl = 'https://music.youtube.com/channel/' + artists[0].id;
           }
-        }
-        if (albums.length === 1 && albums[0].name) {
-          details.album = albums[0].name;
-          details.albumUrl = 'https://music.youtube.com/browse/' + albums[0].id;
         }
       }
     }
