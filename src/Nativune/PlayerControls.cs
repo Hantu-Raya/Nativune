@@ -148,16 +148,22 @@ internal sealed class PlayerControls : IDisposable
     // what they already show. Sampled with a null state means the website had no coherent player.
     internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
 
-    internal async Task<CompactRead> ReadCompactStateAsync()
+    // The full Compact read (state plus action capabilities).
+    internal Task<CompactRead> ReadCompactStateAsync() => ReadPlaybackStateAsync(PlaybackReadMode.Compact);
+
+    // Presence mode runs the read-only script: same guards and schema, but action capabilities it
+    // does not compute come back unavailable, so its result must never drive Compact controls.
+    internal async Task<CompactRead> ReadPlaybackStateAsync(PlaybackReadMode mode)
     {
         if (!IsAvailable) return default;
         if (!TryStart("compact-state", out var request, out _)) return default;
         try
         {
-            var script = CompactPlayback.BuildScript("state", null, request.Href,
+            var script = CompactPlayback.BuildStateScript(mode, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
 #if NATIVUNE_DISCORD_TEST_HOOKS
-            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted("Compact", script.Length);
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(
+                mode == PlaybackReadMode.Presence ? "Presence" : "Compact", script.Length);
             var diagnosticValid = false;
             try
             {
