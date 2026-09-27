@@ -1937,6 +1937,29 @@ public sealed partial class WebHostWindow : Window
         }
     }
 
+    // WM_POWERBROADCAST. Also driven by the Discord fixture's command-power-* hooks in test-hook builds.
+    private void HandlePowerEvent(long powerEvent)
+    {
+        if (powerEvent == PbtApmsuspend)
+        {
+            _playerSuspended = true;
+            InvalidateDiscord(keepItem: true);
+        }
+        else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
+        {
+            _playerSuspended = false;
+            _sleep?.CheckOnResume();
+            // The check timer doesn't count sleep time; run a check that came due while asleep.
+            ConfigureAutomaticReleaseUpdateChecks();
+        }
+        if (powerEvent is PbtApmsuspend or PbtApmresume or PbtApmresumesuspend)
+        {
+            _playerControls?.Invalidate();
+            RefreshCompactActivity();
+            UpdatePlayerControls();
+        }
+    }
+
     private bool HandleNativeMessage(uint message, nint wParam, nint lParam, out nint result)
     {
         result = 0;
@@ -1984,27 +2007,7 @@ public sealed partial class WebHostWindow : Window
             return true;
         }
         if (message == WmPowerBroadcast)
-        {
-            var powerEvent = wParam.ToInt64();
-            if (powerEvent == PbtApmsuspend)
-            {
-                _playerSuspended = true;
-                InvalidateDiscord();
-            }
-            else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
-            {
-                _playerSuspended = false;
-                _sleep?.CheckOnResume();
-                // The check timer doesn't count sleep time; run a check that came due while asleep.
-                ConfigureAutomaticReleaseUpdateChecks();
-            }
-            if (powerEvent is PbtApmsuspend or PbtApmresume or PbtApmresumesuspend)
-            {
-                _playerControls?.Invalidate();
-                RefreshCompactActivity();
-                UpdatePlayerControls();
-            }
-        }
+            HandlePowerEvent(wParam.ToInt64());
         if (message is WmSettingChange or WmThemeChanged)
             QueueShellAppearanceRefresh();
         if (TaskbarButtonCreated != 0 && message == TaskbarButtonCreated && !_closing && !_disposed)

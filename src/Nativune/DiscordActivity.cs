@@ -13,6 +13,9 @@ internal static class DiscordActivity
     private const int MaxTextChars = 128, MaxTextBytes = 128, MaxLinkChars = 512;
     private const string ButtonLabel = "Open in YouTube Music";
     private const string FallbackLargeImage = "nativune";
+    // Discord rejects the whole SET_ACTIVITY when large_image is too long (the Social SDK documents 300
+    // characters); longer artwork URLs fall back to the app asset. 256 leaves margin.
+    private const int MaxLargeImageChars = 256;
     private const string RepositoryUrl = "https://github.com/Hantu-Raya/Nativune"; // fixed constant, not page data
     // App hover caption: immutable for the process, so normalized once.
     private static readonly string? LargeText = NormalizeText(AppVersion.DisplayName + " · by Hantu-Raya", "");
@@ -50,7 +53,7 @@ internal static class DiscordActivity
                 w.WriteEndObject();
             }
             w.WriteStartObject("assets");
-            w.WriteString("large_image", artwork ?? FallbackLargeImage);
+            w.WriteString("large_image", artwork is { Length: <= MaxLargeImageChars } ? artwork : FallbackLargeImage);
             if (largeText is not null) w.WriteString("large_text", largeText);
             w.WriteString("large_url", RepositoryUrl);
             if (o.Paused)

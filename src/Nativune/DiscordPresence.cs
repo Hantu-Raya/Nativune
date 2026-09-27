@@ -110,6 +110,18 @@ internal sealed class DiscordPresence : IAsyncDisposable
         }
     }
 
+    // System suspend: drop the cached observation (clearing the card) but keep item identity and the pause
+    // deadline, so a paused song does not get a fresh 10-minute card after every sleep.
+    internal void ForgetObservation()
+    {
+        lock (_gate)
+        {
+            if (_stopped || !_options.Enabled || _session is not { StopRequested: false } session) return;
+            ForgetObservationLocked();
+            session.Signal();
+        }
+    }
+
     internal Task StopAsync()
     {
         lock (_gate)

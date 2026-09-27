@@ -48,12 +48,14 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
   from the first card, +2 s estimate tolerance): clears are never held back by the write gate.
 - PauseExpiry: PAUSE override 20 s, bench profile Paused (steady paused track A). One clear ~20 s after the
   first paused card (15-25 s window), no republish while still paused. Then Discord drops and comes back while
-  still paused: the new connection must not republish the expired paused card (the pause deadline survives a
-  reconnect). Then command-resume (page media.play()) must bring a fresh playing card with timestamps.
+  still paused, and then a simulated system suspend/resume (command-power-suspend/-resume): neither may
+  republish the expired paused card (the pause deadline survives both). Then command-resume (page
+  media.play()) must bring a fresh playing card with timestamps.
 - ArtGap: bench profile ArtGap. Track A plays with loaded art, its art becomes unloadable (the reader reports
   no art) at page 12 s, and track B starts at 24 s with track A's art URL. B's first card must use the
   'nativune' fallback (a transient missing-art sample must not erase A's art from the stale-art guard); B's
-  shared art may appear only >= 3 s later.
+  shared art may appear only >= 3 s later. At 40 s B's art becomes a loadable URL longer than 256 characters:
+  no large_image may exceed 256 characters, and the card falls back to 'nativune'.
 - LiveToggle: command-discord-off / command-discord-on call ApplyDiscordOptions(Enabled false/true), the
   Settings Save path. Off: a clear, then the connection closes, then no further frames. On: a new connection,
   READY and a fresh non-null card after that READY.
@@ -727,7 +729,7 @@ function Test-PauseExpiry {
     Write-Settings $root $true
     $server = Start-FakeServer 'pauseexpiry'
     $server2 = $null
-    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null; $resumeUtc = $null; $reconnectUtc = $null
+    $app = $null; $alive = $false; $ready = $false; $firstUtc = $null; $resumeUtc = $null; $reconnectUtc = $null; $suspendUtc = $null
     try {
         $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_PAUSE_SECONDS = '20'
             NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Paused'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
@@ -742,6 +744,11 @@ function Test-PauseExpiry {
         [void] (Wait-Until { [bool] (@(Read-Frames $server2) | Where-Object { $_.json -eq 'connected' }) } 30)
         $reconnectUtc = [DateTime]::UtcNow
         # Two page reads (5 s cadence) + debounce + write gate: a republished card would land in this window.
+        Start-Sleep -Seconds 15
+        # System sleep while still paused: suspend then resume must not restart the 10-minute deadline.
+        $suspendUtc = Send-HookCommand $root 'command-power-suspend'
+        Start-Sleep -Seconds 3
+        [void] (Send-HookCommand $root 'command-power-resume')
         Start-Sleep -Seconds 15
         $resumeUtc = Send-HookCommand $root 'command-resume'
         [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server2)) | Where-Object {
@@ -771,6 +778,7 @@ function Test-PauseExpiry {
     Add-Check 'pauseExpiry.noRepublishWhilePaused' ($clears.Count -eq 1 -and $afterClear.Count -eq 0)
     Add-Check 'pauseExpiry.reconnected' ($null -ne $reconnectUtc)
     Add-Check 'pauseExpiry.noRepublishAfterReconnect' ($null -ne $reconnectUtc -and $republished.Count -eq 0)
+    Add-Check 'pauseExpiry.noRepublishAfterSuspendResume' ($null -ne $suspendUtc -and -not ($republished | Where-Object { $_.Utc -gt $suspendUtc }))
     Add-Check 'pauseExpiry.freshPlayingCardAfterResume' ($null -ne $resumed -and $null -ne (Get-Prop $resumed.Activity 'timestamps') -and
         (Get-Prop $resumed.Activity 'details') -eq 'Fixture Song A' -and ($resumed.Utc - $resumeUtc).TotalSeconds -le 15)
     $scenarioResults['PauseExpiry'] = [ordered]@{
@@ -791,7 +799,7 @@ function Test-ArtGap {
         $ready = Wait-BenchReady $root
         [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object {
             $null -ne $_.Activity -and (Get-Prop $_.Activity 'details') -eq 'Fixture Song B' }) } 60)
-        Start-Sleep -Seconds 8
+        Start-Sleep -Seconds 22 # page 40: B's art becomes a loadable URL longer than 256 characters
         $alive = -not $app.HasExited
         [void] (Stop-App $app $root)
         Start-Sleep -Seconds 2
@@ -811,8 +819,13 @@ function Test-ArtGap {
     Add-Check 'artGap.firstBCardWithoutSharedArt' ($b.Count -gt 0 -and (& $image $b[0]) -eq 'nativune')
     Add-Check 'artGap.sharedArtOnlyAfter3s' ($b.Count -gt 0 -and -not ($b | Where-Object {
         (& $image $_) -eq $sharedArt -and $_.Mono -lt ($b[0].Mono + 2500) }))
+    $longest = (@($cards | ForEach-Object { ([string] (& $image $_)).Length }) | Measure-Object -Maximum).Maximum
+    $lastB = $b | Select-Object -Last 1
+    Add-Check 'artGap.noLargeImageOver256' ($cards.Count -gt 0 -and $longest -le 256)
+    Add-Check 'artGap.longArtworkFallsBack' ($null -ne $lastB -and (& $image $lastB) -eq 'nativune' -and
+        [bool] ($b | Where-Object { (& $image $_) -eq $sharedArt }))
     $scenarioResults['ArtGap'] = [ordered]@{
-        appPid = $app.Id; trackACards = @($a | ForEach-Object { & $image $_ }); trackBCards = @($b | ForEach-Object { & $image $_ })
+        appPid = $app.Id; trackACards = @($a | ForEach-Object { & $image $_ }); trackBCards = @($b | ForEach-Object { & $image $_ }); longestLargeImage = $longest
     }
 }
 

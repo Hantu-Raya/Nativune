@@ -161,6 +161,7 @@ public sealed partial class WebHostWindow
     //   command-quit                    harness request -> diagnostics-quit.json, then the normal Quit path
     //   command-resume                  run the page's own play control (media.play()) via ExecuteScriptAsync
     //   command-discord-off / -on       ApplyDiscordOptions with Enabled false/true (Settings Save path)
+    //   command-power-suspend / -resume the WM_POWERBROADCAST suspend / resume-suspend handling (HandlePowerEvent)
     //   command-compact / command-full  SetCompact(true) + RequestActivation / SetCompact(false)
     // Commands are honoured in every fixture run with a valid test prefix, not only bench state runs.
     private const string DiscordBenchProfileMeta = "<meta name=\"nativune-discord-bench-profile\" content=\"\">";
@@ -405,6 +406,8 @@ public sealed partial class WebHostWindow
             RequestActivation();
         }
         if (TakeDiscordBenchCommand("command-full")) SetCompact(false);
+        if (TakeDiscordBenchCommand("command-power-suspend")) HandlePowerEvent(PbtApmsuspend);
+        if (TakeDiscordBenchCommand("command-power-resume")) HandlePowerEvent(PbtApmresumesuspend);
         if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
             await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
         if (_closing || _disposed) return;

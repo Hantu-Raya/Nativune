@@ -93,12 +93,14 @@ public sealed partial class WebHostWindow
             DateTimeOffset.UtcNow), epoch);
     }
 
-    private void InvalidateDiscord()
+    // keepItem (system suspend): clear the card but keep the song's pause deadline and art history.
+    private void InvalidateDiscord(bool keepItem = false)
     {
         _presenceGeneration++;
         _presenceUnavailableSince = -1;
         _presenceHasState = false;
-        _discord?.Observe(null);
+        if (keepItem) _discord?.ForgetObservation();
+        else _discord?.Observe(null);
     }
 
     private async Task StopDiscordAsync()
