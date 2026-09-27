@@ -18,6 +18,8 @@ public sealed partial class WebHostWindow
 {
     private const string DiscordFixtureResourceName = "Nativune.DiscordFixturePage.html";
     private const string DiscordFixtureArtworkHost = "lh3.googleusercontent.com";
+    // ArtGap profile: a loadable artwork URL whose total length exceeds Discord's large_image limit.
+    private static readonly string DiscordFixtureLongArtworkPath = "/fixture-a" + new string('x', 300) + "=w544-h544";
     private static byte[]? s_discordFixturePage;
 
     // The fixture plays unmuted silent PCM: Chromium pauses muted media while the page is hidden (tray),
@@ -64,7 +66,8 @@ public sealed partial class WebHostWindow
         // generated locally under their allowed URLs; nothing is fetched from Google.
         if (https && uri!.Host.Equals(DiscordFixtureArtworkHost, StringComparison.OrdinalIgnoreCase)
             && args.ResourceContext == CoreWebView2WebResourceContext.Image
-            && uri.AbsolutePath is "/fixture-a=w544-h544" or "/fixture-b=w544-h544")
+            && (uri.AbsolutePath is "/fixture-a=w544-h544" or "/fixture-b=w544-h544"
+                || uri.AbsolutePath == DiscordFixtureLongArtworkPath))
         {
             var png = uri.AbsolutePath.StartsWith("/fixture-a", StringComparison.Ordinal)
                 ? DiscordFixturePng(0xE0, 0x3E, 0x52)
