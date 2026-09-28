@@ -1,7 +1,8 @@
 # Bundle-version reinstall check on the actual bench app (build with -p:PerfBenchHooks=true -o .cache/build/lyrics-e2e/).
 # Disposable root under .cache/lyrics-upgrade/<stamp>; four launches: fresh install, an older record, a pending record
 # and the current record. Expect: installed; reinstall+installed; reinstall+installed; installed only, with the current
-# version recorded and the extension enabled. Checks only the log lines each launch added; writes result.json; exits 1 on mismatch.
+# version recorded and the extension enabled. Checks only the log lines each launch added; writes
+# artifacts/lyrics-upgrade/<stamp>-result.json; exits 1 on mismatch.
 # pwsh -NoProfile -File scripts/lyrics-upgrade-check.ps1
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -68,6 +69,8 @@ $results += Check (Launch 'pending-record') @($reinstall, $installed)
 $results += Check (Launch 'current-record') @($installed)
 $report = [ordered]@{ version = $version; pass = -not ($results | Where-Object { -not $_.pass }); steps = $results
     command = 'pwsh -NoProfile -File scripts/lyrics-upgrade-check.ps1' }
-$report | ConvertTo-Json -Depth 6 | Tee-Object (Join-Path $base 'result.json')
+$artifacts = Join-Path $root 'artifacts\lyrics-upgrade'
+New-Item -ItemType Directory -Force $artifacts | Out-Null
+$report | ConvertTo-Json -Depth 6 | Tee-Object (Join-Path $artifacts "$(Split-Path $base -Leaf)-result.json")
 if (-not $report.pass) { Write-Error 'Upgrade check failed.'; exit 1 }
 exit 0
