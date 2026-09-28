@@ -27,13 +27,15 @@ Click **Copy link** in Settings › OBS. It copies `http://localhost:47813/`. Th
 6. Use one source; add it to other scenes as a reference (Paste (Reference)), not a copy.
 7. If OBS was opened first, click Refresh.
 
-![The OBS Sources panel with the + menu open and Browser highlighted](images/obs-overlay/01-sources-add.png)
+In OBS 32, the **+** under Sources opens an **Add Source** window: choose **Browser**, give it a name and confirm, and the properties window opens.
 
-![OBS Browser Source properties: URL http://localhost:47813/, Width 440, Height 96, Use custom frame rate ticked with 30, and Shutdown source when not visible ticked](images/obs-overlay/02-browser-properties.png)
+![The OBS Add Source window opened from the + under Sources, with Browser in the list of source types](images/obs-overlay/01-sources-add.png)
 
-![Adding the Browser source in OBS: choosing Browser from the + menu, naming the source, then filling in the URL, width, height and frame rate](images/obs-overlay/03-add-source.gif)
+![OBS Browser Source properties: URL http://localhost:47813/, Width 440, Height 96, and Use custom frame rate ticked with 30. Shutdown source when not visible is further down the same window](images/obs-overlay/02-browser-properties.png)
 
-"Shutdown source when not visible" stops the overlay when its scene isn't showing, so it uses nothing in the background. Using one source as a reference in every scene keeps a single connection to Nativune.
+![Adding the Browser source in OBS: the main window, the Add Source window, then the Browser Source properties](images/obs-overlay/03-add-source.gif)
+
+"Shutdown source when not visible" closes the overlay page a few seconds after its scene stops showing, so it doesn't keep running in the background. Using one source as a reference in every scene keeps a single connection to Nativune.
 
 ## When the song is paused
 

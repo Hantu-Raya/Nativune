@@ -27,7 +27,9 @@ let artUrl = null;       // accepted artwork URL currently loaded or loading
 let source = null;       // the one EventSource
 let connGen = 0;         // connection generation; timers check it
 let lossTimer = 0, retryTimer = 0;
-let viewAnim = null, clipAnim = null, greyAnim = null;
+let viewAnim = null;
+let fillTimer = 0;       // the one stepped-fill setTimeout chain (no rAF, no fill animation)
+let fillPx = -1;         // last written fill boundary in whole pixels of the 400 px pill
 let viewOpacity = 0;     // target opacity of the pill
 
 // ---- view (opacity/transform only) ----
@@ -57,31 +59,51 @@ function setView(opacity) {
 function hide() {
   setView(0);
   // Freeze the fill where it is so the fading pill does not jump; no motion while hidden.
-  if (clipAnim) clipAnim.pause();
-  if (greyAnim) greyAnim.pause();
+  stopFill();
 }
 
 // ---- fill (clip box at translateX(p%), grey canvas counter-translated) ----
 
+// The fill moves in discrete whole-pixel steps, at most one write per second, so CEF only
+// composites a new frame when the visible boundary actually moves (G3 CPU budget).
+// will-change is deliberately not added: the clip sits inside the rounded, overflow-hidden,
+// shadowed pill, so each step re-rasters the same small area either way; per-second steps
+// are what removes the per-frame cost.
 function stopFill() {
-  if (clipAnim) { clipAnim.cancel(); clipAnim = null; }
-  if (greyAnim) { greyAnim.cancel(); greyAnim = null; }
+  clearTimeout(fillTimer); fillTimer = 0;
 }
+
+function writeFill(px) {
+  if (px === fillPx) return;
+  fillPx = px;
+  clip.style.transform = `translateX(${px}px)`;
+  grey.style.transform = `translateX(${-px}px)`;
+}
+
+function toPx(p) { return Math.min(W, Math.max(0, Math.round(p / 100 * W))); }
 
 function setFill(p) {
   stopFill();
-  clip.style.transform = `translateX(${p}%)`;
-  grey.style.transform = `translateX(${-p}%)`;
+  writeFill(toPx(p));
 }
 
-function runFill(p, ms) {
-  setFill(p);
-  if (p >= 100 || !(ms > 0)) { setFill(100); return; }
-  clip.style.transform = 'translateX(100%)';
-  grey.style.transform = 'translateX(-100%)';
-  const timing = { duration: ms, easing: 'linear' };
-  clipAnim = clip.animate([{ transform: `translateX(${p}%)` }, { transform: 'translateX(100%)' }], timing);
-  greyAnim = grey.animate([{ transform: `translateX(${-p}%)` }, { transform: 'translateX(-100%)' }], timing);
+function stepFill() {
+  fillTimer = 0;
+  const s = projected();
+  if (s == null || !msg || msg.duration == null) { writeFill(W); return; }
+  state.projectedPosition = s;
+  const px = toPx(s / msg.duration * 100);
+  writeFill(px);
+  if (px >= W) return;
+  // Next rounded-pixel boundary, or 1 s, whichever is later.
+  const nextS = (px + 0.5) / W * msg.duration;
+  const delay = Math.max(1000, (nextS - s) / msg.rate * 1000);
+  fillTimer = setTimeout(stepFill, Math.ceil(delay));
+}
+
+function runFill() {
+  stopFill();
+  stepFill();
 }
 
 // ---- projection (plan §4.2), seconds ----
@@ -147,6 +169,7 @@ function loadArt(raw) {
 // ---- messages ----
 
 function apply(m) {
+  stopFill();
   state.receivedAt = performance.now();
   state.state = m.state;
   if (m.state === 'none' || m.state === 'ad') {
@@ -181,8 +204,7 @@ function apply(m) {
   }
   if (m.state !== 'playing') { hide(); return; }
   if (msg.clock && duration != null) {
-    const shown = state.projectedPosition;
-    runFill(shown / duration * 100, (duration - shown) / msg.rate * 1000);
+    runFill();
   } else {
     setFill(100);
   }

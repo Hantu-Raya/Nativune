@@ -1,5 +1,5 @@
 <#
-E2E-B for the opt-in OBS now-playing overlay against a real, disposable OBS Studio 32.1.2
+E2E-B for the opt-in OBS now-playing overlay against a real, disposable OBS Studio 32.2.2
 (notes/research/obs-overlay-2026-09-28/plan.md §6.2; design notes in design.md). Helper: scripts/obs-portable.ps1.
 
 APPROVAL: running this script needs the owner's explicit approval for this run (plan §6.2 heading: no answer is not
@@ -16,7 +16,7 @@ Flow: publish the hook build (-p:DiscordPresenceTestHooks=true) to artifacts/obs
 snapshot the owner's OBS profile (B-ISO); per session start the app first (Basic-user token through runas when this
 harness is elevated, as in obs-overlay-e2e.ps1), confirm overlay.running and a 200 on http://localhost:47813/, then
 New-ObsPortable (.cache/obs-portable/<run>-<session>, current-user-only ACL) + Start-ObsPortable (owned-instance
-check: PID + creation time, listening PID, GetVersion 32.1.2; expected vs observed paths). Sessions:
+check: PID + creation time, listening PID, GetVersion 32.2.2; expected vs observed paths). Sessions:
   look   default fixture timeline: B-LOOK then B-DOCS (one OBS launch).
   vis    Playing profile (1800 s steady): B-VIS matrix; then OBS relaunched with the item hidden; then OBS relaunched
          with shutdown off (recorded, not gated: D9). The app keeps running across these OBS launches.
@@ -29,9 +29,9 @@ Scenarios (plan §6.2):
           -0.5..+3.5 s around seek (25 s), pause (45 s, hide: hidePaused on), play (resume 60 s, show) and track B
           (80 s) at 10 fps with the achieved rate recorded (< 8 fps -> blocked). Event time = receipt of the matching
           SSE data event by the harness reader (fallback: predicted page time). Oracles (Pillow, analyze-look.py):
-            mask      alpha >= 0.9 inside the rounded rect (20,20,400,56,r28) inset 2 px; alpha 0 outside except the
-                      shadow band: <= 18 px right/below; the CSS box-shadow (6px 8px 14px) also bleeds at most
-                      14-6 = 8 px left and 14-8 = 6 px above, which the band includes (recorded separately).
+            mask      alpha >= 0.9 inside the rounded rect (20,20,400,56,r28) inset 2 px; the alpha > 200 bounding box
+                      equals (20,20,420,76) +-1 px; outside the rect beyond a 2 px anti-alias ring every pixel has
+                      alpha <= 170 (the box-shadow rgba(0,0,0,.65) maximum 166 plus rounding); counts reported.
             reveal    saturation step x at 20 + 400 p +-6 px (stills and the settled seek frame).
             artFixed  the art's luminance profile right of both reveal boundaries shifts <= 3 px between t0 and
                       t0+10 s. (The fixture's bright top-left 48x48 quadrant is cropped out of the 56 px band by the
@@ -41,21 +41,26 @@ Scenarios (plan §6.2):
             hide      >= 2 intermediate frames (vs the pre-event frames), alpha <= 0.1 from 2.5 s after pause.
             text      text region (white glyph mask) differs between the last A frame and the settled B frame.
           Frames: look/<event>/*.png, look/look.gif (owner review, G2).
-  B-VIS   Supported mode (shutdown on), each step settled >= 7 s, then two hook snapshots 3 s apart: overlay.streams
-          and Overlay-mode reads in between; 0/0 when not showing in any view, >= 1/>= 1 when showing. Steps: eye
+  B-VIS   Supported mode (shutdown on). Showing steps: settled >= 7 s, then two hook snapshots 3 s apart: overlay.streams
+          >= 1 and Overlay-mode reads >= 1 in between. Not-showing steps: streams must reach 0 within 11 s of the step
+          (2 x 5 s SSE heartbeat + 1 s: after CEF closes the page cleanly the first keep-alive write still succeeds and
+          only the second fails; time recorded); reads counted in a >= 5 s window starting 2 s after streams first
+          reads 0 must be 0 (one read may be in flight). Steps: eye
           off/on; scene away/back; Studio Mode preview-only / program-only / both / neither; windowed projector on
           the scene opened then closed (WM_CLOSE to the owned projector window); the source referenced in 2 scenes
           (one showing, then none); a nested scene; a 1 s Fade transition in and out; OBS started with the item
           hidden, then shown. No screenshots. Shutdown-off: recorded under scenarios.B-VIS.shutdownOff, no check.
   B-ISO   Get-OwnerObsProfileSnapshot (SHA-256, size, mtime under %APPDATA%\obs-studio; listing of
           %LOCALAPPDATA%\obs-studio*) at start and after all cleanup: identical.
-  B-DOCS  Window-scoped captures of the owned OBS windows only (PrintWindow of each visible top-level window of the
-          OBS PID, composited onto the main window's frame; never the desktop): 01-sources-add.png (Sources + menu,
-          Browser focused), 02-browser-properties.png (properties filled through UI Automation), 03-add-source.gif
-          (frames of those UIA steps), 04-overlay.gif (B-LOOK frames play -> track B -> pause; needs B-LOOK in the
+  B-DOCS  Window-scoped captures of the owned OBS windows only (PrintWindow of owned top-level windows of the OBS PID,
+          composited onto the main window's frame; never the desktop): 01-sources-add.png (Sources + popup opened by
+          WM_LBUTTONDOWN/UP posted to the UIA-located Add Source button; the real cursor is not moved; blocked if no
+          owned popup appears within 3 s), 02-browser-properties.png (dialog opened with obs-websocket
+          OpenInputPropertiesDialog, PrintWindow on its HWND, then WM_CLOSE), 03-add-source.gif (main window, menu,
+          properties at ~1 fps), 04-overlay.gif (B-LOOK frames play -> track B -> pause; needs B-LOOK in the
           same run), 05-paused-dimmed.png (command-obs-hide-paused-off, page 47 s). Each GIF <= 3 MB. Written to
-          <run>/docs-images/; copied to docs/images/obs-overlay/ only with -UpdateDocsImages. The guide-added
-          source is removed again (RemoveInput). The owner reviews the images in the PR.
+          <run>/docs-images/; copied to docs/images/obs-overlay/ only with -UpdateDocsImages. The owner reviews the
+          images in the PR.
 
 Report: <OutputDirectory>/<utc>/report.json (checks {name, expected, observed, status pass|fail|blocked}); no secrets.
 Blocked never counts as pass; the exit code is 1 when any check fails or is blocked.
@@ -146,6 +151,10 @@ public static class ObsBE2E {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  public static string ClassName(IntPtr h) { var t = new StringBuilder(256); GetClassName(h, t, 256); return t.ToString(); }
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int size);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
@@ -244,12 +253,22 @@ $launchHelper = Join-Path $rootBase 'launch-helper.ps1'
 param([string] $SpecPath)
 $ErrorActionPreference = 'Stop'
 $spec = Get-Content -Raw -LiteralPath $SpecPath | ConvertFrom-Json
-foreach ($name in @($spec.unset)) { if ($name) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') } }
-foreach ($p in $spec.env.PSObject.Properties) { [Environment]::SetEnvironmentVariable($p.Name, [string] $p.Value, 'Process') }
+# Unset = remove the variable (PowerShell passes $null to .NET string parameters as ''); empty values are removed too.
+foreach ($name in @($spec.unset)) { if ($name) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue } }
+foreach ($p in $spec.env.PSObject.Properties) {
+    if ([string]::IsNullOrEmpty([string] $p.Value)) { Remove-Item -LiteralPath "Env:$($p.Name)" -ErrorAction SilentlyContinue }
+    else { [Environment]::SetEnvironmentVariable($p.Name, [string] $p.Value, 'Process') }
+}
 $proc = Start-Process -FilePath $spec.exe -ArgumentList @($spec.arguments) -WorkingDirectory $spec.workingDirectory -PassThru
 [IO.File]::WriteAllText($spec.pidFile, (@{ processId = $proc.Id } | ConvertTo-Json -Compress))
 '@, [Text.UTF8Encoding]::new($false))
 
+# $null/'' removes the variable: the app treats an empty NATIVUNE_TEST_DISCORD_BENCH_* value as invalid (only an
+# absent variable means command-only), and PowerShell passes $null to .NET string parameters as ''.
+function Set-ProcessEnv([string] $Name, $Value) {
+    if ([string]::IsNullOrEmpty([string] $Value)) { Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue }
+    else { [Environment]::SetEnvironmentVariable($Name, [string] $Value, 'Process') }
+}
 function Get-AdminEnabled([int] $ProcessId) {
     $token = [ObsBE2E]::OpenToken($ProcessId)
     if ($token -eq [IntPtr]::Zero) { return $null }
@@ -271,14 +290,14 @@ function Start-App([string] $Root, [hashtable] $Override = @{}) {
         $spec = Join-Path $rootBase "launch-$($script:launchCount).json"
         $pidFile = Join-Path $rootBase "launch-$($script:launchCount).pid.json"
         $set = [ordered]@{}; $unset = @()
-        foreach ($entry in $environment.GetEnumerator()) { if ($null -eq $entry.Value) { $unset += $entry.Key } else { $set[$entry.Key] = $entry.Value } }
+        foreach ($entry in $environment.GetEnumerator()) { if ([string]::IsNullOrEmpty([string] $entry.Value)) { $unset += $entry.Key } else { $set[$entry.Key] = [string] $entry.Value } }
         [IO.File]::WriteAllText($spec, ([ordered]@{ exe = $appExe; arguments = $arguments; workingDirectory = $workingDirectory; env = $set; unset = $unset; pidFile = $pidFile } |
             ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
         & runas.exe '/trustlevel:0x20000' "pwsh.exe -NoProfile -ExecutionPolicy Bypass -File `"$launchHelper`" `"$spec`"" | Out-Null
         if (-not (Wait-For { Test-Path -LiteralPath $pidFile } 30)) { throw "runas /trustlevel launch helper wrote no PID file ($pidFile)." }
         $process = Get-Process -Id ([int] (Get-Content -Raw -LiteralPath $pidFile | ConvertFrom-Json).processId)
     } else {
-        foreach ($entry in $environment.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
+        foreach ($entry in $environment.GetEnumerator()) { Set-ProcessEnv $entry.Key $entry.Value }
         $process = Start-Process -FilePath $appExe -ArgumentList $arguments -WorkingDirectory $workingDirectory -PassThru
     }
     $started.Add($process)
@@ -345,26 +364,88 @@ function Stop-App($Process, [string] $Root) {
     }
     $log = Join-Path $Root 'data/nativune.log'
     if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $runDirectory "nativune-$(Split-Path -Leaf $Root).log") -Force }
+    Copy-BenchJson $Root
+}
+# Keeps data/discord-bench/*.json of an app root in the run folder (roots are deleted on cleanup).
+function Copy-BenchJson([string] $Root) {
+    $directory = Get-BenchDirectory $Root
+    if (-not (Test-Path -LiteralPath $directory)) { return }
+    $destination = Join-Path $runDirectory "discord-bench-$(Split-Path -Leaf $Root)"
+    [IO.Directory]::CreateDirectory($destination) | Out-Null
+    foreach ($f in @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        try { Copy-Item -LiteralPath $f.FullName -Destination $destination -Force } catch { }
+    }
+}
+function Get-FailedJson([string] $Root) {
+    $path = Join-Path (Get-BenchDirectory $Root) 'failed.json'
+    if (Test-Path -LiteralPath $path) { try { (Get-Content -Raw -LiteralPath $path).Trim() } catch { "unreadable: $($_.Exception.Message)" } } else { $null }
 }
 function Test-OverlayHttp200 {
     try { $r = Invoke-WebRequest -Uri $overlayUrl -UseBasicParsing -TimeoutSec 5 -NoProxy; [int] $r.StatusCode -eq 200 } catch { $false }
 }
 
-# Starts the app first (plan D13) and confirms overlay.running plus a 200 on /; returns the app context.
+# Mode-aware serving wait, polled every 500 ms up to $Seconds; all conditions must hold in the same pass.
+# Bench profile: ready.json exists. Command-only fixture (default timeline, no ready.json is ever written): the fixture
+# page is ready, i.e. an SSE data event playing fixtureSngA arrived (the Wait-Initial signal obs-overlay-e2e.ps1 uses for
+# A-TIME). Both modes then need a fresh snapshot (command-snapshot-<label>) with overlay.running true and 200 on /.
+function Wait-OverlayServing([string] $Root, [string] $BenchProfile, [double] $Seconds = 60) {
+    $readyPath = Join-Path (Get-BenchDirectory $Root) 'ready.json'
+    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+    $mode = if ($BenchProfile) { 'benchProfile' } else { 'commandOnly' }
+    $last = [ordered]@{ ok = $false; mode = $mode; ready = $false; fixturePlaying = $null; running = $null; http200 = $false; snapshot = $null; failed = $false; failedJson = $null }
+    $reader = $null
+    try {
+        if (-not $BenchProfile) { $reader = Start-SseReader "serving-$(Split-Path -Leaf $Root)-$([DateTime]::UtcNow.Ticks)" }
+        while ($true) {
+            Assert-TimeBox
+            $last.failedJson = Get-FailedJson $Root
+            $last.failed = $null -ne $last.failedJson
+            if ($BenchProfile) { $last.ready = Test-Path -LiteralPath $readyPath }
+            else {
+                if ($last.fixturePlaying -ne $true) {
+                    $last.fixturePlaying = [bool] (Find-FirstSseData $reader { param($d) Test-Data $d 'playing' 'fixtureSngA' })
+                }
+                $last.ready = $last.fixturePlaying
+            }
+            $last.running = $null; $last.snapshot = $null; $last.http200 = $false
+            if ($last.ready -and -not $last.failed) {
+                # Fresh snapshot: Get-State sends a new command-snapshot-<label> and reads state-<label>.json.
+                $s = Get-State $Root 'running'
+                $last.snapshot = if ($s) { $s.label } else { $null }
+                $last.running = Get-Overlay $s 'running'
+                $last.http200 = [bool] (Test-OverlayHttp200)
+            }
+            if ($last.ready -and -not $last.failed -and $last.running -eq $true -and $last.http200) { $last.ok = $true; return $last }
+            if ($last.failed -or [DateTime]::UtcNow -ge $deadline) { return $last }
+            Start-Sleep -Milliseconds 500
+        }
+    } finally { Stop-SseReader $reader }
+}
+function Find-FirstSseData($Reader, [scriptblock] $Predicate) {
+    @(Read-Sse $Reader) | Where-Object { $null -ne $_ -and $_.kind -eq 'data' -and $_.data -and (& $Predicate $_.data) } | Select-Object -First 1
+}
+function Assert-OverlayServing($App, [string] $Label, [string] $CheckName) {
+    $w = Wait-OverlayServing $App.Root $App.BenchProfile 60
+    $observed = [ordered]@{ mode = $w.mode; ready = $w.ready; fixturePlaying = $w.fixturePlaying; failed = $w.failed; failedJson = $w.failedJson
+        running = $w.running; http200 = $w.http200; snapshot = $w.snapshot; adminEnabled = (Get-AdminEnabled $App.App.Id) }
+    $expected = if ($App.BenchProfile) { 'ready.json, fresh overlay.running true and 200 on / together before OBS launches' }
+    else { 'command-only fixture: SSE playing fixtureSngA, fresh overlay.running true and 200 on / together before OBS launches' }
+    Add-Check $CheckName $expected $observed $w.ok
+    if (-not $w.ok) {
+        throw "$Label`: the overlay app is not serving after 60 s (mode=$($w.mode) ready=$($w.ready) fixturePlaying=$($w.fixturePlaying) running=$($w.running) http200=$($w.http200) snapshot=$($w.snapshot) failed.json=$(if ($w.failed) { $w.failedJson } else { 'absent' })); OBS is not launched."
+    }
+}
+# Starts the app first (plan D13); the serving wait runs in Start-ObsSession before every OBS launch.
 function Start-OverlayApp([string] $Name, [string] $BenchProfile = $null, [string] $CheckPrefix) {
     $root = New-Root $Name
     Write-Settings $root $true
     $launchEnv = @{}
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = 'Full' }
     $app = Start-App $root $launchEnv
-    $ready = Wait-BenchReady $root 120
-    $running = Wait-For { $s = Get-State $root 'running'; if ((Get-Overlay $s 'running') -eq $true) { $s } } 30 500
-    $http = [bool] (Wait-For { Test-OverlayHttp200 } 15 500)
-    $ok = [bool] $ready -and [bool] $running -and $http
-    Add-Check "$CheckPrefix.appListeningBeforeObs" 'app ready, overlay.running true and 200 on / before OBS launches' ([ordered]@{
-            ready = [bool] $ready; running = (Get-Overlay $running 'running'); http200 = $http; adminEnabled = (Get-AdminEnabled $app.Id) }) $ok
-    if (-not $ok) { throw "$Name`: the overlay app is not serving; OBS is not launched." }
-    [pscustomobject]@{ Name = $Name; Root = $root; App = $app }
+    # Cold start: with a bench profile allow the fixture up to 120 s to write ready.json before the 60 s serving wait.
+    # Command-only mode never writes ready.json; its readiness is checked in Wait-OverlayServing.
+    if ($BenchProfile) { [void] (Wait-BenchReady $root 120) }
+    [pscustomobject]@{ Name = $Name; Root = $root; App = $app; CheckPrefix = $CheckPrefix; BenchProfile = $BenchProfile }
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -449,35 +530,43 @@ function Get-PageStartQpc($Initial) {
 # ---------------------------------------------------------------------------------------------------------------
 # OBS sessions
 
-function Edit-SceneCollection($Obs, [scriptblock] $Edit) {
-    $json = Get-Content -Raw -LiteralPath $Obs.SceneCollectionFile | ConvertFrom-Json -Depth 32 -AsHashtable
-    & $Edit $json
-    [IO.File]::WriteAllText($Obs.SceneCollectionFile, ($json | ConvertTo-Json -Depth 32), [Text.UTF8Encoding]::new($false))
-}
-# $ItemHidden: seed the scene item with visible=false. $ShutdownOff: seed the browser input with shutdown=false.
-function Start-ObsSession([string] $Label, [string] $CheckPrefix, [switch] $ItemHidden, [switch] $ShutdownOff) {
+# $ItemHidden: create the scene item disabled. $ShutdownOff: create the browser input with shutdown=false.
+# The scene is created through obs-websocket right after connecting (Initialize-ObsOverlayScene).
+function Start-ObsSession([string] $Label, [string] $CheckPrefix, $App, [switch] $ItemHidden, [switch] $ShutdownOff) {
     Assert-TimeBox
-    if (-not (Test-OverlayHttp200)) { throw "$Label`: no 200 on $overlayUrl just before the OBS launch." }
+    Assert-OverlayServing $App $Label "$CheckPrefix.$Label.appListeningBeforeObs"
     $obs = New-ObsPortable -RunDir (Join-Path $repo ".cache/obs-portable/$runId-$Label")
     $obsInstances.Add($obs)
-    if ($ItemHidden -or $ShutdownOff) {
-        Edit-SceneCollection $obs {
-            param($c)
-            foreach ($s in $c['sources']) {
-                if ($s['id'] -eq 'scene' -and $ItemHidden) { foreach ($i in $s['settings']['items']) { $i['visible'] = $false } }
-                if ($s['id'] -eq 'browser_source' -and $ShutdownOff) { $s['settings']['shutdown'] = $false }
-            }
-        }
-    }
-    $record = [ordered]@{ label = $Label; itemHidden = [bool] $ItemHidden; shutdownOff = [bool] $ShutdownOff; owned = $null; paths = $null }
+    $record = [ordered]@{ label = $Label; itemHidden = [bool] $ItemHidden; shutdownOff = [bool] $ShutdownOff; owned = $null; paths = $null; scene = $null }
     $obsLaunches.Add($record)
     try { [void] (Start-ObsPortable $obs) } finally { $record.owned = $obs.OwnedCheck }
     Add-Check "$CheckPrefix.$Label.ownedInstance" "launched PID+creation time, websocket listener PID = OBS PID, GetVersion $script:ObsPortableVersion" $obs.OwnedCheck ([bool] $obs.OwnedCheck.passed)
     $ws = Connect-ObsWebSocket $obs
-    [pscustomobject]@{ Label = $Label; Obs = $obs; Ws = $ws; Record = $record; Prefix = $CheckPrefix }
+    $scene = Initialize-ObsOverlayScene $ws -Shutdown (-not $ShutdownOff) -ItemEnabled (-not $ItemHidden)
+    $record.scene = [ordered]@{ sceneItemId = $scene.sceneItemId; shutdown = Get-Prop $scene.settings 'shutdown'; itemEnabled = -not $ItemHidden }
+    [pscustomobject]@{ Label = $Label; Obs = $obs; Ws = $ws; Record = $record; Prefix = $CheckPrefix; ItemId = $scene.sceneItemId }
+}
+# Graceful close + relaunch of the same run folder; reconnects the session's websocket.
+function Restart-ObsSession($Session) {
+    Close-ObsWebSocket $Session.Ws; $Session.Ws = $null
+    try { $graceful = Restart-ObsPortable $Session.Obs } finally { $Session.Record.relaunchOwned = $Session.Obs.OwnedCheck }
+    Add-Check "$($Session.Prefix).$($Session.Label).relaunchOwnedInstance" 'relaunched same run folder: owned-instance check passes' $Session.Obs.OwnedCheck ([bool] $Session.Obs.OwnedCheck.passed)
+    $Session.Ws = Connect-ObsWebSocket $Session.Obs
+    $graceful
+}
+# Wait until the page has connected (overlay streams >= 1) so obs-browser has written its cache files.
+function Wait-OverlayStream($App, [double] $Seconds = 30) {
+    [bool] (Wait-For { $s = Get-State $App.Root 'streamwait'; [int] (Get-Overlay $s 'streams') -ge 1 } $Seconds 500)
 }
 # Observed paths after the page loaded (plan §6.2, W6).
-function Test-ObsPaths($Session, [bool] $PageExpected) {
+# With $PageExpected, first wait until the browser source has loaded (overlay streams >= 1), then allow obs-browser
+# up to 15 s to write its files before the paths are evaluated.
+function Test-ObsPaths($Session, [bool] $PageExpected, $App = $null) {
+    if ($PageExpected) {
+        if ($App) { $Session.Record.pageStreamed = Wait-OverlayStream $App 30 }
+        $browserDir = Join-Path $Session.Obs.ConfigDir 'plugin_config\obs-browser'
+        [void] (Wait-For { (Test-Path -LiteralPath $browserDir) -and @(Get-ChildItem -LiteralPath $browserDir -Recurse -File -Force -ErrorAction SilentlyContinue).Count -gt 0 } 15 500)
+    }
     $paths = Update-ObsPortablePaths $Session.Obs
     $Session.Record.paths = $paths
     $o = $paths.observed
@@ -566,25 +655,33 @@ def in_round(x, y, x0, y0, w, h, r):
     return (px - cx) ** 2 + (py - cy) ** 2 <= r * r
 
 def mask(img):
+    # Spec: inside the pill inset 2 px alpha >= 0.9; alpha>200 bbox == pill rect +-1 px; outside the pill beyond a
+    # 2 px anti-alias ring alpha <= 170 (box-shadow rgba(0,0,0,.65) max = 166 + rounding).
     a = img.getchannel('A').load()
     iw, ih = img.size
     inside_n = inside_low = 0
-    outside_bad = 0; bleed_lt = 0; max_out = 0
+    outside_n = outside_bad = 0; max_out = 0; shadow_n = 0
+    bx0 = by0 = None; bx1 = by1 = None
     for y in range(ih):
         for x in range(iw):
             v = a[x, y]
+            if v > 200:
+                bx0 = x if bx0 is None else min(bx0, x); by0 = y if by0 is None else min(by0, y)
+                bx1 = x + 1 if bx1 is None else max(bx1, x + 1); by1 = y + 1 if by1 is None else max(by1, y + 1)
             if in_round(x, y, X0 + 2, Y0 + 2, W - 4, H - 4, R - 2):
                 inside_n += 1
                 if v < 0.9 * 255: inside_low += 1
-            elif not in_round(x, y, X0, Y0, W, H, R):
-                if v == 0: continue
+            elif not in_round(x, y, X0 - 2, Y0 - 2, W + 4, H + 4, R + 2):
+                outside_n += 1
+                if v > 0: shadow_n += 1
                 max_out = max(max_out, v)
-                in_band = (X0 - 8) <= x < (X0 + W + 18) and (Y0 - 6) <= y < (Y0 + H + 18)
-                if not in_band: outside_bad += 1
-                elif x < X0 or y < Y0: bleed_lt += 1
-    return {'insidePixels': inside_n, 'insideBelow09': inside_low, 'outsideNonZeroOutsideBand': outside_bad,
-            'bleedLeftTopPixels': bleed_lt, 'maxOutsideAlpha': max_out,
-            'pass': inside_n > 0 and inside_low == 0 and outside_bad == 0}
+                if v > 170: outside_bad += 1
+    bbox = None if bx0 is None else [bx0, by0, bx1, by1]
+    bbox_ok = bbox is not None and all(abs(p - q) <= 1 for p, q in zip(bbox, [X0, Y0, X0 + W, Y0 + H]))
+    return {'insidePixels': inside_n, 'insideBelow09': inside_low, 'alpha200BBox': bbox,
+            'expectedBBox': [X0, Y0, X0 + W, Y0 + H], 'bboxOk': bbox_ok, 'outsidePixels': outside_n,
+            'outsideNonZero': shadow_n, 'outsideAbove170': outside_bad, 'maxOutsideAlpha': max_out,
+            'pass': inside_n > 0 and inside_low == 0 and bbox_ok and outside_bad == 0}
 
 def row_alpha(img):
     a = img.getchannel('A').load()
@@ -794,7 +891,7 @@ function Test-BLook($App, $Session) {
     try {
         $showing = Wait-For { $s = Get-State $App.Root 'look-streams'; if ((Get-Overlay $s 'streams') -ge 2) { $s } } 60 1000
         Add-Check 'B-LOOK.sourceConnected' 'OBS page and harness reader both connected (streams >= 2)' (Get-Overlay $showing 'streams') ([bool] $showing)
-        Test-ObsPaths $Session $true
+        Test-ObsPaths $Session $true $App
         $navQpc = Send-HookCommand $App.Root 'command-navigate'
         $initial = Wait-SseData $reader { param($d) (Test-Data $d 'playing' 'fixtureSngA') -and [double] (Get-Prop $d 'position') -lt 15 } 60 $navQpc
         if (-not $initial) { Add-Blocked 'B-LOOK.timeline' 'fixture timeline restarted by command-navigate' 'no playing A event within 60 s'; return }
@@ -834,7 +931,7 @@ function Test-BLook($App, $Session) {
         $a = Invoke-Pillow 'look' $spec
         $obs.analysis = $a
         $blockedRate = @($checks | Where-Object { $_.name -like 'B-LOOK.*.captureRate' -and $_.status -eq 'blocked' }).Count -gt 0
-        Add-Check 'B-LOOK.mask.t0' 'alpha >= 0.9 inside the inset rounded rect; alpha 0 outside the shadow band' $a.mask.t0 ([bool] $a.mask.t0.pass)
+        Add-Check 'B-LOOK.mask.t0' 'alpha >= 0.9 inside the inset rounded rect; alpha>200 bbox (20,20,420,76) +-1; outside the 2 px AA ring alpha <= 170' $a.mask.t0 ([bool] $a.mask.t0.pass)
         Add-Check 'B-LOOK.mask.t10' 'same at t0+10 s' $a.mask.t10 ([bool] $a.mask.t10.pass)
         Add-Check 'B-LOOK.reveal.t0' 'saturation step at 20 + 400 p +-6 px' $a.reveal.t0 ([bool] $a.reveal.t0.pass)
         Add-Check 'B-LOOK.reveal.t10' 'saturation step at 20 + 400 p +-6 px' $a.reveal.t10 ([bool] $a.reveal.t10.pass)
@@ -864,7 +961,7 @@ function Test-BLook($App, $Session) {
 # ---------------------------------------------------------------------------------------------------------------
 # B-VIS
 
-# Settle >= 7 s after the step, then streams and Overlay-mode reads over a 3 s window.
+# Settle >= 7 s after the step, then streams and Overlay-mode reads over a 3 s window (showing steps and D9).
 function Measure-Vis($App, [string] $Name) {
     Wait-Seconds 7
     $s0 = Get-State $App.Root "vis-$Name-a"
@@ -872,12 +969,44 @@ function Measure-Vis($App, [string] $Name) {
     $s1 = Get-State $App.Root "vis-$Name-b"
     [ordered]@{ streams = Get-Overlay $s1 'streams'; overlayReads = Get-OverlayReads $s0 $s1; demand = Get-Overlay $s1 'demand' }
 }
+# Not-showing steps: after CEF closes the page cleanly (FIN) the first SSE keep-alive write still succeeds and only the
+# second (5 s later) fails, so the server notices within 2 heartbeats; one read may be in flight, so reads are counted
+# from 2 s after the app first reports streams == 0, over >= 5 s; streams must reach 0 within $VisHiddenZeroBoundS
+# (2 x 5 s heartbeat + 1 s) of the step and the step still settles >= 7 s overall.
+$VisHiddenZeroBoundS = 11
+function Measure-VisHidden($App, [string] $Name, [double] $StepQpc) {
+    $zeroQpc = $null; $poll = 0
+    $limit = $StepQpc + 15 * $freq
+    while ((Get-Qpc) -lt $limit) {
+        $s = Get-State $App.Root "vis-$Name-z$((++$poll))"
+        if ($null -ne (Get-Overlay $s 'streams') -and [int] (Get-Overlay $s 'streams') -eq 0) { $zeroQpc = Get-Qpc; break }
+        Wait-Seconds 0.5
+    }
+    if ($null -eq $zeroQpc) {
+        return [ordered]@{ streams = Get-Overlay $s 'streams'; streamsZeroAfterS = $null; overlayReads = $null; windowS = $null; demand = Get-Overlay $s 'demand' }
+    }
+    Wait-UntilQpc ($zeroQpc + 2 * $freq)
+    $s0 = Get-State $App.Root "vis-$Name-a"
+    $w0 = Get-Qpc
+    Wait-UntilQpc ([Math]::Max($w0 + 5 * $freq, $StepQpc + 7 * $freq))
+    $s1 = Get-State $App.Root "vis-$Name-b"
+    [ordered]@{ streams = Get-Overlay $s1 'streams'; streamsZeroAfterS = Round3 (($zeroQpc - $StepQpc) / $freq)
+        overlayReads = Get-OverlayReads $s0 $s1; windowStartAfterZeroS = Round3 (($w0 - $zeroQpc) / $freq)
+        windowS = Round3 (((Get-Qpc) - $w0) / $freq); demand = Get-Overlay $s1 'demand' }
+}
 function Test-VisStep($App, [string] $Name, [bool] $Showing, [string] $What, [scriptblock] $Action) {
     Assert-TimeBox
+    $stepQpc = Get-Qpc
     & $Action
-    $m = Measure-Vis $App $Name
-    $ok = if ($Showing) { $m.streams -ge 1 -and $m.overlayReads -ge 1 } else { $m.streams -eq 0 -and $m.overlayReads -eq 0 }
-    $expected = if ($Showing) { "$What`: showing -> streams >= 1 and overlay reads >= 1" } else { "$What`: not showing in any view -> streams 0 and overlay reads 0" }
+    if ($Showing) {
+        $m = Measure-Vis $App $Name
+        $ok = $m.streams -ge 1 -and $m.overlayReads -ge 1
+        $expected = "$What`: showing -> streams >= 1 and overlay reads >= 1"
+    } else {
+        $m = Measure-VisHidden $App $Name $stepQpc
+        $ok = $null -ne $m.streamsZeroAfterS -and $m.streamsZeroAfterS -le $VisHiddenZeroBoundS -and $m.streams -eq 0 -and $m.overlayReads -eq 0
+        $expected = "$What`: not showing in any view -> streams 0 within $VisHiddenZeroBoundS s of the step (2 x 5 s SSE heartbeat + 1 s), and 0 overlay reads in a >= 5 s window starting 2 s after streams reached 0"
+    }
     Add-Check "B-VIS.$Name" $expected $m $ok
     $m
 }
@@ -889,7 +1018,7 @@ function Find-ProjectorWindow($Session) {
 function Test-BVis($App) {
     $obs = [ordered]@{ steps = [ordered]@{} }
     $scenarioResults['B-VIS'] = $obs
-    $session = Start-ObsSession 'vis' 'B-VIS'
+    $session = Start-ObsSession 'vis' 'B-VIS' $App
     try {
         $item = (Obs $session 'GetSceneItemId' @{ sceneName = $sceneName; sourceName = $sourceName }).sceneItemId
         [void] (Obs $session 'CreateScene' @{ sceneName = 'Other' })
@@ -898,7 +1027,7 @@ function Test-BVis($App) {
         [void] (Obs $session 'SetCurrentProgramScene' @{ sceneName = $sceneName })
         $steps = $obs.steps
         $steps.baseline = Test-VisStep $App 'baseline' $true 'program = Overlay, eye on' { }
-        Test-ObsPaths $session $true
+        Test-ObsPaths $session $true $App
         $steps.eyeOff = Test-VisStep $App 'eyeOff' $false 'eye off' { [void] (Obs $session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item; sceneItemEnabled = $false }) }
         $steps.eyeOn = Test-VisStep $App 'eyeOn' $true 'eye on' { [void] (Obs $session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item; sceneItemEnabled = $true }) }
         $steps.sceneAway = Test-VisStep $App 'sceneAway' $false 'program switched to Other' { [void] (Obs $session 'SetCurrentProgramScene' @{ sceneName = 'Other' }) }
@@ -944,14 +1073,32 @@ function Test-BVis($App) {
             [void] (Obs $session 'SetCurrentProgramScene' @{ sceneName = 'Other' }) }
     } finally { Stop-ObsSession $session }
 
-    # OBS started with the item hidden, then shown.
-    $session = Start-ObsSession 'vis-hidden' 'B-VIS' -ItemHidden
+    # OBS started with the item hidden, then shown: create the scene with the item disabled, close OBS gracefully so
+    # it saves the collection, relaunch the same run folder, and measure only if the item persisted disabled.
+    $session = $null
     try {
-        $item = (Obs $session 'GetSceneItemId' @{ sceneName = $sceneName; sourceName = $sourceName }).sceneItemId
-        $obs.steps.startHidden = Test-VisStep $App 'startHidden' $false 'OBS started with the item hidden' { }
-        Test-ObsPaths $session $false
-        $obs.steps.startHiddenThenShown = Test-VisStep $App 'startHiddenThenShown' $true 'item shown after a hidden start' {
-            [void] (Obs $session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item; sceneItemEnabled = $true }) }
+        $session = Start-ObsSession 'vis-hidden' 'B-VIS' $App -ItemHidden
+        $persist = [ordered]@{ gracefulExit = $null; itemFound = $false; itemEnabled = $null; programScene = $null; error = $null }
+        $obs.startHiddenPersistence = $persist
+        $item = $null
+        try {
+            $persist.gracefulExit = Restart-ObsSession $session
+            $item = [int] (Obs $session 'GetSceneItemId' @{ sceneName = $sceneName; sourceName = $sourceName }).sceneItemId
+            $persist.itemFound = $true
+            $persist.itemEnabled = [bool] (Obs $session 'GetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item }).sceneItemEnabled
+            $persist.programScene = (Obs $session 'GetCurrentProgramScene' @{}).currentProgramSceneName
+        } catch { $persist.error = $_.Exception.Message }
+        $persisted = $persist.itemFound -and $persist.itemEnabled -eq $false -and $persist.programScene -eq $sceneName
+        if ($persisted) {
+            $obs.steps.startHidden = Test-VisStep $App 'startHidden' $false 'OBS started with the item hidden (persisted across a graceful relaunch)' { }
+            Test-ObsPaths $session $false
+            $obs.steps.startHiddenThenShown = Test-VisStep $App 'startHiddenThenShown' $true 'item shown after a hidden start' {
+                [void] (Obs $session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item; sceneItemEnabled = $true }) }
+        } else {
+            $reason = "disabled item did not persist across a graceful relaunch: $($persist | ConvertTo-Json -Compress)"
+            Add-Blocked 'B-VIS.startHidden' 'OBS started with the item hidden: streams 0 and overlay reads 0' $reason
+            Add-Blocked 'B-VIS.startHiddenThenShown' 'item shown after a hidden start: streams >= 1 and overlay reads >= 1' $reason
+        }
     } finally { Stop-ObsSession $session }
 
     # Shutdown off: recorded, not gated (D9).
@@ -959,7 +1106,7 @@ function Test-BVis($App) {
     $obs.shutdownOff = $off
     $session = $null
     try {
-        $session = Start-ObsSession 'vis-shutdown-off' 'B-VIS' -ShutdownOff
+        $session = Start-ObsSession 'vis-shutdown-off' 'B-VIS' $App -ShutdownOff
         $item = (Obs $session 'GetSceneItemId' @{ sceneName = $sceneName; sourceName = $sourceName }).sceneItemId
         $off.eyeOn = Measure-Vis $App 'off-eyeon'
         [void] (Obs $session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $item; sceneItemEnabled = $false })
@@ -982,27 +1129,6 @@ function Find-ObsElement($Session, [scriptblock] $Match, [int] $Seconds = 10) {
         }
     } $Seconds 300
 }
-function Get-ElementValue($El) {
-    try { return (Get-Pattern $El ([System.Windows.Automation.ValuePattern])).Current.Value } catch { }
-    try { return [string] (Get-Pattern $El ([System.Windows.Automation.RangeValuePattern])).Current.Value } catch { }
-    $null
-}
-function Set-ElementValue($El, [string] $Value) {
-    try { (Get-Pattern $El ([System.Windows.Automation.ValuePattern])).SetValue($Value); return $true } catch { }
-    try { (Get-Pattern $El ([System.Windows.Automation.RangeValuePattern])).SetValue([double] $Value); return $true } catch { }
-    $false
-}
-function Get-Pattern($El, $Pattern) { $El.GetCurrentPattern($Pattern::Pattern) }
-function Invoke-Element($El) {
-    try { (Get-Pattern $El ([System.Windows.Automation.InvokePattern])).Invoke(); return } catch { }
-    (Get-Pattern $El ([System.Windows.Automation.ExpandCollapsePattern])).Expand()
-}
-function Set-Toggle($El, [bool] $On) {
-    $pattern = Get-Pattern $El ([System.Windows.Automation.TogglePattern])
-    $want = if ($On) { [System.Windows.Automation.ToggleState]::On } else { [System.Windows.Automation.ToggleState]::Off }
-    if ($pattern.Current.ToggleState -ne $want) { $pattern.Toggle() }
-    $pattern.Current.ToggleState -eq $want
-}
 function Test-ImageOnDisk([string] $Name, [string] $Path, [bool] $Gif) {
     $exists = Test-Path -LiteralPath $Path -PathType Leaf
     $bytes = if ($exists) { (Get-Item -LiteralPath $Path).Length } else { $null }
@@ -1024,78 +1150,82 @@ function Test-BDocs($App, $Session) {
         $p = Save-ObsWindowShot $Session (Join-Path $frameDir ('{0:D2}-{1}.png' -f $gifFrames.Count, $Tag))
         $gifFrames.Add($p); $durations.Add($Ms); $p }
 
-    $added = $false
-    try { do {
-        & $snap 'start' 1200 | Out-Null
-        # (1) Sources > + menu, Browser focused.
-        $addButton = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $e.Current.Name -eq 'Add Source' } 5
-        if (-not $addButton) {
-            $dock = Find-ObsElement $Session { param($e) $e.Current.Name -eq 'Sources' -and $e.Current.ControlType -ne [System.Windows.Automation.ControlType]::Text } 5
-            if ($dock) {
-                $addButton = $dock.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)) |
-                    Where-Object { $_.Current.Name -like 'Add*' -or $_.Current.HelpText -like 'Add*' } | Select-Object -First 1
+    & $snap 'start' 1000 | Out-Null
+    # (1) Sources dock '+' (Add source): located through UIA, clicked with posted WM_LBUTTONDOWN/UP at the button's
+    # client coordinates (the real mouse cursor is never moved). The popup is an owned top-level window of the OBS
+    # PID (Qt popup / QMenu class) that did not exist before the click.
+    $addButton = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $e.Current.Name -eq 'Add Source' } 5
+    if (-not $addButton) {
+        $dock = Find-ObsElement $Session { param($e) $e.Current.Name -eq 'Sources' -and $e.Current.ControlType -ne [System.Windows.Automation.ControlType]::Text } 5
+        if ($dock) {
+            $addButton = $dock.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)) |
+                Where-Object { $_.Current.Name -like 'Add*' -or $_.Current.HelpText -like 'Add*' } | Select-Object -First 1
+        }
+    }
+    if (-not $addButton) { Add-Blocked 'B-DOCS.01-sources-add' 'Sources + button found through UI Automation' 'no Add Source button exposed by OBS UIA' }
+    else {
+        $b = $addButton.Current.BoundingRectangle
+        $target = [IntPtr] $addButton.Current.NativeWindowHandle
+        if ($target -eq [IntPtr]::Zero) { $target = $main }
+        $pt = New-Object ObsBE2E+POINT; $pt.X = [int] ($b.Left + $b.Width / 2); $pt.Y = [int] ($b.Top + $b.Height / 2)
+        [void] [ObsBE2E]::ScreenToClient($target, [ref] $pt)
+        $lp = [IntPtr] ((($pt.Y -band 0xFFFF) -shl 16) -bor ($pt.X -band 0xFFFF))
+        $before = [Collections.Generic.HashSet[long]]::new()
+        foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { [void] $before.Add($h.ToInt64()) }
+        [void] [ObsBE2E]::PostMessage($target, 0x0200, [IntPtr]::Zero, $lp)   # WM_MOUSEMOVE
+        Start-Sleep -Milliseconds 100
+        [void] [ObsBE2E]::PostMessage($target, 0x0201, [IntPtr] 1, $lp)       # WM_LBUTTONDOWN, MK_LBUTTON
+        Start-Sleep -Milliseconds 80
+        [void] [ObsBE2E]::PostMessage($target, 0x0202, [IntPtr]::Zero, $lp)   # WM_LBUTTONUP
+        $popup = Wait-For {
+            foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) {
+                if ($before.Contains($h.ToInt64())) { continue }
+                $cls = [ObsBE2E]::ClassName($h)
+                if ($cls -like '*Popup*' -or $cls -like '*QMenu*' -or $cls -like 'Qt*QWindow*') { return $h }
             }
+        } 3 150
+        $newWindows = @([ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId) | Where-Object { -not $before.Contains($_.ToInt64()) } | ForEach-Object { [ObsBE2E]::ClassName($_) })
+        $obs.steps.addClick = [ordered]@{ button = $addButton.Current.Name; targetClass = [ObsBE2E]::ClassName($target); client = @($pt.X, $pt.Y)
+            popupClass = if ($popup) { [ObsBE2E]::ClassName($popup) } else { $null }; newOwnedWindows = $newWindows }
+        if (-not $popup) {
+            Add-Blocked 'B-DOCS.01-sources-add' 'Sources + popup opened by a posted click on the Add Source button' "no new owned popup window within 3 s after WM_LBUTTONDOWN/UP to $($obs.steps.addClick.targetClass) at client $($pt.X),$($pt.Y) (new owned windows: $($newWindows -join ', '))"
+        } else {
+            Start-Sleep -Milliseconds 400
+            $shot1 = & $snap 'menu' 1000
+            $menuShot = Get-WindowBitmap $popup
+            if ($menuShot) { try { $menuShot.Bitmap.Save((Join-Path $frameDir 'menu-only.png'), [System.Drawing.Imaging.ImageFormat]::Png) } finally { $menuShot.Bitmap.Dispose() } }
+            Copy-Item -LiteralPath $shot1 -Destination (Join-Path $docsOut '01-sources-add.png') -Force
+            Add-Check 'B-DOCS.01.popupOpened' 'Sources + popup opened (owned top-level popup window) and captured window-scoped' $obs.steps.addClick $true
+            [void] [ObsBE2E]::PostMessage($popup, 0x0100, [IntPtr] 0x1B, [IntPtr]::Zero)   # WM_KEYDOWN Escape
+            [void] [ObsBE2E]::PostMessage($popup, 0x0101, [IntPtr] 0x1B, [IntPtr]::Zero)
+            if (-not (Wait-For { -not [ObsBE2E]::IsWindowVisible($popup) } 2 150)) { [void] [ObsBE2E]::PostMessage($popup, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+            Start-Sleep -Milliseconds 300
         }
-        if (-not $addButton) { Add-Blocked 'B-DOCS.01-sources-add' 'Sources + button found through UI Automation' 'no Add Source button exposed by OBS UIA'; break }
-        Invoke-Element $addButton
-        $browserItem = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem -and $e.Current.Name -eq 'Browser' } 10
-        if (-not $browserItem) { Add-Blocked 'B-DOCS.01-sources-add' 'Browser item in the + menu' 'menu item Browser not found'; break }
-        $focused = try { $browserItem.SetFocus(); $true } catch { try { (Get-Pattern $browserItem ([System.Windows.Automation.SelectionItemPattern])).Select(); $true } catch { $false } }
-        Start-Sleep -Milliseconds 600
-        $shot1 = & $snap 'menu' 1500
-        Copy-Item -LiteralPath $shot1 -Destination (Join-Path $docsOut '01-sources-add.png') -Force
-        $obs.steps.menuFocused = $focused
-        Add-Check 'B-DOCS.01.browserHighlighted' 'Browser item focused in the + menu (UIA)' $focused $focused
-        Invoke-Element $browserItem
-        # Create/Select Source: name the new source.
-        $create = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window -and $e.Current.Name -like 'Create/Select Source*' } 10
-        if (-not $create) { Add-Blocked 'B-DOCS.02-browser-properties' 'Create/Select Source dialog' 'dialog not found'; break }
-        $nameEdit = $create.FindFirst($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit))
-        if ($nameEdit) { [void] (Set-ElementValue $nameEdit 'Now playing') }
-        & $snap 'create' 1200 | Out-Null
-        $ok = $create.FindFirst($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, 'OK'))
-        if (-not $ok) { Add-Blocked 'B-DOCS.02-browser-properties' 'OK in Create/Select Source' 'button not found'; break }
-        Invoke-Element $ok
-        $added = $true
-        # (2) Properties: identify controls by the obs-browser defaults (URL, 800, 600) and the checkbox labels.
-        $props = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window -and $e.Current.Name -like "Properties for*" } 15
-        if (-not $props) { Add-Blocked 'B-DOCS.02-browser-properties' 'Properties dialog' 'dialog not found'; break }
-        Start-Sleep -Seconds 2
-        & $snap 'props-open' 1000 | Out-Null
-        $fields = @($props.FindAll($Scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-            Where-Object { $_.Current.ControlType -in @([System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::Spinner) })
-        $url = $fields | Where-Object { "$(Get-ElementValue $_)" -like 'http*' } | Select-Object -First 1
-        $width = $fields | Where-Object { "$(Get-ElementValue $_)" -eq '800' } | Select-Object -First 1
-        $height = $fields | Where-Object { "$(Get-ElementValue $_)" -eq '600' } | Select-Object -First 1
-        $set = [ordered]@{
-            url = if ($url) { Set-ElementValue $url $overlayUrl } else { $false }
-            width = if ($width) { Set-ElementValue $width '440' } else { $false }
-            height = if ($height) { Set-ElementValue $height '96' } else { $false }
-        }
-        & $snap 'props-size' 1000 | Out-Null
-        $customFps = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox -and $e.Current.Name -eq 'Use custom frame rate' } 5
-        $set.customFps = if ($customFps) { Set-Toggle $customFps $true } else { $false }
-        Start-Sleep -Milliseconds 600
-        $fps = @($props.FindAll($Scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-            Where-Object { $_.Current.ControlType -in @([System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::Spinner) -and "$(Get-ElementValue $_)" -eq '30' })
-        $set.fps30 = $fps.Count -gt 0
-        $shutdown = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox -and $e.Current.Name -eq 'Shutdown source when not visible' } 5
-        $set.shutdown = if ($shutdown) { Set-Toggle $shutdown $true } else { $false }
-        Start-Sleep -Milliseconds 800
-        $shot2 = & $snap 'props-filled' 2500
-        Copy-Item -LiteralPath $shot2 -Destination (Join-Path $docsOut '02-browser-properties.png') -Force
-        $obs.steps.properties = $set
-        $allSet = -not ($set.Values | Where-Object { -not $_ })
-        Add-Check 'B-DOCS.02.fieldsFilled' 'URL, 440 x 96, custom FPS 30 and Shutdown source when not visible filled through UIA' $set $allSet
-        $okProps = $props.FindFirst($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, 'OK'))
-        if ($okProps) { Invoke-Element $okProps; Start-Sleep -Seconds 1 }
-    } while ($false)
-        # (3) GIF of the UIA steps 1-2 (whatever was reached; a missing step is already blocked above).
-        if ($gifFrames.Count -gt 1) {
-            $obs.gif03 = Invoke-Pillow 'gif' ([ordered]@{ out = (Join-Path $docsOut '03-add-source.gif'); frames = @($gifFrames); durations = @($durations); widths = @(1280, 1024, 800, 640) })
-        }
-    } finally {
-        if ($added) { try { [void] (Obs $Session 'RemoveInput' @{ inputName = 'Now playing' }) } catch { $obs.removeError = $_.Exception.Message } }
+    }
+
+    # (2) Browser source properties: opened with obs-websocket OpenInputPropertiesDialog, captured with PrintWindow on
+    # the owned dialog HWND only, then closed with WM_CLOSE (no settings changed).
+    $beforeProps = [Collections.Generic.HashSet[long]]::new()
+    foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { [void] $beforeProps.Add($h.ToInt64()) }
+    $openError = $null
+    try { [void] (Obs $Session 'OpenInputPropertiesDialog' @{ inputName = $sourceName }) } catch { $openError = $_.Exception.Message }
+    $dialog = if ($openError) { $null } else {
+        Wait-For { foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { if (-not $beforeProps.Contains($h.ToInt64()) -and [ObsBE2E]::Title($h) -like 'Properties*') { return $h } } } 10 200 }
+    if (-not $dialog) {
+        Add-Blocked 'B-DOCS.02-browser-properties' 'properties dialog opened by OpenInputPropertiesDialog' $(if ($openError) { "request failed: $openError" } else { 'no new owned Properties window within 10 s' })
+    } else {
+        Start-Sleep -Seconds 2   # let the dialog's preview and property widgets render
+        $shot = Get-WindowBitmap $dialog
+        if ($shot) { try { $shot.Bitmap.Save((Join-Path $docsOut '02-browser-properties.png'), [System.Drawing.Imaging.ImageFormat]::Png) } finally { $shot.Bitmap.Dispose() } }
+        & $snap 'props' 2000 | Out-Null
+        $obs.steps.properties = [ordered]@{ title = [ObsBE2E]::Title($dialog); captured = [bool] $shot }
+        Add-Check 'B-DOCS.02.dialogCaptured' 'owned Properties dialog captured window-scoped (PrintWindow on its HWND)' $obs.steps.properties ([bool] $shot)
+        [void] [ObsBE2E]::PostMessage($dialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+        $obs.steps.properties.closed = [bool] (Wait-For { -not [ObsBE2E]::IsWindowVisible($dialog) } 10 250)
+    }
+    # (3) GIF of the captured sequence (main window, + menu if captured, properties dialog over the main window) ~1 fps.
+    if ($gifFrames.Count -gt 1) {
+        $obs.gif03 = Invoke-Pillow 'gif' ([ordered]@{ out = (Join-Path $docsOut '03-add-source.gif'); frames = @($gifFrames); durations = @($durations); widths = @(1280, 1024, 800, 640); maxBytes = 3MB })
     }
 
     # (4) Overlay GIF from B-LOOK frames: playing -> track change -> pause (hide).
@@ -1179,7 +1309,7 @@ try {
         $first = $lookSet[0]
         try {
             $lookApp = Start-OverlayApp 'look' $null $first
-            $lookSession = Start-ObsSession 'look' $first
+            $lookSession = Start-ObsSession 'look' $first $lookApp
             foreach ($n in $lookSet) {
                 $t0 = [DateTime]::UtcNow
                 try {
@@ -1218,8 +1348,11 @@ try {
     foreach ($process in $started) {
         try { if (-not $process.HasExited) { foreach ($id in (Get-ProcessTree $process.Id $rootBase)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } } } catch { }
     }
-    foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
-    if (Test-Path -LiteralPath $rootBase) { Start-Sleep -Seconds 1; Remove-Item -LiteralPath $rootBase -Recurse -Force -ErrorAction SilentlyContinue }
+    foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { Set-ProcessEnv $key $null }
+    if (Test-Path -LiteralPath $rootBase) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $rootBase -Directory -ErrorAction SilentlyContinue)) { Copy-BenchJson $d.FullName }
+        Start-Sleep -Seconds 1; Remove-Item -LiteralPath $rootBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # B-ISO after every OBS instance stopped: the owner's OBS config is byte-identical (content, size, mtime).
