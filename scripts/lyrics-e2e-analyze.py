@@ -1,7 +1,7 @@
 """Barebones Better Lyrics E2E analyzer. Applies the frozen rules in scripts/lyrics-e2e-protocol.md.
 
 Usage: python scripts/lyrics-e2e-analyze.py <out> <raw-runs-dir>
-Reads <out>/config.json, <out>/<arm>.bench.jsonl, <out>/<arm>.lyrics.log and <raw>/<arm>.netlog.json.
+Reads <out>/config.json, <out>/<arm>.bench.jsonl, <out>/<arm>.lyrics.log, <out>/<arm>.exitcode and <raw>/<arm>.netlog.json.
 Only host names (with first-seen times and request-source counts for lyric hosts) leave the raw netlogs.
 Writes <out>/hosts.json, <out>/summary.json and <out>/report.json (pass | fail | blocked per scenario, with evidence).
 """
@@ -378,6 +378,17 @@ def verdict(name, expected, checks, evidence, needed_arms=(), needs_control=Fals
     if needs_control and control is None:
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": "control arm C netlog missing", "evidence": evidence}
         return
+    # Every needed arm must have exited 0; a missing exit record is unmeasurable.
+    exit_codes = {}
+    for a in needed_arms:
+        p = os.path.join(out, f"{a}.exitcode")
+        try:
+            exit_codes[a] = int(open(p, encoding="ascii").read().strip()) if os.path.exists(p) else None
+        except ValueError:
+            exit_codes[a] = None
+    if needed_arms:
+        checks = {**checks, "appExitZero": None if None in exit_codes.values() else all(c == 0 for c in exit_codes.values())}
+        evidence = {**evidence, "exitCodes": exit_codes} if isinstance(evidence, dict) else {"evidence": evidence, "exitCodes": exit_codes}
     # A measured failure is a fail even when another check is unmeasurable; only all-measured-or-unknown is blocked.
     if any(v is None for v in checks.values()) and not any(v is False for v in checks.values()):
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": "unmeasurable: " + ", ".join(k for k, v in checks.items() if v is None),

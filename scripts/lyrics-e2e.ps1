@@ -261,6 +261,8 @@ while ($pending.Count -gt 0 -or $running.Count -gt 0) {
             Add-Content -LiteralPath (Join-Path $out "$($step.Arm).bench.jsonl") -Value '{"t":0,"event":"harness-killed"}' -Encoding utf8
             $job.Proc.WaitForExit(10000) | Out-Null
         }
+        # The analyzer fails any scenario whose arm exited nonzero (a scheduled quit that hit a native error is not a pass).
+        Set-Content -LiteralPath (Join-Path $out "$($step.Arm).exitcode") -Value $job.Proc.ExitCode -NoNewline -Encoding ascii
         Wait-RootReleased $job.Root $step.Arm
         Save-AppLog $job.Root $step.Arm
         $job.Index++
