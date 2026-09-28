@@ -301,6 +301,7 @@ public sealed partial class WebHostWindow : Window
         InitializeOutputAudio();
         InitializeCompactSurface();
         InitializeDiscordPresence();
+        InitializeObsOverlay();
         ApplyAppearance();
         CompactButton.Click += (_, _) => ToggleCompact();
         TitleDragRegion.SizeChanged += (_, _) => ApplyFullTitleBar();
@@ -1014,6 +1015,7 @@ public sealed partial class WebHostWindow : Window
         InvalidateCompactState();
         // A main-frame navigation replaces the document (account pages included).
         InvalidateDiscord();
+        InvalidateOverlay();
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
@@ -1134,6 +1136,7 @@ public sealed partial class WebHostWindow : Window
                 _playerControls?.Invalidate();
                 InvalidateCompactState();
                 InvalidateDiscord();
+                InvalidateOverlay();
                 _browserFailed = true;
                 ExitCode = 1;
                 UpdateNavigation();
@@ -1143,6 +1146,7 @@ public sealed partial class WebHostWindow : Window
                 // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
                 InvalidateCompactState();
                 InvalidateDiscord();
+                InvalidateOverlay();
                 if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
                 {
                     SetStatus("The page stopped again. Use Retry, or close and relaunch the app.", isError: true);
@@ -1429,6 +1433,8 @@ public sealed partial class WebHostWindow : Window
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
         dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
         dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
+        dialog.SetObsStatus(CurrentObsStatus, _obsOverlay?.OpenStreams ?? 0);
+        dialog.OpenObsGuideRequested += (_, _) => _ = OpenObsGuideAsync();
         if (discordPage)
             dialog.SelectDiscordPage();
         _settingsDialog = dialog;
@@ -1468,10 +1474,14 @@ public sealed partial class WebHostWindow : Window
                     BlockAds = dialog.Result.BlockAds,
                     AutostartMode = dialog.Result.AutostartMode,
                     RestoreSection = dialog.Result.RestoreSection,
-                    Discord = dialog.Result.Discord
+                    Discord = dialog.Result.Discord,
+                    ObsOverlay = dialog.Result.ObsOverlay,
+                    ObsHidePaused = dialog.Result.ObsHidePaused
                 };
                 ApplyDiscordOptions(_settings.Discord);
                 RefreshDiscordSurfaces();
+                ApplyObsHidePaused(_settings.ObsHidePaused);
+                await ApplyObsOverlayAsync(_settings.ObsOverlay);
                 if (restoreChanged)
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
@@ -2009,6 +2019,7 @@ public sealed partial class WebHostWindow : Window
         {
             _playerSuspended = true;
             InvalidateDiscord(keepItem: true);
+            InvalidateOverlay();
         }
         else if (powerEvent is PbtApmresume or PbtApmresumesuspend)
         {
@@ -2248,6 +2259,8 @@ public sealed partial class WebHostWindow : Window
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
+        // Close overlay streams before Discord so no delivery runs after the server is gone.
+        try { await StopObsOverlayAsync(); } catch (Exception ex) { RememberFailure(ex); }
         // Clear presence while the module can still write (bounded to about 1 s internally).
         try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }

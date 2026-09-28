@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>Nativune now playing</title>
+<style>
+  html, body { margin: 0; width: 440px; height: 96px; overflow: hidden; background: transparent; }
+  #pill {
+    position: absolute; left: 20px; top: 20px; width: 400px; height: 56px;
+    border-radius: 28px; overflow: hidden; background: #202020;
+    box-shadow: 6px 8px 14px rgba(0, 0, 0, .65);
+    opacity: 0; transform: translateY(12px);
+  }
+  #pill canvas { position: absolute; left: 0; top: 0; width: 400px; height: 56px; }
+  #clip { position: absolute; left: 0; top: 0; width: 400px; height: 56px; overflow: hidden; transform: translateX(100%); }
+  #text {
+    position: absolute; left: 28px; right: 28px; top: 0; bottom: 0;
+    display: flex; flex-direction: column; justify-content: center;
+    color: #fff; text-align: center; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+  }
+  #title, #artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
+  #title { font-size: 18px; font-weight: 700; }
+  #artist { font-size: 15px; font-weight: 400; }
+  #artist:empty { display: none; }
+</style>
+<script src="/overlay.js" defer></script>
+</head>
+<body>
+<div id="pill">
+  <canvas id="colour" width="400" height="56"></canvas>
+  <div id="clip"><canvas id="grey" width="400" height="56"></canvas></div>
+  <div id="text"><div id="title"></div><div id="artist"></div></div>
+</div>
+</body>
+</html>

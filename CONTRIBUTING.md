@@ -52,6 +52,14 @@ Quick (delta) updates have two end-to-end checks:
 - `pwsh -NoProfile -File scripts/delta-update-fixture.ps1` builds two releases (the second reusing the first's Setup) and runs the Setup side under `.cache`: applying the update, tampered, missing and extra files, a wrong manifest hash, repairing a corrupted file, removing an obsolete file, and usage errors. Report: `artifacts/delta-update/fixture-report.json`.
 - `scripts/delta-update-app-e2e.ps1` drives the real app through Update now against the local server (`--delta-dir`). It needs `%LOCALAPPDATA%\Nativune-fixture`, so ask the owner first. Its Setup runs with `--test-no-shell`, because the real shortcuts and uninstall entry share names with an installed Nativune. The steps are in the script header.
 
+### Testing the OBS overlay
+
+`pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario All` uses the test-hook build (`-p:DiscordPresenceTestHooks=true`) against the fixture player and checks the overlay server, stream, page and Settings › OBS. It needs no OBS. The scenario names, build steps and regenerate command are in the script header. Report: `artifacts/obs-overlay/<utc>/report.json`. It uses the fixed port 47813, so don't run it at the same time as a Discord E2E run.
+
+The real-OBS test, `scripts/obs-overlay-obs-e2e.ps1`, runs a disposable portable copy of OBS with its WebSocket server listening on all interfaces while it runs. It needs the owner's explicit approval before every run; no answer is not approval.
+
+The guide images in `docs/images/obs-overlay/` come from that real-OBS run: window-scoped captures of the disposable OBS window only, with fixture songs and fixture artwork (no real album art or personal data), each GIF at most 3 MB. `settings-obs.png` comes from the Settings › OBS check of `obs-overlay-e2e.ps1`. To re-record them, get the owner's approval, run the real-OBS test, check the frames in `artifacts/obs-overlay-obs/<utc>/`, and copy the approved images over the old ones with the same file names.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).

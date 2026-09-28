@@ -12,11 +12,18 @@ internal static class AppVersion
     internal const string DonationFailedMessage =
         "The donation page could not be opened. Visit ko-fi.com/hanturaya in your browser.";
 
-    internal static async Task<bool> TryOpenDonationPageAsync()
+    // OBS overlay setup guide (Settings > OBS > How to set up...). Opened in the default browser.
+    internal static readonly Uri ObsGuideUri = new("https://github.com/Hantu-Raya/Nativune/blob/main/docs/obs-overlay.md");
+    internal const string ObsGuideFailedMessage =
+        "The setup guide could not be opened. Visit github.com/Hantu-Raya/Nativune/blob/main/docs/obs-overlay.md in your browser.";
+
+    internal static async Task<bool> TryOpenUriAsync(Uri uri)
     {
-        try { return await Windows.System.Launcher.LaunchUriAsync(DonationUri); }
+        try { return await Windows.System.Launcher.LaunchUriAsync(uri); }
         catch (Exception) { return false; }
     }
+
+    internal static Task<bool> TryOpenDonationPageAsync() => TryOpenUriAsync(DonationUri);
 
     private static string ReadNumber()
     {

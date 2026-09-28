@@ -4,12 +4,19 @@ using System.Text.Json;
 
 namespace Nativune;
 
+// Why a shared playback read runs; labels test-hook diagnostics only (every reason runs the same full read).
+internal enum ReadReason { Compact, Presence, Overlay }
+
 internal sealed class PlayerControls : IDisposable
 {
     private const int MaxScriptResultLength = 4096;
     internal const string CompactRequestedStatus = "Player control click sent.";
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan DispatchWindow = TimeSpan.FromMilliseconds(1200);
+
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    internal static volatile bool HookForceUnavailable;   // IsAvailable returns false while set; nothing else changes
+#endif
 
     private readonly CoreWebView2 _core;
     private readonly Func<bool> _hostReady;
@@ -47,6 +54,9 @@ internal sealed class PlayerControls : IDisposable
     {
         get
         {
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (HookForceUnavailable) return false;
+#endif
             lock (_gate)
             {
                 if (!CanAttemptLocked()) return false;
@@ -148,8 +158,8 @@ internal sealed class PlayerControls : IDisposable
     // what they already show. Sampled with a null state means the website had no coherent player.
     internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
 
-    // presenceOnly labels test-hook read diagnostics only; every caller runs the same full read.
-    internal async Task<CompactRead> ReadPlaybackStateAsync(bool presenceOnly = false)
+    // reason labels test-hook read diagnostics only; every caller runs the same full read.
+    internal async Task<CompactRead> ReadPlaybackStateAsync(ReadReason reason)
     {
         if (!IsAvailable) return default;
         if (!TryStart("compact-state", out var request, out _)) return default;
@@ -158,7 +168,7 @@ internal sealed class PlayerControls : IDisposable
             var script = CompactPlayback.BuildScript("state", null, request.Href,
                 DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
 #if NATIVUNE_DISCORD_TEST_HOOKS
-            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(presenceOnly ? "Presence" : "Compact", script.Length);
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(reason, script.Length);
             var diagnosticValid = false;
             try
             {
