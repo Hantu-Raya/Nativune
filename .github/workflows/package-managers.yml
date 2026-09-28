@@ -70,6 +70,7 @@ jobs:
           token: ${{ secrets.WINGET_TOKEN }}
 
       - name: Push to Chocolatey
-        if: github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.CHOCO_API_KEY != ''
+        # Independent of winget: a failed winget submission must not skip the Chocolatey push.
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.CHOCO_API_KEY != '' }}
         shell: pwsh
         run: choco push "artifacts/package-managers/chocolatey/nativune.${{ steps.tag.outputs.version }}.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
