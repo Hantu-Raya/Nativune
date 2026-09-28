@@ -141,10 +141,8 @@ internal static class PrerequisiteInstaller
         }
 #endif
         IReadOnlyList<MissingPrerequisite> missing;
-        Version? outdatedWebView;
         try
         {
-            outdatedWebView = FindOutdatedWebView2(ReadWebView2Versions());
             missing = DetectMissing();
         }
         catch (SetupException)
@@ -159,13 +157,6 @@ internal static class PrerequisiteInstaller
                 "Check that Windows package information is available, then try again. Official sources:\n\n" +
                 FormatLinks(Definitions.Select(definition => new MissingPrerequisite(definition, "availability could not be verified"))),
                 error);
-        }
-
-        // The WebView2 bootstrapper cannot update an existing Evergreen runtime (it reports "already installed"),
-        // so stop before consent instead of downloading and installing other prerequisites only to fail at the end.
-        if (outdatedWebView is not null)
-        {
-            throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdatedWebView));
         }
 
         if (options.Silent && !options.InstallPrerequisites && missing.Count > 0)
@@ -381,11 +372,11 @@ internal static class PrerequisiteInstaller
         {
             PrerequisiteTestScenario.Present or PrerequisiteTestScenario.DownloadCheck => new PrerequisitePlan([], downloadDirectory: null, testScenario: scenario),
             PrerequisiteTestScenario.WebView2Outdated or PrerequisiteTestScenario.WebView2AtFloor =>
-                FindOutdatedWebView2([scenario == PrerequisiteTestScenario.WebView2AtFloor
+                FindMissingWebView2([scenario == PrerequisiteTestScenario.WebView2AtFloor
                     ? MinimumWebView2Version
                     : new Version(MinimumWebView2Version.Major, MinimumWebView2Version.Minor, MinimumWebView2Version.Build, MinimumWebView2Version.Revision - 1)])
                 is { } outdated
-                    ? throw new SetupException(ExitCode.PrerequisiteFailure, BuildOutdatedWebView2Failure(outdated))
+                    ? throw new SetupException(ExitCode.PrerequisiteFailure, BuildSilentFailure([outdated]))
                     : new PrerequisitePlan([], downloadDirectory: null, testScenario: PrerequisiteTestScenario.Present),
             // --install-prerequisites would take the download-and-install path; the test hook never runs real installers.
             PrerequisiteTestScenario.Missing when installPrerequisites => throw new SetupException(
@@ -422,17 +413,9 @@ internal static class PrerequisiteInstaller
                 "The x64 Microsoft Visual C++ v14 runtime is missing or its installed version could not be verified."));
         }
 
-        var webViewVersions = ReadWebView2Versions();
-        var supportedWebView = webViewVersions
-            .Where(version => version >= MinimumWebView2Version)
-            .OrderByDescending(version => version)
-            .FirstOrDefault();
-        if (supportedWebView is null)
+        if (FindMissingWebView2(ReadWebView2Versions()) is { } webView)
         {
-            var detected = webViewVersions.Count == 0
-                ? "No Evergreen runtime version was found in the documented HKCU/HKLM EdgeUpdate registry locations."
-                : $"Detected Evergreen version(s) {string.Join(", ", webViewVersions.OrderByDescending(version => version))}, below the required {MinimumWebView2Version}.";
-            missing.Add(new MissingPrerequisite(Definitions[2], detected));
+            missing.Add(webView);
         }
 
         if (!HasWindowsAppSdkRuntime())
@@ -514,16 +497,21 @@ internal static class PrerequisiteInstaller
         return versions;
     }
 
-    // Installed (any valid pv) but every registered version is below the floor; null when absent or supported.
-    private static Version? FindOutdatedWebView2(IReadOnlyCollection<Version> versions)
-        => versions.Count > 0 && versions.Max()! < MinimumWebView2Version ? versions.Max() : null;
-
-    private static string BuildOutdatedWebView2Failure(Version detected)
-        => $"Microsoft Edge WebView2 Runtime {detected} is installed, but Nativune needs {MinimumWebView2Version} or later. " +
-           "Nothing was installed and Nativune was not changed.\n\n" +
-           "Windows updates WebView2 automatically in the background through Microsoft Edge Update; its own installer cannot update an existing copy. " +
-           "Leave the PC online for a while (restarting Windows can help), then run Setup again.\n\n" +
-           "Information: https://developer.microsoft.com/microsoft-edge/webview2/";
+    // An installed-but-old runtime (Windows 11 ships 122 per machine) is only replaced by an elevated bootstrapper run;
+    // unelevated it reports "already installed". Microsoft: github.com/MicrosoftEdge/WebView2Feedback/issues/3524
+    private static MissingPrerequisite? FindMissingWebView2(IReadOnlyCollection<Version> versions)
+    {
+        if (versions.Count == 0)
+        {
+            return new MissingPrerequisite(Definitions[2], "No Evergreen runtime version was found in the documented HKCU/HKLM EdgeUpdate registry locations.");
+        }
+        var highest = versions.Max()!;
+        return highest >= MinimumWebView2Version
+            ? null
+            : new MissingPrerequisite(
+                Definitions[2] with { RequiresAdministrator = true },
+                $"Version {highest} is installed, below the required {MinimumWebView2Version}. Installing replaces it with the latest version.");
+    }
 
     private static void AddWebView2Version(RegistryKey? key, ICollection<Version> versions)
     {

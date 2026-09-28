@@ -272,8 +272,8 @@ try {
         if (-not ($stdoutLines | Where-Object { $_.Contains('Checking for required Microsoft components') })) {
             throw "$($scenario.Name) did not print its component-check step to stdout."
         }
-        if ($scenario.Name -eq 'webview2-outdated' -and -not $run.Stderr.Contains("is installed, but Nativune needs $setupFloorText or later")) {
-            throw "webview2-outdated did not report the installed-but-old WebView2 runtime. stderr: $($run.Stderr.Trim())"
+        if ($scenario.Name -eq 'webview2-outdated' -and -not $run.Stderr.Contains("is installed, below the required $setupFloorText")) {
+            throw "webview2-outdated did not report the installed-but-old WebView2 runtime as a prerequisite to update. stderr: $($run.Stderr.Trim())"
         }
         if ($scenario.Name -eq 'download-check') {
             if (-not ($stdoutLines | Where-Object { $_.Contains('Downloading prerequisite 4 of 4') })) {
