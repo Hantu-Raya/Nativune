@@ -1548,10 +1548,6 @@ internal static partial class ReleaseUpdater
             && TryGetAttributes(path, out var attributes)
             && (attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
 
-    private static bool IsReparsePoint(string path)
-        => TryGetAttributes(path, out var attributes)
-            && (attributes & FileAttributes.ReparsePoint) != 0;
-
     private static bool HasReparsePointInChain(string path)
     {
         var current = Path.GetFullPath(path);

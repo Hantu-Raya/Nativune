@@ -466,8 +466,6 @@ public sealed partial class SettingsDialog : Window
         OpenLyricsSettingsButton.Click += (_, _) => OpenLyricsSettingsRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    internal void SelectLyricsPage() => Nav.SelectedItem = LyricsNavItem;
-
     internal void SetLyricsStatus(string text, bool canOpenSettings)
     {
         OpenLyricsSettingsButton.IsEnabled = canOpenSettings;

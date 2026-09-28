@@ -1350,27 +1350,27 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var wasDragging = _dragging;
         _dragging = false;
         if (_state is null || !_seek.IsEnabled) return;
-        var target = ClampSeekTarget(position, _state.Duration);
-        _elapsed.Text = FormatElapsed(target);
-        if (ShouldCommitSeek(wasDragging, false))
-        {
-            _pendingSeek = target;
-            _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
-            _seekPendingState = _state;
-            RaiseCommand("seek", target);
-        }
-        UpdateAnimationTimer();
+        CommitSeekTarget(_state, position, send: ShouldCommitSeek(wasDragging, false));
     }
 
     private void CommitKeyboardSeek(double position)
     {
         if (_state is null || !_seek.IsEnabled) return;
-        var target = ClampSeekTarget(position, _state.Duration);
+        CommitSeekTarget(_state, position, send: true);
+    }
+
+    // Shared by drag and keyboard so the optimistic target, its 2 s expiry and item binding stay identical.
+    private void CommitSeekTarget(CompactPlaybackState state, double position, bool send)
+    {
+        var target = ClampSeekTarget(position, state.Duration);
         _elapsed.Text = FormatElapsed(target);
-        _pendingSeek = target;
-        _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
-        _seekPendingState = _state;
-        if (ShouldCommitSeek(true, false)) RaiseCommand("seek", target);
+        if (send)
+        {
+            _pendingSeek = target;
+            _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            _seekPendingState = state;
+            RaiseCommand("seek", target);
+        }
         UpdateAnimationTimer();
     }
 

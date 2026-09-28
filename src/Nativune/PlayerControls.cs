@@ -148,8 +148,6 @@ internal sealed class PlayerControls : IDisposable
     // what they already show. Sampled with a null state means the website had no coherent player.
     internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
 
-    internal Task<CompactRead> ReadCompactStateAsync() => ReadPlaybackStateAsync();
-
     // presenceOnly labels test-hook read diagnostics only; every caller runs the same full read.
     internal async Task<CompactRead> ReadPlaybackStateAsync(bool presenceOnly = false)
     {
