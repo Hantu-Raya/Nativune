@@ -1,6 +1,7 @@
 # Bundle-version reinstall check on the actual bench app (build with -p:PerfBenchHooks=true -o .cache/build/lyrics-e2e/).
 # Disposable root under .cache/lyrics-upgrade/<stamp>; four launches: fresh install, an older record, a pending record
-# and the current record. Expect: installed; reinstall+installed; reinstall+installed; installed only. Writes result.json.
+# and the current record. Expect: installed; reinstall+installed; reinstall+installed; installed only, with the current
+# version recorded and the extension enabled. Checks only the log lines each launch added; writes result.json; exits 1 on mismatch.
 # pwsh -NoProfile -File scripts/lyrics-upgrade-check.ps1
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -18,7 +19,11 @@ foreach ($kv in @{ BetterLyricsEnabled = $true; AutoCheckUpdates = $false; Sleep
 $marker = Join-Path $run 'data\webview2\better-lyrics-extension.version'
 $appLog = Join-Path $run 'data\nativune.log'
 
+$version = [string] ((Get-Content (Join-Path $root 'release-inputs.json') -Raw | ConvertFrom-Json).betterLyrics.version)
+
 function Launch([string] $label) {
+    # The app log appends across launches of the same root; keep only the lines this launch added.
+    $before = if (Test-Path $appLog) { @(Get-Content $appLog).Count } else { 0 }
     $psi = [Diagnostics.ProcessStartInfo]::new($exe)
     $psi.UseShellExecute = $false
     foreach ($a in @('web', '--root', $run)) { $psi.ArgumentList.Add($a) }
@@ -29,16 +34,39 @@ function Launch([string] $label) {
     $p = [Diagnostics.Process]::Start($psi)
     if (-not $p.WaitForExit(90000)) { $p.Kill($true); throw "$label timed out" }
     Start-Sleep -Seconds 3
-    $lines = @(Get-Content $appLog | Where-Object { $_ -match '\[lyrics\]' })
+    $added = @(Get-Content $appLog | Select-Object -Skip $before)
+    $events = @($added | Where-Object { $_ -match '\[lyrics\] (.+)$' } | ForEach-Object { ($_ -replace '^.*\[lyrics\] ', '').Trim() })
     $ext = @(Get-Content (Join-Path $base "$label.bench.jsonl") | Where-Object { $_ -match '"lyrics-extensions"' } | Select-Object -Last 1)
-    [ordered]@{ step = $label; marker = $(if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { $null }); lyricsLog = $lines; extensions = $ext }
+    $enabled = $null
+    if ($ext.Count) {
+        $item = @(($ext[0] | ConvertFrom-Json).items | Where-Object { $_.id -eq 'ogodmldcmpbfeekmejkeppchklblochl' })
+        $enabled = if ($item.Count) { [bool] $item[0].enabled } else { $false }
+    }
+    [ordered]@{ step = $label; marker = $(if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { $null }); events = $events; extensionEnabled = $enabled }
 }
 
+function Check($result, [string[]] $expectedEvents) {
+    $problems = @()
+    if (($result.events -join '|') -cne ($expectedEvents -join '|')) { $problems += "events [$($result.events -join ', ')] expected [$($expectedEvents -join ', ')]" }
+    if ($result.marker -cne $version) { $problems += "record '$($result.marker)' expected '$version'" }
+    if ($result.extensionEnabled -ne $true) { $problems += "extension enabled = $($result.extensionEnabled)" }
+    $result['expectedEvents'] = $expectedEvents
+    $result['pass'] = $problems.Count -eq 0
+    $result['problems'] = $problems
+    $result
+}
+
+$installed = "installed $version"
+$reinstall = "reinstall $version"
 $results = @()
-$results += Launch 'fresh'
+$results += Check (Launch 'fresh') @($installed)
 Set-Content -LiteralPath $marker -Value '2.4.1.1' -NoNewline
-$results += Launch 'older-record'
-Set-Content -LiteralPath $marker -Value 'pending 2.4.1.2' -NoNewline
-$results += Launch 'pending-record'
-$results += Launch 'current-record'
-$results | ConvertTo-Json -Depth 5 | Tee-Object (Join-Path $base 'result.json')
+$results += Check (Launch 'older-record') @($reinstall, $installed)
+Set-Content -LiteralPath $marker -Value "pending $version" -NoNewline
+$results += Check (Launch 'pending-record') @($reinstall, $installed)
+$results += Check (Launch 'current-record') @($installed)
+$report = [ordered]@{ version = $version; pass = -not ($results | Where-Object { -not $_.pass }); steps = $results
+    command = 'pwsh -NoProfile -File scripts/lyrics-upgrade-check.ps1' }
+$report | ConvertTo-Json -Depth 6 | Tee-Object (Join-Path $base 'result.json')
+if (-not $report.pass) { Write-Error 'Upgrade check failed.'; exit 1 }
+exit 0
