@@ -36,13 +36,16 @@ $oldTmp = $env:TMP
 try {
     $env:TEMP = Join-Path $root '.cache\tmp'
     $env:TMP = $env:TEMP
-    [IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
-    [IO.Directory]::CreateDirectory($cache) | Out-Null
-    foreach ($p in @($cache, $env:TEMP, (Join-Path $root '.tools'))) {
+    # Check every existing directory on the write paths before creating anything, so a junction at .cache or .tools
+    # (or below) cannot redirect downloads, temp files or later deletions outside the repository.
+    $writeDirs = @((Join-Path $root '.cache'), $env:TEMP, $cache, (Join-Path $root '.tools'), $toolsNode)
+    foreach ($p in $writeDirs) {
         if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Refusing reparse point: $p"
         }
     }
+    [IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
+    [IO.Directory]::CreateDirectory($cache) | Out-Null
 
     if (Test-Path -LiteralPath $target) {
         Assert-NoReparsePoints $target
