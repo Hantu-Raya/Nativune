@@ -8,7 +8,8 @@
 #   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -FromPinned
 #   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -SourceArchive artifacts/release/barebones-better-lyrics-2.4.1.2-source.zip
 # -FromPinned deletes and freshly clones release-inputs.json betterLyrics.sourceRepo into .cache/better-lyrics/src,
-#   checks out betterLyrics.sourceCommit, verifies HEAD, then builds from that clone (it becomes the default -Source).
+#   checks out betterLyrics.sourceCommit, verifies HEAD, then builds from that clone. Its only allowed target is
+#   .cache/better-lyrics/src; any other -Source is refused, because the target is deleted first.
 # -SourceArchive writes `git archive --format=zip` of betterLyrics.sourceCommit from -Source (including
 #   package-lock.json) and prints its SHA-256. Entry times come from the commit time (UTC), so the ZIP is
 #   deterministic. Nothing is built or published in this mode (with -FromPinned it clones, then archives).
@@ -86,8 +87,14 @@ $pinnedCommit = ([string] $inputs.betterLyrics.sourceCommit).Trim()
 if (($FromPinned -or $SourceArchive -ne '') -and $pinnedCommit -notmatch '^[0-9a-f]{40}$') {
     throw 'release-inputs.json betterLyrics.sourceCommit is not set to a full commit SHA.'
 }
+$pinnedClone = [IO.Path]::GetFullPath((Join-Path $root '.cache/better-lyrics/src'))
 if ($FromPinned -and -not $PSBoundParameters.ContainsKey('Source')) { $Source = '.cache/better-lyrics/src' }
 $sourcePath = if ([IO.Path]::IsPathRooted($Source)) { [IO.Path]::GetFullPath($Source) } else { [IO.Path]::GetFullPath((Join-Path $root $Source)) }
+# -FromPinned deletes its target before cloning, so it may only ever target the dedicated clone directory (never the
+# repository, an ancestor, the dev clone under .cache/better-lyrics/dev, or anything outside the repository).
+if ($FromPinned -and -not [string]::Equals($sourcePath.TrimEnd('\', '/'), $pinnedClone, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "-FromPinned only clones into $pinnedClone; refusing -Source $sourcePath."
+}
 
 if ($FromPinned) {
     $sourceRepo = [string] $inputs.betterLyrics.sourceRepo
