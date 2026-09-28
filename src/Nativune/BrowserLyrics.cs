@@ -29,6 +29,7 @@ internal static class BrowserLyrics
     internal const string ExtensionName = "Barebones Better Lyrics";
     internal const string ExtensionVersion = "2.4.1.2";
     private const string InstalledVersionFile = "better-lyrics-extension.version";
+    private const string PendingPrefix = "pending ";
     internal const string ExpectedExtensionId = "ogodmldcmpbfeekmejkeppchklblochl";
     private const long MaxManifestBytes = 256 * 1024;
     private static readonly TimeSpan ExtensionOperationTimeout = TimeSpan.FromSeconds(30);
@@ -99,13 +100,13 @@ internal static class BrowserLyrics
                 string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal));
             // Chromium keeps serving an unpacked extension from the directory it was added from, and the ID is the same
             // across bundle versions. Without a record of this version, remove the old copy (losing its saved
-            // settings) and add the bundled directory. The new version is recorded *before* the removal: if the record
-            // cannot be persisted, removing now would repeat on every launch and wipe the settings each time, so the
-            // existing copy is kept (disabled) and the failure is surfaced instead. A failed removal throws into the
-            // fail-safe path below; a later add failure is retried next launch because no copy is then installed.
+            // settings) and add the bundled directory. Before the removal the record is set to "pending <version>",
+            // which never matches: a removal or add that fails is retried next launch instead of the old copy being
+            // taken for the new version. If even that write fails, removing now would repeat on every launch and wipe
+            // the settings each time, so the existing copy is kept (disabled) and the failure is surfaced instead.
             if (extension is not null && !string.Equals(ReadRecordedVersion(projectRoot), ExtensionVersion, StringComparison.Ordinal))
             {
-                if (!RecordInstalledVersion(projectRoot))
+                if (!RecordInstalledVersion(projectRoot, PendingPrefix + ExtensionVersion))
                 {
                     AppLog.Write("lyrics", "failed record");
                     await TryDisableAfterFailureAsync(core, token);
@@ -142,13 +143,25 @@ internal static class BrowserLyrics
                 return BrowserLyricsState.Failed("enable");
             }
 
+            // Only Nativune adds extensions here, so a same-name copy with another ID is an obsolete registration. Two
+            // enabled copies would both inject content scripts, so every one must end up disabled or removed.
             foreach (var stale in installed.Where(candidate =>
                 string.Equals(candidate.Name, ExtensionName, StringComparison.Ordinal)
                 && !string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)))
             {
                 await TryDisableOrRemoveAsync(stale, operationToken);
             }
-            RecordInstalledVersion(projectRoot);
+            var afterCleanup = await BrowserPrivacy.AwaitBoundedAsync(
+                core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, operationToken);
+            if (afterCleanup.Any(candidate => candidate.IsEnabled
+                && string.Equals(candidate.Name, ExtensionName, StringComparison.Ordinal)
+                && !string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)))
+            {
+                AppLog.Write("lyrics", "failed stale");
+                await TryDisableAfterFailureAsync(core, token);
+                return BrowserLyricsState.Failed("stale");
+            }
+            RecordInstalledVersion(projectRoot, ExtensionVersion);
             AppLog.Write("lyrics", "installed " + ExtensionVersion);
             return BrowserLyricsState.Installed(ExtensionVersion);
         }
@@ -278,7 +291,7 @@ internal static class BrowserLyrics
         }
     }
 
-    private static bool RecordInstalledVersion(string root)
+    private static bool RecordInstalledVersion(string root, string value)
     {
         var path = RecordedVersionPath(root);
         var temporary = path + ".tmp";
@@ -288,7 +301,7 @@ internal static class BrowserLyrics
             RootLocator.EnsureNoReparsePath(root, directory);
             Directory.CreateDirectory(directory);
             RootLocator.EnsureNoReparsePath(root, temporary);
-            File.WriteAllText(temporary, ExtensionVersion);
+            File.WriteAllText(temporary, value);
             File.Move(temporary, path, overwrite: true);
             return true;
         }
