@@ -706,12 +706,13 @@ if "StyleIsolation" in selected:
     checks, diffs, ignored, sheets = {}, {}, {}, {}
     for name in STYLE_PROBES:
         s, c2, c3 = style_probe("S", name), style_probe("C2", name), style_probe("C3", name)
-        if s is None or c2 is None:
+        # C3 identifies volatile attributes; without its probe the comparison is unmeasured, not stricter.
+        if s is None or c2 is None or c3 is None:
             checks[f"identical_{name}"] = None
             continue
         fs, f2 = style_flat(s), style_flat(c2)
         # Only html/body attributes may be ignored, and only those that also differ between the two lyrics-off runs.
-        vol = [k for k in style_diff(f2, style_flat(c3)) if "|attr|" in k] if c3 is not None else []
+        vol = [k for k in style_diff(f2, style_flat(c3)) if "|attr|" in k]
         ignored[name] = vol
         d = [k for k in style_diff(fs, f2) if k not in vol]
         # Post-red-run amendments (protocol): with the Lyrics tab selected in only one arm, #tab-renderer (the fork's host) and the
