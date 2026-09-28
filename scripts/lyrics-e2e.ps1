@@ -1,7 +1,8 @@
 <#
 Barebones Better Lyrics end-to-end acceptance. Protocol and frozen thresholds: scripts/lyrics-e2e-protocol.md.
-Needs the bench build: dotnet build src/Nativune -c Release -p:PerfBenchHooks=true -o .cache/build/lyrics-e2e
-and the published extension tree under .tools/better-lyrics (scripts/setup-better-lyrics.ps1).
+Needs the bench build: dotnet build src/Nativune -c Release -p:PerfBenchHooks=true -o .cache/build/lyrics-e2e/
+(keep the trailing slash: without it WinUI writes the .xbf files beside the folder and the window fails to load).
+It also needs the published extension tree under .tools/better-lyrics (scripts/setup-better-lyrics.ps1).
 Every arm runs on a disposable root under .cache/lyrics-e2e/runs/<stamp>/<arm>; lyrics are switched on or off only
 through that root's data/settings.json. Only processes started here are stopped. Raw network logs are reduced to host
 names by scripts/lyrics-e2e-analyze.py and then deleted with the roots (unless -KeepRaw).

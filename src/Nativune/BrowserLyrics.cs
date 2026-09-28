@@ -22,7 +22,8 @@ internal sealed record BrowserLyricsState(BrowserLyricsStatus Status, string? Ve
 }
 
 // Barebones Better Lyrics (GPL-3.0 fork of Better Lyrics 2.4.1), opt-in and off by default.
-// Lyrics problems never throw to the caller: Music and uBO Lite setup continue regardless.
+// Lyrics problems never throw while Lyrics is on, so Music and uBO Lite continue. While it is off, a copy that
+// cannot be confirmed disabled or removed throws, so Music is not loaded (fail closed, like uBO Lite).
 internal static class BrowserLyrics
 {
     internal const string ExtensionName = "Barebones Better Lyrics";
@@ -48,6 +49,7 @@ internal static class BrowserLyrics
 
         if (!enabled)
         {
+            // Off must mean nothing is sent: confirm disabled, else remove it, else fail closed before Music loads.
             try
             {
                 await DisableExpectedAsync(core, operationToken);
@@ -55,6 +57,8 @@ internal static class BrowserLyrics
             catch (Exception exception)
             {
                 AppLog.Write("lyrics", "disable-failed " + exception.GetType().Name);
+                await RemoveExpectedAsync(core, token);
+                AppLog.Write("lyrics", "removed");
             }
             return BrowserLyricsState.Disabled;
         }
@@ -153,6 +157,7 @@ internal static class BrowserLyrics
         }
     }
 
+    // Throws unless every copy with the expected ID ends up disabled.
     private static async Task DisableExpectedAsync(CoreWebView2 core, CancellationToken operationToken)
     {
         var installed = await BrowserPrivacy.AwaitBoundedAsync(
@@ -162,7 +167,28 @@ internal static class BrowserLyrics
         {
             await BrowserPrivacy.AwaitBoundedAsync(
                 extension.EnableAsync(false).AsTask(), ExtensionOperationTimeout, operationToken);
+            if (extension.IsEnabled)
+                throw new InvalidOperationException("Lyrics extension stayed enabled.");
         }
+    }
+
+    // Last resort for the off state (loses the extension's saved settings). Throws, so Music is not loaded,
+    // unless no enabled copy with the expected ID remains.
+    private static async Task RemoveExpectedAsync(CoreWebView2 core, CancellationToken token)
+    {
+        using var removal = CancellationTokenSource.CreateLinkedTokenSource(token);
+        removal.CancelAfter(ExtensionOperationTimeout);
+        var installed = await BrowserPrivacy.AwaitBoundedAsync(
+            core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
+        foreach (var extension in installed.Where(candidate =>
+            string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)))
+        {
+            await BrowserPrivacy.AwaitBoundedAsync(extension.RemoveAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
+        }
+        var remaining = await BrowserPrivacy.AwaitBoundedAsync(
+            core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
+        if (remaining.Any(candidate => string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal) && candidate.IsEnabled))
+            throw new InvalidOperationException("Lyrics could not be turned off; Music was not loaded.");
     }
 
     private static async Task TryDisableAfterFailureAsync(CoreWebView2 core, CancellationToken token)

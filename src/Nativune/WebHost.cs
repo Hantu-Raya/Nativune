@@ -868,7 +868,7 @@ public sealed partial class WebHostWindow : Window
             }, _settings.BlockAds, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
-            // Optional lyrics: never throws for lyrics problems, so Music and uBO Lite continue regardless.
+            // Optional lyrics: throws only when Lyrics is off and the extension cannot be confirmed off.
             _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, _settings.BetterLyricsEnabled, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
