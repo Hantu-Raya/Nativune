@@ -132,7 +132,9 @@ if ($FromPinned) {
 
 if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "Better Lyrics source directory is missing: $sourcePath" }
 $sourcePath = (Resolve-Path -LiteralPath $sourcePath).Path
-Assert-NotReparse $sourcePath
+# npm ci and the build rewrite node_modules and dist inside the source tree, so the source must be repository-local
+# with no junction on the way (archive mode also only reads from here).
+Assert-RepoWritePath $sourcePath
 
 if ($SourceArchive -ne '') {
     $archivePath = if ([IO.Path]::IsPathRooted($SourceArchive)) { [IO.Path]::GetFullPath($SourceArchive) } else { [IO.Path]::GetFullPath((Join-Path $root $SourceArchive)) }
@@ -206,6 +208,7 @@ try {
         Assert-RepoWritePath $p
     }
 
+    foreach ($p in @((Join-Path $sourcePath 'node_modules'), (Join-Path $sourcePath 'dist'))) { Assert-RepoWritePath $p }
     Set-Location -LiteralPath $sourcePath
     $ciArgs = @($npmCli, 'ci')
     if (-not $AllowInstallScripts) { $ciArgs += '--ignore-scripts' }
