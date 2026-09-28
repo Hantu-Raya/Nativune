@@ -2,6 +2,8 @@
 
 Bug reports and feature ideas are welcome as [GitHub issues](https://github.com/Hantu-Raya/Nativune/issues). Before opening a pull request, please open an issue to discuss the change.
 
+Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately, as described in [SECURITY.md](SECURITY.md), not in a public issue.
+
 ## Ground rules
 
 These are project non-goals, and pull requests that add them will not be accepted:

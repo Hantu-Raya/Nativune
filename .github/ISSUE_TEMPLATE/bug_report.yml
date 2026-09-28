@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in Nativune doesn't work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Don't include passwords, cookies, account details, or your private library or listening history. Security problems go to [Report a vulnerability](https://github.com/Hantu-Raya/Nativune/security/advisories/new) instead.
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Describe the problem, including any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: If it doesn't happen every time, say how often and what seems to trigger it.
+      placeholder: |
+        1. Open Nativune
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Nativune version and install type
+      description: Shown in Settings > About.
+      placeholder: 0.1.32, installed
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Installed from
+      options:
+        - GitHub release (Setup)
+        - winget
+        - Chocolatey
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run `winver` to check.
+      placeholder: Windows 11 24H2
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or logs
+      description: Optional. Crop out account names and anything private.
