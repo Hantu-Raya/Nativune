@@ -420,8 +420,10 @@ if "Core" in selected:
     checks = {
         "1_load": bool(r1.get("load", {}).get("loaded") and r2.get("load", {}).get("loaded")),
         "2_lyrics": bool(r1.get("lyricsOk")),
-        "3_timing": bool(synced) and all(d["passRate"] is not None and d["passRate"] >= 0.95 for d in synced)
-                    and all(s["correctWithin2s"] for s in r1.get("seeks", []) if s["applicable"]),
+        "3_timing": bool(synced) and all(d["passRate"] is not None and d["passRate"] >= 0.95 for d in synced),
+        # Both scheduled seeks (seekfwd, then seekback) must be logged and have a synced sample in their 2 s window.
+        "3_seeks": (None if sorted(s["event"] for s in r1.get("seeks", [])) != ["lyrics-seekback", "lyrics-seekfwd"]
+                    or not all(s["applicable"] for s in r1["seeks"]) else all(s["correctWithin2s"] for s in r1["seeks"])),
         "4_pause": bool(r1.get("pause") and r1["pause"]["pass"]),
         "5_trackChange": bool(r1.get("trackChange") and r1["trackChange"]["pass"]),
         "6_options": True in r1.get("optionsLoaded", []) and (cap_bytes("R1", "options") or 0) > 10000

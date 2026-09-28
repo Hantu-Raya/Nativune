@@ -129,6 +129,8 @@ Second amendment, after the first run on the fixed fork (`style-green/20260927T2
 
 **Exit-code amendment (28 Sep 2026, Codex reviews of `139b64f`, `8fb6f34` and `262859f`).** The runner writes each arm's process exit code to `<arm>.exitcode` (also after a forced kill). Every scenario adds `appExitZero`: all its arms exited 0, including every control arm (C, C2, C3) whose netlog formed the host baseline when the scenario uses that baseline. A nonzero code fails the scenario; a missing record is unmeasurable. StyleIsolation now requires C3 as well as S and C2, and a style probe missing from any of the three leaves that probe unmeasured. **Why:** a scheduled quit that hits a native error (for example, `ShutdownCoreAsync` setting exit code 1 after a failed cleanup) produced the same observations as a clean quit, so the report could pass.
 
+**Seek-measurement amendment (28 Sep 2026, Codex review of `70198b5`).** Core reports the seek part of rule 3 as `3_seeks`. Both scheduled seeks (`seekfwd`, `seekback`) must be logged and have a synced sample within their 2 s window; otherwise `3_seeks` is unmeasured. **Why:** the old check only judged seeks that were logged and had a sample, so Core could pass without measuring either seek.
+
 **Not covered:**
 - signed-in or Premium playback;
 - real ads;
