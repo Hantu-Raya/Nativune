@@ -160,7 +160,13 @@ public sealed partial class WebHostWindow
         var off = false;
         try
         {
-            if (_browserHost is { } host)
+            if (_configuringPrivacy)
+            {
+                // Startup has not loaded Music yet and may be installing the extension right now. Do not race it:
+                // the startup path rechecks the saved setting after its lyrics setup and disables before Music loads.
+                off = true;
+            }
+            else if (_browserHost is { } host)
             {
                 core = host.Core;
                 off = await BrowserLyrics.DisableNowAsync(core, _lifetime.Token);

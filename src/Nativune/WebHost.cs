@@ -872,6 +872,12 @@ public sealed partial class WebHostWindow : Window
             _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, _settings.BetterLyricsEnabled, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
+            // Settings > Lyrics Off may have been saved while the setup above was installing (TurnLyricsOffAsync only
+            // saves while _configuringPrivacy is true). Honour it before Music loads; this call fails closed.
+            if (!_settings.BetterLyricsEnabled && _lyricsState.Status != BrowserLyricsStatus.Disabled)
+                _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, enabled: false, lifetimeToken);
+            if (!CanContinueInitialization(lifetimeToken))
+                return;
 
             _configuringPrivacy = false;
             core.NavigationCompleted += (_, args) => OnNavigationCompleted(args);
