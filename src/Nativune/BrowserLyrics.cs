@@ -181,13 +181,18 @@ internal static class BrowserLyrics
         }
     }
 
-    // Throws unless every copy with the expected ID ends up disabled.
+    // Only Nativune adds extensions to its profile, so a copy with the managed name but another ID is an obsolete
+    // Barebones Better Lyrics registration; the off state must cover it too.
+    private static bool IsManagedLyrics(CoreWebView2BrowserExtension candidate)
+        => string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)
+            || string.Equals(candidate.Name, ExtensionName, StringComparison.Ordinal);
+
+    // Throws unless every managed lyrics copy ends up disabled.
     private static async Task DisableExpectedAsync(CoreWebView2 core, CancellationToken operationToken)
     {
         var installed = await BrowserPrivacy.AwaitBoundedAsync(
             core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, operationToken);
-        foreach (var extension in installed.Where(candidate =>
-            string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal) && candidate.IsEnabled))
+        foreach (var extension in installed.Where(candidate => IsManagedLyrics(candidate) && candidate.IsEnabled))
         {
             await BrowserPrivacy.AwaitBoundedAsync(
                 extension.EnableAsync(false).AsTask(), ExtensionOperationTimeout, operationToken);
@@ -197,21 +202,20 @@ internal static class BrowserLyrics
     }
 
     // Last resort for the off state (loses the extension's saved settings). Throws, so Music is not loaded,
-    // unless no enabled copy with the expected ID remains.
+    // unless no enabled managed lyrics copy remains.
     private static async Task RemoveExpectedAsync(CoreWebView2 core, CancellationToken token)
     {
         using var removal = CancellationTokenSource.CreateLinkedTokenSource(token);
         removal.CancelAfter(ExtensionOperationTimeout);
         var installed = await BrowserPrivacy.AwaitBoundedAsync(
             core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
-        foreach (var extension in installed.Where(candidate =>
-            string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)))
+        foreach (var extension in installed.Where(IsManagedLyrics))
         {
             await BrowserPrivacy.AwaitBoundedAsync(extension.RemoveAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
         }
         var remaining = await BrowserPrivacy.AwaitBoundedAsync(
             core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, removal.Token);
-        if (remaining.Any(candidate => string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal) && candidate.IsEnabled))
+        if (remaining.Any(candidate => IsManagedLyrics(candidate) && candidate.IsEnabled))
             throw new InvalidOperationException("Lyrics could not be turned off; Music was not loaded.");
     }
 
