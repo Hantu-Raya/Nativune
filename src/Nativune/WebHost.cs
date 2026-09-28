@@ -864,8 +864,21 @@ public sealed partial class WebHostWindow : Window
                 if (!CanContinueInitialization(lifetimeToken))
                     return;
                 _privacySetupUri = setupUri;
-                _configuringPrivacy = setupUri is not null;
+                // Stay in startup mode until the lyrics setup below has also finished (cleared before Music loads);
+                // runtime Lyrics Off relies on this guard to leave the extension to the startup path.
+                if (setupUri is not null)
+                    _configuringPrivacy = true;
             }, _settings.BlockAds, lifetimeToken);
+            if (!CanContinueInitialization(lifetimeToken))
+                return;
+            // Optional lyrics: throws only when a managed copy cannot be confirmed off (Lyrics off, or failed to start).
+            _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, _settings.BetterLyricsEnabled, lifetimeToken);
+            if (!CanContinueInitialization(lifetimeToken))
+                return;
+            // Settings > Lyrics Off may have been saved while the setup above was installing (TurnLyricsOffAsync only
+            // saves while _configuringPrivacy is true). Honour it before Music loads; this call fails closed.
+            if (!_settings.BetterLyricsEnabled && _lyricsState.Status != BrowserLyricsStatus.Disabled)
+                _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, enabled: false, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
 
@@ -1399,6 +1412,8 @@ public sealed partial class WebHostWindow : Window
             return applied ? null : error;
         }, installed, startupState, () => _statusDetailsText, _root);
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
+        dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
+        dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
         if (discordPage)
             dialog.SelectDiscordPage();
         _settingsDialog = dialog;
@@ -1427,6 +1442,7 @@ public sealed partial class WebHostWindow : Window
                 var adSettingChanged = _settings.BlockAds != dialog.Result.BlockAds;
                 var restoreChanged = _settings.RestoreSection != dialog.Result.RestoreSection;
                 var trayChanged = _settings.TrayEnabled != dialog.Result.TrayEnabled;
+                var lyricsChanged = _settings.BetterLyricsEnabled != dialog.Result.BetterLyricsEnabled;
                 _settings = _settings with
                 {
                     Shortcuts = dialog.Result.Shortcuts,
@@ -1445,6 +1461,13 @@ public sealed partial class WebHostWindow : Window
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
                     SetTrayEnabled(dialog.Result.TrayEnabled);
+                if (lyricsChanged)
+                {
+                    // Off: disable (else remove) and reload now; if that cannot be confirmed the app closes, so no "Settings saved".
+                    if (!dialog.Result.BetterLyricsEnabled && !await TurnLyricsOffAsync())
+                        return;
+                    _settings = _settings with { BetterLyricsEnabled = dialog.Result.BetterLyricsEnabled };
+                }
                 string? startupError = null;
                 if (ReleaseUpdater.IsInstalledBuild(_root))
                 {
@@ -1474,6 +1497,10 @@ public sealed partial class WebHostWindow : Window
                 CaptureSettings();
                 if (startupError is not null)
                     SetStatus(startupError, isError: true);
+                else if (lyricsChanged && !_settings.BetterLyricsEnabled && LyricsOffSaveFailed)
+                    SetStatus(LyricsOffUnsavedMessage, isError: true);
+                else if (lyricsChanged && _settings.BetterLyricsEnabled)
+                    SetStatus("Settings saved. Lyrics turn on after you restart Nativune.");
                 else if (restoreChanged)
                     SetStatus(_settings.RestoreSection
                         ? "Settings saved. Remembering Home or Library only. The website still owns account, queue and autoplay behavior."
@@ -1927,14 +1954,36 @@ public sealed partial class WebHostWindow : Window
         while (_pendingSettings is { } snapshot && !_saveCancellation.IsCancellationRequested)
         {
             _pendingSettings = null;
-            try { await Task.Run(() => ShellSettings.SaveAsync(_root, snapshot, _saveCancellation.Token)); }
-            catch (OperationCanceledException) { break; }
+            try
+            {
+                await Task.Run(() => ShellSettings.SaveAsync(_root, snapshot, _saveCancellation.Token));
+                _lastSaveSucceeded = true;
+            }
+            catch (OperationCanceledException) { _lastSaveSucceeded = false; break; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                _lastSaveSucceeded = false;
                 _settingsWarning = "Settings could not be saved. Changes apply to this session only.";
                 SetStatus(_settingsWarning, true);
             }
         }
+    }
+
+    private bool _lastSaveSucceeded;
+
+    // Captures and saves like CaptureSettings, then waits for the serialized writer to drain. True only when the last
+    // write (which includes the current _settings) succeeded and nothing is left unsaved. Other callers keep
+    // fire-and-forget CaptureSettings; the write itself is the same.
+    private async Task<bool> SaveSettingsConfirmedAsync()
+    {
+        CaptureSettings();
+        try
+        {
+            while (!_saveTask.IsCompleted) await _saveTask;
+            await _saveTask;
+        }
+        catch (Exception) { return false; }
+        return _lastSaveSucceeded && _pendingSettings is null;
     }
 
     // WM_POWERBROADCAST. Also driven by the Discord fixture's command-power-* hooks in test-hook builds.
@@ -2168,6 +2217,7 @@ public sealed partial class WebHostWindow : Window
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
+        try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
         // Clear presence while the module can still write (bounded to about 1 s internally).
         try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }

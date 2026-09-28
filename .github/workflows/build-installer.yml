@@ -84,6 +84,22 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ubol.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Pinned uBlock Origin Lite setup failed.' }
 
+      - name: Bootstrap pinned local Node.js
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup-node.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned local Node.js setup failed.' }
+
+      # The fork repository (release-inputs.json betterLyrics.sourceRepo) must be public: this
+      # step clones it anonymously; persist-credentials is off and no token is passed.
+      - name: Build pinned Barebones Better Lyrics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/setup-better-lyrics.ps1 -FromPinned
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Barebones Better Lyrics build failed.' }
+
       - name: Restore application with repository-local NuGet configuration
         shell: pwsh
         run: |
@@ -249,6 +265,9 @@ jobs:
             foreach ($required in @(
               'app/Nativune.exe',
               '.tools/ubol/2026.907.2003/manifest.json',
+              '.tools/better-lyrics/2.4.1.2/manifest.json',
+              'licenses/BarebonesBetterLyrics-GPL-3.0.txt',
+              'licenses/BarebonesBetterLyrics-NOTICE.txt',
               'installer/Nativune.Setup.exe',
               'licenses/Nativune-LICENSE.txt',
               'licenses/THIRD-PARTY-NOTICES.txt',
@@ -415,17 +434,22 @@ jobs:
             throw 'delta-update.json does not match the built release manifest installer entry.'
           }
 
-          $expectedChecksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json')
+          $lyricsVersion = [string] (Get-Content -LiteralPath 'release-inputs.json' -Raw | ConvertFrom-Json).betterLyrics.version
+          $lyricsSourceZip = "barebones-better-lyrics-$lyricsVersion-source.zip"
+          foreach ($entryPath in $zipPaths) {
+            if ($entryPath -like '*-source.zip') { throw "The app payload must not contain the source archive: $entryPath" }
+          }
+          $expectedChecksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json', $lyricsSourceZip)
           $checksumMap = @{}
           foreach ($line in @(Get-Content -LiteralPath $checksumsPath | Where-Object { $_.Length -gt 0 })) {
-            if ($line -cnotmatch '^([0-9a-f]{64})  (Nativune-Setup\.exe|Nativune-Setup\.zip|delta-update\.json|release-manifest\.json)$') {
+            if ($line -cnotmatch '^([0-9a-f]{64})  (Nativune-Setup\.exe|Nativune-Setup\.zip|delta-update\.json|release-manifest\.json|barebones-better-lyrics-[0-9.]+-source\.zip)$') {
               throw "Malformed checksum line: $line"
             }
             $name = $Matches[2]
             if ($checksumMap.ContainsKey($name)) { throw "Duplicate checksum entry: $name" }
             $checksumMap[$name] = $Matches[1]
           }
-          if ($checksumMap.Count -ne $expectedChecksumNames.Count) { throw 'Checksum file does not list exactly the four release outputs.' }
+          if ($checksumMap.Count -ne $expectedChecksumNames.Count) { throw 'Checksum file does not list exactly the five release outputs.' }
           foreach ($name in $expectedChecksumNames) {
             if (-not $checksumMap.ContainsKey($name)) { throw "Checksum file is missing $name." }
             $actualHash = (Get-FileHash -LiteralPath (Join-Path $releaseRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -444,6 +468,7 @@ jobs:
             artifacts/release/release-manifest.json
             artifacts/release/delta-update.json
             artifacts/release/SHA256SUMS.txt
+            artifacts/release/barebones-better-lyrics-*-source.zip
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

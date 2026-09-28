@@ -29,6 +29,7 @@
         <NavigationViewItem x:Name="ShortcutsNavItem" Content="Shortcuts" Tag="Shortcuts" AutomationProperties.Name="Shortcuts" />
         <NavigationViewItem x:Name="PrivacyNavItem" Content="Privacy" Tag="Privacy" AutomationProperties.Name="Privacy" />
         <NavigationViewItem x:Name="DiscordNavItem" Content="Discord" Tag="Discord" AutomationProperties.Name="Discord" />
+        <NavigationViewItem x:Name="LyricsNavItem" Content="Lyrics" Tag="Lyrics" AutomationProperties.Name="Lyrics" />
         <NavigationViewItem x:Name="AboutNavItem" Content="About" Tag="About" AutomationProperties.Name="About" />
       </NavigationView.MenuItems>
       <ScrollViewer x:Name="PageScroller"
@@ -400,6 +401,47 @@
                        Foreground="{ThemeResource SecondaryTextBrush}"
                        AutomationProperties.Name="Discord connection status"
                        AutomationProperties.LiveSetting="Polite" />
+          </StackPanel>
+
+          <StackPanel x:Name="LyricsPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="Lyrics"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <CheckBox x:Name="LyricsEnabledCheckBox"
+                      Content="Show time-synced lyrics (restart required)"
+                      MinHeight="36"
+                      IsChecked="False"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Show time-synced lyrics (restart required)"
+                      AutomationProperties.HelpText="Off by default. Sends the playing song's details to lyric services. Takes effect after restarting Nativune." />
+            <TextBlock x:Name="LyricsDisclosureText"
+                       Text="Off by default. When on, Nativune loads Barebones Better Lyrics, a modified version of Better Lyrics (GPL-3.0). For the playing song it sends the title, artist, album and duration to the Better Lyrics API (api.betterlyrics.org) and, if it has no synced lyrics, to LRCLIB (lrclib.net). Those services see your IP address. Lyrics are cached in this profile. Translation is off unless you turn it on in lyric settings; then lyric text is sent to Google Translate (translate.googleapis.com). Takes effect after restarting Nativune."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,-6,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Lyrics privacy disclosure" />
+            <Button x:Name="OpenLyricsSettingsButton"
+                    Content="Open lyric settings…"
+                    Margin="28,0,0,0"
+                    AutomationProperties.Name="Open lyric settings"
+                    AutomationProperties.HelpText="Opens the lyric settings window for translation, language and timing." />
+            <TextBlock x:Name="LyricsStatusText"
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Lyrics status"
+                       AutomationProperties.LiveSetting="Polite" />
+            <TextBlock x:Name="LyricsSettingsCaption"
+                       Text="Lyric settings save immediately; Cancel here does not undo them."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Lyric settings save immediately; Cancel here does not undo them." />
           </StackPanel>
 
           <StackPanel x:Name="AboutPage" Spacing="10" Visibility="Collapsed">

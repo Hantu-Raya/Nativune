@@ -95,6 +95,7 @@ public sealed partial class SettingsDialog : Window
         StartWithWindows = startupState is StartupEntryState.On or StartupEntryState.DisabledByUser;
         InitializeUpdatesAndStartup(initial);
         InitializeDiscord(initial);
+        InitializeLyrics(initial);
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -330,6 +331,7 @@ public sealed partial class SettingsDialog : Window
             Discord = new DiscordPresenceOptions(DiscordPresenceCheckBox.IsChecked == true,
                 SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true,
                 DiscordShowAuthorCheckBox.IsChecked == true),
+            BetterLyricsEnabled = LyricsEnabledCheckBox.IsChecked == true,
             Shortcuts = bindings
         };
         (StartWithWindows, StartupChange) = ResolveStartupChange();
@@ -455,6 +457,22 @@ public sealed partial class SettingsDialog : Window
 
     internal void SelectDiscordPage() => Nav.SelectedItem = DiscordNavItem;
 
+    internal event EventHandler? OpenLyricsSettingsRequested;
+
+    private void InitializeLyrics(ShellSettings initial)
+    {
+        LyricsEnabledCheckBox.IsChecked = initial.BetterLyricsEnabled;
+        OpenLyricsSettingsButton.Click += (_, _) => OpenLyricsSettingsRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal void SelectLyricsPage() => Nav.SelectedItem = LyricsNavItem;
+
+    internal void SetLyricsStatus(string text, bool canOpenSettings)
+    {
+        OpenLyricsSettingsButton.IsEnabled = canOpenSettings;
+        LyricsStatusText.Text = canOpenSettings ? text : text + " Enable, save and restart Nativune first.";
+    }
+
     // Called by the owner with the live presence state; the text never contains track data.
     internal void SetDiscordStatus(DiscordPresenceStatus status)
     {
@@ -513,6 +531,7 @@ public sealed partial class SettingsDialog : Window
         ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
         DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
+        LyricsPage.Visibility = tag == "Lyrics" ? Visibility.Visible : Visibility.Collapsed;
         AboutPage.Visibility = tag == "About" ? Visibility.Visible : Visibility.Collapsed;
         RestoreButton.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PageScroller.ChangeView(null, 0, null, disableAnimation: true);

@@ -7,7 +7,10 @@ param(
     [string] $Configuration = 'Release',
     [ValidatePattern('^artifacts[/\\][A-Za-z0-9._-]+$')]
     [string] $OutputDirectory = 'artifacts/release',
-    [string] $PreviousReleaseDirectory = ''
+    [string] $PreviousReleaseDirectory = '',
+    # Git clone of the Barebones Better Lyrics fork at release-inputs.json betterLyrics.sourceCommit
+    # (scripts/setup-better-lyrics.ps1 -FromPinned creates .cache/better-lyrics/src).
+    [string] $BetterLyricsSource = '.cache/better-lyrics/src'
 )
 
 Set-StrictMode -Version Latest
@@ -486,6 +489,34 @@ try {
     if ($ubolFingerprint.sha256 -ne $releaseInputs.uBlockOriginLite.treeSha256 -or $ubolFingerprint.fileCount -ne $releaseInputs.uBlockOriginLite.fileCount -or $ubolFingerprint.totalBytes -ne $releaseInputs.uBlockOriginLite.totalBytes) {
         throw 'The pristine uBO Lite source tree does not match release-inputs.json.'
     }
+    # Barebones Better Lyrics (GPL-3.0 fork): the published build must match the pin exactly.
+    $betterLyrics = $releaseInputs.betterLyrics
+    $betterLyricsVersion = [string] $betterLyrics.version
+    $betterLyricsCommit = ([string] $betterLyrics.sourceCommit).Trim()
+    if ($betterLyricsVersion -notmatch '^\d+(\.\d+){1,3}$' -or $betterLyricsCommit -notmatch '^[0-9a-f]{40}$' -or [string] $betterLyrics.treeSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'release-inputs.json betterLyrics must pin version, sourceCommit and treeSha256.'
+    }
+    $betterLyricsRoot = Resolve-RepositoryPath ".tools/better-lyrics/$betterLyricsVersion"
+    if (-not (Test-Path -LiteralPath $betterLyricsRoot -PathType Container)) {
+        throw "Barebones Better Lyrics $betterLyricsVersion is missing; run scripts/setup-better-lyrics.ps1 -FromPinned."
+    }
+    $betterLyricsFingerprint = Get-TreeFingerprint $betterLyricsRoot
+    if ($betterLyricsFingerprint.sha256 -ne [string] $betterLyrics.treeSha256 -or $betterLyricsFingerprint.fileCount -ne [int64] $betterLyrics.fileCount -or $betterLyricsFingerprint.totalBytes -ne [int64] $betterLyrics.totalBytes) {
+        throw "The Barebones Better Lyrics tree does not match release-inputs.json (got $($betterLyricsFingerprint.sha256), $($betterLyricsFingerprint.fileCount) files, $($betterLyricsFingerprint.totalBytes) bytes)."
+    }
+    $betterLyricsManifest = Get-Content -LiteralPath (Resolve-RepositoryPath (Join-Path $betterLyricsRoot 'manifest.json')) -Raw | ConvertFrom-Json
+    if ([string] $betterLyricsManifest.version -ne $betterLyricsVersion -or [string] $betterLyricsManifest.name -ne [string] $betterLyrics.name) {
+        throw "The Barebones Better Lyrics manifest identity does not match release-inputs.json."
+    }
+    $betterLyricsSourcePath = Resolve-RepositoryPath $BetterLyricsSource
+    $betterLyricsHead = ([string] (& git -C $betterLyricsSourcePath rev-parse HEAD)).Trim()
+    if ($LASTEXITCODE -ne 0 -or $betterLyricsHead -cne $betterLyricsCommit) {
+        throw "The Better Lyrics source at $BetterLyricsSource is not at the pinned commit $betterLyricsCommit."
+    }
+    $betterLyricsLicense = Resolve-RepositoryPath (Join-Path $betterLyricsSourcePath 'LICENSE')
+    Assert-RegularFile $betterLyricsLicense 'The Barebones Better Lyrics GPL-3.0 license'
+    & git -C $betterLyricsSourcePath diff --quiet $betterLyricsCommit -- LICENSE
+    if ($LASTEXITCODE -ne 0) { throw 'The Better Lyrics LICENSE differs from the pinned commit.' }
     Assert-RegularFile $appSdkLicense 'The Windows App SDK license'
     Assert-RegularFile $dotnetLicense '.NET license'
     Assert-RegularFile $dotnetNotice '.NET third-party notices'
@@ -545,6 +576,8 @@ try {
 
     $ubolDestination = Join-Path $stageRoot ".tools/ubol/$ubolVersion"
     Copy-TreeContent $ubolSource $ubolDestination
+    $betterLyricsDestination = Join-Path $stageRoot ".tools/better-lyrics/$betterLyricsVersion"
+    Copy-TreeContent $betterLyricsRoot $betterLyricsDestination
 
     $installerDestination = Join-Path $stageRoot 'installer'
     [IO.Directory]::CreateDirectory($installerDestination) | Out-Null
@@ -559,6 +592,50 @@ try {
     Copy-Item -LiteralPath $webView2Notice -Destination (Join-Path $licensesDestination 'Microsoft-WebView2-SDK-NOTICE.txt') -Force
     Copy-Item -LiteralPath $nativuneLicense -Destination (Join-Path $licensesDestination 'Nativune-LICENSE.txt') -Force
     Copy-Item -LiteralPath $repositoryNotice -Destination (Join-Path $licensesDestination 'THIRD-PARTY-NOTICES.txt') -Force
+    Copy-Item -LiteralPath $betterLyricsLicense -Destination (Join-Path $licensesDestination 'BarebonesBetterLyrics-GPL-3.0.txt') -Force
+    $betterLyricsNotice = @(
+        "Barebones Better Lyrics $betterLyricsVersion",
+        '',
+        'Based on Better Lyrics 2.4.1 (https://github.com/better-lyrics/better-lyrics),',
+        'Copyright (c) Boidushya Bhattacharya and the Better Lyrics contributors.',
+        'Licensed under the GNU General Public License version 3; see',
+        'BarebonesBetterLyrics-GPL-3.0.txt.',
+        '',
+        'Modified by Hantu-Raya for Nativune, 2026: stripped to synced lyrics and translation.',
+        '',
+        'Corresponding source:',
+        "  https://github.com/Hantu-Raya/barebones-better-lyrics at commit $betterLyricsCommit",
+        "  and barebones-better-lyrics-$betterLyricsVersion-source.zip published beside each Nativune release.",
+        '',
+        'This extension is separate from Nativune, which is MIT-licensed. It runs only when',
+        'the user turns on Lyrics in Settings.',
+        '',
+        'Bundled dependencies (MIT License):',
+        '- @braccato/core, Copyright (c) 2026 Boidushya Bhattacharya',
+        '- @braccato/parsers, Copyright (c) 2026 Boidushya Bhattacharya',
+        '- fflate, Copyright (c) 2026 Arjun Barrett',
+        '',
+        'MIT License text for these dependencies:',
+        '',
+        'Permission is hereby granted, free of charge, to any person obtaining a copy',
+        'of this software and associated documentation files (the "Software"), to deal',
+        'in the Software without restriction, including without limitation the rights',
+        'to use, copy, modify, merge, publish, distribute, sublicense, and/or sell',
+        'copies of the Software, and to permit persons to whom the Software is',
+        'furnished to do so, subject to the following conditions:',
+        '',
+        'The above copyright notice and this permission notice shall be included in all',
+        'copies or substantial portions of the Software.',
+        '',
+        'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+        'IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,',
+        'FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE',
+        'AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER',
+        'LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,',
+        'OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE',
+        'SOFTWARE.'
+    ) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $licensesDestination 'BarebonesBetterLyrics-NOTICE.txt'), $betterLyricsNotice + "`n", [Text.UTF8Encoding]::new($false))
 
     $fixedWebViewPath = Join-Path $stageRoot '.tools/webview2'
     $runtimeMarkers = @(Get-ChildItem -LiteralPath $stageRoot -Recurse -File -Force | Where-Object { $_.Name -eq 'runtime-path.txt' })
@@ -579,6 +656,16 @@ try {
     New-AppendedSetup $stubPath $zipPath $setupPath
     Copy-Item -LiteralPath (Join-Path $stageRoot 'release-manifest.json') -Destination $manifestPath
 
+    # Corresponding source for the GPL-3.0 extension: a release asset, never part of the app payload.
+    $betterLyricsSourceZipName = "barebones-better-lyrics-$betterLyricsVersion-source.zip"
+    $betterLyricsSourceZipWork = Join-Path $workRoot $betterLyricsSourceZipName
+    $betterLyricsSourceZipPath = Join-Path $releaseRoot $betterLyricsSourceZipName
+    & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'setup-better-lyrics.ps1') -Source $betterLyricsSourcePath -SourceArchive $betterLyricsSourceZipWork
+    if ($LASTEXITCODE -ne 0) { throw 'The Barebones Better Lyrics source archive failed.' }
+    Assert-RegularFile $betterLyricsSourceZipWork 'The Barebones Better Lyrics source archive'
+    Remove-SafeOutputFile $betterLyricsSourceZipPath 'The Barebones Better Lyrics source archive output'
+    Copy-Item -LiteralPath $betterLyricsSourceZipWork -Destination $betterLyricsSourceZipPath
+
     $descriptor = [ordered]@{
         schemaVersion = 1
         product = 'Nativune'
@@ -590,7 +677,7 @@ try {
     }
     [IO.File]::WriteAllText($deltaDescriptorPath, ($descriptor | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 
-    $checksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json')
+    $checksumNames = @('Nativune-Setup.exe', 'Nativune-Setup.zip', 'delta-update.json', 'release-manifest.json', $betterLyricsSourceZipName)
     $checksumLines = foreach ($name in ($checksumNames | Sort-Object)) {
         $path = Join-Path $releaseRoot $name
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -602,6 +689,7 @@ try {
     Write-Host "Created $manifestPath"
     Write-Host "Created $deltaDescriptorPath"
     Write-Host "Created $checksumsPath"
+    Write-Host "Created $betterLyricsSourceZipPath"
 } finally {
     if (Test-Path -LiteralPath $workRoot) {
         [void](Resolve-RepositoryPath $workRoot)
