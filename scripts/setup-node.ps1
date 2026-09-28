@@ -31,21 +31,35 @@ function Assert-NoReparsePoints([string] $Path) {
     }
 }
 
+# Every write, create or delete goes through this first: the path must be inside the repository, and no existing
+# component from the repository root down to it (the leaf included, even a dangling link) may be a reparse point.
+# Same helper as scripts/setup-better-lyrics.ps1.
+function Assert-RepoWritePath([string] $Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+    if (-not $full.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing a write outside the repository: $full"
+    }
+    $current = $rootFull
+    foreach ($part in @($full.Substring($rootFull.Length) -split '[\\/]' | Where-Object { $_ -ne '' })) {
+        $current = Join-Path $current $part
+        try { $attributes = [IO.File]::GetAttributes($current) }
+        catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return }
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Refusing reparse point: $current" }
+    }
+}
+
 $oldTemp = $env:TEMP
 $oldTmp = $env:TMP
 try {
     $env:TEMP = Join-Path $root '.cache\tmp'
     $env:TMP = $env:TEMP
-    # Check every existing directory on the write paths before creating anything, so a junction at .cache or .tools
-    # (or below) cannot redirect downloads, temp files or later deletions outside the repository.
-    $writeDirs = @((Join-Path $root '.cache'), $env:TEMP, $cache, (Join-Path $root '.tools'), $toolsNode)
-    foreach ($p in $writeDirs) {
-        if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Refusing reparse point: $p"
-        }
-    }
+    # Check every write path (and each existing ancestor) before creating anything, so a junction at .cache or
+    # .tools, or a linked partial download, cannot redirect writes or deletions outside the repository.
+    foreach ($p in @($env:TEMP, $archive, "$archive.download", $target)) { Assert-RepoWritePath $p }
     [IO.Directory]::CreateDirectory($env:TEMP) | Out-Null
     [IO.Directory]::CreateDirectory($cache) | Out-Null
+    foreach ($p in @($env:TEMP, $archive, "$archive.download", $target)) { Assert-RepoWritePath $p }
 
     if (Test-Path -LiteralPath $target) {
         Assert-NoReparsePoints $target
@@ -59,6 +73,7 @@ try {
     }
 
     if (-not (Test-Path -LiteralPath $archive)) {
+        if (Test-Path -LiteralPath "$archive.download") { Remove-Item -LiteralPath "$archive.download" -Force }
         Invoke-WebRequest -Uri $url -OutFile "$archive.download"
         if ((Get-FileHash -LiteralPath "$archive.download" -Algorithm SHA256).Hash -ne $expectedHash) {
             Remove-Item -LiteralPath "$archive.download" -Force
@@ -71,6 +86,7 @@ try {
     }
 
     $staging = Join-Path $env:TEMP "node-$version-$([Guid]::NewGuid().ToString('N'))"
+    Assert-RepoWritePath $staging
     try {
         [IO.Compression.ZipFile]::ExtractToDirectory($archive, $staging)
         $inner = Join-Path $staging "node-v$version-win-x64"

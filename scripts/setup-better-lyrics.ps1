@@ -46,6 +46,24 @@ function Assert-NotReparse([string] $Path) {
     }
 }
 
+# Every write, create or delete goes through this first: the path must be inside the repository, and no existing
+# component from the repository root down to it (the leaf included, even a dangling link) may be a reparse point.
+# Checking only the leaf misses a junction at .cache or .tools, which CreateDirectory would silently follow.
+function Assert-RepoWritePath([string] $Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\', '/')
+    if (-not $full.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing a write outside the repository: $full"
+    }
+    $current = $rootFull
+    foreach ($part in @($full.Substring($rootFull.Length) -split '[\\/]' | Where-Object { $_ -ne '' })) {
+        $current = Join-Path $current $part
+        try { $attributes = [IO.File]::GetAttributes($current) }
+        catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return }
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Refusing reparse point: $current" }
+    }
+}
+
 function Relative-ForwardPath([string] $Root, [string] $Path) {
     return $Path.Substring($Root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar).Replace([IO.Path]::DirectorySeparatorChar, '/')
 }
@@ -99,8 +117,7 @@ if ($FromPinned -and -not [string]::Equals($sourcePath.TrimEnd('\', '/'), $pinne
 if ($FromPinned) {
     $sourceRepo = [string] $inputs.betterLyrics.sourceRepo
     if ($sourceRepo -notmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Unexpected betterLyrics.sourceRepo: $sourceRepo" }
-    Assert-NotReparse (Join-Path $root '.cache')
-    Assert-NotReparse (Split-Path -Parent $sourcePath)
+    Assert-RepoWritePath $sourcePath
     if (Test-Path -LiteralPath $sourcePath) {
         Assert-NoReparsePoints $sourcePath
         Remove-Item -LiteralPath $sourcePath -Recurse -Force
@@ -127,10 +144,10 @@ if ($SourceArchive -ne '') {
     & git -C $sourcePath cat-file -e "${pinnedCommit}:LICENSE"
     if ($LASTEXITCODE -ne 0) { throw 'The pinned commit has no LICENSE file.' }
     $archiveParent = Split-Path -Parent $archivePath
+    Assert-RepoWritePath $archivePath
     [IO.Directory]::CreateDirectory($archiveParent) | Out-Null
-    Assert-NotReparse $archiveParent
+    Assert-RepoWritePath $archivePath
     if (Test-Path -LiteralPath $archivePath) {
-        Assert-NotReparse $archivePath
         Remove-Item -LiteralPath $archivePath -Force
     }
     $prefix = "barebones-better-lyrics-$([string] $inputs.betterLyrics.version)/"
@@ -184,8 +201,9 @@ try {
     # Process-only: let npm lifecycle scripts resolve the pinned node.exe first.
     $env:PATH = "$nodeRoot;$($saved['PATH'])"
     foreach ($p in @($env:TEMP, $env:npm_config_cache)) {
+        Assert-RepoWritePath $p
         [IO.Directory]::CreateDirectory($p) | Out-Null
-        Assert-NotReparse $p
+        Assert-RepoWritePath $p
     }
 
     Set-Location -LiteralPath $sourcePath
@@ -214,7 +232,7 @@ try {
 
     if ($Verify) {
         $verifyRoot = Join-Path $root '.cache\build\better-lyrics-verify'
-        Assert-NotReparse (Join-Path $root '.cache\build')
+        Assert-RepoWritePath $verifyRoot
         if (Test-Path -LiteralPath $verifyRoot) {
             Assert-NoReparsePoints $verifyRoot
             Remove-Item -LiteralPath $verifyRoot -Recurse -Force
@@ -233,11 +251,12 @@ try {
     }
 
     $toolsRoot = Join-Path $root '.tools\better-lyrics'
-    Assert-NotReparse (Join-Path $root '.tools')
+    Assert-RepoWritePath $toolsRoot
     [IO.Directory]::CreateDirectory($toolsRoot) | Out-Null
-    Assert-NotReparse $toolsRoot
     $target = Join-Path $toolsRoot $version
     $fingerprintPath = Join-Path $toolsRoot "$version.fingerprint.json"
+    Assert-RepoWritePath $target
+    Assert-RepoWritePath $fingerprintPath
     $built = Get-TreeFingerprint $dist
 
     if (Test-Path -LiteralPath $target) {
