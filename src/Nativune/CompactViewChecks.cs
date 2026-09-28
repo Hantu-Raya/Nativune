@@ -952,7 +952,19 @@ internal static class CompactViewChecks
             && Math.Abs((command.Value ?? -1) - .65) < .001) == 1
             && !commands.Any(command => command.Command == "volume"),
             "Compact slider did not route normalized app output volume.");
-        await AwaitFlyoutClosedAsync(volumePopup, () => volumePopup.Hide(), "App output volume");
+        SetField(volumeSlider, "_dragging", true);
+        SetField(volumeSlider, "_liveSent", true);
+        SetField(volumeSlider, "_originalValue", 400d);
+        ((Slider)volumeSlider).Value = 100;
+        commands.Clear();
+        view.SetActive(false);
+        Require(commands.Count(command => command.Command == "output-volume") == 1
+            && commands.Any(command => command.Command == "output-volume"
+                && Math.Abs((command.Value ?? -1) - .4) < .001),
+            "Deactivating Compact mid-drag did not roll the app volume back.");
+        view.SetActive(true);
+        if (volumePopup.IsOpen)
+            await AwaitFlyoutClosedAsync(volumePopup, () => volumePopup.Hide(), "App output volume");
         view.SetPlayback(state);
         phase = "status-menu-and-cleanup";
         var inlineStatus = parts["InlineStatus"] as TextBlock

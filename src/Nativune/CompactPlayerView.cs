@@ -511,6 +511,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _active = active;
         if (!active)
         {
+            _volumeSlider.CancelDrag();
             _volumeCommitTimer.Stop();
             _volumeHoverCloseTimer.Stop();
             _volumeButtonPointerOver = false;
@@ -520,7 +521,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _restoreVolumeFocusOnClose = false;
             ClearPendingSeek();
             _pendingOutputVolume = null;
-            _volumeSlider.CancelDrag();
             _moreMenu.Hide();
             _playlistMenu.Hide();
             _volumePopup.Hide();

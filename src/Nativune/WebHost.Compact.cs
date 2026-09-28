@@ -339,13 +339,14 @@ public sealed partial class WebHostWindow
 
     private async Task ExecuteCompactCommandAsync(string command, double? value)
     {
-        if (!CompactActive) return;
+        // App output volume is host-owned audio, not page state; a drag rollback arrives while Compact is deactivating.
         if (command == "output-volume")
         {
             if (value is { } volume && double.IsFinite(volume) && volume >= 0 && volume <= 1)
                 SetOutputVolume(volume);
             return;
         }
+        if (!CompactActive) return;
         if (command == "output-mute")
         {
             ToggleOutputMute();
