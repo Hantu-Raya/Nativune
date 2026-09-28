@@ -6,7 +6,7 @@
 #   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -Verify
 #   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -AllowInstallScripts
 #   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -FromPinned
-#   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -SourceArchive artifacts/release/barebones-better-lyrics-2.4.1.1-source.zip
+#   pwsh -NoProfile -File scripts/setup-better-lyrics.ps1 -SourceArchive artifacts/release/barebones-better-lyrics-2.4.1.2-source.zip
 # -FromPinned deletes and freshly clones release-inputs.json betterLyrics.sourceRepo into .cache/better-lyrics/src,
 #   checks out betterLyrics.sourceCommit, verifies HEAD, then builds from that clone (it becomes the default -Source).
 # -SourceArchive writes `git archive --format=zip` of betterLyrics.sourceCommit from -Source (including

@@ -6,6 +6,7 @@ Only host names (with first-seen times and request-source counts for lyric hosts
 Writes <out>/hosts.json, <out>/summary.json and <out>/report.json (pass | fail | blocked per scenario, with evidence).
 """
 import json
+import math
 import os
 import re
 import statistics
@@ -65,18 +66,50 @@ def last_before(smp, t0):
     return next((s for t, s in reversed(smp) if t < t0), None)
 
 
+WORD_STATES = ("upcoming", "active", "past")
+
+
+# Amendment 28 Sep 2026 (word-state frontier): Core timing, seek recovery and pause stability judge the sung-word states
+# (data-word-state), not the blyrics--active scroll focus, which the engine sets ~1.18 s early by design. Same ±1 s tolerance.
+def frontier_ok(s):
+    words, t = s.get("timingWords"), s.get("t")
+    if not isinstance(words, list) or not words or not isinstance(t, (int, float)):
+        return False
+    lo, hi = -math.inf, math.inf
+    for w in words:
+        if not isinstance(w, list) or len(w) != 3:
+            return False
+        a, b, state = w
+        if (not isinstance(a, (int, float)) or not isinstance(b, (int, float)) or isinstance(a, bool) or isinstance(b, bool)
+                or not math.isfinite(a) or not math.isfinite(b) or b < a or state not in WORD_STATES):
+            return False
+        if state == "upcoming":
+            hi = min(hi, a)
+        elif state == "active":
+            lo, hi = max(lo, a), min(hi, b)
+        else:
+            lo = max(lo, b)
+    return lo < hi and lo <= t + 1 and hi > t - 1
+
+
+def word_states(s):
+    words = s.get("timingWords")
+    return json.dumps([w[2] if isinstance(w, list) and len(w) == 3 else None for w in words]) if isinstance(words, list) else None
+
+
 # Spike rules 3-5, unchanged thresholds.
 def timing(ev):
     samples = samples_of(ev)
     marks = [e["t"] for e in ev if e["event"] in MARK_EVENTS]
     changes = [samples[i][0] for i in range(1, len(samples)) if samples[i][1].get("v") != samples[i - 1][1].get("v")]
     quiet = lambda t: all(abs(t - m) > 2000 for m in marks + changes)
+    # Diagnostic only since the frontier amendment: scroll-focus line vs playback time.
     ok_line = lambda s: s.get("activeTime") is not None and s["activeTime"] <= s["t"] + 1 and (s.get("nextTime") is None or s["nextTime"] > s["t"] - 1)
     per = {}
     for t, s in samples:
         v = s.get("v")
         d = per.setdefault(v, {"samples": 0, "withLines": 0, "syncValues": Counter(), "eligible": 0, "pass": 0, "noActive": 0,
-                               "firstLinesAtMs": None})
+                               "scrollFocusPass": 0, "firstLinesAtMs": None})
         d["samples"] += 1
         d["syncValues"][str(s.get("sync"))] += 1
         if s.get("lines", 0) > 0:
@@ -90,23 +123,29 @@ def timing(ev):
             if s.get("activeTime") is None:
                 d["noActive"] += 1
             elif ok_line(s):
+                d["scrollFocusPass"] += 1
+            if frontier_ok(s):
                 d["pass"] += 1
     for d in per.values():
         d["syncValues"] = dict(d["syncValues"])
         d["passRate"] = round(d["pass"] / d["eligible"], 4) if d["eligible"] else None
+        d["scrollFocusPassRate"] = round(d["scrollFocusPass"] / d["eligible"], 4) if d["eligible"] else None
     seeks = []
     for e in ev:
         if e["event"] in ("lyrics-seekfwd", "lyrics-seekback"):
             win = [s for t, s in samples if e["t"] <= t <= e["t"] + 2000 and is_synced(s)]
-            seeks.append({"event": e["event"], "applicable": bool(win), "correctWithin2s": any(s.get("t") is not None and ok_line(s) for s in win)})
+            seeks.append({"event": e["event"], "applicable": bool(win), "correctWithin2s": any(s.get("t") is not None and frontier_ok(s) for s in win),
+                          "scrollFocusWithin2s": any(s.get("t") is not None and ok_line(s) for s in win)})
     pause = None
     p0, p1 = first(ev, "media-pause"), first(ev, "media-play")
     if p0 and p1:
         win = [s for t, s in samples if p0["t"] + 500 <= t <= p1["t"]]
         ts = [s["t"] for s in win if s.get("t") is not None]
+        states = {word_states(s) for s in win}
         pause = {"samples": len(win), "timeSpread": round(max(ts) - min(ts), 3) if ts else None,
+                 "wordStatesStable": len(states) <= 1 and None not in states,
                  "activeStable": len({json.dumps(s.get("active")) for s in win}) <= 1}
-        pause["pass"] = bool(win) and pause["timeSpread"] is not None and pause["timeSpread"] <= 0.3 and pause["activeStable"]
+        pause["pass"] = bool(win) and pause["timeSpread"] is not None and pause["timeSpread"] <= 0.3 and pause["wordStatesStable"]
     change = None
     nxt = first(ev, "lyrics-next")
     if nxt:

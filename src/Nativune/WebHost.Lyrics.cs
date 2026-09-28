@@ -140,13 +140,21 @@ public sealed partial class WebHostWindow
         try { window?.Close(); } catch (Exception) { }
     }
 
+    internal const string LyricsOffUnsavedMessage =
+        "Lyrics is off for this session, but the setting could not be saved. Lyrics may turn back on at next start.";
+
+    // Set by TurnLyricsOffAsync when this session is off but Off was not observably saved.
+    internal bool LyricsOffSaveFailed { get; private set; }
+
     // Runtime Lyrics off, shared by the Settings save path and the bench `lyrics-off-now` action.
     // Returns true when Lyrics is confirmed off; false when it could not be confirmed and the app is closing.
     private async Task<bool> TurnLyricsOffAsync()
     {
         // Persist Off first through the serialized save path, so a hang or crash below still starts with Lyrics off.
+        // The save result is awaited only after disable/reload, so a slow disk does not delay turning Lyrics off.
         _settings = _settings with { BetterLyricsEnabled = false };
-        CaptureSettings();
+        LyricsOffSaveFailed = false;
+        var saved = SaveSettingsConfirmedAsync();
         CloseLyricsSettingsWindow();
         CoreWebView2? core = null;
         var off = false;
@@ -177,6 +185,16 @@ public sealed partial class WebHostWindow
         if (off)
         {
             _lyricsState = BrowserLyricsState.Disabled;
+            // Off is only claimed to persist after an observable successful save. If the save failed, Lyrics is still
+            // off for this session (disabled/removed and reloaded above), but we say honestly that the next start may
+            // turn it back on instead of claiming "Settings saved". Chosen over closing the app: this session is
+            // verifiably off, and closing would not make the save succeed.
+            if (!await saved)
+            {
+                LyricsOffSaveFailed = true;
+                AppLog.Write("lyrics", "off-save-failed");
+                SetStatus(LyricsOffUnsavedMessage, isError: true);
+            }
             return true;
         }
         if (_closing || _disposed) return false;
@@ -186,9 +204,12 @@ public sealed partial class WebHostWindow
         // disposes the browser. The page can keep running for that bounded delay.
         AppLog.Write("lyrics", "off-unconfirmed closing");
         ExitCode = 1;
-        SetStatus("Lyrics could not be confirmed off. Nativune is closing; it starts with Lyrics off.", isError: true);
-        try { await _saveTask.WaitAsync(TimeSpan.FromSeconds(2)); }
+        var persisted = false;
+        try { persisted = await saved.WaitAsync(TimeSpan.FromSeconds(2)); }
         catch (Exception) { }
+        SetStatus(persisted
+            ? "Lyrics could not be confirmed off. Nativune is closing; it starts with Lyrics off."
+            : "Lyrics could not be confirmed off, and the setting could not be saved. Nativune is closing.", isError: true);
         _ = ShutdownAsync();
         return false;
     }

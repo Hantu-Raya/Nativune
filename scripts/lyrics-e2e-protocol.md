@@ -4,7 +4,7 @@ These thresholds are frozen before the first full run. They are never loosened a
 
 ## Setup
 - **Build:** `-p:PerfBenchHooks=true -o .cache/build/lyrics-e2e`. The seam (`BenchHooks.cs`, `WebHost.Bench.cs`, `WebHost.LyricsBench.cs`) is compiled only under `NATIVUNE_PERF_BENCH_HOOKS`.
-- **Extension:** production loads it from the root's `.tools/better-lyrics/2.4.1.1`, a copy of the published tree. Expected ID: `ogodmldcmpbfeekmejkeppchklblochl`.
+- **Extension:** production loads it from the root's `.tools/better-lyrics/2.4.1.2`, a copy of the published tree. Expected ID: `ogodmldcmpbfeekmejkeppchklblochl`.
 - **Roots:** each arm is a disposable root under `.cache/lyrics-e2e/runs/<stamp>/<root>`. It holds a copy of the signed-out profile template `.cache/perf/template/webview2`, pinned `.tools/ubol` and `.tools/better-lyrics`.
 - **Settings:** `data/settings.json` sets `BetterLyricsEnabled`, `BlockAds` per arm, `AutoCheckUpdates=false` and `SleepInBackground=false`. Lyrics are switched on or off only there.
 - **Playback:** muted, with autoplay. The start URI is the Radio of `dQw4w9WgXcQ` (`list=RDAMVMdQw4w9WgXcQ`).
@@ -48,7 +48,7 @@ These thresholds are frozen before the first full run. They are never loosened a
 ## Rules (spike rules, same numbers)
 1. **Load:** profile enumeration shows the extension `ogodmldcmpbfeekmejkeppchklblochl` enabled in R1 and R2. *Adapted:* production loads the extension, so the bench can no longer time the load against the first Music navigation.
 2. **Lyrics:** `.blyrics--line` elements appear within **20 s** of the Lyrics-tab click, with `data-sync` other than none/unsynced/plain.
-3. **Timing:** checked on each synced track, over eligible samples (playing, and more than 2 s away from any pause, seek, track change, nav or offset change). The active line time must be ≤ `currentTime` + 1 s, and the next line time > `currentTime` − 1 s, in at least **95 %** of samples. A missing active line counts as a fail. After each seek, the correct line must appear within **2 s**.
+3. **Timing:** checked on each synced track, over eligible samples (playing, and more than 2 s away from any pause, seek, track change, nav or offset change). The active line time must be ≤ `currentTime` + 1 s, and the next line time > `currentTime` − 1 s, in at least **95 %** of samples. A missing active line counts as a fail. After each seek, the correct line must appear within **2 s**. (Since the **Word-state frontier amendment**, "correct" is judged on sung-word state; same numbers.)
 4. **Pause:** while paused, `currentTime` stays within **0.3 s** and the active line does not change.
 5. **Track change:** the previous track's line hash is gone no more than **2 s** after the video id changes.
 6. **Options:** the options page loads in the host-owned window, and its capture is larger than 10 000 bytes. R1's storage writes succeed, and R2 reads the same nonces. All five contract controls are present.
@@ -116,6 +116,16 @@ Second amendment, after the first run on the fixed fork (`style-green/20260927T2
 - **Verdict precedence (all scenarios, stricter):** a check that was measured and failed now makes the scenario `fail` even if another check is unmeasurable; before, any unmeasurable check made it `blocked`.
   - **Why:** the RuntimeOff red run (`.cache/lyrics-e2e/runtimeoff-red/20260928T024742Z`, build without the reload) was reported `blocked` because it had no sample after a reload, yet it measured the failure directly.
   - **What it measured:** after the disable, `lrclib.net` and `api.betterlyrics.org` were each requested about once a second until the arm quit, about 65 s later: roughly 76 and 66 late requests.
+
+**Word-state frontier amendment (28 Sep 2026, fork 2.4.1.2, before its first full run).** Rule 3's timing, the seek-recovery check and the pause-stability check now judge sung-word state, not the scroll-focus line.
+- **Why:** `blyrics--active` marks the line the engine scrolls to, and the engine sets it about 1.18 s early by design: 0.54 s early scroll, plus a 0.5 s scroll offset, plus a 0.15 s richsync offset (unchanged in `@braccato/core` 1.12.x `updateWordStates`). Measured against the line time with ±1 s, earlier runs scored 93.9–97.7 % per track, so the old metric measured scroll lead, not whether the right words are sung.
+- **What is sampled:** `timingWords`, one `[start, end, data-word-state]` per sung word, with no text. It excludes highlight duplicates, translations and romanizations. A word's end is start + duration, or else the next word's start, or else the line end; line-synced lyrics use the engine's generated 50 ms word spans with the same rule. A non-instrumental line without word spans is recorded as `[null, null, null]`.
+- **Predicate:** start `lo = −∞`, `hi = +∞`. `upcoming` sets `hi = min(hi, start)`; `active` sets `lo = max(lo, start)` and `hi = min(hi, end)`; `past` sets `lo = max(lo, end)`. A sample passes only if `lo < hi`, `lo ≤ currentTime + 1 s` and `hi > currentTime − 1 s`. Empty or malformed rows, non-finite times, negative durations or unknown states fail the sample; failing samples stay in the denominator.
+- **Seek and pause:** a seek recovers when a synced sample within 2 s passes the predicate. Pause stability requires the word-state vector to be identical across the pause window (plus the unchanged 0.3 s time spread).
+- **Unchanged:** ±1 s, ≥ 95 % per track, 2 s seek, 0.3 s pause, eligibility and sample requirements. No 1.18 s correction or extra grace is applied. `blyrics--active` results are still reported as diagnostics only (`scrollFocusPassRate`, `scrollFocusWithin2s`, `activeStable`); scroll and visibility checks stay separate, because word-state attributes cannot prove pixels are visible.
+- **Post-data correction (first full run `20260928T033213Z`):** a line without word spans that has no letter or digit of its own counts as `[]` (no sung-word state), like an instrumental line. Such lines are blank or symbol-only spacer lines; translations and romanizations are ignored for this test. The sample records their count as `wordlessBlank`.
+  - **Why:** in that run, Core track 1 (`dQw4w9WgXcQ`, richsync) passed 100 %. Track 2 (`U4_X2p6rPJI`, line-synced) scored 0 %: every sample had exactly one `[null, null, null]` row, while its word frontier was correct (for example, `active` at 40.30–40.35 s with `t` = 40.26 s).
+  - **Unchanged:** a line that has letters but no word spans still fails the sample.
 
 **Not covered:**
 - signed-in or Premium playback;

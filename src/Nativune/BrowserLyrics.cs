@@ -27,7 +27,8 @@ internal sealed record BrowserLyricsState(BrowserLyricsStatus Status, string? Ve
 internal static class BrowserLyrics
 {
     internal const string ExtensionName = "Barebones Better Lyrics";
-    internal const string ExtensionVersion = "2.4.1.1";
+    internal const string ExtensionVersion = "2.4.1.2";
+    private const string InstalledVersionFile = "better-lyrics-extension.version";
     internal const string ExpectedExtensionId = "ogodmldcmpbfeekmejkeppchklblochl";
     private const long MaxManifestBytes = 256 * 1024;
     private static readonly TimeSpan ExtensionOperationTimeout = TimeSpan.FromSeconds(30);
@@ -96,6 +97,16 @@ internal static class BrowserLyrics
                 core.Profile.GetBrowserExtensionsAsync().AsTask(), ExtensionOperationTimeout, operationToken);
             var extension = installed.FirstOrDefault(candidate =>
                 string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal));
+            // Chromium keeps serving an unpacked extension from the directory it was added from, and the ID is the same
+            // across bundle versions. Without a record of this version, remove the old copy (losing its saved
+            // settings) and add the bundled directory. A failed removal throws into the fail-safe path below.
+            if (extension is not null && !string.Equals(ReadRecordedVersion(projectRoot), ExtensionVersion, StringComparison.Ordinal))
+            {
+                AppLog.Write("lyrics", "reinstall " + ExtensionVersion);
+                await BrowserPrivacy.AwaitBoundedAsync(extension.RemoveAsync().AsTask(), ExtensionOperationTimeout, operationToken);
+                operationToken.ThrowIfCancellationRequested();
+                extension = null;
+            }
             if (extension is null)
             {
                 extension = await BrowserPrivacy.AwaitBoundedAsync(
@@ -128,7 +139,7 @@ internal static class BrowserLyrics
             {
                 await TryDisableOrRemoveAsync(stale, operationToken);
             }
-
+            RecordInstalledVersion(projectRoot);
             AppLog.Write("lyrics", "installed " + ExtensionVersion);
             return BrowserLyricsState.Installed(ExtensionVersion);
         }
@@ -229,6 +240,55 @@ internal static class BrowserLyrics
         catch (Exception exception)
         {
             AppLog.Write("lyrics", "stale-cleanup-failed " + exception.GetType().Name);
+        }
+    }
+
+    private static string RecordedVersionPath(string root)
+        => Path.Combine(RootLocator.WebViewProfilePath(root), InstalledVersionFile);
+
+    // File content: the bundle version last added to this profile. Missing/unreadable means "unknown", which forces
+    // a reinstall; that is the safe direction.
+    private static string? ReadRecordedVersion(string root)
+    {
+        try
+        {
+            var path = RecordedVersionPath(root);
+            if (!File.Exists(path)) return null;
+            RootLocator.EnsureRegularFile(root, path);
+            if (new FileInfo(path).Length > 64) return null;
+            return File.ReadAllText(path).Trim();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static void RecordInstalledVersion(string root)
+    {
+        var path = RecordedVersionPath(root);
+        var temporary = path + ".tmp";
+        try
+        {
+            var directory = Path.GetDirectoryName(path)!;
+            RootLocator.EnsureNoReparsePath(root, directory);
+            Directory.CreateDirectory(directory);
+            RootLocator.EnsureNoReparsePath(root, temporary);
+            File.WriteAllText(temporary, ExtensionVersion);
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            // A missing record only costs one extra reinstall next launch.
+            AppLog.Write("lyrics", "record-failed " + exception.GetType().Name);
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 

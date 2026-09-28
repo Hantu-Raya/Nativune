@@ -33,7 +33,7 @@ uBlock Origin Lite 2026.907.2003
   unpacked extension source at .tools/ubol/2026.907.2003/LICENSE.txt
 - Bundled only in the project's configured privacy-only mode.
 
-Barebones Better Lyrics 2.4.1.1
+Barebones Better Lyrics 2.4.1.2
 - A modified version of Better Lyrics 2.4.1
   (https://github.com/better-lyrics/better-lyrics), stripped to synced lyrics
   and translation. Modified by Hantu-Raya for Nativune, 2026.

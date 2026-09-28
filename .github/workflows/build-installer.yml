@@ -265,7 +265,7 @@ jobs:
             foreach ($required in @(
               'app/Nativune.exe',
               '.tools/ubol/2026.907.2003/manifest.json',
-              '.tools/better-lyrics/2.4.1.1/manifest.json',
+              '.tools/better-lyrics/2.4.1.2/manifest.json',
               'licenses/BarebonesBetterLyrics-GPL-3.0.txt',
               'licenses/BarebonesBetterLyrics-NOTICE.txt',
               'installer/Nativune.Setup.exe',

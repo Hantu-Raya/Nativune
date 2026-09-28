@@ -20,12 +20,23 @@ public sealed partial class WebHostWindow
         "let h=0;const s=L.map(e=>e.dataset.content||e.textContent||'').join('\\n');for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;" +
         "const tab=[...document.querySelectorAll('tp-yt-paper-tab')].find(t=>/lyrics|liedtext|songtext/i.test(t.textContent));" +
         "const tr=c?c.querySelectorAll('[class*=\"translat\"]').length:0;" +
+        // Word-state frontier for the Core timing metric (protocol amendment 28 Sep 2026): [start,end,state] per sung
+        // word, no text. Highlight duplicates, translations and romanizations are excluded. A line without word spans
+        // yields [] when it is instrumental or has no letter or digit of its own (a blank or symbol-only spacer line,
+        // amendment 28 Sep 2026); otherwise [null,null,null], so the analyzer fails it instead of dropping it.
+        "const blank=l=>{const o=l.cloneNode(true);o.querySelectorAll('.blyrics--romanized,.blyrics--translated').forEach(x=>x.remove());return !/[\\p{L}\\p{N}]/u.test(o.textContent||'');};" +
+        "let wordlessBlank=0;" +
+        "const timingWords=[...(c?c.querySelectorAll('.blyrics--line'):[])].flatMap(l=>{" +
+        "const w=[...l.querySelectorAll('.blyrics--word:not(.blyrics-word-highlight)')].filter(e=>!e.closest('.blyrics--romanized,.blyrics--translated'));" +
+        "if(!w.length){if(l.dataset.instrumental==='true')return [];if(blank(l)){wordlessBlank++;return [];}return [[null,null,null]];}" +
+        "return w.map((e,i)=>{const a=Number(e.dataset.time),d=Number(e.dataset.duration);" +
+        "return [a,d>0?a+d:(i+1<w.length?Number(w[i+1].dataset.time):Number(l.dataset.time)+Number(l.dataset.duration)),e.dataset.wordState??null];});});" +
         "return {v:u.searchParams.get('v'),path:u.pathname,t:v&&Number.isFinite(v.currentTime)?v.currentTime:null,paused:v?v.paused:null," +
         "lines:L.length,active:act.slice(-4),activeTime:last>=0?tm(L[last]):null,nextTime:last>=0&&last+1<L.length?tm(L[last+1]):null," +
         "firstTime:L.length?tm(L[0]):null,sync:c?(c.dataset.sync||null):null,noLyrics:c?(c.dataset.noLyrics||null):null," +
         "container:!!c,blyrics:document.querySelectorAll('[class*=\"blyrics\"]').length,timed:L.filter(e=>tm(e)!==null).length,translated:tr>0,translatedCount:tr," +
         "hash:L.length?h:null,tab:tab?tab.getAttribute('aria-selected'):null,lang:document.documentElement.lang||null,doc:performance.timeOrigin," +
-        "ad:!!document.querySelector('ytmusic-player-bar[is-advertisement]')};})()";
+        "ad:!!document.querySelector('ytmusic-player-bar[is-advertisement]'),timingWords,wordlessBlank};})()";
 
     // The Lyrics tab is the third tab of the player page; the text match covers English and German UI.
     private const string LyricsBenchTabScript =

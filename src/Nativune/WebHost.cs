@@ -1488,6 +1488,8 @@ public sealed partial class WebHostWindow : Window
                 CaptureSettings();
                 if (startupError is not null)
                     SetStatus(startupError, isError: true);
+                else if (lyricsChanged && !_settings.BetterLyricsEnabled && LyricsOffSaveFailed)
+                    SetStatus(LyricsOffUnsavedMessage, isError: true);
                 else if (lyricsChanged && _settings.BetterLyricsEnabled)
                     SetStatus("Settings saved. Lyrics turn on after you restart Nativune.");
                 else if (restoreChanged)
@@ -1943,14 +1945,36 @@ public sealed partial class WebHostWindow : Window
         while (_pendingSettings is { } snapshot && !_saveCancellation.IsCancellationRequested)
         {
             _pendingSettings = null;
-            try { await Task.Run(() => ShellSettings.SaveAsync(_root, snapshot, _saveCancellation.Token)); }
-            catch (OperationCanceledException) { break; }
+            try
+            {
+                await Task.Run(() => ShellSettings.SaveAsync(_root, snapshot, _saveCancellation.Token));
+                _lastSaveSucceeded = true;
+            }
+            catch (OperationCanceledException) { _lastSaveSucceeded = false; break; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                _lastSaveSucceeded = false;
                 _settingsWarning = "Settings could not be saved. Changes apply to this session only.";
                 SetStatus(_settingsWarning, true);
             }
         }
+    }
+
+    private bool _lastSaveSucceeded;
+
+    // Captures and saves like CaptureSettings, then waits for the serialized writer to drain. True only when the last
+    // write (which includes the current _settings) succeeded and nothing is left unsaved. Other callers keep
+    // fire-and-forget CaptureSettings; the write itself is the same.
+    private async Task<bool> SaveSettingsConfirmedAsync()
+    {
+        CaptureSettings();
+        try
+        {
+            while (!_saveTask.IsCompleted) await _saveTask;
+            await _saveTask;
+        }
+        catch (Exception) { return false; }
+        return _lastSaveSucceeded && _pendingSettings is null;
     }
 
     // WM_POWERBROADCAST. Also driven by the Discord fixture's command-power-* hooks in test-hook builds.
