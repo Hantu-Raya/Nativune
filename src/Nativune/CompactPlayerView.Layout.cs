@@ -68,7 +68,9 @@ internal sealed record CompactLayoutPlan(
     LayoutRect Close,
     IReadOnlyList<LayoutRect> CaptionRegions,
     IReadOnlyList<CompactOverflowControl> Overflow,
-    LayoutRect? Update = null)
+    LayoutRect? Update = null,
+    LayoutRect? Pin = null,
+    LayoutRect? Donate = null)
 {
     /// <summary>Every pointer/keyboard target that is visible in this plan.</summary>
     public IEnumerable<(string Name, LayoutRect Rect)> InteractiveRects()
@@ -89,6 +91,8 @@ internal sealed record CompactLayoutPlan(
         yield return ("More", More);
         if (Minimize is { } minimize) yield return ("Minimize", minimize);
         yield return ("Close", Close);
+        if (Pin is { } pin) yield return ("Pin", pin);
+        if (Donate is { } donate) yield return ("Donate", donate);
     }
 }
 
@@ -118,6 +122,10 @@ public sealed partial class CompactPlayerView
     private const double UtilityGap = 4;
     private const double UtilityWidth = UtilityButton * 4 + UtilityGap * 3;
     private const double UtilityWidthWithoutMinimize = UtilityButton * 3 + UtilityGap * 2;
+    // Top-left Pin + Donate cluster plus the gap before the title.
+    private const double LeadingWidth = UtilityButton * 2 + UtilityGap + ItemGap;
+    // Standard/Wide show Pin/Donate only while the title keeps this much; below it a cut-off title reads worse.
+    private const double LeadingMinTitleWidth = 200;
     private const double TimerTextWidth = 148;
     private const double TitleHeight = 32;
     private const double StatusHeight = 16;
@@ -333,8 +341,18 @@ public sealed partial class CompactPlayerView
 
         if (artwork > 0)
             b.Artwork = new LayoutRect(ArtworkMargin, (b.Height - artwork) / 2, artwork, artwork);
-        var utilityLeft = b.PlaceUtility(Math.Max(4, top - 2));
-        b.PlaceTitleBlock(column, top, Math.Max(TitleMinWidth, utilityLeft - ItemGap - column));
+        var utilityTop = Math.Max(4, top - 2);
+        var utilityLeft = b.PlaceUtility(utilityTop);
+        // Pin/Donate take the title row's left end only while the title keeps room; More has both otherwise.
+        var titleLeft = column;
+        var captionLeft = 0d;
+        if (utilityLeft - ItemGap - column - LeadingWidth >= LeadingMinTitleWidth)
+        {
+            var leadingRight = b.PlaceLeading(column, utilityTop);
+            titleLeft = leadingRight + ItemGap;
+            captionLeft = leadingRight + ItemGap / 2;
+        }
+        b.PlaceTitleBlock(titleLeft, top, Math.Max(TitleMinWidth, utilityLeft - ItemGap - titleLeft));
         b.PlaceTransport(column, controlsTop);
         var available = b.Width - EdgeMargin - (column + TransportWidth);
         var extras = FitExtras(ref available);
@@ -347,7 +365,7 @@ public sealed partial class CompactPlayerView
         b.Progress = new LayoutRect(column, progressTop, b.Width - EdgeMargin - column, ProgressHeight);
         b.ProgressShowsTimes = b.Progress.Value.Width >= ProgressMinWidthWithTimes;
 
-        b.AddCaption(LayoutRect.FromEdges(0, 0, utilityLeft - ItemGap / 2, controlsTop));
+        b.AddCaption(LayoutRect.FromEdges(captionLeft, 0, utilityLeft - ItemGap / 2, controlsTop));
         if (artwork > 0)
             b.AddCaption(LayoutRect.FromEdges(0, 0, column, b.Height));
         var progressBottom = progressTop + ProgressHeight;
@@ -367,6 +385,7 @@ public sealed partial class CompactPlayerView
         var artworkTop = bandBottom + (titleTop - ItemGap - bandBottom - artwork) / 2;
         b.Artwork = new LayoutRect((b.Width - artwork) / 2, artworkTop, artwork, artwork);
         var utilityLeft = b.PlaceUtility(utilityTop);
+        var leadingRight = b.PlaceLeading(EdgeMargin, utilityTop);
         b.PlaceTitleBlock(EdgeMargin, titleTop, b.Width - EdgeMargin * 2);
         var available = b.Width - EdgeMargin * 2 - TransportWidth;
         var extras = FitExtras(ref available);
@@ -382,7 +401,7 @@ public sealed partial class CompactPlayerView
         b.Progress = new LayoutRect(EdgeMargin, progressTop, b.Width - EdgeMargin * 2, ProgressHeight);
         b.ProgressShowsTimes = b.Progress.Value.Width >= ProgressMinWidthWithTimes;
 
-        b.AddCaption(LayoutRect.FromEdges(0, 0, utilityLeft - ItemGap / 2, bandBottom));
+        b.AddCaption(LayoutRect.FromEdges(leadingRight + ItemGap / 2, 0, utilityLeft - ItemGap / 2, bandBottom));
         b.AddCaption(LayoutRect.FromEdges(0, bandBottom, b.Width, controlsTop - ItemGap / 2));
     }
 
@@ -594,6 +613,17 @@ public sealed partial class CompactPlayerView
             return x;
         }
 
+        public LayoutRect? Pin { get; set; }
+        public LayoutRect? Donate { get; set; }
+
+        /// <summary>Left-aligns Pin then Donate at x and returns the cluster's right edge.</summary>
+        public double PlaceLeading(double x, double top)
+        {
+            Pin = new LayoutRect(x, top, UtilityButton, UtilityButton);
+            Donate = new LayoutRect(x + UtilityButton + UtilityGap, top, UtilityButton, UtilityButton);
+            return Donate.Value.Right;
+        }
+
         public void AddCaption(LayoutRect rect)
         {
             if (!rect.IsEmpty) _caption.Add(rect);
@@ -615,7 +645,7 @@ public sealed partial class CompactPlayerView
                 Snap(ReturnToFull), Snap(More), Snap(Minimize), Snap(Close),
                 _caption.Select(Snap).ToArray(),
                 order.Where(_overflow.Contains).ToArray(),
-                Snap(Update));
+                Snap(Update), Snap(Pin), Snap(Donate));
         }
 
         private LayoutRect? Snap(LayoutRect? rect) => rect is { } value ? Snap(value) : null;
@@ -701,6 +731,8 @@ public sealed partial class CompactPlayerView
         ApplyBounds(_more, plan.More);
         ApplyBounds(_minimize, plan.Minimize);
         ApplyBounds(_close, plan.Close);
+        ApplyBounds(_pin, plan.Pin);
+        ApplyBounds(_donate, plan.Donate);
         RefreshOverflowMenuItems();
     }
 

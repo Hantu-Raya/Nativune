@@ -28,6 +28,7 @@
     "discord",
     "dislike",
     "dislike-filled",
+    "donate",
     "error",
     "exit-fullscreen",
     "forward",
@@ -121,6 +122,13 @@
       "width": 16,
       "height": 16,
       "sha256": "74ed362ed95552bbcc06b96080083b7a18dafbeb99b02517e347f1f54af39428"
+    },
+    {
+      "path": "16/donate.png",
+      "logicalName": "Nativune.NativeIcons.16.donate.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "c0a4e2a070720ba9baadf512cd23e31d8e81435f3bcfa30a8d5062eecdd8a6eb"
     },
     {
       "path": "16/error.png",
@@ -431,6 +439,13 @@
       "sha256": "15125b961d23fa3e757d239c95c10fb84e90da23369211d8ba0822187ff87cf1"
     },
     {
+      "path": "20/donate.png",
+      "logicalName": "Nativune.NativeIcons.20.donate.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "008c82fadf3f61080d2c490b6fae8f862f22876b8ded1db273327e6594b24d8a"
+    },
+    {
       "path": "20/error.png",
       "logicalName": "Nativune.NativeIcons.20.error.png",
       "width": 20,
@@ -737,6 +752,13 @@
       "width": 24,
       "height": 24,
       "sha256": "3322620fdec4ac9981fdaa0b902cb367fb10934a12c62f34d1e6bb7b706dde02"
+    },
+    {
+      "path": "24/donate.png",
+      "logicalName": "Nativune.NativeIcons.24.donate.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "a27df7b49e770eb971d7a52a025fbad3b32777b05aa5a0692951e4faf05fe358"
     },
     {
       "path": "24/error.png",
@@ -1047,6 +1069,13 @@
       "sha256": "4db7da70022a7e15cbc4007289036552dab485e326d5fc7d01951c9b19687e9c"
     },
     {
+      "path": "25/donate.png",
+      "logicalName": "Nativune.NativeIcons.25.donate.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "939526a6ff3ff880673d7543667eb542c48f7e8a98ab1836d45fdd2194b871eb"
+    },
+    {
       "path": "25/error.png",
       "logicalName": "Nativune.NativeIcons.25.error.png",
       "width": 25,
@@ -1353,6 +1382,13 @@
       "width": 30,
       "height": 30,
       "sha256": "1377a0dba75b686b0ad44724facf24a46509599245005d0147861c88abb86b07"
+    },
+    {
+      "path": "30/donate.png",
+      "logicalName": "Nativune.NativeIcons.30.donate.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "6927b6fc1d159ca3253dc0a6903365ce69bd65d8d6a2bc3296de750478f349a9"
     },
     {
       "path": "30/error.png",
@@ -1663,6 +1699,13 @@
       "sha256": "13c56d59fe8bcb8bf775134b9d3dfa6623dccfd4ebd4c0c143fd99f33e7b062a"
     },
     {
+      "path": "32/donate.png",
+      "logicalName": "Nativune.NativeIcons.32.donate.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "ff7091a7f1cafbb8fcadf4f4a21324ed1fad3c822d0b48dd07cc8d844eb555ca"
+    },
+    {
       "path": "32/error.png",
       "logicalName": "Nativune.NativeIcons.32.error.png",
       "width": 32,
@@ -1969,6 +2012,13 @@
       "width": 40,
       "height": 40,
       "sha256": "51f7dbb6e7b606e489e266a6b1205ce8662f9d6c85cfb64603309b5ad347de6e"
+    },
+    {
+      "path": "40/donate.png",
+      "logicalName": "Nativune.NativeIcons.40.donate.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "c92d878c502cc487af87b109acf15af4ba297877f2f1c29561119c0fce57e182"
     },
     {
       "path": "40/error.png",
@@ -2279,6 +2329,13 @@
       "sha256": "bd85f97156befdd2086db6366ec1be465f11cf8a791e1afb1c78da66cc498680"
     },
     {
+      "path": "48/donate.png",
+      "logicalName": "Nativune.NativeIcons.48.donate.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "865f3812b6f4dc12ecf5d46309f2b2aef9722155028fae726f1c7d4ac4b5ae58"
+    },
+    {
       "path": "48/error.png",
       "logicalName": "Nativune.NativeIcons.48.error.png",
       "width": 48,
@@ -2585,6 +2642,13 @@
       "width": 64,
       "height": 64,
       "sha256": "1ed762c1c61f33d178242be5a26ba4aa0b6a6285056bbbd167bc3338b12b25ec"
+    },
+    {
+      "path": "64/donate.png",
+      "logicalName": "Nativune.NativeIcons.64.donate.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "465755658573204c69232e0855a5082a46fd50d5a0750bb95e6312e4703980d5"
     },
     {
       "path": "64/error.png",

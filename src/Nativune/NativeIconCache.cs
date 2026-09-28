@@ -41,6 +41,7 @@ internal sealed class NativeIconCache : IDisposable
             ["compact"] = "compact",
             ["discord"] = "discord",
             ["dislike"] = "dislike",
+            ["donate"] = "donate",
             ["error"] = "error",
             ["exit-fullscreen"] = "exit-fullscreen",
             ["forward"] = "forward",

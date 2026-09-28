@@ -20,7 +20,7 @@ internal static class CompactViewChecks
     {
         "Artwork", "Title", "InlineStatus", "Elapsed", "Duration", "Seek", "SeekProgress",
         "Previous", "PlayPause", "Next", "Like", "Dislike", "Playlists", "Repeat", "Shuffle",
-        "Volume", "Timer", "ReturnToFull", "More", "Minimize", "Close"
+        "Volume", "Timer", "ReturnToFull", "More", "Minimize", "Close", "Pin", "Donate"
     };
     private const uint WmNcHitTest = 0x0084;
     private const int HtLeft = 10;
@@ -220,6 +220,14 @@ internal static class CompactViewChecks
                     $"Compact {label}: {control} is neither shown nor offered in the More menu (or both).");
             }
 
+            Require(plan.Pin.HasValue == plan.Donate.HasValue, $"Compact {label}: Pin and Donate must show together.");
+            Require(plan.SizeClass is not (CompactSizeClass.Strip or CompactSizeClass.Compact) || plan.Pin is null,
+                $"Compact {label}: Strip/Compact rows have no room for Pin/Donate.");
+            Require(plan.SizeClass != CompactSizeClass.Tall || plan.Pin is { X: 12 },
+                $"Compact {label}: Tall did not place Pin in the top-left corner.");
+            Require(plan.Pin is null || plan.Title is not { } titleRect || titleRect.Width >= 80,
+                $"Compact {label}: Pin/Donate squeezed the title below its minimum.");
+
             Require(plan.CaptionRegions.Count > 0 && plan.CaptionRegions.Any(region => region.Width >= 24 && region.Height >= 24),
                 $"Compact {label}: no usable drag region.");
             foreach (var region in plan.CaptionRegions)
@@ -257,7 +265,8 @@ internal static class CompactViewChecks
             && standard.Playlists is { X: 400 } && standard.Repeat is { X: 444 } && standard.Shuffle is { X: 488 }
             && standard.Volume is { X: 532 } && standard.Timer is { X: 588, Width: 148 } && standard.TimerShowsText
             && standard.Minimize is not null && standard.Overflow.Count == 0 && standard.ProgressShowsTimes
-            && standard.Previous.X == 152 && standard.Progress is { X: 152 },
+            && standard.Previous.X == 152 && standard.Progress is { X: 152 }
+            && standard.Pin is { X: 152 } && standard.Donate is { X: 192 } && standard.Title is { X: 236 },
             "The 800x180 Standard layout no longer shows the full control set at its agreed positions with the 112-DIP artwork column.");
         var narrow = CompactPlayerView.PlanLayout(360, 180, 1, statusVisible: false);
         Require(narrow.Like is not null && narrow.Volume is not null && narrow.Playlists is null && narrow.Repeat is null
@@ -406,6 +415,37 @@ internal static class CompactViewChecks
             "The Compact Update button did not take the full window's update name.");
         InvokeControl(updatePart, "update");
         Require(updateRequests == 1, "The Compact Update button did not request the update action.");
+
+        phase = "pin-and-donate";
+        var pinPart = FindPart(view, "Pin") as ToggleButton
+            ?? throw new SelfCheckException("Compact Pin was not a ToggleButton.");
+        var donatePart = FindPart(view, "Donate");
+        var topmostItem = ReadField(view, "_topmostItem") as ToggleMenuFlyoutItem
+            ?? throw new SelfCheckException("Compact More menu has no Keep window on top item.");
+        Require(pinPart.Visibility == Visibility.Visible && donatePart.Visibility == Visibility.Visible
+            && view.CurrentLayoutPlan is { Pin: { } pinRect, Donate: { } donateRect, Title: { } pinTitle }
+            && pinRect.Right <= donateRect.X && donateRect.Right <= pinTitle.X,
+            "Compact 800x180 did not show Pin then Donate left of the title.");
+        view.SetPreferences(reduceMotion: false, topmost: true);
+        Require(pinPart.IsChecked == true && topmostItem.IsChecked, "Compact Pin did not follow topmost on.");
+        view.SetPreferences(reduceMotion: false, topmost: false);
+        Require(pinPart.IsChecked == false && !topmostItem.IsChecked, "Compact Pin did not follow topmost off.");
+        var topmostRequests = 0;
+        var donateRequests = 0;
+        Action countTopmost = () => topmostRequests++;
+        Action countDonate = () => donateRequests++;
+        view.ToggleTopmostRequested += countTopmost;
+        view.DonateRequested += countDonate;
+        // Screen readers use the Toggle pattern; it must reach the same request as a click.
+        (FrameworkElementAutomationPeer.CreatePeerForElement(pinPart)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)!.Toggle();
+        Require(topmostRequests == 1 && pinPart.IsChecked == topmostItem.IsChecked,
+            "Compact Pin did not request topmost once, or its state disagreed with the More menu item.");
+        InvokeControl(donatePart, "Compact Donate");
+        Require(donateRequests == 1, "Compact Donate did not request the donation page.");
+        view.ToggleTopmostRequested -= countTopmost;
+        view.DonateRequested -= countDonate;
+        Require(ReadField(view, "_donateItem") is MenuFlyoutItem { Text: "Donate on Ko-fi" },
+            "Compact More menu has no Donate on Ko-fi item.");
         var initialUpdateIcon = ReadField(view, "_updateIconElement");
         view.SetUpdate("close", "Cancel the Nativune update download", "Cancel the update download.",
             enabled: true, available: true);

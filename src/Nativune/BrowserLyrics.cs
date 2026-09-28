@@ -21,7 +21,7 @@ internal sealed record BrowserLyricsState(BrowserLyricsStatus Status, string? Ve
     internal bool IsInstalled => Status == BrowserLyricsStatus.Installed;
 }
 
-// Barebones Better Lyrics (GPL-3.0 fork of Better Lyrics 2.4.1), opt-in and off by default.
+// Barebones Better Lyrics (GPL-3.0 fork of Better Lyrics 2.4.1), on by default (Settings > Lyrics turns it off).
 // A lyrics problem while Lyrics is on leaves Lyrics off and Music and uBO Lite continue. Whenever Lyrics is off, or
 // failed to start, a managed copy that cannot be confirmed disabled or removed throws, so Music is not loaded (fail
 // closed, like uBO Lite).

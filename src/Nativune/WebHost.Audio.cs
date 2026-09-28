@@ -145,14 +145,14 @@ public sealed partial class WebHostWindow
     private static bool IsOutputHoverPointer(PointerRoutedEventArgs e, UIElement element)
         => e.GetCurrentPoint(element).PointerDeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen;
 
-    private void ShowOutputFlyout(bool fromHover)
+    private void ShowOutputFlyout(bool fromHover, FrameworkElement? anchor = null)
     {
         if (_closing || _disposed || _compact || !OutputMuteButton.IsEnabled || !OutputVolumeSlider.IsEnabled)
             return;
         _outputFlyoutPinned = !fromHover;
         _outputFlyoutFocusSlider = !fromHover;
         OutputVolumeFlyout.ShowMode = fromHover ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
-        OutputVolumeFlyout.ShowAt(OutputMuteButton);
+        OutputVolumeFlyout.ShowAt(anchor ?? OutputMuteButton);
     }
 
     private void OpenOutputFlyoutForInteraction()

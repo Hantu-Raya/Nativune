@@ -100,6 +100,7 @@ public sealed partial class WebHostWindow
         CompactView.MinimizeRequested += () => _presenter?.Minimize();
         CompactView.CloseRequested += CloseOrHideToTray;
         CompactView.ToggleTopmostRequested += () => SetTopmost(!(_presenter?.IsAlwaysOnTop == true));
+        CompactView.DonateRequested += () => _ = OpenDonationPageAsync();
         CompactView.PlaylistsRequested += () => _ = ShowCompactPlaylistsAsync();
         CompactView.PlaylistChosen += (index, title) => _ = PlayCompactPlaylistAsync(index, title);
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);

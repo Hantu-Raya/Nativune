@@ -12,7 +12,7 @@ pwsh = shutil.which('pwsh')
 assert pwsh, 'PowerShell 7 is required for the raster wrapper'
 active_names = {
     'app-mark', 'back', 'cancel-timer', 'close', 'compact', 'discord', 'dislike',
-    'dislike-filled', 'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
+    'dislike-filled', 'donate', 'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
     'like', 'like-filled', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
     'play', 'playlist', 'previous', 'quit-timer', 'quit', 'repeat-one', 'repeat',
     'restore-section', 'restore-window', 'retry', 'settings', 'show',
@@ -21,7 +21,7 @@ active_names = {
 }
 mask_root = root / 'assets' / 'native-icons' / 'states' / 'mask'
 assert {path.stem for path in mask_root.glob('*.svg')} == active_names, (
-    'active mask registry must contain exactly the 44 canonical SVG names'
+    'active mask registry must contain exactly the 45 canonical SVG names'
 )
 discord_svg = (mask_root / 'discord.svg').read_text(encoding='utf-8')
 assert '<g transform="translate(2 4.4196) scale(0.157925)">' in discord_svg
