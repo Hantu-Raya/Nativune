@@ -99,9 +99,18 @@ internal static class BrowserLyrics
                 string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal));
             // Chromium keeps serving an unpacked extension from the directory it was added from, and the ID is the same
             // across bundle versions. Without a record of this version, remove the old copy (losing its saved
-            // settings) and add the bundled directory. A failed removal throws into the fail-safe path below.
+            // settings) and add the bundled directory. The new version is recorded *before* the removal: if the record
+            // cannot be persisted, removing now would repeat on every launch and wipe the settings each time, so the
+            // existing copy is kept (disabled) and the failure is surfaced instead. A failed removal throws into the
+            // fail-safe path below; a later add failure is retried next launch because no copy is then installed.
             if (extension is not null && !string.Equals(ReadRecordedVersion(projectRoot), ExtensionVersion, StringComparison.Ordinal))
             {
+                if (!RecordInstalledVersion(projectRoot))
+                {
+                    AppLog.Write("lyrics", "failed record");
+                    await TryDisableAfterFailureAsync(core, token);
+                    return BrowserLyricsState.Failed("record");
+                }
                 AppLog.Write("lyrics", "reinstall " + ExtensionVersion);
                 await BrowserPrivacy.AwaitBoundedAsync(extension.RemoveAsync().AsTask(), ExtensionOperationTimeout, operationToken);
                 operationToken.ThrowIfCancellationRequested();
@@ -250,8 +259,8 @@ internal static class BrowserLyrics
     private static string RecordedVersionPath(string root)
         => Path.Combine(RootLocator.WebViewProfilePath(root), InstalledVersionFile);
 
-    // File content: the bundle version last added to this profile. Missing/unreadable means "unknown", which forces
-    // a reinstall; that is the safe direction.
+    // File content: the bundle version last added to this profile. Missing/unreadable means "unknown": the caller
+    // reinstalls only after it has persisted the current version, so an unwritable record never loops.
     private static string? ReadRecordedVersion(string root)
     {
         try
@@ -269,7 +278,7 @@ internal static class BrowserLyrics
         }
     }
 
-    private static void RecordInstalledVersion(string root)
+    private static bool RecordInstalledVersion(string root)
     {
         var path = RecordedVersionPath(root);
         var temporary = path + ".tmp";
@@ -281,12 +290,13 @@ internal static class BrowserLyrics
             RootLocator.EnsureNoReparsePath(root, temporary);
             File.WriteAllText(temporary, ExtensionVersion);
             File.Move(temporary, path, overwrite: true);
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
             or InvalidOperationException)
         {
-            // A missing record only costs one extra reinstall next launch.
             AppLog.Write("lyrics", "record-failed " + exception.GetType().Name);
+            return false;
         }
         finally
         {

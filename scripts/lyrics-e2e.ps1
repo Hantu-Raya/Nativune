@@ -181,7 +181,11 @@ function Save-AppLog([string] $RunRoot, [string] $Arm) {
     }
 }
 
-$fingerprint = Get-ChildItem -LiteralPath $lyricsTools -Filter 'fingerprint.json' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+# The setup script writes .tools/better-lyrics/<version>.fingerprint.json; record exactly the bundled version's file.
+$bundleVersion = [string] ((Get-Content -LiteralPath (Join-Path $root 'release-inputs.json') -Raw | ConvertFrom-Json).betterLyrics.version)
+$fingerprintPath = Join-Path $lyricsTools "$bundleVersion.fingerprint.json"
+if (-not (Test-Path -LiteralPath $fingerprintPath -PathType Leaf)) { throw "Missing extension fingerprint: $fingerprintPath (run scripts/setup-better-lyrics.ps1)" }
+$fingerprint = Get-Item -LiteralPath $fingerprintPath
 $config = [ordered]@{
     stamp = $stamp; scenarios = @($selected); quick = [bool] $Quick; excluded = $excluded; uri = $uri; nonce = $nonce; coverageTracks = $coverageTracks
     noLyricsTrack = $NoLyricsTrack; expectedExtensionId = 'ogodmldcmpbfeekmejkeppchklblochl'
