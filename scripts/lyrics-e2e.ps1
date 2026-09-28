@@ -8,9 +8,11 @@ through that root's data/settings.json. Only processes started here are stopped.
 names by scripts/lyrics-e2e-analyze.py and then deleted with the roots (unless -KeepRaw).
 #>
 param(
-    [ValidateSet('All', 'Core', 'HostAllowlist', 'Idle', 'TranslateOn', 'TranslateOff', 'SettingsPersist', 'Off',
+    [ValidateSet('All', 'Core', 'HostAllowlist', 'Idle', 'TranslateOn', 'TranslateOff', 'SettingsPersist', 'Off', 'RuntimeOff',
         'NonEnglish', 'NoLyrics', 'Coverage', 'StyleIsolation', 'Smoke')]
     [string[]] $Scenario = @('All'),
+    # Quick preset (not full acceptance): Core, SettingsPersist, Off, RuntimeOff, StyleIsolation, NoLyrics. Overrides -Scenario.
+    [switch] $Quick,
     [string] $OutputDirectory = 'artifacts/lyrics-e2e',
     [string] $Exe = '.cache/build/lyrics-e2e/Nativune.exe',
     # A frozen public instrumental recording expected to have no synced lyrics.
@@ -31,8 +33,10 @@ foreach ($required in @($exePath, $lyricsTools, $template, $templateSettings, $u
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) { throw 'python is required for scripts/lyrics-e2e-analyze.py' }
 
-$all = @('Smoke', 'Core', 'HostAllowlist', 'Idle', 'TranslateOn', 'TranslateOff', 'SettingsPersist', 'Off', 'NonEnglish', 'NoLyrics', 'Coverage', 'StyleIsolation')
+$all = @('Smoke', 'Core', 'HostAllowlist', 'Idle', 'TranslateOn', 'TranslateOff', 'SettingsPersist', 'Off', 'RuntimeOff', 'NonEnglish', 'NoLyrics', 'Coverage', 'StyleIsolation')
+if ($Quick) { $Scenario = @('Core', 'SettingsPersist', 'Off', 'RuntimeOff', 'StyleIsolation', 'NoLyrics') }
 $selected = if ($Scenario -contains 'All') { $all | Where-Object { $_ -ne 'Smoke' } } else { $Scenario }
+$excluded = @($all | Where-Object { $_ -ne 'Smoke' -and $selected -notcontains $_ })
 $needs = @{}
 foreach ($s in $selected) {
     switch ($s) {
@@ -44,6 +48,7 @@ foreach ($s in $selected) {
         'TranslateOff' { $needs.Translate = $true; $needs.Control = $true }
         'SettingsPersist' { $needs.Settings = $true }
         'Off' { $needs.Off = $true }
+        'RuntimeOff' { $needs.RuntimeOff = $true }
         'NonEnglish' { $needs.NonEnglish = $true }
         'NoLyrics' { if ($NoLyricsTrack) { $needs.NoLyrics = $true } }
         'Coverage' { $needs.Coverage = $true }
@@ -62,12 +67,13 @@ $main = 'lyrics@8;pause@70;play@76;seekfwd@95;seekback@115;next@135'
 $coverageTracks = @('dQw4w9WgXcQ', 'JGwWNGJdvx8', 'kJQP7kiw5Fk', '9bZkp7q19f0', 'fJ9rUzIMcZQ', 'YQHsXMglC9A', 'gdZLi9oWNZg',
     'IHNzOHi8sJs', 'hT_nvWreIhg', '60ItHLz5WEA', 'RgKAFK5djSk', 'OPf0YbXqDm0', 'CevxZvSJLk8', 'pRpeEdMmmQ0', 'lp-EO5I60KA',
     'DyDfgMOUjCI', 'ZRtdQ81jPUQ', 'oiKj0Z_Xnjc', 'W3q8Od5qJio', 'hcm55lU9knw')
-$coverageSchedule = (@('lyrics@8') + @(for ($i = 0; $i -lt $coverageTracks.Count; $i++) { "nav:$($coverageTracks[$i])@$(10 + 30 * $i)" }) +
-    @("quit@$(10 + 30 * $coverageTracks.Count + 5)")) -join ';'
+# Adaptive Coverage (amendment 28 Sep 2026): one `coverage` action walks the frozen tracks (NATIVUNE_BENCH_COVERAGE_TRACKS), moving on
+# after fresh synced evidence for the new track or the full 20 s window; quit follows as soon as it returns.
+$coverageSchedule = 'lyrics@8;coverage@10;quit@11'
 
 # A step is one app launch; a chain is steps that share one root and run in order. Chains run in parallel (max 3).
-function Step([string] $Arm, [string] $Schedule, [bool] $Lyrics, [bool] $BlockAds, [int] $Timeout, [string] $Nonce = '', [string] $StartUri = '', [string] $Lang = '') {
-    [pscustomobject]@{ Arm = $Arm; Schedule = $Schedule; Lyrics = $Lyrics; BlockAds = $BlockAds; Timeout = $Timeout; Nonce = $Nonce; Lang = $Lang
+function Step([string] $Arm, [string] $Schedule, [bool] $Lyrics, [bool] $BlockAds, [int] $Timeout, [string] $Nonce = '', [string] $StartUri = '', [string] $Lang = '', [string] $Coverage = '') {
+    [pscustomobject]@{ Arm = $Arm; Schedule = $Schedule; Lyrics = $Lyrics; BlockAds = $BlockAds; Timeout = $Timeout; Nonce = $Nonce; Lang = $Lang; Coverage = $Coverage
         StartUri = if ($StartUri) { $StartUri } else { $uri } }
 }
 $chains = [Collections.Generic.List[object]]::new()
@@ -108,8 +114,12 @@ if ($needs.ContainsKey('NonEnglish')) {
 if ($needs.ContainsKey('NoLyrics')) {
     $chains.Add([pscustomobject]@{ Root = 'N'; Steps = @((Step 'N' "lyrics@8;nav:$NoLyricsTrack@10;quit@80" $true $false 240)) })
 }
+if ($needs.ContainsKey('RuntimeOff')) {
+    # Lyrics on; after synced lyrics, the production runtime-off path (Settings > Lyrics off) runs, then Next and >= 60 s of observation.
+    $chains.Add([pscustomobject]@{ Root = 'Q'; Steps = @((Step 'Q' 'lyrics@8;lyrics-off-now@30;next@40;lyrics@45;quit@105' $true $false 300)) })
+}
 if ($needs.ContainsKey('Coverage')) {
-    $chains.Add([pscustomobject]@{ Root = 'V'; Steps = @((Step 'V' $coverageSchedule $true $false (10 + 30 * $coverageTracks.Count + 200))) })
+    $chains.Add([pscustomobject]@{ Root = 'V'; Steps = @((Step 'V' $coverageSchedule $true $false (10 + 30 * $coverageTracks.Count + 200) -Coverage ($coverageTracks -join ','))) })
 }
 if ($needs.ContainsKey('Smoke')) {
     $chains.Add([pscustomobject]@{ Root = 'M'; Steps = @((Step 'M' 'lyrics@8;quit@60' $true $false 180)) })
@@ -159,6 +169,7 @@ function Start-Step([string] $RunRoot, $Step) {
     $psi.Environment['NATIVUNE_BENCH_SCHEDULE'] = $Step.Schedule
     $psi.Environment['NATIVUNE_BENCH_EXTRA_ARGS'] = "--log-net-log=$(Join-Path $runsBase "$($Step.Arm).netlog.json") --net-log-capture-mode=Default" + $(if ($Step.Lang) { " --lang=$($Step.Lang)" } else { '' })
     if ($Step.Nonce) { $psi.Environment['NATIVUNE_BENCH_LYRICS_NONCE'] = $Step.Nonce }
+    if ($Step.Coverage) { $psi.Environment['NATIVUNE_BENCH_COVERAGE_TRACKS'] = $Step.Coverage }
     [Diagnostics.Process]::Start($psi)
 }
 function Save-AppLog([string] $RunRoot, [string] $Arm) {
@@ -172,19 +183,53 @@ function Save-AppLog([string] $RunRoot, [string] $Arm) {
 
 $fingerprint = Get-ChildItem -LiteralPath $lyricsTools -Filter 'fingerprint.json' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
 $config = [ordered]@{
-    stamp = $stamp; scenarios = @($selected); uri = $uri; nonce = $nonce; coverageTracks = $coverageTracks
+    stamp = $stamp; scenarios = @($selected); quick = [bool] $Quick; excluded = $excluded; uri = $uri; nonce = $nonce; coverageTracks = $coverageTracks
     noLyricsTrack = $NoLyricsTrack; expectedExtensionId = 'ogodmldcmpbfeekmejkeppchklblochl'
     fingerprint = if ($fingerprint) { Get-Content -LiteralPath $fingerprint.FullName -Raw | ConvertFrom-Json } else { $null }
     arms = @($chains | ForEach-Object { $_.Steps } | ForEach-Object { [ordered]@{ arm = $_.Arm; schedule = $_.Schedule; lyrics = $_.Lyrics; blockAds = $_.BlockAds; startUri = $_.StartUri } })
-    command = "pwsh -NoProfile -File scripts/lyrics-e2e.ps1 -Scenario $($Scenario -join ',') -OutputDirectory $OutputDirectory"
+    command = "pwsh -NoProfile -File scripts/lyrics-e2e.ps1 $(if ($Quick) { '-Quick' } else { "-Scenario $($Scenario -join ',')" }) -OutputDirectory $OutputDirectory"
 }
 $config | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $out 'config.json') -Encoding utf8
 
-# Chain scheduler: at most 3 app instances at once; window slots keep them apart on screen.
+# Chain scheduler: at most 3 app instances at once; window slots keep them apart on screen. Order (amendment 28 Sep 2026):
+# the StyleIsolation arms first and together (S/C2/C3 must run simultaneously), then the longest chains (I, then V), then the
+# rest longest-first by scheduled seconds. Steps of one chain (same root) still run in order.
+function Chain-Seconds($Chain) {
+    ($Chain.Steps | ForEach-Object { (@([regex]::Matches($_.Schedule, '@(\d+(?:\.\d+)?)') | ForEach-Object { [double] $_.Groups[1].Value }) + 0 | Measure-Object -Maximum).Maximum + 15 } | Measure-Object -Sum).Sum
+}
+function Chain-Rank($Chain) {
+    switch ($Chain.Root) { 'SS' { 0 } 'SC2' { 1 } 'SC3' { 2 } 'I' { 3 } 'V' { 4 } default { 5 } }
+}
+$ordered = @($chains | ForEach-Object -Begin { $n = 0 } -Process { [pscustomobject]@{ Chain = $_; Rank = (Chain-Rank $_); Seconds = (Chain-Seconds $_); Order = $n++ } } |
+    Sort-Object -Property Rank, @{ Expression = 'Seconds'; Descending = $true }, Order | ForEach-Object { $_.Chain })
 $pending = [Collections.Generic.Queue[object]]::new()
-foreach ($c in $chains) { $pending.Enqueue([pscustomobject]@{ Chain = $c; Index = 0; Root = $null; Proc = $null; Deadline = $null; Slot = -1 }) }
+foreach ($c in $ordered) { $pending.Enqueue([pscustomobject]@{ Chain = $c; Index = 0; Root = $null; Proc = $null; Deadline = $null; Slot = -1 }) }
+Write-Host ('Chain order: ' + (($ordered | ForEach-Object { $_.Root }) -join ', '))
 $running = [Collections.Generic.List[object]]::new()
 $slots = @($false, $false, $false)
+
+# Bounded launch readiness (replaces a fixed 2 s sleep): the arm's bench log has its first line and the window exists, or 5 s.
+function Wait-Ready($Proc, [string] $BenchLog) {
+    $until = [DateTime]::UtcNow.AddSeconds(5)
+    while ([DateTime]::UtcNow -lt $until -and -not $Proc.HasExited) {
+        $Proc.Refresh()
+        if ($Proc.MainWindowHandle -ne 0 -and (Test-Path -LiteralPath $BenchLog) -and (Get-Item -LiteralPath $BenchLog).Length -gt 0) { return }
+        Start-Sleep -Milliseconds 100
+    }
+}
+# After the app exits (replaces a fixed 5 s sleep): wait, bounded to 15 s, until no WebView2 process uses this root, so the
+# next step on the same root never meets a held profile. Nothing is killed here; a leftover is reported.
+function Wait-RootReleased([string] $RunRoot, [string] $Arm) {
+    $until = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $left = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($RunRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+        if ($left.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $until)
+    Write-Warning "${Arm}: $($left.Count) WebView2 process(es) still use its root after 15 s."
+}
+
 while ($pending.Count -gt 0 -or $running.Count -gt 0) {
     while ($running.Count -lt 3 -and $pending.Count -gt 0) {
         $job = $pending.Dequeue()
@@ -200,7 +245,7 @@ while ($pending.Count -gt 0 -or $running.Count -gt 0) {
             $job.Proc = Start-Step $job.Root $step
             $job.Deadline = [DateTime]::UtcNow.AddSeconds($step.Timeout)
             Write-Host "Started $($step.Arm) (PID $($job.Proc.Id))"
-            Start-Sleep -Seconds 2
+            Wait-Ready $job.Proc (Join-Path $out "$($step.Arm).bench.jsonl")
             continue
         }
         if (-not $job.Proc.HasExited -and [DateTime]::UtcNow -lt $job.Deadline) { continue }
@@ -210,14 +255,16 @@ while ($pending.Count -gt 0 -or $running.Count -gt 0) {
             & taskkill /PID $job.Proc.Id /T /F | Out-Null
             $global:LASTEXITCODE = 0
             Add-Content -LiteralPath (Join-Path $out "$($step.Arm).bench.jsonl") -Value '{"t":0,"event":"harness-killed"}' -Encoding utf8
+            $job.Proc.WaitForExit(10000) | Out-Null
         }
-        Start-Sleep -Seconds 5
+        Wait-RootReleased $job.Root $step.Arm
         Save-AppLog $job.Root $step.Arm
         $job.Index++
         $job.Proc = $null
         if ($job.Index -ge $job.Chain.Steps.Count) { $running.Remove($job) | Out-Null; $slots[$job.Slot] = $false }
     }
-    Start-Sleep -Seconds 2
+    # Poll exits (replaces a fixed 2 s sleep).
+    Start-Sleep -Milliseconds 250
 }
 
 & $python.Source (Join-Path $PSScriptRoot 'lyrics-e2e-analyze.py') $out $runsBase
@@ -234,6 +281,10 @@ if ($analyzerExit -ne 0 -or -not (Test-Path -LiteralPath $reportPath)) {
 $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
 $bad = @($report.scenarios.PSObject.Properties | Where-Object { $_.Value.status -ne 'pass' })
 foreach ($p in $report.scenarios.PSObject.Properties) { Write-Host ('{0,-16} {1}' -f $p.Name, $p.Value.status) }
+if ($Quick) {
+    Write-Host 'QUICK (not full acceptance)'
+    Write-Host ('Excluded: ' + ($excluded -join ', '))
+}
 Write-Host "Report: $reportPath"
 if ($bad.Count -gt 0) { exit 1 }
 exit 0

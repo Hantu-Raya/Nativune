@@ -141,8 +141,9 @@ internal static class BrowserLyrics
         }
     }
 
-    // Disables the expected extension only; uBO Lite and anything else is left alone. Never throws.
-    internal static async Task DisableNowAsync(CoreWebView2 core, CancellationToken token)
+    // Runtime off: disables the expected extension only (uBO Lite and anything else is left alone); if that cannot be
+    // confirmed, removes it (same sequence as startup). Returns true only when no enabled copy is confirmed to remain.
+    internal static async Task<bool> DisableNowAsync(CoreWebView2 core, CancellationToken token)
     {
         try
         {
@@ -150,10 +151,22 @@ internal static class BrowserLyrics
             cancellation.CancelAfter(ConfigurationTimeout);
             await DisableExpectedAsync(core, cancellation.Token);
             AppLog.Write("lyrics", "disabled");
+            return true;
         }
         catch (Exception exception)
         {
             AppLog.Write("lyrics", "disable-failed " + exception.GetType().Name);
+        }
+        try
+        {
+            await RemoveExpectedAsync(core, token);
+            AppLog.Write("lyrics", "removed");
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AppLog.Write("lyrics", "remove-failed " + exception.GetType().Name);
+            return false;
         }
     }
 

@@ -24,7 +24,7 @@ public sealed partial class WebHostWindow
         "lines:L.length,active:act.slice(-4),activeTime:last>=0?tm(L[last]):null,nextTime:last>=0&&last+1<L.length?tm(L[last+1]):null," +
         "firstTime:L.length?tm(L[0]):null,sync:c?(c.dataset.sync||null):null,noLyrics:c?(c.dataset.noLyrics||null):null," +
         "container:!!c,blyrics:document.querySelectorAll('[class*=\"blyrics\"]').length,timed:L.filter(e=>tm(e)!==null).length,translated:tr>0,translatedCount:tr," +
-        "hash:L.length?h:null,tab:tab?tab.getAttribute('aria-selected'):null,lang:document.documentElement.lang||null," +
+        "hash:L.length?h:null,tab:tab?tab.getAttribute('aria-selected'):null,lang:document.documentElement.lang||null,doc:performance.timeOrigin," +
         "ad:!!document.querySelector('ytmusic-player-bar[is-advertisement]')};})()";
 
     // The Lyrics tab is the third tab of the player page; the text match covers English and German UI.
@@ -73,6 +73,8 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _lyricsBenchTimer;
     private bool _lyricsBenchPending;
     private CoreWebView2? _lyricsBenchObservedOptions;
+    private JsonElement? _lyricsBenchLastSample;
+    private long _lyricsBenchLastSampleAt;
 
     // Extra observers on the Music view; production handlers still run and decide.
     private void LyricsBenchObserveMainView(CoreWebView2 core)
@@ -82,6 +84,7 @@ public sealed partial class WebHostWindow
         core.DownloadStarting += (_, a) => BenchHooks.Event("lyrics-main-download", ("host", LyricsBenchHost(a.DownloadOperation.Uri)));
         core.LaunchingExternalUriScheme += (_, a) => BenchHooks.Event("lyrics-main-external", ("scheme", LyricsBenchScheme(a.Uri)));
         core.ProcessFailed += (_, a) => BenchHooks.Event("lyrics-process-failed", ("kind", a.ProcessFailedKind.ToString()), ("view", "main"));
+        core.ContentLoading += (_, a) => BenchHooks.Event("lyrics-main-content", ("errorPage", a.IsErrorPage));
         // The harness's full `nav` while playing raises YouTube Music's leave-page prompt, which blocks the page. Runs before the first
         // navigation (settings apply from the next one): the bench logs every dialog and accepts only the leave-page prompt.
         core.Settings.AreDefaultScriptDialogsEnabled = false;
@@ -138,14 +141,18 @@ public sealed partial class WebHostWindow
                     "(()=>{const b=document.querySelector('ytmusic-player-bar .next-button');if(!b)return 'no-button';b.click();return 'ok';})()")));
                 break;
             case "nav" when argument is { Length: 11 }:
-                BenchHooks.Event("lyrics-nav", ("v", argument));
-                core.Navigate("https://music.youtube.com/watch?v=" + Uri.EscapeDataString(argument));
-                await Task.Delay(TimeSpan.FromSeconds(8));
-                if (_closing || _disposed) return;
-                // Titles name the song: only a hash and whether it is still the generic title are logged.
-                BenchHooks.Event("lyrics-nav-title", ("v", argument), ("r", await LyricsBenchEvaluateAsync(core, LyricsBenchTitleScript)));
-                BenchHooks.Event("lyrics-tab", ("result", await core.ExecuteScriptAsync(LyricsBenchTabScript)), ("v", argument));
-                StartLyricsBenchSampler();
+                await LyricsBenchNavAsync(core, argument);
+                break;
+            case "coverage":
+                await LyricsBenchCoverageAsync(core);
+                break;
+            case "lyrics-off-now":
+                // The production runtime-off path (Settings > Lyrics off); RuntimeOff scenario.
+                BenchHooks.Event("lyrics-off-now-start");
+                var off = await TurnLyricsOffAsync();
+                BenchHooks.Event("lyrics-off-now", ("ok", off), ("status", LyricsStatusText));
+                if (off && _browserHost is { } afterOff)
+                    await LyricsBenchLogExtensionsAsync(afterOff.Core, "lyrics-extensions-after-off");
                 break;
             case "capture" when argument is not null:
                 await LyricsBenchCaptureAsync(core, argument, "main");
@@ -202,22 +209,76 @@ public sealed partial class WebHostWindow
         try
         {
             var raw = await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(LyricsBenchSampleScript).AsTask(), 3);
-            BenchHooks.Event("lyrics-sample", ("s", JsonDocument.Parse(raw).RootElement.Clone()));
+            var sample = JsonDocument.Parse(raw).RootElement.Clone();
+            _lyricsBenchLastSample = sample;
+            _lyricsBenchLastSampleAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            BenchHooks.Event("lyrics-sample", ("s", sample));
         }
         catch (Exception ex) { BenchHooks.Event("lyrics-sample-error", ("error", ex.GetType().Name)); }
         finally { _lyricsBenchPending = false; }
     }
 
     // Enumerates installed profile extensions (ids and enabled state only) for the Off and load rules.
-    private static async Task LyricsBenchLogExtensionsAsync(CoreWebView2 core)
+    private static async Task LyricsBenchLogExtensionsAsync(CoreWebView2 core, string eventName = "lyrics-extensions")
     {
         try
         {
             var list = await core.Profile.GetBrowserExtensionsAsync();
             var items = list.Select(e => new Dictionary<string, object?> { ["id"] = e.Id, ["enabled"] = e.IsEnabled }).ToList();
-            BenchHooks.Event("lyrics-extensions", ("items", items));
+            BenchHooks.Event(eventName, ("items", items));
         }
-        catch (Exception ex) { BenchHooks.Event("lyrics-extensions-error", ("error", ex.GetType().Name)); }
+        catch (Exception ex) { BenchHooks.Event(eventName + "-error", ("error", ex.GetType().Name)); }
+    }
+
+    private async Task<bool> LyricsBenchNavAsync(CoreWebView2 core, string videoId)
+    {
+        BenchHooks.Event("lyrics-nav", ("v", videoId));
+        core.Navigate("https://music.youtube.com/watch?v=" + Uri.EscapeDataString(videoId));
+        await Task.Delay(TimeSpan.FromSeconds(8));
+        if (_closing || _disposed) return false;
+        // Titles name the song: only a hash and whether it is still the generic title are logged.
+        BenchHooks.Event("lyrics-nav-title", ("v", videoId), ("r", await LyricsBenchEvaluateAsync(core, LyricsBenchTitleScript)));
+        BenchHooks.Event("lyrics-tab", ("result", await core.ExecuteScriptAsync(LyricsBenchTabScript)), ("v", videoId));
+        StartLyricsBenchSampler();
+        return true;
+    }
+
+    // Adaptive Coverage (protocol amendment 28 Sep 2026): navigates the frozen tracks in order and moves on as soon as a
+    // synced sample for the NEW track carries fresh evidence (same video id, and a lyric hash different from the previous
+    // track's or a new document); otherwise it waits the full 20 s window after the nav.
+    private async Task LyricsBenchCoverageAsync(CoreWebView2 core)
+    {
+        foreach (var videoId in BenchHooks.CoverageTracks)
+        {
+            if (_closing || _disposed) return;
+            var previous = _lyricsBenchLastSample;
+            var previousHash = previous is { } p && p.TryGetProperty("hash", out var ph) ? ph.ToString() : null;
+            var previousDoc = previous is { } q && q.TryGetProperty("doc", out var pd) ? pd.ToString() : null;
+            var navAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (!await LyricsBenchNavAsync(core, videoId)) return;
+            var reason = "cap";
+            while (System.Diagnostics.Stopwatch.GetElapsedTime(navAt) < TimeSpan.FromSeconds(20.5))
+            {
+                if (_closing || _disposed) return;
+                if (_lyricsBenchLastSampleAt > navAt && _lyricsBenchLastSample is { } s && LyricsBenchFreshSynced(s, videoId, previousHash, previousDoc))
+                {
+                    reason = "fresh";
+                    break;
+                }
+                await Task.Delay(250);
+            }
+            BenchHooks.Event("lyrics-coverage-advance", ("v", videoId), ("reason", reason),
+                ("afterMs", Math.Round(System.Diagnostics.Stopwatch.GetElapsedTime(navAt).TotalMilliseconds)));
+        }
+    }
+
+    private static bool LyricsBenchFreshSynced(JsonElement s, string videoId, string? previousHash, string? previousDoc)
+    {
+        string? Text(string name) => s.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? value.ToString() : null;
+        var sync = Text("sync");
+        var lines = s.TryGetProperty("lines", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt32() : 0;
+        if (Text("v") != videoId || lines <= 0 || sync is null or "" or "none" or "unsynced" or "plain" or "false") return false;
+        return previousHash is null || Text("hash") != previousHash || (Text("doc") is { } doc && doc != previousDoc);
     }
 
     private static async Task LyricsBenchCaptureAsync(CoreWebView2 core, string name, string view)

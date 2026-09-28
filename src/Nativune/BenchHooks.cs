@@ -21,6 +21,10 @@ internal static class BenchHooks
     private static readonly string[] EnableFeatureOverrides = ParseFeatureList(ReadValue("NATIVUNE_BENCH_ENABLE_FEATURES"));
     private static readonly string[] DisableFeatureOverrides = ParseFeatureList(ReadValue("NATIVUNE_BENCH_DISABLE_FEATURES"));
     private static readonly IReadOnlyList<BenchScheduledAction> ScheduledActions = ParseSchedule(ReadValue("NATIVUNE_BENCH_SCHEDULE"));
+    // Lyrics E2E Coverage: 11-character video ids for the adaptive `coverage` action (comma-separated).
+    private static readonly string[] CoverageTrackList = (ReadValue("NATIVUNE_BENCH_COVERAGE_TRACKS") ?? string.Empty)
+        .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+        .Where(id => id.Length == 11 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')).ToArray();
     private static readonly int StatsSecondsValue = int.TryParse(ReadValue("NATIVUNE_BENCH_STATS_SECONDS"), NumberStyles.Integer,
         CultureInfo.InvariantCulture, out var statsSeconds) && statsSeconds is > 0 and <= 3600 ? statsSeconds : 0;
 
@@ -36,6 +40,7 @@ internal static class BenchHooks
     internal static bool MuteOutput => Enabled && Mute;
     internal static Uri? StartUri => Enabled ? ValidStartUri : null;
     internal static IReadOnlyList<BenchScheduledAction> Schedule => Enabled ? ScheduledActions : Array.Empty<BenchScheduledAction>();
+    internal static IReadOnlyList<string> CoverageTracks => Enabled ? CoverageTrackList : Array.Empty<string>();
     internal static int StatsSeconds => Enabled ? StatsSecondsValue : 0;
     internal static string? LogDirectory => Enabled ? Path.GetDirectoryName(LogPath!) : null;
 
@@ -129,7 +134,7 @@ internal static class BenchHooks
             if (!validArgument
                 || verb is not ("compact" or "full" or "hide" or "show" or "quit" or "pause" or "play"
                     or "lyrics" or "seekfwd" or "seekback" or "next" or "options" or "translate-on" or "translate-off" or "offset-set"
-                    or "nav" or "capture" or "capture-options" or "style-probe" or "home")
+                    or "nav" or "capture" or "capture-options" or "style-probe" or "home" or "lyrics-off-now" or "coverage")
                 || !double.TryParse(entry[(separator + 1)..].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
                 || !double.IsFinite(seconds) || seconds < 0)
                 continue;

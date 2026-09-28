@@ -36,9 +36,9 @@
     "upstream": "https://github.com/better-lyrics/better-lyrics",
     "upstreamTag": "v2.4.1",
     "upstreamCommit": "6e886ef7b19ce20704ebdb36eea2b8891cadff83",
-    "sourceCommit": "bf8fef76aae97e0662788c32e40a4ec225f0de80",
-    "treeSha256": "d6df974f18e08f39b6e68012bda3fe8437c1c51b5d68f02e4b6c494d95bb5a6e",
+    "sourceCommit": "48df330d3a34540f7d6c04f9a45d08bf5e4f7707",
+    "treeSha256": "b554fce584b4da42bf1c08bfeabc589ee8df43fed7009063efea6ff14bdf0906",
     "fileCount": 43,
-    "totalBytes": 429886
+    "totalBytes": 410142
   }
 }

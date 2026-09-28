@@ -1454,9 +1454,10 @@ public sealed partial class WebHostWindow : Window
                     SetTrayEnabled(dialog.Result.TrayEnabled);
                 if (lyricsChanged)
                 {
+                    // Off: disable (else remove) and reload now; if that cannot be confirmed the app closes, so no "Settings saved".
+                    if (!dialog.Result.BetterLyricsEnabled && !await TurnLyricsOffAsync())
+                        return;
                     _settings = _settings with { BetterLyricsEnabled = dialog.Result.BetterLyricsEnabled };
-                    if (!dialog.Result.BetterLyricsEnabled)
-                        await DisableLyricsNowAsync();
                 }
                 string? startupError = null;
                 if (ReleaseUpdater.IsInstalledBuild(_root))

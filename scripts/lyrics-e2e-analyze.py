@@ -50,6 +50,21 @@ def is_synced(s):
     return s.get("sync") not in SYNCED_OFF and s.get("lines", 0) > 0
 
 
+# Amendment 28 Sep 2026 (E2E speed): a synced sample counts for a new track only with fresh evidence: its video id, and a line hash
+# different from the last sample before the change, or a new document (performance.timeOrigin). Right after Next the page briefly
+# reports the NEW video id with the OLD lyrics; that stale sample no longer counts.
+def fresh_synced(s, v, prev):
+    if s.get("v") != v or not is_synced(s):
+        return False
+    if not prev or prev.get("hash") is None:
+        return True
+    return s.get("hash") != prev.get("hash") or (s.get("doc") is not None and s.get("doc") != prev.get("doc"))
+
+
+def last_before(smp, t0):
+    return next((s for t, s in reversed(smp) if t < t0), None)
+
+
 # Spike rules 3-5, unchanged thresholds.
 def timing(ev):
     samples = samples_of(ev)
@@ -224,6 +239,8 @@ def netlog(arm):
     except (TypeError, ValueError):
         offset = None
     hosts, first_seen, sources = Counter(), {}, {h: {} for h in LYRIC_HOSTS | {TRANSLATE_HOST}}
+    # RuntimeOff: start times of every URL request (any path) to a lyric or translate host.
+    any_requests = {h: [] for h in LYRIC_HOSTS | {TRANSLATE_HOST}}
     for ev in evs:
         etype = ev.get("type")
         name = names.get(etype, etype if isinstance(etype, str) else "")
@@ -243,12 +260,15 @@ def netlog(arm):
             if when is not None and (h not in first_seen or when < first_seen[h]):
                 first_seen[h] = when
         url = params.get("url")
+        if name == "URL_REQUEST_START_JOB" and isinstance(url, str) and host_of(url) in any_requests and when is not None:
+            any_requests[host_of(url)].append(when)
         if name == "URL_REQUEST_START_JOB" and isinstance(url, str) and any(x in url for x in LYRIC_PATHS):
             h = host_of(url)
             if h in sources and (sid not in sources[h] or (when is not None and (sources[h][sid] is None or when < sources[h][sid]))):
                 sources[h][sid] = when
     return {"hosts": hosts, "firstSeen": first_seen, "requestSources": {h: len(v) for h, v in sources.items()},
-            "requestTimes": {h: sorted(t for t in v.values() if t is not None) for h, v in sources.items()}}
+            "requestTimes": {h: sorted(t for t in v.values() if t is not None) for h, v in sources.items()},
+            "anyRequestTimes": {h: sorted(v) for h, v in any_requests.items()}}
 
 
 # Post-data amendment (run 20260927T221658Z): YouTube's own ads appear at random in any arm. Ad hosts count as page traffic only
@@ -319,9 +339,14 @@ def verdict(name, expected, checks, evidence, needed_arms=(), needs_control=Fals
     if needs_control and control is None:
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": "control arm C netlog missing", "evidence": evidence}
         return
-    if any(v is None for v in checks.values()):
+    # A measured failure is a fail even when another check is unmeasurable; only all-measured-or-unknown is blocked.
+    if any(v is None for v in checks.values()) and not any(v is False for v in checks.values()):
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": "unmeasurable: " + ", ".join(k for k, v in checks.items() if v is None),
                            "checks": checks, "evidence": evidence}
+        return
+    if any(v is None for v in checks.values()):
+        scenarios[name] = {"status": "fail", "expected": expected, "checks": checks, "evidence": evidence,
+                           "reason": "failed: " + ", ".join(k for k, v in checks.items() if v is False)}
         return
     scenarios[name] = {"status": "pass" if all(checks.values()) else "fail", "expected": expected, "checks": checks, "evidence": evidence}
 
@@ -495,7 +520,9 @@ if "NonEnglish" in selected:
     nxt = first(ev, "lyrics-next")
     seed = "dQw4w9WgXcQ"
     track2 = next((s.get("v") for t, s in smp if nxt and t > nxt["t"] and s.get("v") and s.get("v") != seed), None)
-    evidence = {"htmlLang": dict(langs), "trackA": seed in per, "track2": track2 is not None and track2 in per,
+    prev2 = last_before(smp, nxt["t"]) if nxt else None
+    track2_fresh = bool(track2 and any(fresh_synced(s, track2, prev2) for t, s in smp if t > nxt["t"]))
+    evidence = {"htmlLang": dict(langs), "trackA": seed in per, "track2": track2_fresh,
                 "trackAWithin20s": bool(tab and seed in per and per[seed] - tab <= 20000)}
     if ev and smp and not german:
         scenarios["NonEnglish"] = {"status": "blocked", "expected": "lyrics found for track A and track 2 on a German (hl=de) page",
@@ -537,11 +564,52 @@ if "Coverage" in selected:
     for v in config["coverageTracks"]:
         nav = first(ev, "lyrics-nav", lambda e, v=v: e.get("v") == v)
         win = [s for t, s in smp if nav and nav["t"] <= t <= nav["t"] + 20000 and s.get("v") == v]
-        state = "synced" if any(is_synced(s) for s in win) else "plain" if any(s.get("lines", 0) > 0 for s in win) else "none"
-        tracks.append({"v": v, "navigated": nav is not None, "result": state})
+        prev = last_before(smp, nav["t"]) if nav else None
+        state = "synced" if any(fresh_synced(s, v, prev) for s in win) else "plain" if any(s.get("lines", 0) > 0 for s in win) else "none"
+        adv = first(ev, "lyrics-coverage-advance", lambda e, v=v: e.get("v") == v)
+        tracks.append({"v": v, "navigated": nav is not None, "result": state,
+                       "advance": {"reason": adv.get("reason"), "afterMs": adv.get("afterMs")} if adv else None})
     n = sum(t["result"] == "synced" for t in tracks)
     verdict("Coverage", "synced lines within 20 s of navigation on at least 16 of the 20 frozen tracks",
             {"atLeast16of20": n >= 16}, {"synced": n, "tracks": tracks}, ("V",))
+
+if "RuntimeOff" in selected:
+    ev = ev_by.get("Q", [])
+    smp = samples_of(ev)
+    start = first(ev, "lyrics-off-now-start")
+    done = first(ev, "lyrics-off-now")
+    nxt = first(ev, "lyrics-next", lambda e: bool(done) and e["t"] > done["t"])
+    after_items = (first(ev, "lyrics-extensions-after-off") or {}).get("items")
+    mine_after = [i for i in (after_items or []) if i.get("id") == EXPECTED_ID]
+    # The reload's new document: the first Music-view content load after the action started.
+    reload_doc = first(ev, "lyrics-main-content", lambda e: bool(start) and e["t"] >= start["t"])
+    reload_nav = first(ev, "lyrics-main-nav", lambda e: bool(start) and e["t"] >= start["t"])
+    after_reload = [(t, s) for t, s in smp if reload_doc and t > reload_doc["t"]]
+    times = (nl.get("Q") or {}).get("anyRequestTimes")
+    late = None
+    if times is not None and done:
+        late = {h: [round(x - done["t"]) for x in ts if x > done["t"] + 2000]
+                for h, ts in times.items() if h in ("api.betterlyrics.org", "lrclib.net", TRANSLATE_HOST)}
+        late = {h: v for h, v in late.items() if v}
+    last_t = ev[-1]["t"] if ev else None
+    playing = [s for t, s in after_reload if nxt and t > nxt["t"] and s.get("paused") is False and s.get("t") is not None]
+    resumed = len(playing) >= 2 and max(s["t"] for s in playing) - min(s["t"] for s in playing) > 1
+    music_page = bool(reload_nav and reload_nav.get("host") == "music.youtube.com" and after_reload
+                      and all(str(s.get("path") or "").startswith("/") for _, s in after_reload))
+    checks = {"syncedBeforeOff": bool(start) and any(is_synced(s) for t, s in smp if t < start["t"]),
+              "offConfirmed": None if not done else done.get("ok") is True,
+              "extensionNotEnabled": None if after_items is None else not any(i.get("enabled") for i in mine_after),
+              "noLyricRequestAfterOff": None if late is None else not late,
+              "noBlyricsAfterReload": None if not after_reload else all(s.get("blyrics", 0) == 0 and not s.get("container") for _, s in after_reload),
+              "observed60sAfterNext": None if not (nxt and last_t) else last_t - nxt["t"] >= 60000,
+              "playbackOrMusicPage": resumed or music_page,
+              "notKilled": not any(e["event"] == "harness-killed" for e in ev)}
+    verdict("RuntimeOff", "Lyrics on, synced lyrics, then the production runtime-off path: the extension is confirmed not enabled, the Music page reloads, "
+            "no request to api.betterlyrics.org, lrclib.net or translate.googleapis.com starts later than 2 s after the action completes, "
+            "no blyrics element after the reload, Next and >= 60 s observed, and playback resumes or the page is Music",
+            checks, {"offResult": done, "extensionsAfter": after_items, "lateRequestsMs": late, "reloadNavHost": (reload_nav or {}).get("host"),
+                     "samplesAfterReload": len(after_reload), "playbackResumed": resumed, "musicPage": music_page,
+                     "actionMs": round(done["t"] - start["t"]) if start and done else None}, ("Q",))
 
 STYLE_PROBES = ("player", "player2", "home")
 
@@ -622,6 +690,7 @@ json.dump(summary, open(os.path.join(out, "summary.json"), "w", encoding="utf-8"
           default=lambda o: dict(o) if isinstance(o, Counter) else str(o))
 report = {"stamp": config["stamp"], "command": config.get("command"), "protocol": "scripts/lyrics-e2e-protocol.md",
           "extensionId": EXPECTED_ID, "fingerprint": config.get("fingerprint"), "scenarios": scenarios,
+          "tier": "QUICK (not full acceptance)" if config.get("quick") else "full", "excludedScenarios": config.get("excluded") or [],
           "pass": bool(scenarios) and all(s["status"] == "pass" for s in scenarios.values())}
 json.dump(report, open(os.path.join(out, "report.json"), "w", encoding="utf-8"), indent=1, default=str)
 print(json.dumps({k: v["status"] for k, v in scenarios.items()}, indent=1))
