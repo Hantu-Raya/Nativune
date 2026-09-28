@@ -548,7 +548,7 @@ if "Off" in selected:
                   # Post-data amendment: Nativune opens uBOL's own page at every start; only the lyrics extension's id counts.
                   "noExtensionNav": not any(e["event"] == "lyrics-options-nav" or (e["event"] == "lyrics-main-nav" and e.get("scheme") == "chrome-extension"
                                                                                   and e.get("host") == EXPECTED_ID) for e in ev),
-                  "noLyricHost": None if n is None else not (set(n["hosts"]) & (LYRIC_HOSTS - {"a.nel.cloudflare.com"})),
+                  "noLyricHost": None if n is None else not (set(n["hosts"]) & ((LYRIC_HOSTS - {"a.nel.cloudflare.com"}) | {TRANSLATE_HOST})),
                   "noBlyrics": bool(samples_of(ev)) and all(s.get("blyrics", 0) == 0 and not s.get("container") for _, s in samples_of(ev))}
     checks = {"P1_loaded": bool(summary.get("P1", {}).get("load", {}).get("loaded")),
               "O1_neverInstalled": res["O1"]["absent"]}

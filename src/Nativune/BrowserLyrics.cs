@@ -22,8 +22,9 @@ internal sealed record BrowserLyricsState(BrowserLyricsStatus Status, string? Ve
 }
 
 // Barebones Better Lyrics (GPL-3.0 fork of Better Lyrics 2.4.1), opt-in and off by default.
-// Lyrics problems never throw while Lyrics is on, so Music and uBO Lite continue. While it is off, a copy that
-// cannot be confirmed disabled or removed throws, so Music is not loaded (fail closed, like uBO Lite).
+// A lyrics problem while Lyrics is on leaves Lyrics off and Music and uBO Lite continue. Whenever Lyrics is off, or
+// failed to start, a managed copy that cannot be confirmed disabled or removed throws, so Music is not loaded (fail
+// closed, like uBO Lite).
 internal static class BrowserLyrics
 {
     internal const string ExtensionName = "Barebones Better Lyrics";
@@ -72,7 +73,7 @@ internal static class BrowserLyrics
             if (!File.Exists(Path.Combine(directory, "manifest.json")))
             {
                 AppLog.Write("lyrics", "missing");
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Missing;
             }
             RootLocator.EnsureNoReparseTree(projectRoot, directory);
@@ -81,14 +82,14 @@ internal static class BrowserLyrics
             if (!ManifestMatches(manifest))
             {
                 AppLog.Write("lyrics", "failed manifest");
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("manifest");
             }
         }
         catch (Exception exception)
         {
             AppLog.Write("lyrics", "failed payload " + exception.GetType().Name);
-            await TryDisableAfterFailureAsync(core, token);
+            await DisableAfterFailureAsync(core, token);
             return BrowserLyricsState.Failed("payload");
         }
 
@@ -110,7 +111,7 @@ internal static class BrowserLyrics
                 if (!RecordInstalledVersion(projectRoot, PendingPrefix + ExtensionVersion))
                 {
                     AppLog.Write("lyrics", "failed record");
-                    await TryDisableAfterFailureAsync(core, token);
+                    await DisableAfterFailureAsync(core, token);
                     return BrowserLyricsState.Failed("record");
                 }
                 AppLog.Write("lyrics", "reinstall " + ExtensionVersion);
@@ -128,7 +129,7 @@ internal static class BrowserLyrics
             {
                 AppLog.Write("lyrics", "failed id");
                 await TryDisableOrRemoveAsync(extension, token);
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("id");
             }
             if (!extension.IsEnabled)
@@ -140,7 +141,7 @@ internal static class BrowserLyrics
             if (!extension.IsEnabled)
             {
                 AppLog.Write("lyrics", "failed enable");
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("enable");
             }
 
@@ -159,7 +160,7 @@ internal static class BrowserLyrics
                 && !string.Equals(candidate.Id, ExpectedExtensionId, StringComparison.Ordinal)))
             {
                 AppLog.Write("lyrics", "failed stale");
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("stale");
             }
             // Record the version only when it is not already current. If that write fails, Lyrics stays off for this
@@ -167,17 +168,17 @@ internal static class BrowserLyrics
             if (!recordCurrent && !RecordInstalledVersion(projectRoot, ExtensionVersion))
             {
                 AppLog.Write("lyrics", "failed record");
-                await TryDisableAfterFailureAsync(core, token);
+                await DisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("record");
             }
             AppLog.Write("lyrics", "installed " + ExtensionVersion);
             return BrowserLyricsState.Installed(ExtensionVersion);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is not LyricsCleanupException)
         {
             var category = exception is OperationCanceledException or TimeoutException ? "timeout" : "extension";
             AppLog.Write("lyrics", "failed " + category + " " + exception.GetType().Name);
-            await TryDisableAfterFailureAsync(core, token);
+            await DisableAfterFailureAsync(core, token);
             return BrowserLyricsState.Failed(category);
         }
     }
@@ -249,17 +250,34 @@ internal static class BrowserLyrics
             throw new InvalidOperationException("Lyrics could not be turned off; Music was not loaded.");
     }
 
-    private static async Task TryDisableAfterFailureAsync(CoreWebView2 core, CancellationToken token)
+    // Thrown when a failed setup cannot confirm every managed copy off; ConfigureAsync lets it escape so Music is not loaded.
+    private sealed class LyricsCleanupException(Exception inner)
+        : Exception("Lyrics could not be turned off after a failed setup; Music was not loaded.", inner);
+
+    // A failed setup must not leave a copy running while Lyrics reports failed: disable every managed copy, else remove
+    // them (losing their saved settings, as for Lyrics Off), else throw.
+    private static async Task DisableAfterFailureAsync(CoreWebView2 core, CancellationToken token)
     {
         try
         {
             using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(token);
             cleanup.CancelAfter(CleanupTimeout);
             await DisableExpectedAsync(core, cleanup.Token);
+            return;
         }
         catch (Exception exception)
         {
             AppLog.Write("lyrics", "cleanup-failed " + exception.GetType().Name);
+        }
+        try
+        {
+            await RemoveExpectedAsync(core, token);
+            AppLog.Write("lyrics", "removed");
+        }
+        catch (Exception exception)
+        {
+            AppLog.Write("lyrics", "remove-failed " + exception.GetType().Name);
+            throw new LyricsCleanupException(exception);
         }
     }
 

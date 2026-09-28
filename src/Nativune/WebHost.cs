@@ -871,7 +871,7 @@ public sealed partial class WebHostWindow : Window
             }, _settings.BlockAds, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
-            // Optional lyrics: throws only when Lyrics is off and the extension cannot be confirmed off.
+            // Optional lyrics: throws only when a managed copy cannot be confirmed off (Lyrics off, or failed to start).
             _lyricsState = await BrowserLyrics.ConfigureAsync(core, _root, _settings.BetterLyricsEnabled, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;
