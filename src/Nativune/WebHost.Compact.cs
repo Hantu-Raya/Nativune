@@ -100,6 +100,7 @@ public sealed partial class WebHostWindow
         CompactView.MinimizeRequested += () => _presenter?.Minimize();
         CompactView.CloseRequested += CloseOrHideToTray;
         CompactView.ToggleTopmostRequested += () => SetTopmost(!(_presenter?.IsAlwaysOnTop == true));
+        CompactView.DonateRequested += () => _ = OpenDonationPageAsync();
         CompactView.PlaylistsRequested += () => _ = ShowCompactPlaylistsAsync();
         CompactView.PlaylistChosen += (index, title) => _ = PlayCompactPlaylistAsync(index, title);
         CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
@@ -338,13 +339,27 @@ public sealed partial class WebHostWindow
 
     private async Task ExecuteCompactCommandAsync(string command, double? value)
     {
-        if (!CompactActive) return;
+        // App output volume is host-owned audio, not page state; a drag rollback arrives while Compact is deactivating
+        // or after output became unavailable, so it restores the stored preference and applies only through the gate.
         if (command == "output-volume")
         {
             if (value is { } volume && double.IsFinite(volume) && volume >= 0 && volume <= 1)
                 SetOutputVolume(volume);
             return;
         }
+        if (command == "output-volume-live")
+        {
+            if (value is { } volume && double.IsFinite(volume) && volume >= 0 && volume <= 1)
+                PreviewOutputVolume(volume);
+            return;
+        }
+        if (command == "output-volume-restore")
+        {
+            if (value is { } volume && double.IsFinite(volume) && volume >= 0 && volume <= 1)
+                RestoreOutputVolumePreference(volume);
+            return;
+        }
+        if (!CompactActive) return;
         if (command == "output-mute")
         {
             ToggleOutputMute();

@@ -38,6 +38,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private IconElement? _returnToFullIconElement;
     private IconElement? _moreIconElement;
     private IconElement? _minimizeIconElement;
+    private IconElement? _pinIconElement;
+    private IconElement? _donateIconElement;
+    private IconElement? _donateMenuIconElement;
     private IconElement? _closeIconElement;
     private IconElement? _timerIconElement;
     private IconElement? _settingsMenuIconElement;
@@ -99,6 +102,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private string _updateIconName = "update";
     private readonly Button _more;
     private readonly Button _minimize;
+    private readonly ToggleButton _pin;
+    private readonly Button _donate;
+    private readonly MenuFlyoutItem _donateItem;
     private readonly Button _close;
     private readonly MenuFlyout _moreMenu;
     private readonly MenuFlyoutItem _settingsItem;
@@ -158,6 +164,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal event Action? TimerRequested;
     internal event Action? CancelTimerRequested;
     internal event Action? ToggleTopmostRequested;
+    internal event Action? DonateRequested;
     internal event Action? MinimizeRequested;
     internal event Action? CloseRequested;
     internal event Action? PlaylistsRequested;
@@ -194,6 +201,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _whatsNewItem = WhatsNewItem;
         _more = More;
         _minimize = Minimize;
+        _pin = Pin;
+        _donate = Donate;
+        _donateItem = DonateItem;
         _close = Close;
         _playlists = Playlists;
         _playlistMenu = PlaylistMenu;
@@ -438,6 +448,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _seek.CancelDrag();
         _reduceMotion = reduceMotion;
         _topmostItem.IsChecked = topmost;
+        _pin.IsChecked = topmost;
         _title.ReduceMotion = reduceMotion;
         _title.RecalculateOverflow();
         UpdateAnimationTimer();
@@ -500,6 +511,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _active = active;
         if (!active)
         {
+            _volumeSlider.CancelDrag();
             _volumeCommitTimer.Stop();
             _volumeHoverCloseTimer.Stop();
             _volumeButtonPointerOver = false;
@@ -509,7 +521,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _restoreVolumeFocusOnClose = false;
             ClearPendingSeek();
             _pendingOutputVolume = null;
-            _volumeSlider.CancelDrag();
             _moreMenu.Hide();
             _playlistMenu.Hide();
             _volumePopup.Hide();
@@ -655,6 +666,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         TimerRequested = null;
         CancelTimerRequested = null;
         ToggleTopmostRequested = null;
+        DonateRequested = null;
         MinimizeRequested = null;
         CloseRequested = null;
         PlaylistsRequested = null;
@@ -676,6 +688,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         SetAccessible(_updateItem, "Check for Nativune updates", "Click to check for Nativune updates.");
         ConfigureButton(_more, "More", "More settings and application status.");
         ConfigureButton(_minimize, "Minimize", "Minimize window.");
+        ConfigureButton(_pin, "Keep window on top", "Keeps the Compact player above other windows.");
+        ConfigureButton(_donate, "Donate on Ko-fi", "Opens ko-fi.com/hanturaya in your default browser.");
+        SetAccessible(_donateItem, "Donate on Ko-fi", "Opens ko-fi.com/hanturaya in your default browser.");
         ConfigureButton(_close, "Close", "Close app and stop playback.");
         ConfigureButton(_timer, "Set pause timer", "Set a pause timer; the app stays open.");
         ConfigureButton(_like, "Like unavailable", "Like state is unavailable until playback controls recover.");
@@ -701,6 +716,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _seek.DragCancelled += CancelSeekDrag;
         _volumeSlider.ValueChanged += VolumeSliderChanged;
         _volumeSlider.Committed += VolumeSliderCommitted;
+        _volumeSlider.LiveChanged += VolumeSliderLiveChanged;
+        _volumeSlider.RolledBack += VolumeSliderRolledBack;
         _volume.PointerEntered += VolumePointerEntered;
         _volume.PointerExited += VolumePointerExited;
         _volumePopupSurface.PointerEntered += VolumePopupPointerEntered;
@@ -774,6 +791,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _returnToFull.Click += (_, _) => ReturnToFullRequested?.Invoke();
         _more.Click += (_, _) => ShowMoreMenu();
         _minimize.Click += (_, _) => MinimizeRequested?.Invoke();
+        _pin.Click += (_, _) =>
+        {
+            ToggleTopmostRequested?.Invoke();
+            // The host answers synchronously through SetPreferences; without one, undo the button's own flip.
+            _pin.IsChecked = _topmostItem.IsChecked;
+        };
+        _donate.Click += (_, _) => DonateRequested?.Invoke();
         _close.Click += (_, _) => CloseRequested?.Invoke();
         _playlists.Click += (_, _) =>
         {
@@ -789,7 +813,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close, _playPause
+            _returnToFull, _more, _minimize, _close, _playPause, _pin, _donate
         })
             button.IsEnabledChanged += (_, _) => ApplySecondaryVisuals();
 
@@ -804,6 +828,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
                 WhatsNewRequested?.Invoke();
         });
         _topmostItem.Click += (_, _) => ToggleTopmostRequested?.Invoke();
+        // The menu closes first; the browser opens on the next dispatcher turn.
+        _donateItem.Click += (_, _) => DispatcherQueue.TryEnqueue(() => { if (!_disposed) DonateRequested?.Invoke(); });
         _moreMenu.Closed += (_, _) => RestorePopupFocus();
 
     }
@@ -931,7 +957,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     {
         var sliderStep = Math.Round(_outputVolume * _volumeSlider.Maximum, MidpointRounding.AwayFromZero);
         if (_volume.IsEnabled != _outputAvailable) _volume.IsEnabled = _outputAvailable;
-        if (_volumeSlider.IsEnabled != _outputAvailable) _volumeSlider.IsEnabled = _outputAvailable;
+        if (_volumeSlider.IsEnabled != _outputAvailable)
+        {
+            // Roll a live drag back while the slider can still report it; the restore path is not IsEnabled-gated.
+            if (!_outputAvailable) _volumeSlider.CancelDrag();
+            _volumeSlider.IsEnabled = _outputAvailable;
+        }
         var name = _outputMuted ? "Unmute app output" : "Mute app output";
         var help = !_outputAvailable
             ? CompactVolumeUnavailableHelp
@@ -1132,7 +1163,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _update, _more, _minimize, _close
+            _returnToFull, _update, _more, _minimize, _close, _pin, _donate
         })
         {
             button.Background = transparent;
@@ -1159,7 +1190,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         foreach (var button in new ButtonBase[]
         {
             _previous, _next, _like, _dislike, _playlists, _repeat, _shuffle, _volume, _timer,
-            _returnToFull, _more, _minimize, _close
+            _returnToFull, _more, _minimize, _close, _pin, _donate
         })
             button.Foreground = button.IsEnabled ? primary : secondary;
         _timer.Foreground = _timer.IsEnabled ? secondary : primary;
@@ -1240,12 +1271,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             BindFixedIcon(_more, ref _moreIconElement, "overflow", 16);
             BindFixedIcon(_playlists, ref _playlistsIconElement, "playlist", 20);
             BindFixedIcon(_minimize, ref _minimizeIconElement, "minimize", 16);
+            BindFixedIcon(_pin, ref _pinIconElement, "pin", 16);
+            BindFixedIcon(_donate, ref _donateIconElement, "donate", 16);
             BindFixedIcon(_close, ref _closeIconElement, "close", 16);
             BindStatefulIcon(_timerIcon, ref _timerIconElement, ref _timerIconName,
                 _timerRemaining.HasValue ? "cancel-timer" : "quit-timer", 16);
             BindMenuIcon(_settingsItem, ref _settingsMenuIconElement, "settings");
             BindMenuIcon(_statusItem, ref _statusMenuIconElement, "status");
             BindMenuIcon(_topmostItem, ref _topmostMenuIconElement, "pin");
+            BindMenuIcon(_donateItem, ref _donateMenuIconElement, "donate");
             ApplyPlayVisual();
         }
         catch (Exception)
@@ -1323,27 +1357,27 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var wasDragging = _dragging;
         _dragging = false;
         if (_state is null || !_seek.IsEnabled) return;
-        var target = ClampSeekTarget(position, _state.Duration);
-        _elapsed.Text = FormatElapsed(target);
-        if (ShouldCommitSeek(wasDragging, false))
-        {
-            _pendingSeek = target;
-            _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
-            _seekPendingState = _state;
-            RaiseCommand("seek", target);
-        }
-        UpdateAnimationTimer();
+        CommitSeekTarget(_state, position, send: ShouldCommitSeek(wasDragging, false));
     }
 
     private void CommitKeyboardSeek(double position)
     {
         if (_state is null || !_seek.IsEnabled) return;
-        var target = ClampSeekTarget(position, _state.Duration);
+        CommitSeekTarget(_state, position, send: true);
+    }
+
+    // Shared by drag and keyboard so the optimistic target, its 2 s expiry and item binding stay identical.
+    private void CommitSeekTarget(CompactPlaybackState state, double position, bool send)
+    {
+        var target = ClampSeekTarget(position, state.Duration);
         _elapsed.Text = FormatElapsed(target);
-        _pendingSeek = target;
-        _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
-        _seekPendingState = _state;
-        if (ShouldCommitSeek(true, false)) RaiseCommand("seek", target);
+        if (send)
+        {
+            _pendingSeek = target;
+            _seekPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            _seekPendingState = state;
+            RaiseCommand("seek", target);
+        }
         UpdateAnimationTimer();
     }
 
@@ -1374,6 +1408,16 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeCommitTimer.Start();
     }
 
+    private void VolumeSliderLiveChanged(double normalized)
+    {
+        if (!_updatingControls && _volumePopup.IsOpen && _volumeSlider.IsEnabled)
+        {
+            _pendingOutputVolume = Math.Clamp(normalized, 0, 1);
+            _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            RaiseCommand("output-volume-live", _pendingOutputVolume.Value);
+        }
+    }
+
     private void VolumeSliderCommitted(double normalized)
     {
         _volumeCommitTimer.Stop();
@@ -1383,6 +1427,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
             RaiseCommand("output-volume", _pendingOutputVolume.Value);
         }
+    }
+
+    // Rollbacks restore the stored preference even when the popup closed or output became unavailable mid-drag.
+    private void VolumeSliderRolledBack(double normalized)
+    {
+        _volumeCommitTimer.Stop();
+        _pendingOutputVolume = null;
+        if (double.IsFinite(normalized))
+            RaiseCommand("output-volume-restore", Math.Clamp(normalized, 0, 1));
     }
 
 
@@ -1971,11 +2024,24 @@ public sealed class CompactSeekSlider : Slider
 }
 public sealed class CompactVolumeSlider : Slider
 {
+    // ponytail: fixed ~20 Hz live apply while dragging; the host coalesces Core Audio requests on its worker.
+    private static readonly TimeSpan LiveInterval = TimeSpan.FromMilliseconds(50);
     private bool _dragging;
     private Pointer? _pointer;
     private double _originalValue;
+    // Last value observed outside a press; a track click can move Value before our pressed observer runs.
+    private double _restValue;
+    private bool _pressing;
+    private bool _liveSent;
+    private DateTime _lastLive;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _liveTimer;
 
+    // Raised with the normalized value on release and keyboard steps.
     internal event Action<double>? Committed;
+    // Raised, throttled, with the normalized value while dragging (preview only; not persisted).
+    internal event Action<double>? LiveChanged;
+    // Raised with the pre-drag normalized value when a cancelled drag had already sent live values.
+    internal event Action<double>? RolledBack;
     internal bool Dragging => _dragging;
 
     public CompactVolumeSlider()
@@ -1983,6 +2049,30 @@ public sealed class CompactVolumeSlider : Slider
         AddHandler(PointerPressedEvent, new PointerEventHandler(OnPointerPressedInternal), true);
         AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleasedInternal), true);
         PointerCanceled += (_, _) => CancelDrag();
+        PointerCaptureLost += OnPointerCaptureLost;
+    }
+
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        // The thumb drops capture inside its own PointerReleased, before our handledEventsToo release
+        // observer runs; cancel on the next turn only if no release has ended this drag by then.
+        if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
+        var pointerId = _pointer.PointerId;
+        if (DispatcherQueue?.TryEnqueue(() =>
+            {
+                if (_dragging && _pointer is not null && _pointer.PointerId == pointerId)
+                    CancelDrag();
+            }) != true)
+            CancelDrag();
+    }
+
+    protected override void OnPointerPressed(PointerRoutedEventArgs e)
+    {
+        // Slider moves Value to the clicked track position inside base; remember the value from before it.
+        if (!_dragging) _restValue = Value;
+        _pressing = true;
+        try { base.OnPointerPressed(e); }
+        finally { _pressing = false; }
     }
 
     internal void CancelDrag()
@@ -1990,7 +2080,43 @@ public sealed class CompactVolumeSlider : Slider
         if (!_dragging) return;
         _dragging = false;
         _pointer = null;
+        _liveTimer?.Stop();
         Value = _originalValue;
+        // A cancelled drag already applied live values; put the output back to where the drag started.
+        if (_liveSent) RolledBack?.Invoke(Value / Math.Max(1, Maximum));
+        _liveSent = false;
+    }
+
+    protected override void OnValueChanged(double oldValue, double newValue)
+    {
+        base.OnValueChanged(oldValue, newValue);
+        if (!_dragging)
+        {
+            if (!_pressing) _restValue = newValue;
+            return;
+        }
+        if (DateTime.UtcNow - _lastLive >= LiveInterval)
+        {
+            SendLive();
+            return;
+        }
+        // Trailing update so the value where the pointer rests is applied without waiting for release.
+        if (_liveTimer is null)
+        {
+            _liveTimer = DispatcherQueue.CreateTimer();
+            _liveTimer.Interval = LiveInterval;
+            _liveTimer.IsRepeating = false;
+            _liveTimer.Tick += (_, _) => { if (_dragging) SendLive(); };
+        }
+        if (!_liveTimer.IsRunning) _liveTimer.Start();
+    }
+
+    private void SendLive()
+    {
+        _liveTimer?.Stop();
+        _lastLive = DateTime.UtcNow;
+        _liveSent = true;
+        LiveChanged?.Invoke(Value / Math.Max(1, Maximum));
     }
 
     protected override void OnKeyDown(KeyRoutedEventArgs e)
@@ -2029,7 +2155,8 @@ public sealed class CompactVolumeSlider : Slider
             && !point.Properties.IsLeftButtonPressed) return;
         _dragging = true;
         _pointer = e.Pointer;
-        _originalValue = Value;
+        _originalValue = _restValue;
+        _liveSent = false;
     }
 
     private void OnPointerReleasedInternal(object sender, PointerRoutedEventArgs e)
@@ -2037,6 +2164,8 @@ public sealed class CompactVolumeSlider : Slider
         if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
         _dragging = false;
         _pointer = null;
+        _liveTimer?.Stop();
+        _liveSent = false;
         Committed?.Invoke(Value / Math.Max(1, Maximum));
     }
 }

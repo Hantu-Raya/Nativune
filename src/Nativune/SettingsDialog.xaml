@@ -415,9 +415,9 @@
                       IsChecked="False"
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Show time-synced lyrics (restart required)"
-                      AutomationProperties.HelpText="Off by default. Sends the playing song's details to lyric services. Takes effect after restarting Nativune." />
+                      AutomationProperties.HelpText="On by default. Sends the playing song's details to lyric services. Turning it on takes effect after restarting Nativune; turning it off takes effect right away." />
             <TextBlock x:Name="LyricsDisclosureText"
-                       Text="Off by default. When on, Nativune loads Barebones Better Lyrics, a modified version of Better Lyrics (GPL-3.0). For the playing song it sends the title, artist, album and duration to the Better Lyrics API (api.betterlyrics.org) and, if it has no synced lyrics, to LRCLIB (lrclib.net). Those services see your IP address. Lyrics are cached in this profile. Translation is off unless you turn it on in lyric settings; then lyric text is sent to Google Translate (translate.googleapis.com). Takes effect after restarting Nativune."
+                       Text="On by default. When on, Nativune loads Barebones Better Lyrics, a modified version of Better Lyrics (GPL-3.0). For the playing song it sends the title, artist, album and duration to the Better Lyrics API (api.betterlyrics.org) and, if it has no synced lyrics, to LRCLIB (lrclib.net). Those services see your IP address. Lyrics are cached in this profile. Translation is off unless you turn it on in lyric settings; then lyric text is sent to Google Translate (translate.googleapis.com). Turning it on takes effect after restarting Nativune; turning it off takes effect right away."
                        TextWrapping="Wrap"
                        FontSize="12"
                        Margin="28,-6,0,0"
@@ -463,6 +463,17 @@
                       MinHeight="36"
                       AutomationProperties.Name="Copy application status"
                       AutomationProperties.HelpText="Copies the current application status text to the clipboard." />
+              <Button x:Name="DonateButton"
+                      MinHeight="36"
+                      AutomationProperties.Name="Donate on Ko-fi"
+                      AutomationProperties.HelpText="Opens ko-fi.com/hanturaya in your default browser.">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <!-- Same raster NativeIconCache picks for a 16-DIP icon (2x source). -->
+                  <BitmapIcon UriSource="ms-appx:///Assets/NativeIcons/raster/32/donate.png"
+                              ShowAsMonochrome="True" Width="16" Height="16" VerticalAlignment="Center" />
+                  <TextBlock Text="Donate on Ko-fi" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
             </StackPanel>
             <TextBlock x:Name="CopyStatusResult"
                        FontSize="12"

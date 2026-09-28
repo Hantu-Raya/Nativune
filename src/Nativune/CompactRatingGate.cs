@@ -44,8 +44,4 @@ internal sealed class CompactRatingGate
 
     // Nothing reached the website, so the item may be rated again.
     internal void NotSent() => _pendingItem = null;
-
-    internal long? ReadyAt(long now)
-        => _item is null || _pendingItem is not null ? null
-            : now - _itemShownAt >= ArmDelayMs ? now : _itemShownAt + ArmDelayMs;
 }

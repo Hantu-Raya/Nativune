@@ -4,6 +4,8 @@ Nativune is an unofficial, native Windows desktop app for YouTube Music, built w
 
 Nativune is for Windows users who want YouTube Music in its own desktop window with native controls, rather than in a browser tab or an Electron-based client. It uses the shared WebView2 runtime that Windows already provides instead of bundling its own copy of Chromium. It does not download media or use a private playback API, and it blocks ads only if you turn that on yourself (off by default).
 
+[![Support Nativune on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/hanturaya)
+
 ![Nativune full window: the native toolbar, which is also the title bar, above YouTube Music's player page, showing Viva La Vida by Coldplay paused, with its cover and the Up next queue (signed out)](assets/screenshots/nativune-full-view.png)
 
 ![Nativune Compact mini player at 800 × 180: the album cover on a CD with a hole in the middle, the centered track title, playback, rating, playlists, repeat, shuffle, volume and pause-timer controls and a seek bar](assets/screenshots/nativune-compact-player.png)
@@ -34,7 +36,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
 ## Features
 
-- **Full and Compact views in one window.** The Compact view is a native mini player, 800 × 180 by default. You can resize it freely, from a 360 × 56 strip to a tall view with large artwork; the layout adapts, and controls that don't fit move into its More menu. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer. The artwork is shown on a spinning CD, with a see-through hole in the middle, using the high-resolution cover from YouTube Music's player when it is loaded. A short notice under the title confirms actions such as a dislike or a started playlist.
+- **Full and Compact views in one window.** The Compact view is a native mini player, 800 × 180 by default. You can resize it freely, from a 360 × 56 strip to a tall view with large artwork; the layout adapts, and controls that don't fit move into its More menu. It has artwork, title, elapsed time and duration, a seek bar, previous/play/next, like/dislike, a **Playlists** menu, repeat, shuffle, volume and a pause timer, plus **Keep window on top** (pin) and **Donate on Ko-fi** (heart) buttons in the top-left corner (in More when the window is too small). The artwork is shown on a spinning CD, with a see-through hole in the middle, using the high-resolution cover from YouTube Music's player when it is loaded. A short notice under the title confirms actions such as a dislike or a started playlist.
 - **Compact layouts for every window size and display scale.** Compact picks one of five layouts from the window's size, measured in device-independent pixels (DIP), so it looks the same at 100%–200% Windows display scaling:
 
   | Layout | When | What it shows |
@@ -49,7 +51,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   Each layout at 100% display scaling (sizes are the window's client area in DIP):
 
-  **Strip, 360 × 56** (the minimum size; Minimize and the secondary buttons are in More)
+  **Strip, 360 × 56** (the minimum size; Minimize, Keep window on top, Donate and the secondary buttons are in More)
 
   ![Compact Strip layout at 360 × 56 with a scrolling title, previous, play and next, Return to full, More and Close](assets/screenshots/compact-layout/strip-360x56.png)
 
@@ -77,7 +79,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   ![Tall layout at 480 × 480 with a large CD disc above the title, controls and seek bar](assets/screenshots/compact-layout/tall-480x480.png)
 - **Playlists menu in Compact.** It lists the playlists that YouTube Music shows in its own sidebar when you're signed in, and plays the one you choose by pressing that playlist's own Play button on the website.
-- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer and More (`…`), then the Discord status toggle and the update indicator, on the right. The toolbar is also the title bar: minimize, maximize and close sit at its right end, and dragging its empty middle moves the window. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
+- **Native toolbar** in the full view, in two groups: Compact toggle, back, forward and Home on the left; app volume, pause timer and More (`…`), then the Discord status toggle and the update indicator, on the right. The toolbar is also the title bar: minimize, maximize and close sit at its right end, and dragging its empty middle moves the window. In a narrow window, Forward, Update, Discord, the pause timer, app volume and then Home move into More, in that order, so nothing slides under the window buttons. Previous, play/pause and next live in More › Playback, next to the website's own player bar.
 - **Taskbar thumbnail buttons** for previous, play/pause and next.
 - **Optional tray icon.** It is on by default for new profiles (**Settings › General › Show tray icon**). While it is enabled, Close hides the window and playback keeps running. Quit always exits.
 - **Start with Windows, on by default.** The first time an installed Nativune starts, it turns on **Settings › Startup › Start Nativune when I sign in to Windows** once and says so; if you turn it off, it stays off. The setting adds a per-user entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for this installation. It is available only in installs made with Setup. You choose whether it opens the full window, Compact, or hidden in the tray. Turning it off in Task Manager or **Windows Settings › Apps › Startup** is respected; Nativune never turns it back on. Uninstalling removes the entry.
@@ -103,11 +105,11 @@ Nativune takes a narrower approach. It puts the official website in a native Win
   - **What the card shows:** song title, artist, album art, a time bar while playing, a pause badge while paused (cleared after 10 minutes paused) and a repeat-one badge. Clicking the song title opens that song on YouTube Music, and the optional button does the same; both appear only when Nativune can confirm the playing song's link. Under the artist, a line shows "Nativune <version> · by Hantu-Raya" (or just "Nativune <version>" if you turn the author off in Settings › Discord). The same text appears when hovering the art, and clicking the art opens this repository.
   - The status keeps working while Nativune is hidden in the tray or in Compact, and clears when playback ends, when you turn it off and when you quit.
   - **Limitations:** the Discord desktop app must be running; it works only with the English site language, like Compact; during an ad the status may briefly show or drop the song; and Discord's own activity privacy settings decide who sees it.
-- **Time-synced lyrics, optional and off by default.** Nativune can show lyrics that follow the song in YouTube Music's own **Lyrics** tab. The words highlight as they are sung, and a translation can be added.
+- **Time-synced lyrics, on by default.** Nativune shows lyrics that follow the song in YouTube Music's own **Lyrics** tab. The words highlight as they are sung, and a translation can be added.
 
   ![Nativune playing "Never Gonna Give You Up" with time-synced lyrics in the Lyrics tab: the current line is bright white, the others are dimmed, and a small control pill at the bottom offers the lyrics source, translation, timing offset and reload](assets/screenshots/lyrics/lyrics-in-app.png)
 
-  - **Turn it on** in **Settings › Lyrics**, then restart Nativune. Turning Lyrics off takes effect right away: Nativune reloads the Music page, and if it cannot confirm that Lyrics is off, it closes.
+  - **Turn it off or on** in **Settings › Lyrics**. Turning Lyrics off takes effect right away: Nativune reloads the Music page, and if it cannot confirm that Lyrics is off, it closes. Turning it back on takes effect after you restart Nativune.
 
     ![Settings › Lyrics: Show time-synced lyrics (on), the disclosure of what is sent where, the Open lyric settings button and the status line showing the running Barebones Better Lyrics version](assets/screenshots/lyrics/settings-lyrics.png)
 
@@ -144,7 +146,7 @@ The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It instal
 - **Library data stays on screen.** The Compact Playlists menu reads playlist names from the page only when you open it. They are shown in the menu and not stored, sent anywhere or written to the log.
 - **Tracker filtering by default.** uBlock Origin Lite runs with EasyPrivacy on `music.youtube.com` and filtering is off for other sites. Ads are blocked only if you turn on **Block ads**, which adds uBlock Origin Lite's ad lists and page filtering on `music.youtube.com` only. Either way, Nativune checks the extension's configuration before loading Music and stops if it doesn't match.
 - **Discord status is an exception to "stays on screen".** When you turn on Discord status (the toolbar's Discord button, **More › Show what I'm playing on Discord** or **Settings › Discord**), Nativune sends the current song's public details (title, artist, artwork link and song link) over a local connection to the Discord desktop app, which shows them to people who can see your activity. Discord fetches the artwork from YouTube's image servers. Nativune uses no Discord login, token or account access. Nothing is sent while the setting is off, and Nativune does not log song details.
-- **Lyrics, when you turn them on, send song details to lyric services.** With **Settings › Lyrics** on, the playing song's title, artist, album and length go to the Better Lyrics API and, if needed, LRCLIB; lyric lines go to Google Translate only if translation is on. These services see your IP address. Nothing is sent while Lyrics is off. The extension asks only for storage permission and, like the page, has no bridge into the native app.
+- **Lyrics, on by default, send song details to lyric services.** With **Settings › Lyrics** on, the playing song's title, artist, album and length go to the Better Lyrics API and, if needed, LRCLIB; lyric lines go to Google Translate only if translation is on. These services see your IP address. Turn Lyrics off in **Settings › Lyrics** to send nothing. The extension asks only for storage permission and, like the page, has no bridge into the native app.
 - **Updates.** Each check is one anonymous request to the GitHub Releases API for this repository. Opening the update dialog makes one more anonymous request, for the release notes. Updates are offered only for newer stable releases. The download is checked against its published SHA-256 digest before Setup starts.
 
 ## Performance
@@ -245,7 +247,7 @@ The installer is not yet Authenticode-signed, so Windows may show an "Unknown pu
 3. Play music as you would on the website. The website's player bar, the taskbar buttons, the More menu and the Compact player all control the same player.
 4. Select the **Compact window** button at the left of the toolbar (a window with an arrow pointing into a small player) to switch to the mini player, and **Return to full** (the same window with the arrow pointing out) to switch back.
 5. In Compact, select **Playlists** (the list-and-play icon next to Dislike) to choose one of your playlists. The menu shows what YouTube Music lists in its sidebar, so you need to be signed in.
-6. Open **More commands and settings** (`…`) for Playback (play/pause, previous, next and session shortcuts), fullscreen, keep-on-top, Zoom, **Settings…**, **Application status** and Quit. The pause timer has its own toolbar button. Settings has five pages: General (tray icon, reduce motion, sleep in background, update checks), Startup (start with Windows, start in Compact, remember Home or Library), Shortcuts, Privacy (Block ads) and About.
+6. Open **More commands and settings** (`…`) for Playback (play/pause, previous, next and session shortcuts), fullscreen, keep-on-top, Zoom, **Settings…**, **Application status**, **Donate on Ko-fi** (opens the project's Ko-fi page in your browser) and Quit. The pause timer has its own toolbar button. Settings has five pages: General (tray icon, reduce motion, sleep in background, update checks), Startup (start with Windows, start in Compact, remember Home or Library), Shortcuts, Privacy (Block ads) and About (which also has **Donate on Ko-fi**).
 
 ## Updates
 

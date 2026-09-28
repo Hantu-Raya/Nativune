@@ -139,20 +139,22 @@ public sealed partial class WebHostWindow
         };
         OutputVolumeSlider.ValueChanged += OutputVolumeChanged;
         OutputVolumeSlider.Committed += SetOutputVolume;
+        OutputVolumeSlider.LiveChanged += PreviewOutputVolume;
+        OutputVolumeSlider.RolledBack += RestoreOutputVolumePreference;
         UpdateOutputAudioControls();
     }
 
     private static bool IsOutputHoverPointer(PointerRoutedEventArgs e, UIElement element)
         => e.GetCurrentPoint(element).PointerDeviceType is PointerDeviceType.Mouse or PointerDeviceType.Pen;
 
-    private void ShowOutputFlyout(bool fromHover)
+    private void ShowOutputFlyout(bool fromHover, FrameworkElement? anchor = null)
     {
         if (_closing || _disposed || _compact || !OutputMuteButton.IsEnabled || !OutputVolumeSlider.IsEnabled)
             return;
         _outputFlyoutPinned = !fromHover;
         _outputFlyoutFocusSlider = !fromHover;
         OutputVolumeFlyout.ShowMode = fromHover ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
-        OutputVolumeFlyout.ShowAt(OutputMuteButton);
+        OutputVolumeFlyout.ShowAt(anchor ?? OutputMuteButton);
     }
 
     private void OpenOutputFlyoutForInteraction()
@@ -192,6 +194,7 @@ public sealed partial class WebHostWindow
     private void CloseOutputVolumeFlyout()
     {
         _outputFlyoutCloseTimer?.Stop();
+        OutputVolumeSlider.CancelDrag();
         if (OutputVolumeFlyout.IsOpen) OutputVolumeFlyout.Hide();
     }
 
@@ -295,6 +298,54 @@ public sealed partial class WebHostWindow
         QueueOutputAudioRequest(CaptureOutputAudioProcesses(), volume: value);
         RememberOutputPreference(_settings with { OutputVolume = value });
         UpdateOutputAudioControls();
+    }
+
+    // Live drag preview: reuses the verified process set; no re-capture, no settings save. Release commits via SetOutputVolume.
+    private void PreviewOutputVolume(double value)
+    {
+        if (!_dispatcherQueue.HasThreadAccess)
+        {
+            _dispatcherQueue.TryEnqueue(() => PreviewOutputVolume(value));
+            return;
+        }
+        if (_closing || _disposed || _outputAudioClosed || !_outputAudioPathVerified
+            || _outputAudioExecutablePath is null
+            || !double.IsFinite(value) || value < 0 || value > 1)
+            return;
+        HashSet<int> processIds;
+        lock (_outputAudioGate) processIds = [.. _outputAudioProcessIds];
+        _pendingOutputDisplayVolume = value;
+        _pendingOutputDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
+        QueueOutputAudioRequest(processIds, volume: value);
+    }
+
+    // A cancelled drag's rollback must survive audio readiness dropping mid-drag. While the audio path is
+    // unverified only the stored preference is restored; volume is applied solely through SetOutputVolume's gate.
+    internal void RestoreOutputVolumePreference(double value)
+    {
+        if (!_dispatcherQueue.HasThreadAccess)
+        {
+            _dispatcherQueue.TryEnqueue(() => RestoreOutputVolumePreference(value));
+            return;
+        }
+        if (_closing || _disposed || !double.IsFinite(value) || value < 0 || value > 1) return;
+        if (_outputAudioPathVerified && _outputAudioExecutablePath is not null)
+        {
+            SetOutputVolume(value);
+            return;
+        }
+        lock (_outputAudioGate)
+        {
+            _outputPreferenceRevision++;
+            _outputPreferenceAttemptRevision = _outputPreferenceRevision;
+            _outputPreferenceAttemptCount = 0;
+            _desiredOutputVolume = value;
+        }
+        _pendingOutputDisplayVolume = null;
+        RememberOutputPreference(_settings with { OutputVolume = value });
+        // A rollback raised from inside UpdateOutputAudioControls refreshes after that pass completes.
+        if (_updatingOutputAudio) _dispatcherQueue.TryEnqueue(UpdateOutputAudioControls);
+        else UpdateOutputAudioControls();
     }
 
     private void ToggleOutputMute()
@@ -649,6 +700,9 @@ public sealed partial class WebHostWindow
         var sessionActive = audio.Available;
         var ready = _outputAudioExecutablePath is not null && _outputAudioPathVerified
             && !_closing && !_disposed && !_outputAudioClosed;
+        // Roll a live drag back while the slider is still enabled and before the displayed value is chosen,
+        // so the restored pre-drag preference (not the last live value) is what gets shown and stored.
+        if (!ready) OutputVolumeSlider.CancelDrag();
         var value = sessionActive ? audio.Volume : _desiredOutputVolume;
         var unavailableHelp = _outputAudioExecutablePath is null
             ? "WebView audio is not initialized."
@@ -667,7 +721,7 @@ public sealed partial class WebHostWindow
             OutputMuteButton.IsEnabled = ready;
             if (!ready)
             {
-                OutputVolumeSlider.CancelDrag();
+                OutputVolumeSlider.CancelDrag(); // Normally a no-op after the early rollback above.
                 CloseOutputVolumeFlyout();
             }
             if (!OutputVolumeSlider.Dragging

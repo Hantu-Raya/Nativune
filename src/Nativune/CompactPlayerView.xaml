@@ -284,6 +284,33 @@
                 </StackPanel>
             </Button>
 
+            <!-- Top-left cluster (Standard/Wide when the title keeps room, Tall always); More has both otherwise.
+                 The shared Checked brushes are transparent (Like/Dislike swap glyphs), so Pin sets its own. -->
+            <ToggleButton x:Name="Pin" Width="36" Height="36"
+                          Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                          ToolTipService.ToolTip="Keep window on top">
+                <ToggleButton.Resources>
+                    <ResourceDictionary>
+                        <ResourceDictionary.ThemeDictionaries>
+                            <ResourceDictionary x:Key="Default">
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#2D2D2D" />
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#383838" />
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#262626" />
+                                <SolidColorBrush x:Key="ToggleButtonBorderBrushChecked" Color="#4A4A4A" />
+                            </ResourceDictionary>
+                            <ResourceDictionary x:Key="HighContrast">
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="{ThemeResource SystemColorHighlightColor}" />
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
+                                <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="{ThemeResource SystemColorHighlightColor}" />
+                                <SolidColorBrush x:Key="ToggleButtonBorderBrushChecked" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                            </ResourceDictionary>
+                        </ResourceDictionary.ThemeDictionaries>
+                    </ResourceDictionary>
+                </ToggleButton.Resources>
+            </ToggleButton>
+            <Button x:Name="Donate" Width="36" Height="36"
+                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                    ToolTipService.ToolTip="Donate on Ko-fi" />
             <Button x:Name="Update" Width="36" Height="36" Visibility="Collapsed"
                     Background="Transparent" BorderBrush="Transparent" BorderThickness="0" />
             <Button x:Name="ReturnToFull" Width="36" Height="36"
@@ -298,6 +325,7 @@
                         <MenuFlyoutItem x:Name="WhatsNewItem" Visibility="Collapsed" />
                         <MenuFlyoutSeparator />
                         <ToggleMenuFlyoutItem x:Name="TopmostItem" Text="Keep window on top" />
+                        <MenuFlyoutItem x:Name="DonateItem" Text="Donate on Ko-fi" />
                         <MenuFlyoutSeparator />
                         <MenuFlyoutItem x:Name="VersionItem"
                                            IsEnabled="False" />

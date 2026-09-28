@@ -191,13 +191,15 @@ internal static partial class ReleaseUpdater
         var installedFiles = current.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
         var needed = new List<DeltaFile>();
         long neededBytes = 0;
+        // One scratch buffer for the whole pass instead of a 128 KiB (large-object-heap) array per file.
+        var hashBuffer = new byte[128 * 1024];
         foreach (var file in target.Files)
         {
             token.ThrowIfCancellationRequested();
             var unchanged = installedFiles.TryGetValue(file.Path, out var old)
                 && old.Length == file.Length
                 && old.Sha256.Equals(file.Sha256, StringComparison.Ordinal)
-                && InstalledFileMatches(rootPath, file, token);
+                && InstalledFileMatches(rootPath, file, hashBuffer, token);
             if (unchanged)
                 continue;
             // The handoff copies the installed Setup, so it must already be intact on disk.
@@ -218,7 +220,7 @@ internal static partial class ReleaseUpdater
             targetInstaller);
     }
 
-    private static bool InstalledFileMatches(string rootPath, DeltaFile file, CancellationToken token)
+    private static bool InstalledFileMatches(string rootPath, DeltaFile file, byte[] buffer, CancellationToken token)
     {
         var path = ResolveRelativePath(rootPath, file.Path);
         if (path is null || !IsRegularFile(path))
@@ -227,7 +229,6 @@ internal static partial class ReleaseUpdater
         if (stream.Length != file.Length)
             return false;
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var buffer = new byte[128 * 1024];
         long total = 0;
         while (true)
         {

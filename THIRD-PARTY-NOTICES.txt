@@ -41,7 +41,7 @@ Barebones Better Lyrics 2.4.1.2
   licenses/BarebonesBetterLyrics-GPL-3.0.txt, with copyright and bundled
   dependency notices (MIT) at licenses/BarebonesBetterLyrics-NOTICE.txt.
 - It is a separate program from Nativune and is not covered by Nativune's MIT
-  License. It is loaded only when the user turns on Lyrics in Settings.
+  License. It is loaded by default; turning off Lyrics in Settings stops it.
 - Corresponding source: barebones-better-lyrics-<version>-source.zip, published
   beside each Nativune release, and
   https://github.com/Hantu-Raya/barebones-better-lyrics at the commit pinned in

@@ -92,6 +92,7 @@ public sealed partial class SettingsDialog : Window
         AutomationProperties.SetName(InstallKindText, InstallKindText.Text);
         CopyStatusButton.IsEnabled = statusText is not null;
         CopyStatusButton.Click += (_, _) => CopyStatus();
+        DonateButton.Click += async (_, _) => await OpenDonationPageAsync();
         StartWithWindows = startupState is StartupEntryState.On or StartupEntryState.DisabledByUser;
         InitializeUpdatesAndStartup(initial);
         InitializeDiscord(initial);
@@ -465,8 +466,6 @@ public sealed partial class SettingsDialog : Window
         OpenLyricsSettingsButton.Click += (_, _) => OpenLyricsSettingsRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    internal void SelectLyricsPage() => Nav.SelectedItem = LyricsNavItem;
-
     internal void SetLyricsStatus(string text, bool canOpenSettings)
     {
         OpenLyricsSettingsButton.IsEnabled = canOpenSettings;
@@ -552,6 +551,16 @@ public sealed partial class SettingsDialog : Window
         {
             CopyStatusResult.Text = "The clipboard is not available right now.";
         }
+        if (FrameworkElementAutomationPeer.FromElement(CopyStatusResult) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    // Opens the Ko-fi page in the default browser; only a failure is announced (in the About page's result line).
+    private async Task OpenDonationPageAsync()
+    {
+        if (await AppVersion.TryOpenDonationPageAsync() || _closed)
+            return;
+        CopyStatusResult.Text = AppVersion.DonationFailedMessage;
         if (FrameworkElementAutomationPeer.FromElement(CopyStatusResult) is { } peer)
             peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }

@@ -247,6 +247,7 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyoutItem _discordSettingsItem = null!;
     private MenuFlyoutItem _quitItem = null!;
     private MenuFlyoutItem _versionItem = null!;
+    private MenuFlyoutItem _donateItem = null!;
 
     public int ExitCode { get; private set; }
     public nint NativeHandle { get; private set; }
@@ -483,11 +484,15 @@ public sealed partial class WebHostWindow : Window
             IsEnabled = false
         };
         AutomationProperties.SetName(_versionItem, $"About {AppVersion.DisplayName}");
+        _donateItem = CreateMenuItem("Donate on Ko-fi", "donate", () => _ = OpenDonationPageAsync());
+        AutomationProperties.SetHelpText(_donateItem, "Opens ko-fi.com/hanturaya in your default browser.");
 
-        AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator(),
+        AddRange(_moreFlyout, _retryItem, new MenuFlyoutSeparator());
+        AddRange(_moreFlyout, CreateToolbarOverflowItems());
+        AddRange(_moreFlyout,
             _playbackSubItem, _fullscreenItem, _topmostItem, _zoomSubItem, new MenuFlyoutSeparator(),
             _discordPresenceItem, _discordSettingsItem, _settingsItem, _statusDetailsItem,
-            new MenuFlyoutSeparator(), _versionItem, new MenuFlyoutSeparator(), _quitItem);
+            new MenuFlyoutSeparator(), _versionItem, _donateItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
         TimerButton.Flyout = _timerFlyout;
@@ -595,6 +600,15 @@ public sealed partial class WebHostWindow : Window
         _statusDetailsItem.Icon = _iconCache.CreateElement("status", 16);
         _settingsItem.Icon = _iconCache.CreateElement("settings", 16);
         _quitItem.Icon = _iconCache.CreateElement("quit", 16);
+        _donateItem.Icon = _iconCache.CreateElement("donate", 16);
+        SetToolbarOverflowIcons();
+    }
+
+    private async Task OpenDonationPageAsync()
+    {
+        if (_closing || _disposed) return;
+        if (!await AppVersion.TryOpenDonationPageAsync() && !_closing && !_disposed)
+            SetStatus(AppVersion.DonationFailedMessage, isError: true);
     }
 
     private void SetTopmost(bool value)
@@ -1369,6 +1383,7 @@ public sealed partial class WebHostWindow : Window
             TimerButton.Content = badge;
             TimerButton.Width = Math.Max(80, 36 + badge.Length * 8);
         }
+        UpdateToolbarOverflow();
     }
 
     private void UpdateTimerPresentation()
@@ -1813,6 +1828,7 @@ public sealed partial class WebHostWindow : Window
             titleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
             var scale = RootGrid.XamlRoot?.RasterizationScale ?? CurrentDpi() / 96d;
             CaptionButtonsColumn.Width = new GridLength((_fullscreen ? 0 : titleBar.RightInset / scale) + 8);
+            UpdateToolbarOverflow();
             if (RootGrid.XamlRoot is null || TitleDragRegion.ActualWidth <= 0) return;
             var left = TitleDragRegion.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point()).X;
             var drag = new RectInt32((int)Math.Round(left * scale), 0,
@@ -2099,6 +2115,19 @@ public sealed partial class WebHostWindow : Window
             Marshal.StructureToPtr(info, lParam, false);
             return true;
         }
+        if (message == WmGetMinMaxInfo && !_compact && !_fullscreen && lParam != 0)
+        {
+            var minimum = FullToolbarMinimumDip();
+            if (minimum > 0)
+            {
+                var info = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+                info.MinTrackSize = new PointI(
+                    Math.Max(info.MinTrackSize.X, Dip((int)Math.Ceiling(minimum)) + GetNonClientDelta().X),
+                    info.MinTrackSize.Y);
+                Marshal.StructureToPtr(info, lParam, false);
+                return true;
+            }
+        }
         return false;
     }
 
@@ -2177,9 +2206,10 @@ public sealed partial class WebHostWindow : Window
             MoreButton.Focus(FocusState.Keyboard);
             return;
         }
-        if (BackButton.IsEnabled) BackButton.Focus(FocusState.Keyboard);
-        else if (ForwardButton.IsEnabled) ForwardButton.Focus(FocusState.Keyboard);
-        else HomeButton.Focus(FocusState.Keyboard);
+        static bool CanFocus(Control c) => c.IsEnabled && c.Visibility == Visibility.Visible;
+        foreach (var candidate in new Control[] { BackButton, ForwardButton, HomeButton })
+            if (CanFocus(candidate) && candidate.Focus(FocusState.Keyboard)) return;
+        MoreButton.Focus(FocusState.Keyboard);
     }
 
     private static bool IsDescendantOf(DependencyObject element, DependencyObject ancestor)
