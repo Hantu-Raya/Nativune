@@ -2193,9 +2193,10 @@ public sealed partial class WebHostWindow : Window
             MoreButton.Focus(FocusState.Keyboard);
             return;
         }
-        if (BackButton.IsEnabled) BackButton.Focus(FocusState.Keyboard);
-        else if (ForwardButton.IsEnabled) ForwardButton.Focus(FocusState.Keyboard);
-        else HomeButton.Focus(FocusState.Keyboard);
+        static bool CanFocus(Control c) => c.IsEnabled && c.Visibility == Visibility.Visible;
+        foreach (var candidate in new Control[] { BackButton, ForwardButton, HomeButton })
+            if (CanFocus(candidate) && candidate.Focus(FocusState.Keyboard)) return;
+        MoreButton.Focus(FocusState.Keyboard);
     }
 
     private static bool IsDescendantOf(DependencyObject element, DependencyObject ancestor)

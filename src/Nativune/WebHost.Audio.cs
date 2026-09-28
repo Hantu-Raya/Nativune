@@ -192,6 +192,7 @@ public sealed partial class WebHostWindow
     private void CloseOutputVolumeFlyout()
     {
         _outputFlyoutCloseTimer?.Stop();
+        OutputVolumeSlider.CancelDrag();
         if (OutputVolumeFlyout.IsOpen) OutputVolumeFlyout.Hide();
     }
 

@@ -2003,6 +2003,9 @@ public sealed class CompactVolumeSlider : Slider
     private bool _dragging;
     private Pointer? _pointer;
     private double _originalValue;
+    // Last value observed outside a press; a track click can move Value before our pressed observer runs.
+    private double _restValue;
+    private bool _pressing;
     private bool _liveSent;
     private DateTime _lastLive;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _liveTimer;
@@ -2016,6 +2019,30 @@ public sealed class CompactVolumeSlider : Slider
         AddHandler(PointerPressedEvent, new PointerEventHandler(OnPointerPressedInternal), true);
         AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleasedInternal), true);
         PointerCanceled += (_, _) => CancelDrag();
+        PointerCaptureLost += OnPointerCaptureLost;
+    }
+
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        // The thumb drops capture inside its own PointerReleased, before our handledEventsToo release
+        // observer runs; cancel on the next turn only if no release has ended this drag by then.
+        if (!_dragging || _pointer is null || e.Pointer.PointerId != _pointer.PointerId) return;
+        var pointerId = _pointer.PointerId;
+        if (DispatcherQueue?.TryEnqueue(() =>
+            {
+                if (_dragging && _pointer is not null && _pointer.PointerId == pointerId)
+                    CancelDrag();
+            }) != true)
+            CancelDrag();
+    }
+
+    protected override void OnPointerPressed(PointerRoutedEventArgs e)
+    {
+        // Slider moves Value to the clicked track position inside base; remember the value from before it.
+        if (!_dragging) _restValue = Value;
+        _pressing = true;
+        try { base.OnPointerPressed(e); }
+        finally { _pressing = false; }
     }
 
     internal void CancelDrag()
@@ -2033,7 +2060,11 @@ public sealed class CompactVolumeSlider : Slider
     protected override void OnValueChanged(double oldValue, double newValue)
     {
         base.OnValueChanged(oldValue, newValue);
-        if (!_dragging) return;
+        if (!_dragging)
+        {
+            if (!_pressing) _restValue = newValue;
+            return;
+        }
         if (DateTime.UtcNow - _lastLive >= LiveInterval)
         {
             SendLive();
@@ -2094,7 +2125,7 @@ public sealed class CompactVolumeSlider : Slider
             && !point.Properties.IsLeftButtonPressed) return;
         _dragging = true;
         _pointer = e.Pointer;
-        _originalValue = Value;
+        _originalValue = _restValue;
         _liveSent = false;
     }
 
