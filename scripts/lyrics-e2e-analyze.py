@@ -342,7 +342,8 @@ arms = [a["arm"] for a in config["arms"]]
 ev_by = {a: events(a) for a in arms}
 nl = {a: netlog(a) for a in arms}
 # Post-data amendment: the page baseline is every lyrics-off control arm (C, C2, C3), not C alone; C must still exist.
-control = set().union(*(set(nl[a]["hosts"]) for a in ("C", "C2", "C3") if nl.get(a))) if nl.get("C") else None
+control_arms = [a for a in ("C", "C2", "C3") if nl.get(a)] if nl.get("C") else []
+control = set().union(*(set(nl[a]["hosts"]) for a in control_arms)) if control_arms else None
 hosts_out = {"note": "host names only, from structured NetLog fields (URL request, resolver, connect events); counts are event hits, not request counts; googlevideo shards ignored in rules; ad hosts ignored only when the lyrics bundle has no ad-host names",
              "bundleMentionsAds": BUNDLE_MENTIONS_ADS,
              "arms": {a: dict(n["hosts"].most_common()) for a, n in nl.items() if n}, "onlyWithExtension": {},
@@ -370,7 +371,7 @@ for a in arms:
 scenarios = {}
 
 
-def verdict(name, expected, checks, evidence, needed_arms=(), needs_control=False):
+def verdict(name, expected, checks, evidence, needed_arms=(), needs_control=False, uses_control=None):
     missing = [a for a in needed_arms if not ev_by.get(a)]
     if missing:
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": f"no bench log for arm(s) {missing}", "evidence": evidence}
@@ -378,15 +379,18 @@ def verdict(name, expected, checks, evidence, needed_arms=(), needs_control=Fals
     if needs_control and control is None:
         scenarios[name] = {"status": "blocked", "expected": expected, "reason": "control arm C netlog missing", "evidence": evidence}
         return
-    # Every needed arm must have exited 0; a missing exit record is unmeasurable.
+    # Every needed arm, and every control arm whose netlog formed the baseline when the scenario uses it, must have exited 0;
+    # a missing exit record is unmeasurable.
+    uses = needs_control if uses_control is None else uses_control
+    exit_arms = tuple(dict.fromkeys(tuple(needed_arms) + (tuple(control_arms) if uses else ())))
     exit_codes = {}
-    for a in needed_arms:
+    for a in exit_arms:
         p = os.path.join(out, f"{a}.exitcode")
         try:
             exit_codes[a] = int(open(p, encoding="ascii").read().strip()) if os.path.exists(p) else None
         except ValueError:
             exit_codes[a] = None
-    if needed_arms:
+    if exit_arms:
         checks = {**checks, "appExitZero": None if None in exit_codes.values() else all(c == 0 for c in exit_codes.values())}
         evidence = {**evidence, "exitCodes": exit_codes} if isinstance(evidence, dict) else {"evidence": evidence, "exitCodes": exit_codes}
     # A measured failure is a fail even when another check is unmeasurable; only all-measured-or-unknown is blocked.
@@ -458,7 +462,7 @@ if "Idle" in selected:
               "alarmsUndefined": (None if not probe else (probe.get("types") or {}).get("alarms") == "undefined"),
               "noNewHostAfterMinute1": None if late is None else not late}
     verdict("Idle", "10 min idle: no worker registration, chrome.alarms undefined, no new non-control host after the first minute",
-            checks, {"probe": probe, "lateHosts": late, "controlUsed": control is not None}, ("I",))
+            checks, {"probe": probe, "lateHosts": late, "controlUsed": control is not None}, ("I",), uses_control=control is not None)
 
 if "TranslateOn" in selected:
     ev = ev_by.get("T1", [])
@@ -724,7 +728,7 @@ if "StyleIsolation" in selected:
             "and html/body classes and attributes identical between S (lyrics on) and C2 (lyrics off); only html/body attributes that also "
             "differ between C2 and C3 (both lyrics off) are ignored, and --blyrics-* declarations are removed from html/body inline style",
             checks, {"differences": diffs, "ignoredVolatileKeys": ignored, "context": sheets, "captures": captures,
-                     "c3Present": {n: style_probe("C3", n) is not None for n in STYLE_PROBES}}, ("S", "C2"))
+                     "c3Present": {n: style_probe("C3", n) is not None for n in STYLE_PROBES}}, ("S", "C2", "C3"))
 
 if "Smoke" in selected:
     m = summary.get("M", {})

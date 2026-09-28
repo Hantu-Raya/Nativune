@@ -42,11 +42,12 @@ function Launch([string] $label) {
         $item = @(($ext[0] | ConvertFrom-Json).items | Where-Object { $_.id -eq 'ogodmldcmpbfeekmejkeppchklblochl' })
         $enabled = if ($item.Count) { [bool] $item[0].enabled } else { $false }
     }
-    [ordered]@{ step = $label; marker = $(if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { $null }); events = $events; extensionEnabled = $enabled }
+    [ordered]@{ step = $label; exitCode = $p.ExitCode; marker = $(if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { $null }); events = $events; extensionEnabled = $enabled }
 }
 
 function Check($result, [string[]] $expectedEvents) {
     $problems = @()
+    if ($result.exitCode -ne 0) { $problems += "exit code $($result.exitCode)" }
     if (($result.events -join '|') -cne ($expectedEvents -join '|')) { $problems += "events [$($result.events -join ', ')] expected [$($expectedEvents -join ', ')]" }
     if ($result.marker -cne $version) { $problems += "record '$($result.marker)' expected '$version'" }
     if ($result.extensionEnabled -ne $true) { $problems += "extension enabled = $($result.extensionEnabled)" }

@@ -127,7 +127,7 @@ Second amendment, after the first run on the fixed fork (`style-green/20260927T2
   - **Why:** in that run, Core track 1 (`dQw4w9WgXcQ`, richsync) passed 100 %. Track 2 (`U4_X2p6rPJI`, line-synced) scored 0 %: every sample had exactly one `[null, null, null]` row, while its word frontier was correct (for example, `active` at 40.30–40.35 s with `t` = 40.26 s).
   - **Unchanged:** a line that has letters but no word spans still fails the sample.
 
-**Exit-code amendment (28 Sep 2026, Codex review of `139b64f`).** The runner writes each arm's process exit code to `<arm>.exitcode` (also after a forced kill). Every scenario adds `appExitZero`: all its arms exited 0. A nonzero code fails the scenario; a missing record is unmeasurable. **Why:** a scheduled quit that hits a native error (for example, `ShutdownCoreAsync` setting exit code 1 after a failed cleanup) produced the same observations as a clean quit, so the report could pass.
+**Exit-code amendment (28 Sep 2026, Codex reviews of `139b64f` and `8fb6f34`).** The runner writes each arm's process exit code to `<arm>.exitcode` (also after a forced kill). Every scenario adds `appExitZero`: all its arms exited 0, including every control arm (C, C2, C3) whose netlog formed the host baseline when the scenario uses that baseline. A nonzero code fails the scenario; a missing record is unmeasurable. StyleIsolation now requires C3 as well as S and C2. **Why:** a scheduled quit that hits a native error (for example, `ShutdownCoreAsync` setting exit code 1 after a failed cleanup) produced the same observations as a clean quit, so the report could pass.
 
 **Not covered:**
 - signed-in or Premium playback;
