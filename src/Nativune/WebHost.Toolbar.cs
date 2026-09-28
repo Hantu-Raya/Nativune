@@ -7,7 +7,8 @@ namespace Nativune;
 
 // Narrow full windows: the toolbar needs about 600 DIP with every button, so the lowest-priority buttons collapse
 // into More (owner decision, 28 September 2026) instead of sliding under the caption buttons. Order: Forward,
-// Update, Discord (More already has its toggle and settings), Timer, app volume, then Home. Compact, Back and More stay.
+// Update, Discord (More already has its toggle and settings), Timer, app volume, then Home. Compact, Back and More stay,
+// and the full window's minimum width is that non-collapsible footprint plus the drag area and caption buttons.
 public sealed partial class WebHostWindow
 {
     private const double ToolbarSpacing = 4;
@@ -54,7 +55,7 @@ public sealed partial class WebHostWindow
         if (_disposed || ToolbarHost.ActualWidth <= 0) return;
         var available = ToolbarHost.ActualWidth - Toolbar.Margin.Left - Toolbar.Margin.Right
             - CaptionButtonsColumn.Width.Value - ToolbarDragMinimum;
-        UIElement[] order = [ForwardButton, UpdateButton, DiscordButton, TimerButton, OutputMuteButton, HomeButton];
+        var order = CollapseOrder();
         var hidden = 0;
         while (hidden < order.Length && ToolbarWidth(order, hidden) > available)
             hidden++;
@@ -62,6 +63,18 @@ public sealed partial class WebHostWindow
             SetVisible(order[i], i >= hidden);
         SetVisible(DiscordSeparator, DiscordButton.Visibility == Visibility.Visible || UpdateButton.Visibility == Visibility.Visible);
         if (_moreFlyout?.IsOpen == true) RefreshToolbarOverflowItems();
+    }
+
+    private UIElement[] CollapseOrder()
+        => [ForwardButton, UpdateButton, DiscordButton, TimerButton, OutputMuteButton, HomeButton];
+
+    // Width in DIP below which the fixed toolbar controls would slide under the caption buttons; 0 before layout.
+    private double FullToolbarMinimumDip()
+    {
+        if (ToolbarHost.ActualWidth <= 0) return 0;
+        var order = CollapseOrder();
+        return Toolbar.Margin.Left + Toolbar.Margin.Right + ToolbarWidth(order, order.Length)
+            + ToolbarDragMinimum + CaptionButtonsColumn.Width.Value;
     }
 
     private double ToolbarWidth(UIElement[] order, int hidden)

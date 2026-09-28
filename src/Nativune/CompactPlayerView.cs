@@ -716,6 +716,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _seek.DragCancelled += CancelSeekDrag;
         _volumeSlider.ValueChanged += VolumeSliderChanged;
         _volumeSlider.Committed += VolumeSliderCommitted;
+        _volumeSlider.LiveChanged += VolumeSliderLiveChanged;
+        _volumeSlider.RolledBack += VolumeSliderRolledBack;
         _volume.PointerEntered += VolumePointerEntered;
         _volume.PointerExited += VolumePointerExited;
         _volumePopupSurface.PointerEntered += VolumePopupPointerEntered;
@@ -955,7 +957,12 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     {
         var sliderStep = Math.Round(_outputVolume * _volumeSlider.Maximum, MidpointRounding.AwayFromZero);
         if (_volume.IsEnabled != _outputAvailable) _volume.IsEnabled = _outputAvailable;
-        if (_volumeSlider.IsEnabled != _outputAvailable) _volumeSlider.IsEnabled = _outputAvailable;
+        if (_volumeSlider.IsEnabled != _outputAvailable)
+        {
+            // Roll a live drag back while the slider can still report it; the restore path is not IsEnabled-gated.
+            if (!_outputAvailable) _volumeSlider.CancelDrag();
+            _volumeSlider.IsEnabled = _outputAvailable;
+        }
         var name = _outputMuted ? "Unmute app output" : "Mute app output";
         var help = !_outputAvailable
             ? CompactVolumeUnavailableHelp
@@ -1401,6 +1408,16 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumeCommitTimer.Start();
     }
 
+    private void VolumeSliderLiveChanged(double normalized)
+    {
+        if (!_updatingControls && _volumePopup.IsOpen && _volumeSlider.IsEnabled)
+        {
+            _pendingOutputVolume = Math.Clamp(normalized, 0, 1);
+            _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
+            RaiseCommand("output-volume-live", _pendingOutputVolume.Value);
+        }
+    }
+
     private void VolumeSliderCommitted(double normalized)
     {
         _volumeCommitTimer.Stop();
@@ -1410,6 +1427,15 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _outputPendingUntil = DateTime.UtcNow.AddSeconds(2);
             RaiseCommand("output-volume", _pendingOutputVolume.Value);
         }
+    }
+
+    // Rollbacks restore the stored preference even when the popup closed or output became unavailable mid-drag.
+    private void VolumeSliderRolledBack(double normalized)
+    {
+        _volumeCommitTimer.Stop();
+        _pendingOutputVolume = null;
+        if (double.IsFinite(normalized))
+            RaiseCommand("output-volume-restore", Math.Clamp(normalized, 0, 1));
     }
 
 
@@ -2010,8 +2036,12 @@ public sealed class CompactVolumeSlider : Slider
     private DateTime _lastLive;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _liveTimer;
 
-    // Raised with the normalized value on release, keyboard steps and, throttled, while dragging.
+    // Raised with the normalized value on release and keyboard steps.
     internal event Action<double>? Committed;
+    // Raised, throttled, with the normalized value while dragging (preview only; not persisted).
+    internal event Action<double>? LiveChanged;
+    // Raised with the pre-drag normalized value when a cancelled drag had already sent live values.
+    internal event Action<double>? RolledBack;
     internal bool Dragging => _dragging;
 
     public CompactVolumeSlider()
@@ -2053,7 +2083,7 @@ public sealed class CompactVolumeSlider : Slider
         _liveTimer?.Stop();
         Value = _originalValue;
         // A cancelled drag already applied live values; put the output back to where the drag started.
-        if (_liveSent) Committed?.Invoke(Value / Math.Max(1, Maximum));
+        if (_liveSent) RolledBack?.Invoke(Value / Math.Max(1, Maximum));
         _liveSent = false;
     }
 
@@ -2086,7 +2116,7 @@ public sealed class CompactVolumeSlider : Slider
         _liveTimer?.Stop();
         _lastLive = DateTime.UtcNow;
         _liveSent = true;
-        Committed?.Invoke(Value / Math.Max(1, Maximum));
+        LiveChanged?.Invoke(Value / Math.Max(1, Maximum));
     }
 
     protected override void OnKeyDown(KeyRoutedEventArgs e)

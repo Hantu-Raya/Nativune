@@ -958,8 +958,8 @@ internal static class CompactViewChecks
         ((Slider)volumeSlider).Value = 100;
         commands.Clear();
         view.SetActive(false);
-        Require(commands.Count(command => command.Command == "output-volume") == 1
-            && commands.Any(command => command.Command == "output-volume"
+        Require(commands.Count(command => command.Command == "output-volume-restore") == 1
+            && commands.Any(command => command.Command == "output-volume-restore"
                 && Math.Abs((command.Value ?? -1) - .4) < .001),
             "Deactivating Compact mid-drag did not roll the app volume back.");
         view.SetActive(true);

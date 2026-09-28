@@ -2115,6 +2115,19 @@ public sealed partial class WebHostWindow : Window
             Marshal.StructureToPtr(info, lParam, false);
             return true;
         }
+        if (message == WmGetMinMaxInfo && !_compact && !_fullscreen && lParam != 0)
+        {
+            var minimum = FullToolbarMinimumDip();
+            if (minimum > 0)
+            {
+                var info = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+                info.MinTrackSize = new PointI(
+                    Math.Max(info.MinTrackSize.X, Dip((int)Math.Ceiling(minimum)) + GetNonClientDelta().X),
+                    info.MinTrackSize.Y);
+                Marshal.StructureToPtr(info, lParam, false);
+                return true;
+            }
+        }
         return false;
     }
 
