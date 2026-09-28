@@ -864,7 +864,10 @@ public sealed partial class WebHostWindow : Window
                 if (!CanContinueInitialization(lifetimeToken))
                     return;
                 _privacySetupUri = setupUri;
-                _configuringPrivacy = setupUri is not null;
+                // Stay in startup mode until the lyrics setup below has also finished (cleared before Music loads);
+                // runtime Lyrics Off relies on this guard to leave the extension to the startup path.
+                if (setupUri is not null)
+                    _configuringPrivacy = true;
             }, _settings.BlockAds, lifetimeToken);
             if (!CanContinueInitialization(lifetimeToken))
                 return;

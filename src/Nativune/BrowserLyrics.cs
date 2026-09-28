@@ -104,7 +104,8 @@ internal static class BrowserLyrics
             // which never matches: a removal or add that fails is retried next launch instead of the old copy being
             // taken for the new version. If even that write fails, removing now would repeat on every launch and wipe
             // the settings each time, so the existing copy is kept (disabled) and the failure is surfaced instead.
-            if (extension is not null && !string.Equals(ReadRecordedVersion(projectRoot), ExtensionVersion, StringComparison.Ordinal))
+            var recordCurrent = string.Equals(ReadRecordedVersion(projectRoot), ExtensionVersion, StringComparison.Ordinal);
+            if (extension is not null && !recordCurrent)
             {
                 if (!RecordInstalledVersion(projectRoot, PendingPrefix + ExtensionVersion))
                 {
@@ -161,7 +162,14 @@ internal static class BrowserLyrics
                 await TryDisableAfterFailureAsync(core, token);
                 return BrowserLyricsState.Failed("stale");
             }
-            RecordInstalledVersion(projectRoot, ExtensionVersion);
+            // Record the version only when it is not already current. If that write fails, Lyrics stays off for this
+            // session (so no lyric settings accrue) and the next launch's reinstall has nothing of the user's to reset.
+            if (!recordCurrent && !RecordInstalledVersion(projectRoot, ExtensionVersion))
+            {
+                AppLog.Write("lyrics", "failed record");
+                await TryDisableAfterFailureAsync(core, token);
+                return BrowserLyricsState.Failed("record");
+            }
             AppLog.Write("lyrics", "installed " + ExtensionVersion);
             return BrowserLyricsState.Installed(ExtensionVersion);
         }
