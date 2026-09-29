@@ -385,7 +385,12 @@ function Get-OwnerObsProfileSnapshot {
     $appData = Join-Path $env:APPDATA 'obs-studio'
     if (Test-Path -LiteralPath $appData) {
         foreach ($f in Get-ChildItem -LiteralPath $appData -Recurse -File -Force -ErrorAction SilentlyContinue) {
-            $hash = try { (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash } catch { "unreadable: $($_.Exception.GetType().Name)" }
+            # A transient sharing violation must not read as a change: retry up to 3 times, 200 ms apart.
+            $hash = $null
+            for ($try = 1; $try -le 4; $try++) {
+                try { $hash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash; break }
+                catch { $hash = "unreadable: $($_.Exception.GetType().Name)"; if ($try -lt 4) { Start-Sleep -Milliseconds 200 } }
+            }
             $snapshot[$f.FullName] = [ordered]@{ sha256 = $hash; size = $f.Length; mtime = $f.LastWriteTimeUtc.ToString('o') }
         }
     }

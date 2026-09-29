@@ -11,6 +11,7 @@ Regenerate:
   pwsh -NoProfile -File scripts/obs-overlay-obs-e2e.ps1 -Scenario All -OutputDirectory artifacts/obs-overlay-obs
   pwsh -NoProfile -File scripts/obs-overlay-obs-e2e.ps1 -Scenario B-LOOK,B-DOCS -SkipPublish -UpdateDocsImages
   pwsh -NoProfile -File scripts/obs-overlay-obs-e2e.ps1 -Scenario B-VIS,B-ISO -TimeBoxMinutes 15
+  pwsh -NoProfile -File scripts/obs-overlay-obs-e2e.ps1 -Scenario GUIDE [-HoldMinutes 30] [-SkipPublish]
 
 Flow: publish the hook build (-p:DiscordPresenceTestHooks=true) to artifacts/obs-overlay/app unless -SkipPublish;
 snapshot the owner's OBS profile (B-ISO); per session start the app first (Basic-user token through runas when this
@@ -24,6 +25,14 @@ Cleanup (finally): Stop-ObsPortable (close window, 10 s, kill owned tree, delete
 stops and preserves evidence), stop the app.
 
 Scenarios (plan §6.2):
+  GUIDE   Not part of All; runs only when named. Starts a disposable Nativune (Playing steady fixture, normal full view,
+          ObsOverlay off, Discord presence off) and a disposable OBS with its default empty scene (no source created; its
+          main window is moved to 80,80 1280x800), writes <run>/guide-env.json (obsPid, appPid, appWindowTitle, overlayUrl,
+          stopFile, holdDeadlineUtc), then holds until <run>/guide-stop exists or -HoldMinutes (default 30) elapse, so a
+          computer-use agent can capture a from-scratch setup guide. The setup images (docs/images/obs-overlay/setup/NN-*.png)
+          come from a GUIDE hold driven by a computer-use walkthrough (steps recorded in <run>/guide/steps.md), copied to
+          docs/images/obs-overlay/setup/ after owner approval. Cleanup: OBS, then the app; checks
+          GUIDE.ownerObsProfileUnchanged and GUIDE.obsMinutes. The fixture track is 1800 s long.
   B-LOOK  GetSourceScreenshot of the input 'Nativune Overlay' (PNG, native 440x96). After command-navigate restarts
           the fixture timeline (page 0 = new page load): stills at page 8 s (t0) and 18 s (t0+10 s); capture windows
           -0.5..+3.5 s around seek (25 s), pause (45 s, hide: hidePaused on), play (resume 60 s, show) and track B
@@ -52,15 +61,11 @@ Scenarios (plan §6.2):
           hidden, then shown. No screenshots. Shutdown-off: recorded under scenarios.B-VIS.shutdownOff, no check.
   B-ISO   Get-OwnerObsProfileSnapshot (SHA-256, size, mtime under %APPDATA%\obs-studio; listing of
           %LOCALAPPDATA%\obs-studio*) at start and after all cleanup: identical.
-  B-DOCS  Window-scoped captures of the owned OBS windows only (PrintWindow of owned top-level windows of the OBS PID,
-          composited onto the main window's frame; never the desktop): 01-sources-add.png (Sources + popup opened by
-          WM_LBUTTONDOWN/UP posted to the UIA-located Add Source button; the real cursor is not moved; blocked if no
-          owned popup appears within 3 s), 02-browser-properties.png (dialog opened with obs-websocket
-          OpenInputPropertiesDialog, PrintWindow on its HWND, then WM_CLOSE), 03-add-source.gif (main window, menu,
-          properties at ~1 fps), 04-overlay.gif (B-LOOK frames play -> track B -> pause; needs B-LOOK in the
-          same run), 05-paused-dimmed.png (command-obs-hide-paused-off, page 47 s). Each GIF <= 3 MB. Written to
-          <run>/docs-images/; copied to docs/images/obs-overlay/ only with -UpdateDocsImages. The owner reviews the
-          images in the PR.
+  B-DOCS  Regenerates 04-overlay.gif (B-LOOK frames play -> track B -> pause; needs B-LOOK in the same run) and
+          05-paused-dimmed.png (command-obs-hide-paused-off, page 47 s); each GIF <= 3 MB. Written to <run>/docs-images/;
+          copied to docs/images/obs-overlay/ only with -UpdateDocsImages. Also checks B-DOCS.guideSetupImages: every
+          images/obs-overlay/setup/*.png that docs/obs-overlay.md references exists and is non-empty (those images are
+          not regenerated here). The owner reviews the images in the PR.
 
 Report: <OutputDirectory>/<utc>/report.json (checks {name, expected, observed, status pass|fail|blocked}); no secrets.
 Blocked never counts as pass; the exit code is 1 when any check fails or is blocked.
@@ -72,7 +77,9 @@ param(
     [string] $OutputDirectory = 'artifacts/obs-overlay-obs',
     [switch] $UpdateDocsImages,
     [double] $TimeBoxMinutes = 30,
-    [switch] $SkipPublish
+    [switch] $SkipPublish,
+    # GUIDE only: how long the environment is held open (minutes) unless <run>/guide-stop appears first.
+    [ValidateRange(0.1, 240)] [double] $HoldMinutes = 30
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -80,8 +87,9 @@ $ErrorActionPreference = 'Stop'
 $allScenarios = @('B-LOOK', 'B-VIS', 'B-ISO', 'B-DOCS')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $Scenario) {
-    if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
+    if ($name -ne 'All' -and $name -ne 'GUIDE' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, GUIDE (only when named), $($allScenarios -join ', ')." }
 }
+$runGuide = 'GUIDE' -in $Scenario
 $selected = if ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -99,6 +107,7 @@ $docsImages = Join-Path $repo 'docs/images/obs-overlay'
 $rootBase = Join-Path $repo ".cache/obs-overlay-obs-e2e/$runId"
 foreach ($d in @($runDirectory, $lookDirectory, $docsOut, $rootBase)) { [IO.Directory]::CreateDirectory($d) | Out-Null }
 $deadlineUtc = [DateTime]::UtcNow.AddMinutes($TimeBoxMinutes)
+if ('GUIDE' -in $Scenario) { $deadlineUtc = $deadlineUtc.AddMinutes($HoldMinutes) }   # the hold is not part of the readiness time box
 
 $ubolVersion = [regex]::Match((Get-Content -Raw (Join-Path $repo 'src/Nativune/BrowserPrivacy.cs')),
     'ExtensionVersion\s*=\s*"([^"]+)"').Groups[1].Value
@@ -137,7 +146,7 @@ $script:labelSeq = 0
 $script:lookFrames = $null
 $script:python = $null
 
-Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
+Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
 public static class ObsBE2E {
@@ -178,8 +187,7 @@ public static class ObsBE2E {
   }
 }
 "@
-$AE = [System.Windows.Automation.AutomationElement]
-$Scope = [System.Windows.Automation.TreeScope]
+# (UI Automation is no longer used by this script.)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Report helpers (same check format as obs-overlay-e2e.ps1)
@@ -233,7 +241,7 @@ function New-Root([string] $Name) {
     [IO.Directory]::CreateDirectory((Join-Path $root 'data/discord-bench')) | Out-Null
     $root
 }
-function Write-Settings([string] $Root, [bool] $HidePaused = $true) {
+function Write-Settings([string] $Root, [bool] $HidePaused = $true, [hashtable] $Override = @{}) {
     $data = Join-Path $Root 'data'
     [IO.Directory]::CreateDirectory($data) | Out-Null
     $settings = [ordered]@{
@@ -245,6 +253,7 @@ function Write-Settings([string] $Root, [bool] $HidePaused = $true) {
         DiscordPresence = $false; DiscordStatusLine = 0; DiscordOpenButton = $true
         ObsOverlay = $true; ObsHidePaused = $HidePaused
     }
+    foreach ($entry in $Override.GetEnumerator()) { $settings[$entry.Key] = $entry.Value }
     [IO.File]::WriteAllText((Join-Path $data 'settings.json'), ($settings | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 }
 
@@ -436,9 +445,9 @@ function Assert-OverlayServing($App, [string] $Label, [string] $CheckName) {
     }
 }
 # Starts the app first (plan D13); the serving wait runs in Start-ObsSession before every OBS launch.
-function Start-OverlayApp([string] $Name, [string] $BenchProfile = $null, [string] $CheckPrefix) {
+function Start-OverlayApp([string] $Name, [string] $BenchProfile = $null, [string] $CheckPrefix, [hashtable] $SettingsOverride = @{}) {
     $root = New-Root $Name
-    Write-Settings $root $true
+    Write-Settings $root $true $SettingsOverride
     $launchEnv = @{}
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = 'Full' }
     $app = Start-App $root $launchEnv
@@ -589,44 +598,7 @@ function Get-ObsMainWindow($Session) {
     if (-not $h) { throw 'OBS main window not found.' }
     $h
 }
-function Get-FrameRect([IntPtr] $Hwnd) {
-    $r = New-Object ObsBE2E+RECT
-    if ([ObsBE2E]::DwmGetWindowAttribute($Hwnd, 9, [ref] $r, 16) -ne 0 -or $r.Right -le $r.Left) { [void] [ObsBE2E]::GetWindowRect($Hwnd, [ref] $r) }
-    $r
-}
-function Get-WindowBitmap([IntPtr] $Hwnd) {
-    $wr = New-Object ObsBE2E+RECT; [void] [ObsBE2E]::GetWindowRect($Hwnd, [ref] $wr)
-    $w = $wr.Right - $wr.Left; $h = $wr.Bottom - $wr.Top
-    if ($w -le 0 -or $h -le 0) { return $null }
-    $bmp = New-Object System.Drawing.Bitmap $w, $h
-    $g = [System.Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
-    [void] [ObsBE2E]::PrintWindow($Hwnd, $hdc, 2); $g.ReleaseHdc($hdc); $g.Dispose()
-    $fr = Get-FrameRect $Hwnd
-    $crop = New-Object System.Drawing.Rectangle ([Math]::Max(0, $fr.Left - $wr.Left)), ([Math]::Max(0, $fr.Top - $wr.Top)), ([Math]::Min($w, $fr.Right - $fr.Left)), ([Math]::Min($h, $fr.Bottom - $fr.Top))
-    $out = $bmp.Clone($crop, $bmp.PixelFormat); $bmp.Dispose()
-    [pscustomobject]@{ Bitmap = $out; Left = [Math]::Max($fr.Left, $wr.Left); Top = [Math]::Max($fr.Top, $wr.Top) }
-}
-# Window-scoped capture: only the owned OBS process's visible top-level windows (main window, its menus and
-# dialogs), each rendered with PrintWindow and composited bottom-to-top onto the main window's frame. No screen copy.
-function Save-ObsWindowShot($Session, [string] $Path) {
-    $main = Get-ObsMainWindow $Session
-    $mr = Get-FrameRect $main
-    $canvas = New-Object System.Drawing.Bitmap ($mr.Right - $mr.Left), ($mr.Bottom - $mr.Top)
-    $g = [System.Drawing.Graphics]::FromImage($canvas)
-    try {
-        $g.Clear([System.Drawing.Color]::Black)
-        $windows = @([ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)); [Array]::Reverse($windows)
-        $ordered = @($main) + @($windows | Where-Object { $_ -ne $main })
-        foreach ($h in $ordered) {
-            $shot = Get-WindowBitmap $h
-            if (-not $shot) { continue }
-            try { $g.DrawImage($shot.Bitmap, $shot.Left - $mr.Left, $shot.Top - $mr.Top, $shot.Bitmap.Width, $shot.Bitmap.Height) } finally { $shot.Bitmap.Dispose() }
-        }
-        [IO.Directory]::CreateDirectory((Split-Path -Parent $Path)) | Out-Null
-        $canvas.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
-    } finally { $g.Dispose(); $canvas.Dispose() }
-    $Path
-}
+# Window-scoped capture helpers were removed with the setup images (they come from a GUIDE hold now).
 function Get-SourceShotBytes($Session) {
     $r = Obs $Session 'GetSourceScreenshot' @{ sourceName = $sourceName; imageFormat = 'png'; imageWidth = 440; imageHeight = 96 }
     $data = [string] $r.imageData
@@ -1122,18 +1094,9 @@ function Test-BVis($App) {
 }
 
 # ---------------------------------------------------------------------------------------------------------------
-# B-DOCS (UI Automation of the owned OBS window; captures are window-scoped)
+# B-DOCS (04-overlay.gif and 05-paused-dimmed.png; the setup walkthrough images come from GUIDE)
 
-function Find-ObsElement($Session, [scriptblock] $Match, [int] $Seconds = 10) {
-    $pidCond = New-Object System.Windows.Automation.PropertyCondition ($AE::ProcessIdProperty), ([int] $Session.Obs.ProcessId)
-    Wait-For {
-        foreach ($w in $AE::RootElement.FindAll($Scope::Children, $pidCond)) {
-            foreach ($d in @($w) + @($w.FindAll($Scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition))) {
-                try { if (& $Match $d) { return $d } } catch { }
-            }
-        }
-    } $Seconds 300
-}
+# (Setup walkthrough images are not produced here; see GUIDE.)
 function Test-ImageOnDisk([string] $Name, [string] $Path, [bool] $Gif) {
     $exists = Test-Path -LiteralPath $Path -PathType Leaf
     $bytes = if ($exists) { (Get-Item -LiteralPath $Path).Length } else { $null }
@@ -1148,90 +1111,8 @@ function Test-BDocs($App, $Session) {
     # Fixed window size for consistent guide images (only the owned OBS window is moved).
     [void] [ObsBE2E]::SetWindowPos($main, [IntPtr]::Zero, 80, 80, 1280, 800, 0x0014)
     Start-Sleep -Seconds 2
-    $gifFrames = [Collections.Generic.List[string]]::new()
-    $durations = [Collections.Generic.List[int]]::new()
-    $frameDir = Join-Path $runDirectory 'docs-frames'
-    $snap = { param([string] $Tag, [int] $Ms = 900)
-        $p = Save-ObsWindowShot $Session (Join-Path $frameDir ('{0:D2}-{1}.png' -f $gifFrames.Count, $Tag))
-        $gifFrames.Add($p); $durations.Add($Ms); $p }
+    [IO.Directory]::CreateDirectory((Join-Path $runDirectory 'docs-frames')) | Out-Null
 
-    & $snap 'start' 1000 | Out-Null
-    # (1) Sources dock '+' (Add source): located through UIA, clicked with posted WM_LBUTTONDOWN/UP at the button's
-    # client coordinates (the real mouse cursor is never moved). The popup is an owned top-level window of the OBS
-    # PID (Qt popup / QMenu class) that did not exist before the click.
-    $addButton = Find-ObsElement $Session { param($e) $e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $e.Current.Name -eq 'Add Source' } 5
-    if (-not $addButton) {
-        $dock = Find-ObsElement $Session { param($e) $e.Current.Name -eq 'Sources' -and $e.Current.ControlType -ne [System.Windows.Automation.ControlType]::Text } 5
-        if ($dock) {
-            $addButton = $dock.FindAll($Scope::Descendants, [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)) |
-                Where-Object { $_.Current.Name -like 'Add*' -or $_.Current.HelpText -like 'Add*' } | Select-Object -First 1
-        }
-    }
-    if (-not $addButton) { Add-Blocked 'B-DOCS.01-sources-add' 'Sources + button found through UI Automation' 'no Add Source button exposed by OBS UIA' }
-    else {
-        $b = $addButton.Current.BoundingRectangle
-        $target = [IntPtr] $addButton.Current.NativeWindowHandle
-        if ($target -eq [IntPtr]::Zero) { $target = $main }
-        $pt = New-Object ObsBE2E+POINT; $pt.X = [int] ($b.Left + $b.Width / 2); $pt.Y = [int] ($b.Top + $b.Height / 2)
-        [void] [ObsBE2E]::ScreenToClient($target, [ref] $pt)
-        $lp = [IntPtr] ((($pt.Y -band 0xFFFF) -shl 16) -bor ($pt.X -band 0xFFFF))
-        $before = [Collections.Generic.HashSet[long]]::new()
-        foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { [void] $before.Add($h.ToInt64()) }
-        [void] [ObsBE2E]::PostMessage($target, 0x0200, [IntPtr]::Zero, $lp)   # WM_MOUSEMOVE
-        Start-Sleep -Milliseconds 100
-        [void] [ObsBE2E]::PostMessage($target, 0x0201, [IntPtr] 1, $lp)       # WM_LBUTTONDOWN, MK_LBUTTON
-        Start-Sleep -Milliseconds 80
-        [void] [ObsBE2E]::PostMessage($target, 0x0202, [IntPtr]::Zero, $lp)   # WM_LBUTTONUP
-        $popup = Wait-For {
-            foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) {
-                if ($before.Contains($h.ToInt64())) { continue }
-                $cls = [ObsBE2E]::ClassName($h)
-                if ($cls -like '*Popup*' -or $cls -like '*QMenu*' -or $cls -like 'Qt*QWindow*') { return $h }
-            }
-        } 3 150
-        $newWindows = @([ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId) | Where-Object { -not $before.Contains($_.ToInt64()) } | ForEach-Object { [ObsBE2E]::ClassName($_) })
-        $obs.steps.addClick = [ordered]@{ button = $addButton.Current.Name; targetClass = [ObsBE2E]::ClassName($target); client = @($pt.X, $pt.Y)
-            popupClass = if ($popup) { [ObsBE2E]::ClassName($popup) } else { $null }; newOwnedWindows = $newWindows }
-        if (-not $popup) {
-            Add-Blocked 'B-DOCS.01-sources-add' 'Sources + popup opened by a posted click on the Add Source button' "no new owned popup window within 3 s after WM_LBUTTONDOWN/UP to $($obs.steps.addClick.targetClass) at client $($pt.X),$($pt.Y) (new owned windows: $($newWindows -join ', '))"
-        } else {
-            Start-Sleep -Milliseconds 400
-            $shot1 = & $snap 'menu' 1000
-            $menuShot = Get-WindowBitmap $popup
-            if ($menuShot) { try { $menuShot.Bitmap.Save((Join-Path $frameDir 'menu-only.png'), [System.Drawing.Imaging.ImageFormat]::Png) } finally { $menuShot.Bitmap.Dispose() } }
-            Copy-Item -LiteralPath $shot1 -Destination (Join-Path $docsOut '01-sources-add.png') -Force
-            Add-Check 'B-DOCS.01.popupOpened' 'Sources + popup opened (owned top-level popup window) and captured window-scoped' $obs.steps.addClick $true
-            [void] [ObsBE2E]::PostMessage($popup, 0x0100, [IntPtr] 0x1B, [IntPtr]::Zero)   # WM_KEYDOWN Escape
-            [void] [ObsBE2E]::PostMessage($popup, 0x0101, [IntPtr] 0x1B, [IntPtr]::Zero)
-            if (-not (Wait-For { -not [ObsBE2E]::IsWindowVisible($popup) } 2 150)) { [void] [ObsBE2E]::PostMessage($popup, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
-            Start-Sleep -Milliseconds 300
-        }
-    }
-
-    # (2) Browser source properties: opened with obs-websocket OpenInputPropertiesDialog, captured with PrintWindow on
-    # the owned dialog HWND only, then closed with WM_CLOSE (no settings changed).
-    $beforeProps = [Collections.Generic.HashSet[long]]::new()
-    foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { [void] $beforeProps.Add($h.ToInt64()) }
-    $openError = $null
-    try { [void] (Obs $Session 'OpenInputPropertiesDialog' @{ inputName = $sourceName }) } catch { $openError = $_.Exception.Message }
-    $dialog = if ($openError) { $null } else {
-        Wait-For { foreach ($h in [ObsBE2E]::Windows([uint32] $Session.Obs.ProcessId)) { if (-not $beforeProps.Contains($h.ToInt64()) -and [ObsBE2E]::Title($h) -like 'Properties*') { return $h } } } 10 200 }
-    if (-not $dialog) {
-        Add-Blocked 'B-DOCS.02-browser-properties' 'properties dialog opened by OpenInputPropertiesDialog' $(if ($openError) { "request failed: $openError" } else { 'no new owned Properties window within 10 s' })
-    } else {
-        Start-Sleep -Seconds 2   # let the dialog's preview and property widgets render
-        $shot = Get-WindowBitmap $dialog
-        if ($shot) { try { $shot.Bitmap.Save((Join-Path $docsOut '02-browser-properties.png'), [System.Drawing.Imaging.ImageFormat]::Png) } finally { $shot.Bitmap.Dispose() } }
-        & $snap 'props' 2000 | Out-Null
-        $obs.steps.properties = [ordered]@{ title = [ObsBE2E]::Title($dialog); captured = [bool] $shot }
-        Add-Check 'B-DOCS.02.dialogCaptured' 'owned Properties dialog captured window-scoped (PrintWindow on its HWND)' $obs.steps.properties ([bool] $shot)
-        [void] [ObsBE2E]::PostMessage($dialog, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
-        $obs.steps.properties.closed = [bool] (Wait-For { -not [ObsBE2E]::IsWindowVisible($dialog) } 10 250)
-    }
-    # (3) GIF of the captured sequence (main window, + menu if captured, properties dialog over the main window) ~1 fps.
-    if ($gifFrames.Count -gt 1) {
-        $obs.gif03 = Invoke-Pillow 'gif' ([ordered]@{ out = (Join-Path $docsOut '03-add-source.gif'); frames = @($gifFrames); durations = @($durations); widths = @(1280, 1024, 800, 640); maxBytes = 3MB })
-    }
 
     # (4) Overlay GIF from B-LOOK frames: playing -> track change -> pause (hide).
     if ($script:lookFrames) {
@@ -1265,13 +1146,25 @@ function Test-BDocs($App, $Session) {
         try { [void] (Send-HookCommand $App.Root 'command-obs-hide-paused-on') } catch { }
     }
 
-    # Every image exists at the path the guide references; GIFs <= 3 MB.
+    # Every regenerated image exists at the path the guide references; GIFs <= 3 MB.
     $guide = Get-Content -Raw -LiteralPath (Join-Path $repo 'docs/obs-overlay.md')
-    foreach ($n in @('01-sources-add.png', '02-browser-properties.png', '03-add-source.gif', '04-overlay.gif', '05-paused-dimmed.png')) {
+    foreach ($n in @('04-overlay.gif', '05-paused-dimmed.png')) {
         $referenced = $guide.Contains("images/obs-overlay/$n")
         Add-Check "B-DOCS.guideReferences.$n" 'docs/obs-overlay.md references the image' $referenced $referenced
         Test-ImageOnDisk $n (Join-Path $docsOut $n) ($n -like '*.gif')
     }
+    # Setup images (docs/images/obs-overlay/setup/NN-*.png) come from a GUIDE hold, not from B-DOCS: only check that
+    # every one the guide references exists in the repository and is non-empty.
+    $setupRefs = @([regex]::Matches($guide, 'images/obs-overlay/setup/[A-Za-z0-9._-]+\.png') | ForEach-Object { $_.Value } | Select-Object -Unique)
+    $setupState = @($setupRefs | ForEach-Object {
+        $p = Join-Path $repo ('docs/' + $_)
+        $len = if (Test-Path -LiteralPath $p -PathType Leaf) { (Get-Item -LiteralPath $p).Length } else { $null }
+        [ordered]@{ image = $_; bytes = $len; ok = ($null -ne $len -and $len -gt 0) }
+    })
+    $setupBad = @($setupState | Where-Object { -not $_.ok })
+    $obs.setupImages = [ordered]@{ referenced = $setupRefs.Count; missingOrEmpty = $setupBad.Count }
+    Add-Check 'B-DOCS.guideSetupImages' 'docs/obs-overlay.md references at least one images/obs-overlay/setup/*.png and every referenced file exists and is non-empty' ([ordered]@{
+            referenced = $setupRefs.Count; problems = @($setupBad | ForEach-Object { $_.image }); images = $setupState }) ($setupRefs.Count -gt 0 -and $setupBad.Count -eq 0)
     $obs.ownerReview = 'pending: only fixture titles/art, no other window, notification or personal path (owner reviews the images in the PR)'
     if ($UpdateDocsImages) {
         [IO.Directory]::CreateDirectory($docsImages) | Out-Null
@@ -1287,10 +1180,80 @@ function Test-BDocs($App, $Session) {
 # ---------------------------------------------------------------------------------------------------------------
 # Runner
 
+# GUIDE (only when named; not part of All). Starts a disposable Nativune (ObsOverlay off, normal full view via bench
+# state Full, Playing steady profile, Discord presence off) and a disposable OBS with its default empty scene (no
+# Initialize-ObsOverlayScene, no input), moves the OBS main window to 80,80 1280x800, writes <run>/guide-env.json and
+# holds until <run>/guide-stop exists or -HoldMinutes elapse. Both are stopped by the caller's finally path.
+function Invoke-Guide {
+    $g = [ordered]@{ holdMinutes = $HoldMinutes }
+    $scenarioResults['GUIDE'] = $g
+    Assert-TimeBox
+    $guide = Start-OverlayApp 'guide' 'Playing' 'GUIDE' @{ ObsOverlay = $false }
+    $script:guideApp = $guide
+    $readyPath = Join-Path (Get-BenchDirectory $guide.Root) 'ready.json'
+    $ready = Test-Path -LiteralPath $readyPath
+    Add-Check 'GUIDE.appReady' 'Playing fixture ready in the normal full view (ready.json)' ([ordered]@{ ready = $ready; failedJson = Get-FailedJson $guide.Root; adminEnabled = (Get-AdminEnabled $guide.App.Id) }) $ready
+    if (-not $ready) { throw 'GUIDE: the app did not become ready; OBS is not launched.' }
+    $p = $guide.App
+    $title = Wait-For { $p.Refresh(); if ($p.MainWindowTitle) { $p.MainWindowTitle } } 30 500
+    Add-Check 'GUIDE.appWindow' 'Nativune main window has a title' $title ([bool] $title)
+    $overlayUp = [bool] (Test-OverlayHttp200)
+    Add-Check 'GUIDE.overlayOffAtStart' "$overlayUrl does not answer 200 before the guide turns the overlay on" $overlayUp (-not $overlayUp)
+
+    $obs = New-ObsPortable -RunDir (Join-Path $repo ".cache/obs-portable/$runId-guide")
+    $obsInstances.Add($obs); $script:guideObs = $obs
+    $record = [ordered]@{ label = 'guide'; itemHidden = $false; shutdownOff = $false; owned = $null; paths = $null; scene = $null }
+    $obsLaunches.Add($record)
+    try { [void] (Start-ObsPortable $obs) } finally { $record.owned = $obs.OwnedCheck }
+    $script:guideObsUp = [DateTime]::UtcNow
+    Add-Check 'GUIDE.ownedInstance' "launched PID+creation time, websocket listener PID = OBS PID, GetVersion $script:ObsPortableVersion" $obs.OwnedCheck ([bool] $obs.OwnedCheck.passed)
+    $session = [pscustomobject]@{ Obs = $obs }
+    $main = Get-ObsMainWindow $session
+    [void] [ObsBE2E]::SetWindowPos($main, [IntPtr]::Zero, 80, 80, 1280, 800, 0x0014)
+    # Read-only look at the default scene: no source may exist (nothing is created).
+    $inputs = $null
+    try {
+        $ws = Connect-ObsWebSocket $obs
+        try { $inputs = @((Invoke-ObsRequest $ws 'GetInputList' @{}).inputs) } finally { Close-ObsWebSocket $ws }
+    } catch { $g.inputListError = $_.Exception.Message }
+    Add-Check 'GUIDE.obsEmptyScene' 'default OBS scene with no sources (GetInputList empty)' ([ordered]@{ inputs = $(if ($null -ne $inputs) { $inputs.Count } else { $null }); error = Get-Prop $g 'inputListError' }) ($null -ne $inputs -and $inputs.Count -eq 0)
+
+    $stopFile = Join-Path $runDirectory 'guide-stop'
+    $holdDeadline = [DateTime]::UtcNow.AddMinutes($HoldMinutes)
+    $envPath = Join-Path $runDirectory 'guide-env.json'
+    [IO.File]::WriteAllText($envPath, ([ordered]@{
+        obsPid = $obs.ProcessId; appPid = $guide.App.Id; appWindowTitle = $title; overlayUrl = $overlayUrl
+        stopFile = $stopFile; holdDeadlineUtc = $holdDeadline.ToString('o'); holdMinutes = $HoldMinutes
+        obsWindow = [ordered]@{ x = 80; y = 80; width = 1280; height = 800 }
+        appWindowSettings = [ordered]@{ x = 100; y = 100; width = 1280; height = 800 }
+        fixtureTrackSeconds = 1800; appReadyUtc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    $g.envFile = $envPath; $g.stopFile = $stopFile
+    Write-Host "GUIDE environment ready. Env file: $envPath"
+    Write-Host "Create '$stopFile' to end the hold (or wait until $($holdDeadline.ToString('o')))."
+    $reason = $null
+    try {
+        while ($true) {
+            if (Test-Path -LiteralPath $stopFile) { $reason = 'stop-file'; break }
+            if ([DateTime]::UtcNow -ge $holdDeadline) { $reason = 'hold-elapsed'; break }
+            if ($guide.App.HasExited) { $reason = 'app-exited'; break }
+            if ($obs.Process.HasExited) { $reason = 'obs-exited'; break }
+            Start-Sleep -Seconds 2
+        }
+    } finally {
+        $g.holdEnded = $reason
+        # Order: OBS first, then the app; the owner-profile check runs after both (after the outer finally).
+        try { Stop-ObsPortable $obs } catch { Add-Check 'GUIDE.obsStop' 'disposable OBS stopped without an owner-profile change' $_.Exception.Message $false }
+        $script:guideObsDown = [DateTime]::UtcNow
+        Stop-App $guide.App $guide.Root; $script:guideApp = $null
+    }
+}
+
 $appVersion = $null
 $scenarioErrors = [ordered]@{}
 $ownerBefore = Get-OwnerObsProfileSnapshot
 $lookApp = $null; $visApp = $null; $lookSession = $null
+$script:guideApp = $null; $script:guideObs = $null; $script:guideObsUp = $null; $script:guideObsDown = $null
 function Add-RunnerFailure([string] $Name, $ErrorRecord) {
     $message = $ErrorRecord.Exception.Message
     if ($message -like 'TIMEBOX:*' -or $message -like 'PILLOW:*') { Add-Blocked "$Name.runner.completed" 'scenario ran to completion' $message }
@@ -1342,6 +1305,13 @@ try {
         finally { if ($visApp) { Stop-App $visApp.App $visApp.Root; $visApp = $null } }
         if ($scenarioResults.Contains('B-VIS')) { $scenarioResults['B-VIS']['wallSeconds'] = [Math]::Round(([DateTime]::UtcNow - $t0).TotalSeconds, 1) }
     }
+
+    # GUIDE: disposable Nativune (overlay off, full view, Playing) + empty OBS, held open for a computer-use guide.
+    if ($runGuide) {
+        $t0 = [DateTime]::UtcNow
+        try { Invoke-Guide } catch { Add-RunnerFailure 'GUIDE' $_ }
+        if ($scenarioResults.Contains('GUIDE')) { $scenarioResults['GUIDE']['wallSeconds'] = [Math]::Round(([DateTime]::UtcNow - $t0).TotalSeconds, 1) }
+    }
     if ($scenarioErrors.Count -gt 0) { $scenarioResults['errors'] = $scenarioErrors }
 } catch {
     Add-Check 'runner.completed' 'harness setup succeeded' $_.Exception.Message $false
@@ -1351,6 +1321,7 @@ try {
     foreach ($o in @($obsInstances)) { if (-not $o.Stopped) { try { Stop-ObsPortable $o } catch { Add-Check "B-ISO.cleanup.$(Split-Path -Leaf $o.RunDir)" 'owner OBS profile unchanged at cleanup' $_.Exception.Message $false } } }
     if ($lookApp) { Stop-App $lookApp.App $lookApp.Root }
     if ($visApp) { Stop-App $visApp.App $visApp.Root }
+    if ($script:guideApp) { Stop-App $script:guideApp.App $script:guideApp.Root; $script:guideApp = $null }
     foreach ($process in $started) {
         try { if (-not $process.HasExited) { foreach ($id in (Get-ProcessTree $process.Id $rootBase)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue } } } catch { }
     }
@@ -1361,6 +1332,21 @@ try {
     }
 }
 
+# Diff entries with paths relative to %APPDATA% / %LOCALAPPDATA% (snapshot keys are absolute; "listing:" marks the LOCALAPPDATA listing).
+function ConvertTo-OwnerDiffPaths($Diff) {
+    $rel = {
+        param([string] $p)
+        $prefix = ''
+        if ($p.StartsWith('listing:')) { $prefix = 'listing:'; $p = $p.Substring(8) }
+        foreach ($root in @(@('%LOCALAPPDATA%', $env:LOCALAPPDATA), @('%APPDATA%', $env:APPDATA))) {
+            if ($root[1] -and $p.StartsWith($root[1], [StringComparison]::OrdinalIgnoreCase)) { return $prefix + $root[0] + $p.Substring($root[1].Length) }
+        }
+        $prefix + ($p -replace [regex]::Escape($env:USERPROFILE), '%USERPROFILE%')
+    }
+    foreach ($d in @($Diff)) {
+        [ordered]@{ path = (& $rel ([string] $d.path)); change = $d.change; before = Get-Prop $d 'before'; after = Get-Prop $d 'after' }
+    }
+}
 # B-ISO after every OBS instance stopped: the owner's OBS config is byte-identical (content, size, mtime).
 if ('B-ISO' -in $selected) {
     $ownerAfter = Get-OwnerObsProfileSnapshot
@@ -1368,8 +1354,19 @@ if ('B-ISO' -in $selected) {
     $scenarioResults['B-ISO'] = [ordered]@{ entriesBefore = $ownerBefore.Count; entriesAfter = $ownerAfter.Count; obsLaunches = $obsLaunches.Count
         changes = @($diff | ForEach-Object { [ordered]@{ path = $_.path -replace [regex]::Escape($env:USERPROFILE), '%USERPROFILE%'; change = $_.change } }) }
     Add-Check 'B-ISO.ownerProfileIdentical' 'SHA-256, size and mtime of every file under %APPDATA%\obs-studio and the %LOCALAPPDATA%\obs-studio* listing identical before/after' ([ordered]@{
-            entries = $ownerAfter.Count; changes = $diff.Count; obsLaunches = $obsLaunches.Count }) ($diff.Count -eq 0)
+            entries = $ownerAfter.Count; changes = $diff.Count; obsLaunches = $obsLaunches.Count; paths = @(ConvertTo-OwnerDiffPaths $diff) }) ($diff.Count -eq 0)
     if ($obsLaunches.Count -eq 0) { Add-Blocked 'B-ISO.obsLaunched' 'at least one disposable OBS launch in this run' 'no OBS launched (select B-LOOK/B-VIS/B-DOCS too)' }
+}
+
+# GUIDE after the OBS instance and the app stopped: owner profile identical, OBS on-screen minutes within the hold.
+if ($runGuide) {
+    $ownerAfterGuide = Get-OwnerObsProfileSnapshot
+    $guideDiff = @(Compare-OwnerObsProfileSnapshot $ownerBefore $ownerAfterGuide)
+    Add-Check 'GUIDE.ownerObsProfileUnchanged' 'SHA-256, size and mtime of every file under %APPDATA%\obs-studio and the %LOCALAPPDATA%\obs-studio* listing identical before/after' ([ordered]@{
+            entries = $ownerAfterGuide.Count; changes = $guideDiff.Count; paths = @(ConvertTo-OwnerDiffPaths $guideDiff) }) ($guideDiff.Count -eq 0)
+    $guideMinutes = if ($script:guideObsUp -and $script:guideObsDown) { [Math]::Round(($script:guideObsDown - $script:guideObsUp).TotalMinutes, 2) } else { $null }
+    if ($scenarioResults.Contains('GUIDE')) { $scenarioResults['GUIDE']['obsMinutes'] = $guideMinutes }
+    Add-Check 'GUIDE.obsMinutes' "OBS on screen (launch to stop) <= HoldMinutes $HoldMinutes + 5 min" ([ordered]@{ obsMinutes = $guideMinutes; holdMinutes = $HoldMinutes }) ($null -ne $guideMinutes -and $guideMinutes -le $HoldMinutes + 5)
 }
 
 foreach ($name in $selected) {

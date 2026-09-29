@@ -58,7 +58,12 @@ Quick (delta) updates have two end-to-end checks:
 
 The real-OBS test, `scripts/obs-overlay-obs-e2e.ps1`, runs a disposable portable copy of OBS with its WebSocket server listening on all interfaces while it runs. It needs the owner's explicit approval before every run; no answer is not approval.
 
-The guide images in `docs/images/obs-overlay/` come from that real-OBS run: window-scoped captures of the disposable OBS window only, with fixture songs and fixture artwork (no real album art or personal data), each GIF at most 3 MB. `settings-obs.png` comes from the Settings › OBS check of `obs-overlay-e2e.ps1`. To re-record them, get the owner's approval, run the real-OBS test, check the frames in `artifacts/obs-overlay-obs/<utc>/`, and copy the approved images over the old ones with the same file names.
+The guide images in `docs/images/obs-overlay/` use fixture songs and fixture artwork only (no real album art or personal data).
+
+- `04-overlay.gif` and `05-paused-dimmed.png` come from the real-OBS run: window-scoped captures of the disposable OBS window, each GIF at most 3 MB.
+- The step-by-step images in `setup/` come from a from-scratch walkthrough. `obs-overlay-obs-e2e.ps1 -Scenario GUIDE` launches a disposable Nativune (overlay off) and a disposable OBS (empty scene) and holds them open. Someone, or a computer-use agent, then follows the guide in those two windows and saves a screenshot per step. The steps are recorded in `artifacts/obs-overlay-obs/<utc>/guide/steps.md`.
+
+To re-record either set, get the owner's approval, run the test, check the images in `artifacts/obs-overlay-obs/<utc>/`, and copy the approved ones over the old files with the same names.
 
 ## License
 
