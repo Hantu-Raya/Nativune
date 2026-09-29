@@ -819,9 +819,14 @@ def alpha_at(spec):
     img = load(spec['path'])
     return {'opacity': opacity(img), 'mask': mask(img) if spec.get('mask') else None}
 
+def flatten(spec):
+    f = Image.open(spec['path']).convert('RGBA')
+    Image.alpha_composite(Image.new('RGBA', f.size, tuple(spec['background'])), f).convert('RGB').save(spec['out'])
+    return {'out': spec['out']}
+
 mode, path = sys.argv[1], sys.argv[2]
 spec = json.load(open(path, encoding='utf-8'))
-res = {'look': look, 'gif': gif, 'still': alpha_at}[mode](spec)
+res = {'look': look, 'gif': gif, 'still': alpha_at, 'flatten': flatten}[mode](spec)
 print(json.dumps(res))
 '@, [Text.UTF8Encoding]::new($false))
 
@@ -1247,9 +1252,10 @@ function Test-BDocs($App, $Session) {
         else {
             $start = Get-PageStartQpc $initial
             Wait-UntilQpc ($start + 48 * $freq)
-            [void] (Save-ObsWindowShot $Session (Join-Path $docsOut '05-paused-dimmed.png'))
             $srcPath = Join-Path $runDirectory 'docs-frames/05-source.png'
             [IO.File]::WriteAllBytes($srcPath, (Get-SourceShotBytes $Session))
+            # The guide shows the dimmed bar itself, on the same background as 04-overlay.gif.
+            [void] (Invoke-Pillow 'flatten' ([ordered]@{ path = $srcPath; out = (Join-Path $docsOut '05-paused-dimmed.png'); background = @(24, 24, 28, 255) }))
             $still = Invoke-Pillow 'still' ([ordered]@{ path = $srcPath })
             $obs.pausedOpacity = $still.opacity
             Add-Check 'B-DOCS.05.dimmed' 'paused pill shown at opacity 0.7 +-0.05 with the toggle off' (Round3 $still.opacity) ([Math]::Abs([double] $still.opacity - 0.7) -le 0.05)

@@ -164,6 +164,24 @@ internal sealed class PlayerControls : IDisposable
         if (!TryStart("compact-state", out var request, out _)) return default;
         try
         {
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            // Bench probe (hook builds only): "noop" measures the ExecuteScriptAsync round trip alone for
+            // overlay reads; the overlay is fed the last successfully parsed state again (its position does
+            // not advance). Until a full read has parsed a state, reads take the normal full path once so
+            // there is a state to replay. Compact and Presence reads are unchanged.
+            if (reason == ReadReason.Overlay && OverlayReadProbeNoop && _probeLastRead is not null)
+            {
+                var probeId = DiscordPresenceDiagnostics.RecordStateReadStarted(reason, 1);
+                var probeOk = false;
+                try
+                {
+                    if (await RunCompactScriptAsync(request, "0") is null || !OwnsDocument(request)) return default;
+                    probeOk = _probeLastRead is { State: not null };
+                    return _probeLastRead ?? default;
+                }
+                finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(probeId, probeOk); }
+            }
+#endif
             var script = CompactPlayback.BuildScript("state", null, request.Href, ReadDeadline(DispatchWindow));
 #if NATIVUNE_DISCORD_TEST_HOOKS
             var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(reason, script.Length);
@@ -177,7 +195,11 @@ internal sealed class PlayerControls : IDisposable
 #if NATIVUNE_DISCORD_TEST_HOOKS
             diagnosticValid = parsed && state is not null;
 #endif
-            return new CompactRead(true, parsed ? state : null);
+            var read = new CompactRead(true, parsed ? state : null);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (read.State is not null) _probeLastRead = read;
+#endif
+            return read;
 #if NATIVUNE_DISCORD_TEST_HOOKS
             }
             finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(diagnosticId, diagnosticValid); }
@@ -572,6 +594,12 @@ internal sealed class PlayerControls : IDisposable
             .Any(path => uri.AbsolutePath.Equals(path, StringComparison.OrdinalIgnoreCase)
                 || uri.AbsolutePath.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase));
     }
+
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    private static readonly bool OverlayReadProbeNoop = string.Equals(
+        Environment.GetEnvironmentVariable("NATIVUNE_TEST_OVERLAY_READ_PROBE"), "noop", StringComparison.Ordinal);
+    private CompactRead? _probeLastRead;
+#endif
 
     // Read-only modes ("ready", "state", "playlists") only query the DOM; they never click, dispatch or
     // otherwise mutate the page. Their deadline is rounded UP to the next 10 s boundary, so it is never

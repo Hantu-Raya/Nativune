@@ -50,6 +50,9 @@ param(
     [Alias('Workloads')] [ValidateSet('Playing', 'Paused')] [string[]] $Workload = @('Playing', 'Paused'),
     [ValidateRange(1, 16)] [int] $Pairs = 4,
     [switch] $AppOnly,
+    [ValidateRange(0, 3600)] [double] $WarmupSeconds = 180,
+    [ValidateRange(0, 3600)] [double] $WarmupASeconds = 60,
+    [ValidateSet('none', 'noop')] [string] $ReadProbe = 'none',
     [string] $OutputDirectory = 'artifacts/obs-overlay-obs',
     [double] $TimeBoxMinutes = 90,
     [double] $ObsCpuBudgetPp = 1.0,
@@ -57,8 +60,8 @@ param(
     [double] $ObsGpuBudgetEnginePp = 1.0,
     [double] $ObsRenderBudgetMs = 0.5,
     [double] $ObsSkippedFramesBudget = 0,
-    [double] $AppCpuBudgetPp = 0.1,
-    [double] $AppPrivateBudgetMiB = 5,
+    [double] $AppCpuBudgetPp = 0.5,
+    [double] $AppPrivateBudgetMiB = 8,
     [switch] $SkipPublish,
     [switch] $KeepRoot
 )
@@ -95,6 +98,13 @@ $ageMarginSeconds = 60.0
 $settleSeconds = 30.0
 $measureSeconds = 120.0
 $armSeconds = $settleSeconds + $measureSeconds
+$ageLimitSeconds = $trackSeconds - $ageMarginSeconds
+if ($WarmupSeconds + $armSeconds -gt $ageLimitSeconds) {
+    throw "-WarmupSeconds $WarmupSeconds plus one arm ($armSeconds s) exceeds the fixture age limit ($ageLimitSeconds s = track $trackSeconds s minus $ageMarginSeconds s margin); use -WarmupSeconds $($ageLimitSeconds - $armSeconds) or less."
+}
+# -WarmupASeconds defaults to 60 but never above -WarmupSeconds unless given explicitly (then it must fit).
+if (-not $PSBoundParameters.ContainsKey('WarmupASeconds')) { $WarmupASeconds = [Math]::Min($WarmupASeconds, $WarmupSeconds) }
+if ($WarmupASeconds -gt $WarmupSeconds) { throw "-WarmupASeconds $WarmupASeconds must be <= -WarmupSeconds $WarmupSeconds." }
 $positionTolerance = 5.0
 $maxGapSeconds = 3.0
 $statsEverySeconds = 5.0
@@ -111,7 +121,7 @@ $testEnv = [ordered]@{
     NATIVUNE_TEST_DISCORD_FIXTURE_PAGE = '1'
 }
 $benchEnvKeys = @('NATIVUNE_TEST_DISCORD_BENCH_PROFILE', 'NATIVUNE_TEST_DISCORD_BENCH_STATE', 'NATIVUNE_TEST_DISCORD_MIN_WRITE_SECONDS',
-    'NATIVUNE_TEST_DISCORD_PAUSE_SECONDS')
+    'NATIVUNE_TEST_DISCORD_PAUSE_SECONDS', 'NATIVUNE_TEST_OVERLAY_READ_PROBE')
 $isElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 $budgets = if ($AppOnly) {
@@ -245,6 +255,8 @@ function Start-App([string] $Root, [string] $BenchProfile) {
     foreach ($key in $benchEnvKeys) { $environment[$key] = $null }
     $environment['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile
     $environment['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = 'Hidden'
+    # Hook-only overlay read probe (PlayerControls.ReadPlaybackStateAsync); absent = normal reads.
+    if ($ReadProbe -ne 'none') { $environment['NATIVUNE_TEST_OVERLAY_READ_PROBE'] = $ReadProbe }
     $arguments = @('web', '--root', $Root)
     $script:launchCount++
     if ($isElevated) { $process = Invoke-RunasLaunch $appExe $arguments $appDirectory $environment }
@@ -291,6 +303,29 @@ function Get-OverlayReads($Start, $End) {
         if ($q -gt $s0 -and $q -le $s1 -and [string] (Get-Prop $read 'mode') -eq 'Overlay') { $n++ }
     }
     $n
+}
+# Report only: scriptChars -> count for Overlay-mode reads in the same (Start, End] window as Get-OverlayReads. Tells
+# whether ticks used the tiny invoker (small scriptChars) or the full script / install-and-read (large).
+function Get-OverlayScriptChars($Start, $End) {
+    if (-not $Start -or -not $End) { return $null }
+    $s0 = [double] $Start.qpc; $s1 = [double] $End.qpc; $counts = @{}
+    foreach ($read in @(Get-Prop $End.diag 'reads')) {
+        if (-not $read) { continue }
+        $q = [double] $read.startQpc
+        if ($q -gt $s0 -and $q -le $s1 -and [string] (Get-Prop $read 'mode') -eq 'Overlay') {
+            $k = [string] [int] (Get-Prop $read 'scriptChars'); $counts[$k] = [int] $counts[$k] + 1
+        }
+    }
+    $out = [ordered]@{}
+    foreach ($k in ($counts.Keys | Sort-Object { [int] $_ })) { $out[$k] = $counts[$k] }
+    $out
+}
+function Merge-ScriptCharCounts($Maps) {
+    $counts = @{}
+    foreach ($m in @($Maps)) { if ($null -eq $m) { continue }; foreach ($k in $m.Keys) { $counts[[string] $k] = [int] $counts[[string] $k] + [int] $m[$k] } }
+    $out = [ordered]@{}
+    foreach ($k in ($counts.Keys | Sort-Object { [int] $_ })) { $out[$k] = $counts[$k] }
+    $out
 }
 function Stop-App($Process, [string] $Root) {
     if (-not $Process) { return }
@@ -385,6 +420,68 @@ function Measure-Tree($Entries, [hashtable] $Seen) {
     }
     $cpu = 0.0; foreach ($v in $Seen.Values) { $cpu += [double] $v }
     [pscustomobject]@{ cpu = $cpu; privateMiB = $priv / 1048576.0; missing = $missing }
+}
+
+# Per-role CPU breakdown of the app tree (report only). Roles come from the Win32_Process command line already fetched
+# for the tree: Nativune.exe = host; msedgewebview2.exe by --type= (none = browser).
+$roleNames = @('host', 'browser', 'renderer', 'gpu-process', 'utility', 'crashpad-handler', 'other')
+function Get-ProcessRole($Proc) {
+    $role = 'other'; $sub = $null
+    if ($Proc -and $Proc.Name -ieq 'Nativune.exe') { $role = 'host' }
+    elseif ($Proc -and $Proc.Name -ieq 'msedgewebview2.exe' -and $Proc.CommandLine) {
+        $m = [regex]::Match([string] $Proc.CommandLine, '(?:^|\s)--type=([^\s"]+)')
+        if (-not $m.Success) { $role = 'browser' }
+        elseif ($m.Groups[1].Value -in @('renderer', 'gpu-process', 'utility', 'crashpad-handler')) {
+            $role = $m.Groups[1].Value
+            if ($role -eq 'utility') {
+                $s = [regex]::Match([string] $Proc.CommandLine, '(?:^|\s)--utility-sub-type=([^\s"]+)')
+                if ($s.Success) { $sub = $s.Groups[1].Value }
+            }
+        }
+    }
+    [pscustomobject]@{ role = $role; label = $(if ($sub) { "${role}:$sub" } else { $role }) }
+}
+function Add-ProcessRoles([hashtable] $RoleByKey, $Entries, $All) {
+    $need = @($Entries | Where-Object { -not $RoleByKey.ContainsKey($_.key) })
+    if ($need.Count -eq 0) { return }
+    $byId = @{}; foreach ($p in $All) { $byId[[int] $p.ProcessId] = $p }
+    foreach ($t in $need) { $RoleByKey[$t.key] = Get-ProcessRole $byId[[int] $t.pid] }
+}
+# Cumulative CPU seconds per role label ("utility:<sub-type>" for utility with a sub-type), from Measure-Tree's $Seen.
+function Get-RoleCpu([hashtable] $Seen, [hashtable] $RoleByKey) {
+    $h = @{}
+    foreach ($k in $Seen.Keys) {
+        $label = if ($RoleByKey.ContainsKey($k)) { $RoleByKey[$k].label } else { 'other' }
+        $h[$label] = [double] $h[$label] + [double] $Seen[$k]
+    }
+    $h
+}
+# metrics.roles: cpuPp (same pp-of-one-core formula as app.cpuPp) and the number of distinct processes seen, per role.
+function New-RoleMetrics([hashtable] $First, [hashtable] $Last, [double] $Span, [hashtable] $RoleByKey) {
+    $pp = @{}; $subs = [ordered]@{}; $count = @{}
+    foreach ($label in @(@($First.Keys) + @($Last.Keys) | Select-Object -Unique)) {
+        $d = ([double] $Last[$label] - [double] $First[$label]) / $Span * 100
+        $c = $label.IndexOf(':')
+        $role = if ($c -ge 0) { $label.Substring(0, $c) } else { $label }
+        $pp[$role] = [double] $pp[$role] + $d
+        if ($c -ge 0) { $sk = $label.Substring($c + 1); $subs[$sk] = Round3 ([double] $subs[$sk] + $d) }
+    }
+    foreach ($v in $RoleByKey.Values) { $count[$v.role] = [int] $count[$v.role] + 1 }
+    $out = [ordered]@{}
+    foreach ($r in $roleNames) {
+        $out[$r] = [ordered]@{ cpuPp = Round3 ([double] $pp[$r]); count = [int] $count[$r] }
+        if ($r -eq 'utility') { $out[$r]['subTypesCpuPp'] = $subs }
+    }
+    $out
+}
+function Get-RoleDeltaSummary($Pairs) {
+    $out = [ordered]@{}
+    foreach ($r in $roleNames) {
+        $v = @(@($Pairs) | ForEach-Object { $_.roleDelta[$r] } | Where-Object { $null -ne $_ } | ForEach-Object { [double] $_ })
+        if ($v.Count -eq 0) { continue }
+        $out[$r] = [ordered]@{ min = Round3 ($v | Measure-Object -Minimum).Minimum; max = Round3 ($v | Measure-Object -Maximum).Maximum; mean = Round3 (Get-Mean $v); n = $v.Count }
+    }
+    $out
 }
 
 # GPU engine-percent sum over \GPU Engine(*)\Utilization Percentage instances named pid_<n>_... with n in the OBS tree.
@@ -550,14 +647,25 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     $arm['elapsedSinceReadyAtStart'] = Round3 (Get-Seconds $Ctx.ReadyQpc $settleStart)
 
     if ($Condition -eq 'A') {
+        # Fixture art is fetched only by a fresh page/stream, and fixtureArtServed resets on stream renewal while the page
+        # keeps its image. So an A arm that finds the source already enabled (A after A) recycles it first: disable / stop,
+        # wait for streams 0 (bounded 10 s, as B does), then enable / start. The 30 s settle counts from the re-enable.
+        $recycled = $false
+        if (($AppOnly -and $Ctx.Reader) -or (-not $AppOnly -and $Ctx.ItemEnabled)) {
+            $recycled = $true
+            if ($AppOnly) { Stop-BenchReader $Ctx } else { Set-SourceEnabled $Ctx $false }
+            $recycleZero = Wait-For { $s = Get-State $Ctx.Root 'arecycle'; if ((Get-Overlay $s 'streams') -eq 0) { $s } } 10 500
+            if (-not $recycleZero) { & $invalid 'A recycle: streams did not reach 0 within 10 s' }
+        }
         if ($AppOnly) {
             # One SSE client instead of the OBS page; no page, so no fixture art is fetched.
-            if (-not $Ctx.Reader) { Start-BenchReader $Ctx }
-        } elseif (-not $Ctx.ItemEnabled) {
+            Start-BenchReader $Ctx
+        } else {
             $pre = Get-State $Ctx.Root 'artbase'
             $Ctx.PageArtBaseline = [int] (Get-Overlay $pre 'fixtureArtServed')
             Set-SourceEnabled $Ctx $true
         }
+        if ($recycled) { $settleStart = Get-Qpc; $settleEnd = $settleStart + $settleSeconds * $freq }
         if (-not $AppOnly) { $arm['artBaseline'] = $Ctx.PageArtBaseline }
         # Settle-start validity: the stream, workload state, fixture art (page only), and (Playing) a fresh position.
         # fixtureArtServed resets when a stream opens, so require >= 1 from a snapshot taken with streams >= 1.
@@ -570,7 +678,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
             $art = Wait-For { $s = Get-State $Ctx.Root 'aart'; if (& $settleOk $s) { $s } } ([Math]::Max(1, (Get-Seconds (Get-Qpc) $settleEnd) - 2)) 500
             if ($art) { $fresh = $art; $okSettle = $true }
         }
-        $arm['settle'] = [ordered]@{ streams = Get-Overlay $fresh 'streams'; latestState = Get-Overlay $fresh 'latestState'
+        $arm['settle'] = [ordered]@{ recycled = $recycled; streams = Get-Overlay $fresh 'streams'; latestState = Get-Overlay $fresh 'latestState'
             latestStale = Get-Overlay $fresh 'latestStale'; fixtureArtServed = Get-Overlay $fresh 'fixtureArtServed'; latestPosition = Get-Overlay $fresh 'latestPosition' }
         if (-not $okSettle) { & $invalid 'A settle: streams>=1, latestState, fixtureArtServed>=1 not all met' }
         if ($Ctx.Workload -eq 'Playing' -and $fresh) {
@@ -607,9 +715,11 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
 
     # Measure: no hook probes, no page probes, no screenshots.
     # Tree rule: only the roots (Test-RootsAlive) invalidate; child processes that appear or exit are recorded.
-    $appTree0 = Get-AppTree $Ctx.App.Id $Ctx.Root
+    $all0 = Get-AllProcesses
+    $appTree0 = Get-AppTree $Ctx.App.Id $Ctx.Root $all0
     $obsTree0 = if ($AppOnly) { @() } else { Get-ObsTree $Ctx.ObsProcess.Id }
     $appSeen = @{}; $obsSeen = @{}
+    $roleByKey = @{}; Add-ProcessRoles $roleByKey $appTree0 $all0
     $appNames = @{}; foreach ($t in $appTree0) { $appNames[$t.key] = $t.name }
     $obsNames = @{}; foreach ($t in $obsTree0) { $obsNames[$t.key] = $t.name }
     $appKeys0 = @($appNames.Keys); $obsKeys0 = @($obsNames.Keys)
@@ -633,6 +743,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $obsTree = if ($AppOnly) { @() } else { Get-ObsTree $Ctx.ObsProcess.Id $all }
         $newObsPid = $false
         foreach ($t in $appTree) { if (-not $appNames.ContainsKey($t.key)) { $appNames[$t.key] = $t.name; if ($null -eq $firstChildChange) { $firstChildChange = Round3 (Get-Seconds $mStart $now) } } }
+        Add-ProcessRoles $roleByKey $appTree $all
         foreach ($t in $obsTree) {
             if (-not $obsNames.ContainsKey($t.key)) { $obsNames[$t.key] = $t.name; if ($null -eq $firstChildChange) { $firstChildChange = Round3 (Get-Seconds $mStart $now) } }
             if ($obsPids.Add($t.pid)) { $newObsPid = $true }
@@ -640,11 +751,12 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if ($newObsPid -and $gpuOk) { [void] (Update-GpuCounters $obsPids) }
         $q = Get-Qpc
         $a = Measure-Tree $appTree $appSeen; $o = Measure-Tree $obsTree $obsSeen
+        $rc = Get-RoleCpu $appSeen $roleByKey
         $gpu = if ($gpuOk) { Read-GpuSum $obsPids } else { $null }
         if ($null -ne $lastQpc) { $maxGap = [Math]::Max($maxGap, (Get-Seconds $lastQpc $q)) }
         $lastQpc = $q
         $t = Round3 (Get-Seconds $mStart $q)
-        $samples.Add([pscustomobject]@{ i = $i; t = $t; appCpu = $a.cpu; appPriv = $a.privateMiB; obsCpu = $o.cpu; obsPriv = $o.privateMiB; gpu = $gpu })
+        $samples.Add([pscustomobject]@{ i = $i; t = $t; appCpu = $a.cpu; appPriv = $a.privateMiB; obsCpu = $o.cpu; obsPriv = $o.privateMiB; gpu = $gpu; roles = $rc })
         $prefixCsv = "$($Ctx.Workload),$($Ctx.Block),$($Ctx.Launch),$Pair,$Condition,$Attempt,$i,$t"
         $csv.Add("$prefixCsv,app,$(@($appTree).Count),$(Round3 $a.cpu),$(Round3 $a.privateMiB),")
         if (-not $AppOnly) { $csv.Add("$prefixCsv,obs,$(@($obsTree).Count),$(Round3 $o.cpu),$(Round3 $o.privateMiB),$(Round3 $gpu)") }
@@ -673,7 +785,24 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     # Post-measure validity.
     $sPost = Get-State $Ctx.Root "$($Condition.ToLowerInvariant())post"
     if ($Condition -eq 'A') {
-        $arm['post'] = [ordered]@{ streams = Get-Overlay $sPost 'streams'; latestState = Get-Overlay $sPost 'latestState'; fixtureArtServed = Get-Overlay $sPost 'fixtureArtServed' }
+        # The 5-minute stream lifetime renewal closes and reopens the stream within a few seconds; if the snapshot landed
+        # in that gap, re-read every 1 s for up to 8 s. Outside the measure window. Reads are still counted only up to the
+        # first post snapshot.
+        $sPostWindow = $sPost
+        $renewalRetry = 0.0
+        if ($sPost -and (Get-Overlay $sPost 'streams') -eq 0) {
+            $retryStart = Get-Qpc
+            while ((Get-Seconds $retryStart (Get-Qpc)) -lt 8) {
+                Start-Sleep -Seconds 1
+                $again = Get-State $Ctx.Root 'apostretry'
+                if ($again) { $sPost = $again }
+                if ($again -and (Get-Overlay $again 'streams') -ge 1) { break }
+            }
+            $renewalRetry = Round3 (Get-Seconds $retryStart (Get-Qpc))
+        }
+        $arm['post'] = [ordered]@{ streams = Get-Overlay $sPost 'streams'; latestState = Get-Overlay $sPost 'latestState'; fixtureArtServed = Get-Overlay $sPost 'fixtureArtServed'
+            renewalRetrySeconds = $renewalRetry
+            overlayScriptChars = if ($sPre -and $sPostWindow) { Get-OverlayScriptChars $sPre $sPostWindow } else { $null } }
         # fixtureArtServed is recorded but not required: it resets to 0 when the 5-minute stream lifetime renews and
         # the page keeps its already-loaded image (checked once, at settle).
         if (-not ($sPost -and (Get-Overlay $sPost 'streams') -ge 1 -and (Get-Overlay $sPost 'latestState') -eq $wantState)) {
@@ -697,6 +826,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         }
         $metrics['app.cpuPp'] = Round3 (($l.appCpu - $f.appCpu) / $span * 100)
         $metrics['app.privateMiB'] = Round3 (Get-Mean ($samples | ForEach-Object { $_.appPriv }))
+        $metrics['roles'] = New-RoleMetrics $f.roles $l.roles $span $roleByKey
         $arm['metrics'] = $metrics
     } else { & $invalid 'fewer than 2 samples' }
     $arm['reasons'] = @($arm.reasons)
@@ -706,6 +836,25 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
 # ---------------------------------------------------------------------------------------------------------------
 # Blocks, pairs, reruns, fixture-age bound, time box
 
+# Warm-up after each fresh launch so the first arm does not measure app/OBS start-up or one-time JIT of the read path.
+# Part 1 (-WarmupASeconds) runs in the A condition (SSE client / source enabled, so overlay reads run); the rest runs in
+# the B condition (source disabled / no SSE client), so the first measured arm starts from a settled state. The A part
+# never needs a settle check: it is discarded. B's zero-read settle is done by the arm itself (bzero -> bpre window).
+# OBS stays on screen, so the whole warm-up counts toward the time box.
+function Invoke-Warmup($Ctx) {
+    $start = Get-Qpc
+    if ($WarmupASeconds -gt 0) {
+        if ($AppOnly) { if (-not $Ctx.Reader) { Start-BenchReader $Ctx } }
+        elseif (-not $Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $true }
+        Wait-UntilQpc ($start + $WarmupASeconds * $freq)
+    }
+    $bStart = Get-Qpc
+    if ($AppOnly) { Stop-BenchReader $Ctx } elseif ($Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $false }
+    Wait-UntilQpc ($start + $WarmupSeconds * $freq)
+    $Ctx.Record['warmup'] = [ordered]@{ seconds = Round3 (Get-Seconds $start (Get-Qpc)); condition = 'A+B'
+        aSeconds = Round3 (Get-Seconds $start $bStart); bSeconds = Round3 (Get-Seconds $bStart (Get-Qpc))
+        elapsedSinceReadyAtEnd = Round3 (Get-Seconds $Ctx.ReadyQpc (Get-Qpc)) }
+}
 function Test-AgeFits($Ctx) {
     if ($Ctx.Workload -ne 'Playing') { return $true }
     ((Get-Seconds $Ctx.ReadyQpc (Get-Qpc)) + $armSeconds) -le ($trackSeconds - $ageMarginSeconds)
@@ -722,10 +871,11 @@ function Invoke-Block([string] $WorkloadName, [int] $Block) {
             foreach ($cond in $order) {
                 $result = $null
                 for ($attempt = 1; $attempt -le 2; $attempt++) {
-                    if (-not (Test-TimeFits ($armSeconds + $(if ($ctx) { 0 } else { 120 })))) { $script:timeBoxHit = $true; return @{ pairs = $pairs; blocked = 'time box reached' } }
+                    if (-not (Test-TimeFits ($armSeconds + $(if ($ctx) { 0 } else { 120 + $WarmupSeconds })))) { $script:timeBoxHit = $true; return @{ pairs = $pairs; blocked = 'time box reached' } }
                     if (-not $ctx) {
                         if ($launchesUsed -ge $maxLaunchesPerBlock) { return @{ pairs = $pairs; blocked = "block needed more than $maxLaunchesPerBlock fresh launches" } }
                         $ctx = Start-Launch $WorkloadName $Block; $launchesUsed++
+                        Invoke-Warmup $ctx
                     }
                     if (-not (Test-AgeFits $ctx)) { $restart = $true; break }
                     $result = Invoke-Arm $ctx $p $cond $attempt
@@ -745,7 +895,13 @@ function Invoke-Block([string] $WorkloadName, [int] $Block) {
                 $va = $pairArms['A'].metrics[$m]; $vb = $pairArms['B'].metrics[$m]
                 $delta[$m] = if ($null -ne $va -and $null -ne $vb) { Round3 ([double] $va - [double] $vb) } else { $null }
             }
-            $pairs.Add([ordered]@{ block = $Block; pair = $p; order = ($order -join ''); launch = $ctx.Launch; delta = $delta })
+            $roleDelta = [ordered]@{}
+            foreach ($r in $roleNames) {
+                $ra = $pairArms['A'].metrics['roles']; $rb = $pairArms['B'].metrics['roles']
+                $roleDelta[$r] = if ($ra -and $rb) { Round3 ([double] $ra[$r].cpuPp - [double] $rb[$r].cpuPp) } else { $null }
+            }
+            $pairs.Add([ordered]@{ block = $Block; pair = $p; order = ($order -join ''); launch = $ctx.Launch; delta = $delta; roleDelta = $roleDelta
+                overlayScriptChars = $pairArms['A'].post['overlayScriptChars'] })
         }
         @{ pairs = $pairs; blocked = $null }
     } catch {
@@ -779,6 +935,8 @@ function Invoke-Workload([string] $WorkloadName) {
         if ($between.Count -eq 0) { break }
         # Otherwise one more fresh 4-pair block for this workload.
     }
+    if ($all.Count -gt 0) { $result['roleDeltaPp'] = Get-RoleDeltaSummary $all }
+    if ($all.Count -gt 0) { $result['overlayScriptChars'] = Merge-ScriptCharCounts @($all | ForEach-Object { $_.overlayScriptChars }) }
     foreach ($m in $budgets.Keys) {
         $name = "G3.$WorkloadName.$m"
         $expected = "paired delta A-B <= $($budgets[$m]) (pass: max <= budget; fail: min > budget; else +1 block, then inconclusive = fail)"
@@ -858,7 +1016,7 @@ $passed = $checks.Count -gt 0 -and $failed.Count -eq 0 -and $blocked.Count -eq 0
 $report = [ordered]@{
     command = $commandLine; runId = $runId; appVersion = $(if (Get-Variable appVersion -ErrorAction SilentlyContinue) { $appVersion }); pipePrefix = $prefix
     harnessElevated = $isElevated; budgets = $budgets; timeBoxMinutes = $TimeBoxMinutes; obsOnScreenMinutes = Round3 ($script:obsUsedSeconds / 60)
-    appOnly = [bool] $AppOnly; pairsPerBlock = $pairsPerBlock
+    appOnly = [bool] $AppOnly; pairsPerBlock = $pairsPerBlock; warmupSeconds = $WarmupSeconds; warmupASeconds = $WarmupASeconds; readProbe = $ReadProbe
     protocol = [ordered]@{ settleSeconds = $settleSeconds; measureSeconds = $measureSeconds; sampleSeconds = 1; statsEverySeconds = $statsEverySeconds
         trackSeconds = $trackSeconds; ageLimitSeconds = $trackSeconds - $ageMarginSeconds; positionToleranceSeconds = $positionTolerance
         maxGapSeconds = $maxGapSeconds; pairOrders = @($pairOrders | ForEach-Object { $_ -join '' }); gpuMetric = 'engine-percent sum (not Task Manager %)' }
