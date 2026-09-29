@@ -7,7 +7,7 @@ namespace Nativune;
 
 // Narrow full windows: the toolbar needs about 600 DIP with every button, so the lowest-priority buttons collapse
 // into More (owner decision, 28 September 2026) instead of sliding under the caption buttons. Order: Forward,
-// Update, Discord (More already has its toggle and settings), Timer, app volume, then Home. Compact, Back and More stay,
+// Update, Discord and OBS (More already has their toggles and settings), Timer, app volume, then Home. Compact, Back and More stay,
 // and the full window's minimum width is that non-collapsible footprint plus the drag area and caption buttons.
 public sealed partial class WebHostWindow
 {
@@ -66,7 +66,7 @@ public sealed partial class WebHostWindow
     }
 
     private UIElement[] CollapseOrder()
-        => [ForwardButton, UpdateButton, DiscordButton, TimerButton, OutputMuteButton, HomeButton];
+        => [ForwardButton, UpdateButton, DiscordButton, ObsButton, TimerButton, OutputMuteButton, HomeButton];
 
     // Width in DIP below which the fixed toolbar controls would slide under the caption buttons; 0 before layout.
     private double FullToolbarMinimumDip()
@@ -88,7 +88,7 @@ public sealed partial class WebHostWindow
         var separatorShown = Shown(DiscordButton) || Shown(UpdateButton);
         var right = Row(OutputMuteButton, TimerButton, MoreButton, DiscordButton, UpdateButton)
             + (separatorShown ? ItemWidth(DiscordSeparator) + ToolbarSpacing : 0);
-        var left = Row(CompactButton, BackButton, ForwardButton, HomeButton)
+        var left = Row(CompactButton, BackButton, ForwardButton, HomeButton, ObsButton)
             + ItemWidth(ToolbarLeftSeparator) + ToolbarSpacing;
         return left + right;
     }

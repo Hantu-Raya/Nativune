@@ -1,12 +1,12 @@
 'use strict';
 // Nativune OBS overlay (plan §4.5, design §2.9). Only opacity and transform animate; no rAF loop.
 
-const HOSTS = ['lh3.googleusercontent.com', 'i.ytimg.com', 'yt3.ggpht.com', 'yt3.googleusercontent.com'];
 const W = 400, H = 56, BLUR = 14;
 const FADE_MS = 500, RISE_PX = 12, DIM = 0.7;
 const CONNECTING_HIDE_MS = 5000, CLOSED_RETRY_MS = 30000;
 
-let acceptArtwork = url => { try { const u = new URL(url); return u.protocol === 'https:' && HOSTS.includes(u.hostname) ? u.href : null; } catch { return null; } };
+// Artwork comes only from this server's own /art/<key> route; anything else shows no art.
+const acceptArtwork = url => typeof url === 'string' && /^\/art\/[0-9a-f]{16}$/.test(url) ? url : null;
 
 const state = {
   visible: true, connection: 'closed', shown: false, state: 'none',

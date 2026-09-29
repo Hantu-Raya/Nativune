@@ -39,6 +39,7 @@
     "like-filled",
     "minimize",
     "next",
+    "obs",
     "overflow",
     "pause",
     "pin",
@@ -199,6 +200,13 @@
       "width": 16,
       "height": 16,
       "sha256": "e35bb38d51d6b834952c549e709e6811a51c3396778b56d3e1ee616d14a583fa"
+    },
+    {
+      "path": "16/obs.png",
+      "logicalName": "Nativune.NativeIcons.16.obs.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "c9676f36284b045732d7ec2d28819e4455ec8ef0c57dcb4027f7b3e082619b9e"
     },
     {
       "path": "16/overflow.png",
@@ -516,6 +524,13 @@
       "sha256": "a7bcaf9f0260c7cc34945a3d682c0395caf26005591fd7a35850e8049aa8966a"
     },
     {
+      "path": "20/obs.png",
+      "logicalName": "Nativune.NativeIcons.20.obs.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "683f86b98839a19cbd1d6ee35858edee229393a578eae6830cb669a80369cef2"
+    },
+    {
       "path": "20/overflow.png",
       "logicalName": "Nativune.NativeIcons.20.overflow.png",
       "width": 20,
@@ -829,6 +844,13 @@
       "width": 24,
       "height": 24,
       "sha256": "a1ab7c54de9eb2d8a2ae10a5fa5f9093249fe5195b0519ce35b1709544345572"
+    },
+    {
+      "path": "24/obs.png",
+      "logicalName": "Nativune.NativeIcons.24.obs.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "1381514b25c2cc44d3c71975d40a714f43c62b8e23ab7a8ac3d526e29b00e913"
     },
     {
       "path": "24/overflow.png",
@@ -1146,6 +1168,13 @@
       "sha256": "16b73a6b55c293f345cdbb42a161ee51b4185eb5dd3bcbcf08fe2fa57193a0f8"
     },
     {
+      "path": "25/obs.png",
+      "logicalName": "Nativune.NativeIcons.25.obs.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "8366a5306c21322cc9a8ef128422b329ff3fb9c140f60338541d8744a8f3597f"
+    },
+    {
       "path": "25/overflow.png",
       "logicalName": "Nativune.NativeIcons.25.overflow.png",
       "width": 25,
@@ -1459,6 +1488,13 @@
       "width": 30,
       "height": 30,
       "sha256": "1627edecea5abcd955c3eee494b933623db08aaefaf95383dd9a4f0645773063"
+    },
+    {
+      "path": "30/obs.png",
+      "logicalName": "Nativune.NativeIcons.30.obs.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "01da1555df50c3f34d248bca2ca0e67502585632071b03abb035d4329d6ecdaf"
     },
     {
       "path": "30/overflow.png",
@@ -1776,6 +1812,13 @@
       "sha256": "a93faeb0116fac0543026181a7c6ee55fa62d2637e4069630b48fbd057970bcd"
     },
     {
+      "path": "32/obs.png",
+      "logicalName": "Nativune.NativeIcons.32.obs.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "35e4e67f56396949abd989a81f998bbc1201f3d9c953d41b8d0f3f06defb58d3"
+    },
+    {
       "path": "32/overflow.png",
       "logicalName": "Nativune.NativeIcons.32.overflow.png",
       "width": 32,
@@ -2089,6 +2132,13 @@
       "width": 40,
       "height": 40,
       "sha256": "117bc977bbcef2987705d424d30e9ba2333ac2067bc6297613ef9da53e105dea"
+    },
+    {
+      "path": "40/obs.png",
+      "logicalName": "Nativune.NativeIcons.40.obs.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "9b66091335d2612993434f685b7320e8cdac60f64d430e717779ae4ac9d7cd6d"
     },
     {
       "path": "40/overflow.png",
@@ -2406,6 +2456,13 @@
       "sha256": "41c00892910a6bb917652469728e8f8c1ccc1751c1c8b5aa658250c91ab23a10"
     },
     {
+      "path": "48/obs.png",
+      "logicalName": "Nativune.NativeIcons.48.obs.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "974e377d35d648636a466c8e16d3e953d4e41ab35c908ea14bcc5637d9ed9b60"
+    },
+    {
       "path": "48/overflow.png",
       "logicalName": "Nativune.NativeIcons.48.overflow.png",
       "width": 48,
@@ -2719,6 +2776,13 @@
       "width": 64,
       "height": 64,
       "sha256": "4077cc655fbbd1ac9edba3d946b7f7bc3238a198115ec3dcd1ab43ef5adce436"
+    },
+    {
+      "path": "64/obs.png",
+      "logicalName": "Nativune.NativeIcons.64.obs.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "1f40ae454eff874838cfc9a175d1507ec77b4d21a7fc3e0a4674f39fa44c942c"
     },
     {
       "path": "64/overflow.png",

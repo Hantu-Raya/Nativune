@@ -22,12 +22,12 @@ public sealed partial class WebHostWindow
         if (TakeDiscordBenchCommand("command-obs-off"))
         {
             _settings = _settings with { ObsOverlay = false };
-            await ApplyObsOverlayAsync(false);
+            await ReconcileObsOverlayAsync();
         }
         if (TakeDiscordBenchCommand("command-obs-on"))
         {
             _settings = _settings with { ObsOverlay = true };
-            await ApplyObsOverlayAsync(true);
+            await ReconcileObsOverlayAsync();
         }
         if (TakeDiscordBenchCommand("command-obs-hide-paused-off"))
         {

@@ -352,6 +352,35 @@ internal static class CompactViewChecks
         {
             SetField(host, "_discord", priorDiscord);
         }
+        // The OBS toolbar toggle: the name exposes the state, a click persists it, syncs More and shows the recording
+        // dot, and a second click restores all of it. The overlay server binds loopback only while the setting is on.
+        var obsButton = FindPart(root, "ObsButton") as Button;
+        var obsDot = FindPart(root, "ObsRecordingDot");
+        var obsItem = ReadField(host, "_obsOverlayItem") as ToggleMenuFlyoutItem;
+        var initialObs = ShellSettings.Load(profileRoot, out _).ObsOverlay;
+        bool ObsSurfacesMatch(bool enabled)
+            => AutomationProperties.GetName(obsButton!) is { } obsName
+                && (enabled ? obsName.StartsWith("OBS overlay: on, ", StringComparison.Ordinal) : obsName == "OBS overlay: off")
+                && obsItem?.IsChecked == enabled
+                && obsDot.Visibility == (enabled ? Visibility.Visible : Visibility.Collapsed);
+        Require(obsButton is not null && obsItem is not null && ObsSurfacesMatch(initialObs)
+                && AutomationProperties.GetAccessibilityView(obsDot) == AccessibilityView.Raw,
+            "The OBS toolbar button did not expose its current enabled state and recording dot.");
+        async Task SettleObsAsync(string what)
+        {
+            await ((Task)(ReadField(host, "_saveTask")
+                ?? throw new SelfCheckException($"The OBS toolbar {what} did not queue settings persistence.")))
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            await ((Task)(ReadField(host, "_obsApplyTask") ?? Task.CompletedTask)).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        InvokeControl(obsButton!, "OBS overlay");
+        await SettleObsAsync("click");
+        Require(ShellSettings.Load(profileRoot, out _).ObsOverlay == !initialObs && ObsSurfacesMatch(!initialObs),
+            "Clicking the OBS toolbar button did not persist its setting, sync More and show the recording dot.");
+        InvokeControl(obsButton!, "OBS overlay");
+        await SettleObsAsync("reversal");
+        Require(ShellSettings.Load(profileRoot, out _).ObsOverlay == initialObs && ObsSurfacesMatch(initialObs),
+            "Clicking the OBS toolbar button again did not restore the setting, More and the recording dot.");
         var fullMute = FindPart(root, "OutputMuteButton") as Button;
         var fullFlyout = fullMute?.ContextFlyout as Flyout;
         var flyoutSurface = fullFlyout?.Content as FrameworkElement;

@@ -418,7 +418,7 @@
                       AutomationProperties.Name="Enable OBS overlay"
                       AutomationProperties.HelpText="Off by default. Serves a now-playing overlay for an OBS Browser source on this PC." />
             <TextBlock x:Name="ObsDisclosureText"
-                       Text="When on, apps on this PC can read the song title, artist, artwork link and playback time at http://localhost:47813/. Other PCs and websites cannot. OBS loads the artwork from YouTube's image servers."
+                       Text="When on, apps on this PC can read the song title, artist, artwork and playback time at http://localhost:47813/. Other PCs and websites cannot. Nativune downloads the artwork from YouTube's image servers and passes it to OBS."
                        TextWrapping="Wrap"
                        FontSize="12"
                        Margin="28,-6,0,0"

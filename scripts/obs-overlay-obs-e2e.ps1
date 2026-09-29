@@ -531,7 +531,9 @@ function Wait-SseData($Reader, [scriptblock] $Predicate, [double] $Seconds, [dou
 function Find-SseData($Reader, [scriptblock] $Predicate, [double] $AfterQpc) {
     @(Read-Sse $Reader) | Where-Object { $null -ne $_ -and $_.kind -eq 'data' -and $_.data -and $_.qpc -gt $AfterQpc -and (& $Predicate $_.data) } | Select-Object -First 1
 }
-function Test-Data($D, [string] $State, [string] $Id = $null) { (Get-Prop $D 'state') -eq $State -and (-not $Id -or (Get-Prop $D 'id') -eq $Id) }
+# The stream's id is an opaque per-session key, never the video ID, so fixture tracks are recognised by their title.
+$script:fixtureTitles = @{ fixtureSngA = 'Fixture Song A'; fixtureSngB = 'Fixture Song B'; fixtureSngC = 'Fixture Song C' }
+function Test-Data($D, [string] $State, [string] $Id = $null) { (Get-Prop $D 'state') -eq $State -and (-not $Id -or (Get-Prop $D 'title') -eq $script:fixtureTitles[$Id]) }
 function Get-PageStartQpc($Initial) {
     [double] $Initial.qpc - (([double] (Get-Prop $Initial.data 'ageMs')) / 1000 + [double] (Get-Prop $Initial.data 'position')) * $freq
 }

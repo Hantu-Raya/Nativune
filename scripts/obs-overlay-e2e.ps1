@@ -34,7 +34,9 @@ Scenarios (plan §6.1):
   A-OFF        no key / false / true then command-obs-off: prefix registrable by another process, no app response
                on :47813, streams 0, no overlay reads.
   A-TIME       default timeline scored from the initial event through page 143 s, hidePaused true and false, and the
-               AdFallback profile: exact semantic event sequence, no other data events, no album canary.
+               AdFallback profile: exact semantic event sequence, no other data events, no album canary; privacy: no video id,
+               song link or Google URL in any event, opaque 16-hex id (one per track), /art/<key> artwork (A and B share one),
+               GET /art/<key> 200 image/png and /art/0000000000000000 404, page CSP img-src 'self' only.
   A-AD         Chrome page on the default timeline and AdFallback; hide-when-paused off saved at page 70 s (in the ad):
                pill hidden by 67.5 s, back with A's title by 77.5 s, no data between ad and restore, restore carries
                the new hidePaused.
@@ -56,12 +58,18 @@ Scenarios (plan §6.1):
   A-RECON      Chrome: error page when off then reload connects; server restart; 30 s without streams; 9th-stream 503
                then retry after 30 s; lifetime renewal without hiding.
   A-TEXT       Chrome: Text profile literal text + ellipsis, projection within 1 %; ArtSwap sequence guard (final B).
+  A-ART        ArtGap profile: a loadable page image the proxy cannot fetch answers 502 (no image, not counted as served) and a
+               good key keeps working; the page's failing "missing" artwork is never published (artwork null).
   A-SET        UI Automation of Settings > OBS (names, live region, Cancel/Save/relaunch, missing key, hide-paused
                broadcast, Copy link, guide URI recorder, Block ads link, keyboard focus, save failure, bind conflict).
-  A-PROD       release build: no /fixture-art route, CSP without 'self', no fixture-art in /overlay.js, no hook strings
+  A-PROD       release build: no /fixture-art route, unknown /art/ key 404, CSP img-src 'self' only, no fixture-art in /overlay.js, no hook strings
                (launched-uri, command-obs, command-controls, fixture-art) in Nativune.dll/resources (UTF-8 and UTF-16),
                guide URL present in the release assembly/resources (static check; the button is not clicked).
   A-PAUSEVIEW  Chrome: paused view (0.7 opacity, frozen fill, no running animations), PausedSeek, hidePaused switch.
+  A-TOOLBAR    UI Automation of the toolbar's OBS button (left of the toolbar, after Home): off at launch (name, no listener,
+               no red dot); one invoke -> 200 on the port <= 5 s, ObsOverlay=true saved, name "OBS overlay: on…", red
+               recording dot in a window-scoped capture; a second invoke reverses all of it; five quick invokes end on with
+               exactly one listener.
 
 Report: <OutputDirectory>/<utc>/report.json (each check {name, expected, observed, status pass|fail|blocked}),
 events.json (every reader's lines), screenshots/. Blocked never counts as pass; the exit code is 1 when any check
@@ -79,7 +87,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $allScenarios = @('A-OFF', 'A-TIME', 'A-AD', 'A-SAME', 'A-CLOCK', 'A-GAP', 'A-INV', 'A-IDLE', 'A-DEMAND', 'A-LIVE', 'A-LIFE',
-    'A-SEC', 'A-RECON', 'A-TEXT', 'A-SET', 'A-PROD', 'A-PAUSEVIEW')
+    'A-SEC', 'A-RECON', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $Scenario) {
     if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
@@ -580,7 +588,9 @@ function Wait-SseOpen($Reader, [double] $Seconds = 30) {
 function Wait-SseData($Reader, [scriptblock] $Predicate, [double] $Seconds, [double] $AfterQpc = 0) {
     Wait-For { Get-DataEvents (Read-Sse $Reader) | Where-Object { $null -ne $_ -and $_.qpc -gt $AfterQpc -and (& $Predicate $_.data) } | Select-Object -First 1 } $Seconds
 }
-function Test-Data($D, [string] $State, [string] $Id = $null) { (Get-Prop $D 'state') -eq $State -and (-not $Id -or (Get-Prop $D 'id') -eq $Id) }
+# The stream's id is an opaque per-session key, never the video ID, so fixture tracks are recognised by their title.
+$script:fixtureTitles = @{ fixtureSngA = 'Fixture Song A'; fixtureSngB = 'Fixture Song B'; fixtureSngC = 'Fixture Song C' }
+function Test-Data($D, [string] $State, [string] $Id = $null) { (Get-Prop $D 'state') -eq $State -and (-not $Id -or (Get-Prop $D 'title') -eq $script:fixtureTitles[$Id]) }
 # Page time: the playing fixture track starts at 0 at page load, so load ~= receipt - ageMs - position.
 function Get-PageStartQpc($Initial) {
     [double] $Initial.qpc - (([double] (Get-Prop $Initial.data 'ageMs')) / 1000 + [double] (Get-Prop $Initial.data 'position')) * $freq
@@ -681,7 +691,7 @@ $chromeProbeJs = @'
     title: t ? t.textContent : null, artist: a ? a.textContent : null, titleChildren: t ? t.children.length : null,
     titleEllipsis: t ? (getComputedStyle(t).textOverflow === 'ellipsis' && t.scrollWidth > t.clientWidth) : null,
     running: anims.filter(p => p === 'running').length, animations: anims.length,
-    art: performance.getEntriesByType('resource').filter(e => e.name.includes('/fixture-art/'))
+    art: performance.getEntriesByType('resource').filter(e => /\/art\/[0-9a-f]{16}$/.test(new URL(e.name).pathname))
       .map(e => ({ name: new URL(e.name).pathname, start: e.startTime, end: e.responseEnd }))
   });
 })()
@@ -1030,13 +1040,20 @@ function Test-AOff {
 
 function Invoke-TimelineRun([string] $Name, [bool] $HidePaused, [string] $BenchProfile = $null) {
     $run = Start-OverlayRun $Name @{ ObsHidePaused = $HidePaused } $BenchProfile
+    $probe = [ordered]@{}
     try {
         $initial = Wait-Initial $run
         $start = Get-PageStartQpc $initial
+        # Privacy probes against the live server: the artwork the stream advertises, fetched over real HTTP.
+        $withArt = Wait-SseData $run.Reader { param($d) "$(Get-Prop $d 'artwork')" -match '^/art/[0-9a-f]{16}$' } 20
+        $probe.artPath = if ($withArt) { [string] (Get-Prop $withArt.data 'artwork') } else { $null }
+        $probe.page = Invoke-RawHttp '127.0.0.1' (New-Request)
+        $probe.art = if ($probe.artPath) { Invoke-RawHttp '127.0.0.1' (New-Request -Path $probe.artPath) } else { $null }
+        $probe.unknown = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/art/0000000000000000')
         Wait-UntilQpc ($start + 143 * $freq)
         $alive = -not $run.App.HasExited
     } finally { Stop-OverlayRun $run }
-    [pscustomobject]@{ Run = $run; Events = @(Read-Sse $run.Reader); Raw = (Read-SseRaw $run.Reader); Start = $start; Initial = $initial; Alive = $alive }
+    [pscustomobject]@{ Run = $run; Events = @(Read-Sse $run.Reader); Raw = (Read-SseRaw $run.Reader); Start = $start; Initial = $initial; Alive = $alive; Probe = $probe }
 }
 
 $timelineSteps = @(
@@ -1048,7 +1065,7 @@ $timelineSteps = @(
     @{ name = 'trackB'; at = 80; test = { param($d) Test-Data $d 'playing' 'fixtureSngB' } },
     @{ name = 'ended'; at = 120; test = { param($d) (Get-Prop $d 'state') -eq 'ended' } },
     @{ name = 'trackCNoArt'; at = 125; test = { param($d) (Test-Data $d 'playing' 'fixtureSngC') -and $null -eq (Get-Prop $d 'artwork') } },
-    @{ name = 'trackCArt'; at = 137; test = { param($d) (Test-Data $d 'playing' 'fixtureSngC') -and $null -ne (Get-Prop $d 'artwork') } })
+    @{ name = 'trackCArt'; at = 137; test = { param($d) (Test-Data $d 'playing' 'fixtureSngC') -and "$(Get-Prop $d 'artwork')" -match '^/art/[0-9a-f]{16}$' } })
 
 # Plan §4.2 drift rule: same id and state as the previous event and |position - projection| > 1.5 s, where
 # projection = prev.position + elapsed * rate over the page-sample times (qpc receipt minus ageMs). Returns the
@@ -1108,13 +1125,51 @@ function Test-TimelineEvents([string] $Prefix, $Result, [bool] $HidePaused) {
         unexpected = @($unexpected); allowedDriftCorrections = @($drift) }) ($unexpected.Count -eq 0)
     $canary = $Result.Raw -match 'albumCanary|MPREb_|AlbumCanary'
     Add-Check "$Prefix.noAlbumCanary" 'album canary absent from all bytes' $canary (-not $canary -and $Result.Raw.Length -gt 0)
+    # Privacy: everything a local process or the page can learn from the stream and the artwork route.
+    $wire = (@($Result.Events | Where-Object { $_.kind -in @('data', 'comment', 'retry') }) | ForEach-Object { "$($_.json)$($_.text)" }) -join "`n"
+    $leaks = @([regex]::Matches($wire, 'fixtureS(ng|nA)|fixtureTxt|watch\?v=|googleusercontent|ytimg|ggpht|https?:', 'IgnoreCase') | ForEach-Object { $_.Value } | Select-Object -Unique)
+    Add-Check "$Prefix.noVideoIdOrGoogleUrl" 'no fixture video id, watch link, googleusercontent/ytimg/ggpht host or http(s): URL in any event' $leaks ($wire.Length -gt 0 -and $leaks.Count -eq 0)
+    $meta = @(Get-DataEvents $Result.Events | Where-Object { (Get-Prop $_.data 'state') -in @('playing', 'paused', 'ended') })
+    $badIds = @($meta | Where-Object { "$(Get-Prop $_.data 'id')" -cnotmatch '^[0-9a-f]{16}$' })
+    $byTitle = @($meta | Group-Object { "$(Get-Prop $_.data 'title')" })
+    $unstable = @($byTitle | Where-Object { @($_.Group | ForEach-Object { Get-Prop $_.data 'id' } | Select-Object -Unique).Count -ne 1 })
+    $allIds = @($meta | ForEach-Object { Get-Prop $_.data 'id' } | Select-Object -Unique)
+    Add-Check "$Prefix.opaqueStableIds" 'every id is 16 lowercase hex; one id per track (A, B, C) and a different id for each track' ([ordered]@{
+        tracks = $byTitle.Count; distinctIds = $allIds.Count; malformed = $badIds.Count; unstableTracks = $unstable.Count }) (
+        $meta.Count -gt 0 -and $badIds.Count -eq 0 -and $unstable.Count -eq 0 -and $byTitle.Count -eq 3 -and $allIds.Count -eq 3)
+    $badArt = @($meta | ForEach-Object { Get-Prop $_.data 'artwork' } | Where-Object { $null -ne $_ -and "$_" -cnotmatch '^/art/[0-9a-f]{16}$' })
+    $artOf = { param($t) @($meta | Where-Object { (Get-Prop $_.data 'title') -eq $t -and $null -ne (Get-Prop $_.data 'artwork') } | ForEach-Object { Get-Prop $_.data 'artwork' } | Select-Object -Unique) }
+    $artA = @(& $artOf 'Fixture Song A'); $artB = @(& $artOf 'Fixture Song B'); $artC = @(& $artOf 'Fixture Song C')
+    Add-Check "$Prefix.artworkPaths" 'artwork is null or /art/<16 hex>; A and B (same source URL) share one path, C has a different one' ([ordered]@{
+        a = $artA; b = $artB; c = $artC; malformed = $badArt.Count }) (
+        $badArt.Count -eq 0 -and $artA.Count -eq 1 -and $artB.Count -eq 1 -and $artA[0] -ceq $artB[0] -and $artC.Count -eq 1 -and $artC[0] -cne $artA[0])
+    $pr = $Result.Probe
+    $img = Get-Prop $pr 'art'; $unknown = Get-Prop $pr 'unknown'
+    $imgType = if ($img) { "$($img.headers['content-type'])" } else { '' }
+    $imgLength = if ($img) { [int] $img.headers['content-length'] } else { 0 }
+    $pngMagic = [bool] ($img -and $img.body.Length -ge 4 -and $img.body.Substring(1, 3) -ceq 'PNG')
+    Add-Check "$Prefix.artServed" 'GET the advertised /art/<key> -> 200 image/png, non-empty PNG body, no-store, nosniff; GET /art/0000000000000000 -> 404 from the app' ([ordered]@{
+        path = Get-Prop $pr 'artPath'; status = if ($img) { $img.status } else { $null }; contentType = $imgType; contentLength = $imgLength; pngMagic = $pngMagic
+        cacheControl = if ($img) { "$($img.headers['cache-control'])" } else { $null }; unknownStatus = if ($unknown) { $unknown.status } else { $null } }) (
+        $img -and $img.status -eq 200 -and $imgType -like 'image/png*' -and $imgLength -gt 0 -and $pngMagic -and "$($img.headers['cache-control'])" -like '*no-store*' -and
+        "$($img.headers['x-content-type-options'])" -eq 'nosniff' -and $unknown -and $unknown.status -eq 404 -and $unknown.origin -eq 'app')
+    $csp = "$((Get-Prop $pr 'page').headers['content-security-policy'])"
+    $imgSrc = [regex]::Match($csp, 'img-src[^;]*').Value.Trim()
+    Add-Check "$Prefix.cspImgSelfOnly" "page CSP img-src is exactly 'self' (no Google host)" ([ordered]@{ imgSrc = $imgSrc }) ($imgSrc -ceq "img-src 'self'" -and $csp -notmatch 'googleusercontent|ytimg|ggpht')
     $wrongHide = @($data | Where-Object { (Get-Prop $_.data 'state') -in @('playing', 'paused', 'ended') -and (Get-Prop $_.data 'hidePaused') -ne $HidePaused })
     Add-Check "$Prefix.hidePausedField" "every metadata event carries hidePaused=$HidePaused" $wrongHide.Count ($data.Count -gt 0 -and $wrongHide.Count -eq 0)
     $adEvents = @($data | Where-Object { (Get-Prop $_.data 'state') -in @('ad', 'none') })
     $badShape = @($adEvents | Where-Object { @($_.data.PSObject.Properties.Name) -join ',' -ne 'v,state' })
     Add-Check "$Prefix.adNoneShape" 'ad/none events carry only v and state' $badShape.Count ($badShape.Count -eq 0)
     Add-Check "$Prefix.appAlive" 'app alive through page 143 s' $Result.Alive $Result.Alive
-    [pscustomobject]@{ ok = ($matched.Count -eq $timelineSteps.Count -and $unexpected.Count -eq 0); sequence = @($sequence); driftCorrections = @($drift) }
+    # id and artwork are per-session opaque keys: compare runs by first-seen ordinals (t1.. / a1..), not raw values.
+    $ids = @{}; $arts = @{}
+    $normalized = @($sequence | ForEach-Object {
+        $f = @($_ -split [char] 1)
+        if ($f[1]) { if (-not $ids.ContainsKey($f[1])) { $ids[$f[1]] = 't' + ($ids.Count + 1) }; $f[1] = $ids[$f[1]] }
+        if ($f[4]) { if (-not $arts.ContainsKey($f[4])) { $arts[$f[4]] = 'a' + ($arts.Count + 1) }; $f[4] = $arts[$f[4]] }
+        $f -join [char] 1 })
+    [pscustomobject]@{ ok = ($matched.Count -eq $timelineSteps.Count -and $unexpected.Count -eq 0); sequence = $normalized; driftCorrections = @($drift) }
 }
 
 function Test-ATime {
@@ -1191,8 +1246,8 @@ function Test-ASame {
     $only = if ($after.Count -eq 1) { $after[0].data } else { $null }
     $sameOther = $only -and @(@('state', 'title', 'artist', 'artwork', 'duration', 'rate', 'clock') | Where-Object { "$(Get-Prop $only $_)" -ne "$(Get-Prop $initial.data $_)" }).Count -eq 0
     Add-Check 'A-SAME.oneNewEvent' 'exactly one data event after the initial one' @($after | ForEach-Object { Get-EventSummary $_ $start }) ($after.Count -eq 1)
-    Add-Check 'A-SAME.onlyIdChanged' 'id fixtureSnA2; state, title, artist, artwork, duration, rate, clock unchanged' $(if ($only) { Get-EventSummary $after[0] $start }) (
-        [bool] $sameOther -and (Get-Prop $only 'id') -eq 'fixtureSnA2')
+    Add-Check 'A-SAME.onlyIdChanged' 'id changes to a different opaque 16-hex key; state, title, artist, artwork, duration, rate, clock unchanged' $(if ($only) { Get-EventSummary $after[0] $start }) (
+        [bool] $sameOther -and "$(Get-Prop $only 'id')" -cmatch '^[0-9a-f]{16}$' -and (Get-Prop $only 'id') -cne (Get-Prop $initial.data 'id'))
     $scenarioResults['A-SAME'] = [ordered]@{ events = $after.Count }
 }
 
@@ -1647,6 +1702,10 @@ function Test-ASec {
             @{ n = 'eventsQuery'; a = '127.0.0.1'; r = (New-Request -Path '/events?x=1'); want = { param($x) $x.status -eq 400 -and $x.origin -eq 'app' }; e = '400 app' },
             @{ n = 'rawDotDot'; a = '127.0.0.1'; r = (New-Request -Path '/../'); want = { param($x) ($x.status -eq 200 -and $x.origin -eq 'app' -and "$($x.headers['content-type'])" -like 'text/html*') -or ($x.origin -eq 'kernel' -and $x.status -ge 400 -and $x.status -lt 500) }; e = '200 page (app) or kernel 4xx (HTTP.sys normalizes/rejects); harmless either way' },
             @{ n = 'nope'; a = '127.0.0.1'; r = (New-Request -Path '/nope'); want = { param($x) $x.status -eq 404 -and $x.origin -eq 'app' }; e = '404 app' },
+            @{ n = 'artUnknown'; a = '127.0.0.1'; r = (New-Request -Path '/art/0000000000000000'); want = { param($x) $x.status -eq 404 -and $x.origin -eq 'app' }; e = '404 app (unknown key)' },
+            @{ n = 'artMalformed'; a = '127.0.0.1'; r = (New-Request -Path '/art/not-a-key'); want = { param($x) $x.status -eq 404 -and $x.origin -eq 'app' }; e = '404 app (malformed key)' },
+            @{ n = 'artQuery'; a = '127.0.0.1'; r = (New-Request -Path '/art/0000000000000000?x=1'); want = { param($x) $x.status -eq 400 -and $x.origin -eq 'app' }; e = '400 app' },
+            @{ n = 'artCrossSite'; a = '127.0.0.1'; r = (New-Request -Path '/art/0000000000000000' -Extra @('Sec-Fetch-Site: cross-site')); want = { param($x) $x.status -eq 403 -and $x.origin -eq 'app' }; e = '403 app' },
             @{ n = 'pageIPv4'; a = '127.0.0.1'; r = (New-Request); want = { param($x) $x.status -eq 200 -and "$($x.headers['content-type'])" -like 'text/html*' }; e = '200 page over IPv4' },
             @{ n = 'pageIPv6'; a = '::1'; r = (New-Request); want = { param($x) $x.status -eq 200 -and "$($x.headers['content-type'])" -like 'text/html*' }; e = '200 page over IPv6' },
             @{ n = 'script'; a = '127.0.0.1'; r = (New-Request -Path '/overlay.js'); want = { param($x) $x.status -eq 200 -and "$($x.headers['content-type'])" -like 'text/javascript*' }; e = '200 script' },
@@ -1668,8 +1727,8 @@ function Test-ASec {
         $page = $responses | Where-Object { $_.status -eq 200 -and "$($_.headers['content-type'])" -like 'text/html*' } | Select-Object -First 1
         $csp = if ($page) { "$($page.headers['content-security-policy'])" } else { '' }
         $cspParts = @("default-src 'none'", "script-src 'self'", "style-src 'unsafe-inline'", "connect-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
-            'img-src https://lh3.googleusercontent.com https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com')
-        Add-Check 'A-SEC.htmlCsp' 'HTML carries the plan §3 CSP' $csp ($csp -and -not ($cspParts | Where-Object { -not $csp.Contains($_) }))
+            "img-src 'self';")
+        Add-Check 'A-SEC.htmlCsp' "HTML carries the plan §3 CSP with img-src 'self' only (artwork is served by the app, no Google host)" $csp ($csp -and -not ($cspParts | Where-Object { -not $csp.Contains($_) }) -and $csp -notmatch 'googleusercontent|ytimg|ggpht')
         # 8 streams + 9th 503, close one, 9th succeeds.
         # Release earlier streams (e.g. the 'events' row) and wait until the app has deregistered them.
         foreach ($r in $raws) { Close-RawStream $r }; $raws.Clear()
@@ -1776,7 +1835,7 @@ function Test-AText {
     $run = Start-OverlayRun 'A-TEXT-text' @{} 'Text'
     $chrome = $null
     try {
-        $initial = Wait-Initial $run
+        $initial = Wait-Initial $run ''   # the Text profile's songs are not the default A/B/C titles: accept its first playing event
         $start = Get-PageStartQpc $initial
         $chrome = Start-Chrome 'A-TEXT-text'
         [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
@@ -1819,14 +1878,58 @@ function Test-AText {
         $s = Get-State $run.Root 'art'
         $obs['shotArt'] = Save-ChromeShot $chrome 'A-TEXT-artswap-final'
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
-    $a = @($p.art | Where-Object { $_.name -eq '/fixture-art/a.png' }) | Select-Object -Last 1
-    $b = @($p.art | Where-Object { $_.name -eq '/fixture-art/b.png' }) | Select-Object -Last 1
+    # Artwork is now served by the app as /art/<key>: the last two entries by start are the delayed A then the immediate B.
+    $artEntries = @($p.art | Sort-Object { [double] $_.start })
+    $a = if ($artEntries.Count -ge 2) { $artEntries[$artEntries.Count - 2] }
+    $b = if ($artEntries.Count -ge 2) { $artEntries[$artEntries.Count - 1] }
     Add-Check 'A-TEXT.artSwapFinalB' 'delayed A completes after B, but the latest load (B) is applied: artLoadedSeq == artSeq, no failure' ([ordered]@{
         artSeq = Get-PageField $p 'artSeq'; artLoadedSeq = Get-PageField $p 'artLoadedSeq'; artFailed = Get-PageField $p 'artFailed'
         aEnd = if ($a) { $a.end }; bEnd = if ($b) { $b.end }; fixtureArtServed = Get-Overlay $s 'fixtureArtServed' }) (
         $a -and $b -and [double] $a.start -lt [double] $b.start -and [double] $a.end -gt [double] $b.end -and
         (Get-PageField $p 'artSeq') -eq (Get-PageField $p 'artLoadedSeq') -and (Get-PageField $p 'artFailed') -eq $false)
     $scenarioResults['A-TEXT'] = $obs
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# A-ART
+
+function Test-AArt {
+    # ArtGap: 0 s art A (fixture-a) -> 12 s the page's art fails to load ("missing") -> 24 s track B (art A again) -> 40 s a loadable
+    # image with a 300-character URL, which the fixture fetcher seam answers with a failed fetch (the real fetcher would time out or reject).
+    $run = Start-OverlayRun 'A-ART' @{} 'ArtGap'
+    $r = [ordered]@{}
+    try {
+        $initial = Wait-Initial $run
+        $start = Get-PageStartQpc $initial
+        $good = Wait-SseData $run.Reader { param($d) "$(Get-Prop $d 'artwork')" -match '^/art/[0-9a-f]{16}$' } 20
+        $k1 = if ($good) { [string] (Get-Prop $good.data 'artwork') } else { $null }
+        $second = if ($k1) { Wait-SseData $run.Reader { param($d) "$(Get-Prop $d 'artwork')" -match '^/art/[0-9a-f]{16}$' -and "$(Get-Prop $d 'artwork')" -cne $k1 } 70 } else { $null }
+        $k2 = if ($second) { [string] (Get-Prop $second.data 'artwork') } else { $null }
+        $missing = @(Get-DataEvents (Read-Sse $run.Reader) | Where-Object {
+            (Get-Prop $_.data 'state') -in @('playing', 'paused') -and $null -eq (Get-Prop $_.data 'artwork') -and
+            (Get-PageTime $_.qpc $start) -ge 10 -and (Get-PageTime $_.qpc $start) -le 26 })
+        Add-Check 'A-ART.missingArtNeverPublished' 'while the page image fails to load (page 10..26 s) the stream carries artwork null, never the failing URL' @($missing | ForEach-Object { Get-EventSummary $_ $start }) ($missing.Count -ge 1)
+        Add-Check 'A-ART.twoKeys' 'the stream advertised two different /art/<16 hex> keys (good art, then the failing one)' ([ordered]@{ first = $k1; second = $k2 }) ([bool] $k1 -and [bool] $k2 -and $k1 -cne $k2)
+        if ($k1 -and $k2) {
+            $g1 = Invoke-RawHttp '127.0.0.1' (New-Request -Path $k1)
+            $s1 = Get-State $run.Root 'served1'
+            $b1 = Invoke-RawHttp '127.0.0.1' (New-Request -Path $k2)
+            $b2 = Invoke-RawHttp '127.0.0.1' (New-Request -Path $k2)
+            $g2 = Invoke-RawHttp '127.0.0.1' (New-Request -Path $k1)
+            $s2 = Get-State $run.Root 'served2'
+            $goodOk = { param($x) $x.status -eq 200 -and "$($x.headers['content-type'])" -like 'image/png*' -and $x.body.Length -ge 4 -and $x.body.Substring(1, 3) -ceq 'PNG' }
+            Add-Check 'A-ART.goodKeyServed' 'the good key answers 200 image/png, before and after the failing one' ([ordered]@{ first = $g1.status; again = $g2.status }) ((& $goodOk $g1) -and (& $goodOk $g2))
+            $failOk = { param($x) $x.status -eq 502 -and $x.origin -eq 'app' -and $x.body.Length -eq 0 -and "$($x.headers['content-type'])" -notlike 'image/*' -and
+                "$($x.headers['cache-control'])" -like '*no-store*' -and "$($x.headers['x-content-type-options'])" -eq 'nosniff' }
+            Add-Check 'A-ART.failedFetch502' 'the failing key answers 502 with no body or image type (twice: the retry window still answers 502)' ([ordered]@{
+                first = $b1.status; again = $b2.status; contentType = "$($b1.headers['content-type'])" }) ((& $failOk $b1) -and (& $failOk $b2))
+            $served1 = Get-Overlay $s1 'fixtureArtServed'; $served2 = Get-Overlay $s2 'fixtureArtServed'
+            Add-Check 'A-ART.failureNotCounted' 'fixtureArtServed counts successful serves only: +1 for the second good GET, +0 for the two 502s' ([ordered]@{
+                afterFirstGood = $served1; afterFailuresAndSecondGood = $served2 }) ($null -ne $served1 -and [int] $served1 -ge 1 -and [int] $served2 -eq [int] $served1 + 1)
+        }
+        $r['keys'] = [ordered]@{ first = $k1; second = $k2 }
+    } finally { Stop-OverlayRun $run }
+    $scenarioResults['A-ART'] = $r
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -2048,9 +2151,11 @@ function Test-AProd {
         if (-not $page) { throw 'A-PROD: release overlay page never answered.' }
         $art = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/fixture-art/a.png')
         Add-Check 'A-PROD.fixtureArt404' '/fixture-art/a.png -> 404' $art.status ($art.status -eq 404)
+        $artKey = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/art/0000000000000000')
+        Add-Check 'A-PROD.unknownArtKey404' '/art/0000000000000000 -> 404 from the app (no key registered without a published song)' ([ordered]@{ status = $artKey.status; origin = $artKey.origin }) ($artKey.status -eq 404 -and $artKey.origin -eq 'app')
         $csp = "$($page.headers['content-security-policy'])"
-        $imgSrc = ([regex]::Match($csp, "img-src[^;]*")).Value
-        Add-Check 'A-PROD.cspNoSelfImages' "CSP img-src without 'self'" $imgSrc ($imgSrc -and $imgSrc -notmatch "'self'")
+        $imgSrc = ([regex]::Match($csp, "img-src[^;]*")).Value.Trim()
+        Add-Check 'A-PROD.cspSelfImagesOnly' "CSP img-src is exactly 'self' (no Google host)" $imgSrc ($imgSrc -ceq "img-src 'self'" -and $csp -notmatch 'googleusercontent|ytimg|ggpht')
         $js = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/overlay.js')
         Add-Check 'A-PROD.scriptNoFixtureArt' 'served /overlay.js has no fixture-art (and no __state hook)' ([ordered]@{ status = $js.status; length = $js.body.Length }) (
             $js.status -eq 200 -and $js.body.Length -gt 0 -and $js.body -notmatch 'fixture-art' -and $js.body -notmatch '__state')
@@ -2142,6 +2247,119 @@ function Test-APauseView {
 }
 
 # ---------------------------------------------------------------------------------------------------------------
+# A-TOOLBAR
+
+# Window-scoped capture (Save-WindowShot); counts recording-red pixels (R>180, G<80, B<80) in the top-left quarter of the
+# button's UIA rectangle. Returns @{ count; shot } or $null when the window or capture is unavailable.
+function Get-ObsButtonRedPixels($Process, $Button, [string] $ShotName) {
+    $hwnd = [ObsE2E]::Find([uint32] $Process.Id, $null)
+    if ($hwnd -eq [IntPtr]::Zero) { return $null }
+    $rel = Save-WindowShot $hwnd $ShotName
+    if (-not $rel) { return $null }
+    $frame = New-Object ObsE2E+RECT; [void] [ObsE2E]::DwmGetWindowAttribute($hwnd, 9, [ref] $frame, 16)
+    $r = $Button.Current.BoundingRectangle
+    $left = [int] [Math]::Floor($r.X - $frame.Left); $top = [int] [Math]::Floor($r.Y - $frame.Top)
+    $width = [int] [Math]::Ceiling($r.Width / 2); $height = [int] [Math]::Ceiling($r.Height / 2)
+    $bmp = [System.Drawing.Bitmap]::new((Join-Path $runDirectory $rel))
+    try {
+        $count = 0
+        for ($y = [Math]::Max(0, $top); $y -lt [Math]::Min($bmp.Height, $top + $height); $y++) {
+            for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($bmp.Width, $left + $width); $x++) {
+                $c = $bmp.GetPixel($x, $y)
+                if ($c.R -gt 180 -and $c.G -lt 80 -and $c.B -lt 80) { $count++ }
+            }
+        }
+    } finally { $bmp.Dispose() }
+    [pscustomobject]@{ count = $count; shot = $rel; region = "x=$left y=$top w=$width h=$height" }
+}
+function Get-ObsSavedFlag([string] $Root) { try { Get-Prop (Read-SavedSettings $Root) 'ObsOverlay' } catch { $null } }
+function Get-ObsPortProbe { Invoke-RawHttp '127.0.0.1' (New-Request) }
+
+function Test-AToolbar {
+    $obs = [ordered]@{}
+    $root = New-Root 'A-TOOLBAR'
+    Write-Settings $root @{ ObsOverlay = $false }
+    $bench = @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Playing'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+    $app = $null
+    try {
+        $app = Start-App $root $bench
+        [void] (Wait-BenchReady $root)
+        $mainHwnd = Wait-For { $h = [ObsE2E]::Find([uint32] $app.Id, $null); if ($h -ne [IntPtr]::Zero) { $h } } 60 300
+        if (-not $mainHwnd -or $mainHwnd -eq [IntPtr]::Zero) { throw 'Main window not found.' }
+        $main = $AE::FromHandle($mainHwnd)
+        $button = Find-Element $main 'AutomationId' 'ObsButton' 30
+        Add-Check 'A-TOOLBAR.buttonFound' 'ObsButton found by AutomationId through UI Automation' (Describe $button) ([bool] $button)
+        if (-not $button) { return }
+
+        # 1. Off at launch: name, no listener, no red dot.
+        $probe = Get-ObsPortProbe
+        $red = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-1-off'
+        Add-Check 'A-TOOLBAR.off.name' 'name "OBS overlay: off"' $button.Current.Name ($button.Current.Name -eq 'OBS overlay: off')
+        Add-Check 'A-TOOLBAR.off.noListener' 'no 200 on http://localhost:47813/' ([ordered]@{ origin = $probe.origin; status = $probe.status }) ($probe.status -ne 200)
+        Add-Check 'A-TOOLBAR.off.noRedDot' 'no red pixels in the top-left quarter of the button' $red ($null -ne $red -and $red.count -eq 0)
+
+        # 2. First invoke: on within 5 s.
+        $t0 = [DateTime]::UtcNow
+        Invoke-Element $button
+        $on200 = Wait-For { $p = Get-ObsPortProbe; if ($p.status -eq 200 -and $p.origin -eq 'app') { $p } } 5 200
+        $onSaved = Wait-For { if ((Get-ObsSavedFlag $root) -eq $true) { $true } } 5 200
+        $onName = Wait-For { $n = $button.Current.Name; if ($n -like 'OBS overlay: on*') { $n } } 5 200
+        $onRed = Wait-For { $r = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-2-on'; if ($r -and $r.count -ge 6) { $r } } 5 300
+        if (-not $onRed) { $onRed = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-2-on' }
+        Add-Check 'A-TOOLBAR.on.port200' '200 on the port within 5 s of the invoke' ([ordered]@{ status = Get-Prop $on200 'status'; origin = Get-Prop $on200 'origin' }) ([bool] $on200)
+        Add-Check 'A-TOOLBAR.on.persisted' 'settings.json has ObsOverlay=true within 5 s' (Get-ObsSavedFlag $root) ([bool] $onSaved)
+        Add-Check 'A-TOOLBAR.on.name' 'name starts "OBS overlay: on"' $onName ([bool] $onName)
+        Add-Check 'A-TOOLBAR.on.redDot' 'red pixels (R>180, G<80, B<80) in the top-left quarter of the button' $onRed ($null -ne $onRed -and $onRed.count -ge 6)
+        $obs['on'] = [ordered]@{ name = $onName; redPixels = Get-Prop $onRed 'count'; shot = Get-Prop $onRed 'shot'; helpText = $button.Current.HelpText }
+
+        # 3. Second invoke: off within 5 s.
+        Invoke-Element $button
+        $off = Wait-For { $p = Get-ObsPortProbe; if ($p.status -ne 200) { $p } } 5 200
+        $offSaved = Wait-For { if ((Get-ObsSavedFlag $root) -eq $false) { $true } } 5 200
+        $offName = Wait-For { $n = $button.Current.Name; if ($n -eq 'OBS overlay: off') { $n } } 5 200
+        $offRed = Wait-For { $r = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-3-off'; if ($r -and $r.count -eq 0) { $r } } 5 300
+        if (-not $offRed) { $offRed = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-3-off' }
+        Add-Check 'A-TOOLBAR.off2.portStops' 'port stops answering within 5 s of the second invoke' ([ordered]@{ origin = Get-Prop $off 'origin'; status = Get-Prop $off 'status' }) ([bool] $off)
+        Add-Check 'A-TOOLBAR.off2.persisted' 'settings.json has ObsOverlay=false' (Get-ObsSavedFlag $root) ([bool] $offSaved)
+        Add-Check 'A-TOOLBAR.off2.name' 'name "OBS overlay: off"' $offName ($offName -eq 'OBS overlay: off')
+        Add-Check 'A-TOOLBAR.off2.noRedDot' 'no red pixels remain' $offRed ($null -ne $offRed -and $offRed.count -eq 0)
+
+        # 4. Five quick invokes (off -> on -> off -> on -> off -> on): the end state matches the persisted setting (on) and
+        # exactly one listener answers: one HTTP 200, net "[obs] on" minus "[obs] off" log lines is 1 (a second server would
+        # add an extra "on" or a bind failure), and another process cannot register the prefix.
+        1..5 | ForEach-Object { Invoke-Element $button }
+        $burstSaved = Wait-For { if ((Get-ObsSavedFlag $root) -eq $true) { $true } } 5 200
+        $burst200 = Wait-For { $p = Get-ObsPortProbe; if ($p.status -eq 200 -and $p.origin -eq 'app') { $p } } 5 200
+        $burstName = Wait-For { $n = $button.Current.Name; if ($n -like 'OBS overlay: on*') { $n } } 5 200
+        $script:obsNet = $null
+        $settled = Wait-For {
+            $lines = @(Get-ObsLogLines $root)
+            $onLines = @($lines | Where-Object { $_ -match '\[obs\] on$' }).Count
+            $offLines = @($lines | Where-Object { $_ -match '\[obs\] off$' }).Count
+            $failed = @($lines | Where-Object { $_ -match '\[obs\] bind (PrefixInUse|AccessDenied|Failed)' }).Count
+            $script:obsNet = [ordered]@{ on = $onLines; off = $offLines; bindFailures = $failed }
+            if (($onLines - $offLines) -eq 1) { $true }
+        } 5 250
+        $net = $script:obsNet
+        Start-Sleep -Milliseconds 500
+        $stable = Get-ObsPortProbe
+        $held = -not (Test-PrefixRegistrable)
+        $burstRed = Get-ObsButtonRedPixels $app $button 'A-TOOLBAR-4-burst'
+        Add-Check 'A-TOOLBAR.burst.persisted' 'five quick invokes end on: settings.json ObsOverlay=true' (Get-ObsSavedFlag $root) ([bool] $burstSaved)
+        Add-Check 'A-TOOLBAR.burst.endState' 'name "OBS overlay: on…", 200 on the port and the red dot shown, matching the persisted setting' ([ordered]@{
+            name = $burstName; status = Get-Prop $burst200 'status'; redPixels = Get-Prop $burstRed 'count' }) (
+            [bool] $burstName -and [bool] $burst200 -and $null -ne $burstRed -and $burstRed.count -ge 6)
+        Add-Check 'A-TOOLBAR.burst.oneListener' 'exactly one listener: one 200, on-off log lines = 1, no bind failure, prefix held' ([ordered]@{
+            net = $net; settled = [bool] $settled; status = $stable.status; prefixHeld = $held }) (
+            [bool] $settled -and $net.bindFailures -eq 0 -and $stable.status -eq 200 -and $held)
+        $obs['burst'] = [ordered]@{ log = $net; redPixels = Get-Prop $burstRed 'count'; shot = Get-Prop $burstRed 'shot' }
+    } finally {
+        Stop-App $app $root; Copy-AppLog $root 'A-TOOLBAR'
+        $scenarioResults['A-TOOLBAR'] = $obs
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------------------
 # Runner (serial: every scenario binds the fixed port 47813)
 
 $appVersion = $null
@@ -2149,8 +2367,8 @@ $scenarioErrors = [ordered]@{}
 $functions = [ordered]@{
     'A-OFF' = { Test-AOff }; 'A-TIME' = { Test-ATime }; 'A-AD' = { Test-AAd }; 'A-SAME' = { Test-ASame }; 'A-CLOCK' = { Test-AClock }
     'A-GAP' = { Test-AGap }; 'A-INV' = { Test-AInv }; 'A-IDLE' = { Test-AIdle }; 'A-DEMAND' = { Test-ADemand }; 'A-LIVE' = { Test-ALive }
-    'A-LIFE' = { Test-ALife }; 'A-SEC' = { Test-ASec }; 'A-RECON' = { Test-ARecon }; 'A-TEXT' = { Test-AText }; 'A-SET' = { Test-ASet }
-    'A-PROD' = { Test-AProd }; 'A-PAUSEVIEW' = { Test-APauseView }
+    'A-LIFE' = { Test-ALife }; 'A-SEC' = { Test-ASec }; 'A-RECON' = { Test-ARecon }; 'A-TEXT' = { Test-AText }; 'A-ART' = { Test-AArt }; 'A-SET' = { Test-ASet }
+    'A-PROD' = { Test-AProd }; 'A-PAUSEVIEW' = { Test-APauseView }; 'A-TOOLBAR' = { Test-AToolbar }
 }
 try {
     if (-not $SkipPublish) {

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 
@@ -32,14 +33,19 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
     internal const string LogCategory = "obs";
 
     private const string Origin = "http://localhost:47813";
-    private const string ReleaseImageSources =
-        "https://lh3.googleusercontent.com https://i.ytimg.com https://yt3.ggpht.com https://yt3.googleusercontent.com";
+    private const string ArtPrefix = "/art/";
+    private const int MaxArtEntries = 2;
+    private const long ArtRetryTicks = 10_000;
     private const string HtmlType = "text/html; charset=utf-8";
     private const string ScriptType = "text/javascript; charset=utf-8";
     private static readonly byte[] RetryBytes = Encoding.UTF8.GetBytes("retry: 3000\n\n");
     private static readonly byte[] HeartbeatBytes = Encoding.UTF8.GetBytes(": k\n\n");
 
     private readonly object _gate = new();
+    // Per-server key: wire ids and artwork keys are HMACs of the raw values, stable within this server object
+    // and unlinkable to the video ID, the source URL or another session.
+    private readonly byte[] _wireKey = RandomNumberGenerator.GetBytes(32);
+    private readonly List<ArtEntry> _art = []; // current and previous artwork only, oldest first
     private readonly List<StreamEntry> _streams = [];
     private readonly HashSet<Task> _pumps = [];
     private ObsOverlaySnapshot _latest = ObsOverlaySnapshot.None(0);
@@ -79,8 +85,8 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
             return ObsOverlayStartResult.Failed;
         }
         HookAppendScript(ref script);
-        var imgSrc = ReleaseImageSources;
-        HookExtendImageSources(ref imgSrc);
+        _csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'"
+            + "; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
         var listener = new HttpListener { IgnoreWriteExceptions = false };
         listener.Prefixes.Add(Prefix);
@@ -105,8 +111,6 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
 
         _html = html;
         _script = script;
-        _csp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src " + imgSrc
-            + "; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
         _listener = listener;
         _stopCts = new CancellationTokenSource();
         lock (_gate)
@@ -159,6 +163,11 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
             // A straggler holds only a dead response.
         }
 
+        lock (_gate)
+        {
+            _art.Clear();
+        }
+
         // 5. Detach subscribers and report stopped.
         StreamsChanged = null;
         var wasRunning = IsRunning;
@@ -170,15 +179,20 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
 
     internal void Publish(ObsOverlaySnapshot sample)
     {
-        var artwork = sample.Artwork;
-        HookRewriteArtwork(ref artwork);
-        if (!string.Equals(artwork, sample.Artwork, StringComparison.Ordinal))
-            sample = sample with { Artwork = artwork };
+        // The stream never carries the raw video ID or a Google URL: both leave here as opaque keys.
+        var artUrl = sample.Artwork;
+        var artKey = artUrl is null ? null : Opaque("art", artUrl);
+        sample = sample with
+        {
+            Id = sample.Id is null ? null : Opaque("id", sample.Id),
+            Artwork = artKey is null ? null : ArtPrefix + artKey,
+        };
 
         var now = Environment.TickCount64;
         lock (_gate)
         {
             if (_stopping) return;
+            if (artUrl is not null) RegisterArt(artKey!, artUrl);
             _latest = sample;
             _latestStale = false;
             var broadcast = ObsOverlaySnapshot.ShouldBroadcast(_anchor, sample, now);
@@ -244,13 +258,115 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
         }
     }
 
-    partial void HookTryRoute(HttpListenerRequest request, ref ObsOverlayResponse? response);
-    partial void HookExtendImageSources(ref string imgSrc);
     partial void HookAppendScript(ref byte[] overlayJs);
-    partial void HookRewriteArtwork(ref string? artwork);
+    partial void HookFetchArtwork(string url, CancellationToken cancellation, ref Task<ArtworkPayload?>? fetch);
+    partial void HookArtServed(string url);
     partial void HookStreamOpened();
     partial void HookStreamEnded(ObsOverlayStreamEnd reason);
     partial void HookWriteStarted(bool pending);
+
+    private string Opaque(string domain, string value) =>
+        Convert.ToHexStringLower(HMACSHA256.HashData(_wireKey, Encoding.UTF8.GetBytes(domain + "\0" + value)), 0, 8);
+
+    // Caller holds _gate. Keeps the current and previous artwork only.
+    private void RegisterArt(string key, string url)
+    {
+        foreach (var known in _art)
+            if (known.Key == key) return;
+        if (_art.Count >= MaxArtEntries) _art.RemoveAt(0);
+        _art.Add(new ArtEntry(key, url));
+    }
+
+    private static bool IsArtKey(string key)
+    {
+        if (key.Length != 16) return false;
+        foreach (var c in key)
+            if (c is not ((>= '0' and <= '9') or (>= 'a' and <= 'f'))) return false;
+        return true;
+    }
+
+    private Task<ArtworkPayload?> FetchArtAsync(string url, CancellationToken cancellation)
+    {
+        Task<ArtworkPayload?>? hooked = null;
+        HookFetchArtwork(url, cancellation, ref hooked);
+        return hooked ?? CompactArtwork.FetchAsync(url, cancellation);
+    }
+
+    // GET /art/<key>: the one route that reaches YouTube's image servers, only for a URL the player published.
+    // One fetch per key at a time; a failure is remembered for ArtRetryTicks so a page retry loop cannot hammer it.
+    private async Task ServeArtAsync(HttpListenerResponse response, string key)
+    {
+        ArtEntry? entry = null;
+        ArtworkPayload? payload = null;
+        TaskCompletionSource<ArtworkPayload?>? flight = null;
+        var owner = false;
+        var known = false;
+        var stop = _stopCts?.Token ?? CancellationToken.None;
+        if (IsArtKey(key))
+        {
+            var now = Environment.TickCount64;
+            lock (_gate)
+            {
+                if (_stopping)
+                {
+                    response.Abort();
+                    return;
+                }
+                entry = _art.Find(e => e.Key == key);
+                if (entry is not null)
+                {
+                    known = true;
+                    if (entry.Payload is { } ready) payload = ready;
+                    else if (entry.Flight is { } running) flight = running;
+                    else if (now >= entry.RetryAfterTicks)
+                    {
+                        flight = entry.Flight = new TaskCompletionSource<ArtworkPayload?>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        owner = true;
+                    }
+                }
+            }
+        }
+
+        if (!known)
+        {
+            await WriteStaticAsync(response, new(404, null, null), html: false).ConfigureAwait(false);
+            return;
+        }
+
+        if (owner)
+        {
+            try
+            {
+                payload = await FetchArtAsync(entry!.Url, stop).ConfigureAwait(false);
+            }
+            catch
+            {
+                payload = null;
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    if (payload is not null) entry!.Payload = payload;
+                    else entry!.RetryAfterTicks = Environment.TickCount64 + ArtRetryTicks;
+                    entry.Flight = null;
+                }
+                flight!.TrySetResult(payload);
+            }
+        }
+        else if (flight is not null)
+        {
+            payload = await flight.Task.ConfigureAwait(false);
+        }
+
+        if (payload is null)
+        {
+            await WriteStaticAsync(response, new(502, null, null), html: false).ConfigureAwait(false);
+            return;
+        }
+        await WriteStaticAsync(response, new(200, payload.ContentType, payload.Bytes), html: false).ConfigureAwait(false);
+        HookArtServed(entry!.Url);
+    }
 
     private static byte[] ReadResource(string name)
     {
@@ -311,6 +427,9 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
                 case "/events":
                     OpenStream(response);
                     break;
+                case var art when art.StartsWith(ArtPrefix, StringComparison.Ordinal):
+                    await ServeArtAsync(response, art[ArtPrefix.Length..]).ConfigureAwait(false);
+                    break;
                 default:
                     await WriteStaticAsync(response, new(404, null, null), html: false).ConfigureAwait(false);
                     break;
@@ -342,9 +461,6 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
             return new(400, null, null);
         if (request.Url is null)
             return new(400, null, null);
-        ObsOverlayResponse? hooked = null;
-        HookTryRoute(request, ref hooked);
-        if (hooked is not null) return hooked;
         if (request.Url.Query.Length > 0)
             return new(400, null, null);
         return null;
@@ -496,6 +612,15 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
         {
             HookWriteStarted(false);
         }
+    }
+
+    private sealed class ArtEntry(string key, string url)
+    {
+        internal string Key { get; } = key;
+        internal string Url { get; } = url;
+        internal ArtworkPayload? Payload { get; set; }
+        internal TaskCompletionSource<ArtworkPayload?>? Flight { get; set; }
+        internal long RetryAfterTicks { get; set; }
     }
 
     private sealed class StreamEntry(HttpListenerResponse response, CancellationTokenSource cts)

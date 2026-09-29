@@ -232,6 +232,7 @@ public sealed partial class WebHostWindow : Window
     private MenuFlyoutItem _nextItem = null!;
     private ToggleMenuFlyoutItem _shortcutsItem = null!;
     private ToggleMenuFlyoutItem _discordPresenceItem = null!;
+    private ToggleMenuFlyoutItem _obsOverlayItem = null!;
     private MenuFlyoutSubItem _playbackSubItem = null!;
     private MenuFlyoutSubItem _zoomSubItem = null!;
     private MenuFlyoutItem _zoomInItem = null!;
@@ -459,6 +460,7 @@ public sealed partial class WebHostWindow : Window
             SetDiscordEnabled);
         _discordSettingsItem = CreateMenuItem("Discord settings…", "settings",
             () => ShowSettings(discordPage: true));
+        _obsOverlayItem = CreateToggleItem("Show the OBS overlay", "obs", SetObsOverlayEnabled);
         _shortcutsItem = CreateToggleItem("Session playback shortcuts", "settings", value => SetShortcutsEnabled(value));
         _playbackSubItem = new MenuFlyoutSubItem { Text = "Playback", Icon = _iconCache.CreateElement("play-pause", 16) };
         AutomationProperties.SetName(_playbackSubItem, "Playback");
@@ -492,12 +494,13 @@ public sealed partial class WebHostWindow : Window
         AddRange(_moreFlyout, CreateToolbarOverflowItems());
         AddRange(_moreFlyout,
             _playbackSubItem, _fullscreenItem, _topmostItem, _zoomSubItem, new MenuFlyoutSeparator(),
-            _discordPresenceItem, _discordSettingsItem, _settingsItem, _statusDetailsItem,
+            _discordPresenceItem, _discordSettingsItem, _obsOverlayItem, _settingsItem, _statusDetailsItem,
             new MenuFlyoutSeparator(), _versionItem, _donateItem, new MenuFlyoutSeparator(), _quitItem);
         AddRange(_timerFlyout, _setTimerItem, _cancelTimerItem);
         MoreButton.Flyout = _moreFlyout;
         TimerButton.Flyout = _timerFlyout;
         RefreshDiscordSurfaces();
+        RefreshObsSurfaces();
         _retryItem.IsEnabled = false;
         _statusDetailsItem.IsEnabled = true;
     }
@@ -541,6 +544,8 @@ public sealed partial class WebHostWindow : Window
         HomeButton.Click += (_, _) => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); };
         DiscordButton.Click += (_, _) => SetDiscordEnabled(!_settings.Discord.Enabled);
         DiscordSettingsContextItem.Click += (_, _) => ShowSettings(discordPage: true);
+        ObsButton.Click += (_, _) => SetObsOverlayEnabled(!_settings.ObsOverlay);
+        ObsSettingsContextItem.Click += (_, _) => ShowSettings(obsPage: true);
         UpdateButton.Click += (_, _) => OnUpdateButtonClick();
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
@@ -574,10 +579,12 @@ public sealed partial class WebHostWindow : Window
         DiscordButton.Content = _iconCache.CreateElement("discord", 20);
         ForwardButton.Content = _iconCache.CreateElement("forward", 20);
         HomeButton.Content = _iconCache.CreateElement("home", 20);
+        SetObsButtonIcon();
         MoreButton.Content = _iconCache.CreateElement("overflow", 20);
         SetTimerButtonContent(TimerBadge);
         CompactButton.Content = _iconCache.CreateElement(_compact ? "restore-window" : "compact", 20);
         RefreshDiscordSurfaces();
+        RefreshObsSurfaces();
         SetReleaseUpdateButtonState(
             _releaseUpdateButtonState, _availableReleaseUpdate?.Version);
     }
@@ -597,6 +604,7 @@ public sealed partial class WebHostWindow : Window
         _setTimerItem.Icon = _iconCache.CreateElement("quit-timer", 16);
         _cancelTimerItem.Icon = _iconCache.CreateElement("cancel-timer", 16);
         _discordPresenceItem.Icon = _iconCache.CreateElement("discord", 16);
+        _obsOverlayItem.Icon = _iconCache.CreateElement("obs", 16);
         _discordSettingsItem.Icon = _iconCache.CreateElement("settings", 16);
         _statusDetailsItem.Icon = _iconCache.CreateElement("status", 16);
         _settingsItem.Icon = _iconCache.CreateElement("settings", 16);
@@ -1411,7 +1419,7 @@ public sealed partial class WebHostWindow : Window
         _ = ExecutePlayerCommandAsync("pause");
     }
 
-    private void ShowSettings(bool discordPage = false)
+    private void ShowSettings(bool discordPage = false, bool obsPage = false)
     {
         if (_closing || _disposed || _settingsDialogOpen) return;
         _settingsDialogOpen = true;
@@ -1437,6 +1445,8 @@ public sealed partial class WebHostWindow : Window
         dialog.OpenObsGuideRequested += (_, _) => _ = OpenObsGuideAsync();
         if (discordPage)
             dialog.SelectDiscordPage();
+        else if (obsPage)
+            dialog.SelectObsPage();
         _settingsDialog = dialog;
         _ = ShowSettingsAsync(dialog);
     }
@@ -1481,7 +1491,7 @@ public sealed partial class WebHostWindow : Window
                 ApplyDiscordOptions(_settings.Discord);
                 RefreshDiscordSurfaces();
                 ApplyObsHidePaused(_settings.ObsHidePaused);
-                await ApplyObsOverlayAsync(_settings.ObsOverlay);
+                await ReconcileObsOverlayAsync();
                 if (restoreChanged)
                     _settings = _settings with { LastSection = "home" };
                 if (trayChanged)

@@ -90,6 +90,10 @@ Back in Nativune, the status line in Settings › OBS changes from **Waiting for
 
 "Shutdown source when not visible" closes the overlay page a few seconds after its scene stops showing, so it doesn't keep running in the background.
 
+## Turn it on and off from the toolbar
+
+Once it's set up, you don't need Settings to turn the overlay on or off. The **OBS overlay** button on the left of the toolbar, after **Home**, switches it on or off and saves the change right away. When the overlay is on, a small red dot shows at the button's top-left corner, like a recording light. You can also use **More › Show the OBS overlay**. Hover over the button to see whether OBS is connected, or right-click it for **OBS overlay settings…**.
+
 ## When the song is paused
 
 **Hide the overlay when paused** is on by default: the bar fades out while the song is paused and comes back when it plays.
@@ -106,10 +110,10 @@ The **Open Block ads setting** button on the OBS page takes you to Settings › 
 
 ## Privacy
 
-When on, apps on this PC can read the song title, artist, artwork link and playback time at http://localhost:47813/. Other PCs and websites cannot. OBS loads the artwork from YouTube's image servers.
+When on, apps on this PC can read the song title, artist, artwork and playback time at http://localhost:47813/. Other PCs and websites cannot. Nativune downloads the artwork from YouTube's image servers and passes it to OBS, so OBS itself never contacts YouTube for it.
 
 - This works even when Discord status is off.
-- Nothing else is shared: no account, history, album name or song link.
+- Nothing else is shared: no account, history, album name, song link or YouTube video ID. The song is identified only by a random code that changes each time the overlay starts.
 - Nothing is served while the setting is off.
 
 ## Troubleshooting

@@ -5,6 +5,9 @@ using Windows.Storage.Streams;
 
 namespace Nativune;
 
+// One fetched, size- and type-checked artwork image (image/jpeg or image/png).
+internal sealed record ArtworkPayload(byte[] Bytes, string ContentType, int Width, int Height);
+
 /// <summary>
 /// Bounded artwork loader for the native Compact surface. It intentionally accepts only the
 /// existing public artwork origins and decodes bytes through the WinUI native image pipeline.
@@ -13,6 +16,7 @@ internal static class CompactArtwork
 {
     private const int MaxBytes = 1024 * 1024;
     private const int MaxDimension = 1024;
+    private static readonly TimeSpan FetchDeadline = TimeSpan.FromSeconds(3);
     private static readonly HttpClient Client = new(new HttpClientHandler
     {
         AllowAutoRedirect = false,
@@ -37,29 +41,11 @@ internal static class CompactArtwork
         // Start one linked three-second budget before sending headers so the request, body read
         // and native decode share the same deadline.
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-        deadline.CancelAfter(TimeSpan.FromSeconds(3));
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Accept.ParseAdd("image/jpeg, image/png");
-        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
-        if (response.StatusCode != HttpStatusCode.OK
-            || response.Content.Headers.ContentLength is > MaxBytes
-            || response.Content.Headers.ContentType?.MediaType is not ("image/jpeg" or "image/png"))
-            return null;
-
-        await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
-        using var bytes = new MemoryStream(capacity: Math.Min(MaxBytes, 64 * 1024));
-        var buffer = new byte[8192];
-        while (true)
-        {
-            var count = await stream.ReadAsync(buffer.AsMemory(), deadline.Token);
-            if (count == 0) break;
-            if (bytes.Length + count > MaxBytes) return null;
-            bytes.Write(buffer, 0, count);
-        }
-
-        deadline.Token.ThrowIfCancellationRequested();
-        var payload = bytes.ToArray();
-        if (!TryReadDimensions(payload, out var width, out var height)) return null;
+        deadline.CancelAfter(FetchDeadline);
+        if (await FetchBoundedAsync(url, deadline.Token) is not { } fetched) return null;
+        var payload = fetched.Bytes;
+        var width = fetched.Width;
+        var height = fetched.Height;
 
         // BitmapImage and its decoder are apartment-bound. LoadAsync is normally entered from
         // the native UI thread; when a caller enters elsewhere, enqueue only the decode step.
@@ -79,6 +65,47 @@ internal static class CompactArtwork
             // passed the origin, media-type, signature and dimension gates above.
             return null;
         }
+    }
+
+    /// <summary>
+    /// Bounded fetch of one approved artwork URL for callers that serve or decode the bytes
+    /// themselves: same host allowlist, HTTPS, three-second deadline, size cap and image/jpeg or
+    /// image/png only. Returns null when the URL or response is rejected; network failures throw.
+    /// </summary>
+    internal static async Task<ArtworkPayload?> FetchAsync(string url, CancellationToken cancellation)
+    {
+        if (!IsAllowedUrl(url)) return null;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        deadline.CancelAfter(FetchDeadline);
+        return await FetchBoundedAsync(url, deadline.Token);
+    }
+
+    private static async Task<ArtworkPayload?> FetchBoundedAsync(string url, CancellationToken deadline)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Accept.ParseAdd("image/jpeg, image/png");
+        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline);
+        if (response.StatusCode != HttpStatusCode.OK
+            || response.Content.Headers.ContentLength is > MaxBytes
+            || response.Content.Headers.ContentType?.MediaType is not { } contentType
+            || contentType is not ("image/jpeg" or "image/png"))
+            return null;
+
+        await using var stream = await response.Content.ReadAsStreamAsync(deadline);
+        using var bytes = new MemoryStream(capacity: Math.Min(MaxBytes, 64 * 1024));
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var count = await stream.ReadAsync(buffer.AsMemory(), deadline);
+            if (count == 0) break;
+            if (bytes.Length + count > MaxBytes) return null;
+            bytes.Write(buffer, 0, count);
+        }
+
+        deadline.ThrowIfCancellationRequested();
+        var payload = bytes.ToArray();
+        if (!TryReadDimensions(payload, out var width, out var height)) return null;
+        return new ArtworkPayload(payload, contentType, width, height);
     }
 
     private static async Task<BitmapImage?> DecodeOnDispatcherAsync(

@@ -1,7 +1,6 @@
 #if NATIVUNE_DISCORD_TEST_HOOKS
 using System.Buffers.Binary;
 using System.IO.Compression;
-using System.Net;
 using System.Text.RegularExpressions;
 
 namespace Nativune;
@@ -11,10 +10,9 @@ internal readonly record struct ObsOverlayHookState(string LatestState, bool Lat
     double? LatestDuration, int FixtureArtServed, bool PendingWrite, string? LastStreamEndReason, bool HidePaused);
 
 // Test-hook half of ObsOverlayServer (design.md §2.8, §4); compiled only with -p:DiscordPresenceTestHooks=true.
-// It is the only code that names /fixture-art, delayMs, the -d<ms> suffix, 'self' in img-src or the hooks script.
+// It is the only code that names the fixture artwork URLs, delayMs/-d<ms> delays or the hooks script.
 internal sealed partial class ObsOverlayServer
 {
-    private const string FixtureArtPrefix = "/fixture-art/";
     private const int FixtureArtMaxDelayMs = 5000;
     private static readonly Regex s_fixtureArtwork = new("^/fixture-([abc])=w544-h544(?:-d([0-9]{1,4}))?$",
         RegexOptions.CultureInvariant);
@@ -35,30 +33,6 @@ internal sealed partial class ObsOverlayServer
     private int _hookPendingWrites;
     private string? _hookLastStreamEnd;
 
-    partial void HookTryRoute(HttpListenerRequest request, ref ObsOverlayResponse? response)
-    {
-        var path = request.Url!.AbsolutePath;
-        if (path is not ("/fixture-art/a.png" or "/fixture-art/b.png" or "/fixture-art/c.png")) return;
-        var query = request.Url.Query;
-        var delayMs = 0;
-        if (query.Length != 0)
-        {
-            const string head = "?delayMs=";
-            var digits = query.StartsWith(head, StringComparison.Ordinal) ? query.AsSpan(head.Length) : default;
-            if (digits.Length is < 1 or > 4 || !IsAsciiDigits(digits)
-                || (delayMs = int.Parse(digits, provider: System.Globalization.CultureInfo.InvariantCulture)) > FixtureArtMaxDelayMs)
-            {
-                response = new ObsOverlayResponse(400, null, null);
-                return;
-            }
-        }
-        if (delayMs > 0) Thread.Sleep(delayMs); // pool-thread request handler
-        Interlocked.Increment(ref _hookFixtureArtServed);
-        response = new ObsOverlayResponse(200, "image/png", s_fixtureArt[path[FixtureArtPrefix.Length] - 'a'].Value);
-    }
-
-    partial void HookExtendImageSources(ref string imgSrc) => imgSrc += " 'self'";
-
     partial void HookAppendScript(ref byte[] overlayJs)
     {
         var hooks = s_hooksScript.Value;
@@ -69,16 +43,42 @@ internal sealed partial class ObsOverlayServer
         overlayJs = combined;
     }
 
-    partial void HookRewriteArtwork(ref string? artwork)
+    // The fixture artwork URLs never leave the machine: the fetcher seam answers them with the fixture PNG, after
+    // the -d<ms> delay, so the E2E runs through the real /art/ route, cache and single-flight.
+    partial void HookFetchArtwork(string url, CancellationToken cancellation, ref Task<ArtworkPayload?>? fetch)
     {
-        if (artwork is null || !Uri.TryCreate(artwork, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps || !uri.Host.Equals("lh3.googleusercontent.com", StringComparison.OrdinalIgnoreCase)
-            || uri.Query.Length != 0)
-            return;
+        if (TryFixtureArtwork(url, out var letter, out var delay))
+            fetch = FixtureFetchAsync(letter, delay, cancellation);
+        else if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.Host.Equals("lh3.googleusercontent.com", StringComparison.OrdinalIgnoreCase)
+            && uri.AbsolutePath.StartsWith("/fixture-", StringComparison.Ordinal))
+            fetch = Task.FromResult<ArtworkPayload?>(null); // the fixture's "missing" art: a failed fetch, never a real request
+    }
+
+    partial void HookArtServed(string url)
+    {
+        if (TryFixtureArtwork(url, out _, out _)) Interlocked.Increment(ref _hookFixtureArtServed);
+    }
+
+    private static async Task<ArtworkPayload?> FixtureFetchAsync(int letter, int delay, CancellationToken cancellation)
+    {
+        if (delay > 0) await Task.Delay(delay, cancellation).ConfigureAwait(false);
+        return new ArtworkPayload(s_fixtureArt[letter].Value, "image/png", 128, 128);
+    }
+
+    private static bool TryFixtureArtwork(string url, out int letter, out int delay)
+    {
+        letter = 0;
+        delay = 0;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
+            || !uri.Host.Equals("lh3.googleusercontent.com", StringComparison.OrdinalIgnoreCase) || uri.Query.Length != 0)
+            return false;
         var match = s_fixtureArtwork.Match(uri.AbsolutePath);
-        if (!match.Success) return;
-        var delay = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) : 0;
-        artwork = Prefix + "fixture-art/" + match.Groups[1].Value + ".png?delayMs=" + Math.Min(delay, FixtureArtMaxDelayMs);
+        if (!match.Success) return false;
+        letter = match.Groups[1].Value[0] - 'a';
+        if (match.Groups[2].Success)
+            delay = Math.Min(int.Parse(match.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture), FixtureArtMaxDelayMs);
+        return true;
     }
 
     partial void HookStreamOpened() => Interlocked.Exchange(ref _hookFixtureArtServed, 0);
@@ -110,13 +110,6 @@ internal sealed partial class ObsOverlayServer
                 latest.Duration, Volatile.Read(ref _hookFixtureArtServed), Volatile.Read(ref _hookPendingWrites) > 0,
                 Volatile.Read(ref _hookLastStreamEnd), _hidePaused);
         }
-    }
-
-    private static bool IsAsciiDigits(ReadOnlySpan<char> value)
-    {
-        foreach (var c in value)
-            if (c is < '0' or > '9') return false;
-        return true;
     }
 
     // 128x128 RGB: a diagonal gradient whose hue differs per letter, plus a bright top-left 48x48 quadrant

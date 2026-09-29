@@ -7,7 +7,9 @@ internal enum ObsOverlayState { None, Playing, Paused, Ended, Ad }
 
 // Immutable sample of one successful read. CaptureTicks = Environment.TickCount64 at read completion.
 // For Ad and None every field except State and CaptureTicks is null/0/false, so they compare equal by
-// value and the broadcast rule stays quiet for the whole ad or gap.
+// value and the broadcast rule stays quiet for the whole ad or gap. FromState carries the raw video ID and
+// artwork URL; ObsOverlayServer.Publish swaps both for opaque per-session keys before the sample is compared
+// or serialized, so nothing that can rebuild a song link or reach Google is ever written to a stream.
 internal sealed record ObsOverlaySnapshot(
     ObsOverlayState State,
     string? Id,
