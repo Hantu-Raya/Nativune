@@ -41,16 +41,23 @@ public sealed partial class WebHostWindow
         && !_closing && !_disposed && !_playerSuspended;
 
     // Which consumer needs the shared playback reader (sets cadence and delivery; every demand runs
-    // the same full read). Compact takes precedence and also feeds presence: one read per tick.
-    private enum ReaderDemand { None, Presence, Compact }
+    // the same full read). Compact takes precedence and also feeds presence and the overlay: one read per tick.
+    private enum ReaderDemand { None, Presence, Overlay, Compact }
 
     private ReaderDemand CurrentReaderDemand => CompactActive ? ReaderDemand.Compact
-        : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
+        : OverlayReadActive ? ReaderDemand.Overlay : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
 
     private static long ReadIntervalMs(ReaderDemand demand)
-        => demand == ReaderDemand.Compact ? 1000 : PresenceReadIntervalMs;
+        => demand == ReaderDemand.Presence ? PresenceReadIntervalMs : 1000;
 
-    // Starts/stops the shared read timer: 1 s while Compact is active, else 5 s for presence.
+    private static ReadReason ReasonFor(ReaderDemand demand) => demand switch
+    {
+        ReaderDemand.Compact => ReadReason.Compact,
+        ReaderDemand.Overlay => ReadReason.Overlay,
+        _ => ReadReason.Presence
+    };
+
+    // Starts/stops the shared read timer: 1 s for Compact or the overlay, else 5 s for presence.
     private void RefreshSharedReader()
     {
         if (_playbackReadTimer is null) return;
@@ -60,17 +67,33 @@ public sealed partial class WebHostWindow
             _presenceUnavailableSince = -1;
             _presenceHasState = false;
         }
+        // Overlay demand ended during a read gap: the held sample must not greet a later stream.
+        if (!OverlayReadActive && _overlayGapSince >= 0)
+        {
+            _overlayGapSince = -1;
+            _overlayNoneSent = false;
+            _obsOverlay?.MarkStale();
+        }
         if (demand == ReaderDemand.None)
         {
             _playbackReadTimer.Stop();
             return;
         }
         var interval = TimeSpan.FromMilliseconds(ReadIntervalMs(demand));
-        if (_playbackReadTimer.Interval != interval) _playbackReadTimer.Interval = interval;
         if (!_playbackReadTimer.IsRunning)
         {
+            if (_playbackReadTimer.Interval != interval) _playbackReadTimer.Interval = interval;
             _playbackReadTimer.Start();
-            if (demand == ReaderDemand.Presence) _ = ReadPlaybackStateAsync();
+            if (demand is ReaderDemand.Presence or ReaderDemand.Overlay) _ = ReadPlaybackStateAsync();
+        }
+        else if (_playbackReadTimer.Interval != interval)
+        {
+            // Setting Interval on a running timer does not restart its period; restart it and let
+            // the read's own eligibility gate decide whether a read starts now or on the next tick.
+            _playbackReadTimer.Stop();
+            _playbackReadTimer.Interval = interval;
+            _playbackReadTimer.Start();
+            _ = ReadPlaybackStateAsync();
         }
     }
 
@@ -226,8 +249,8 @@ public sealed partial class WebHostWindow
         else if (now - _presenceUnavailableSince >= CompactHoldMs) InvalidateDiscord(keepItem: true);
     }
 
-    // One shared full read per tick. The captured compact flag decides whether the result also
-    // reaches Compact UI; presence-only demand delivers to presence alone.
+    // One shared full read per tick. The captured demand decides whether the result also
+    // reaches Compact UI; presence and the overlay take it when their own gates still hold.
     private async Task ReadPlaybackStateAsync()
     {
         var demand = CurrentReaderDemand;
@@ -241,6 +264,7 @@ public sealed partial class WebHostWindow
         {
             if (compact) HoldOrDropCompactState();
             if (PresenceReadActive) HoldOrDropPresenceState();
+            if (OverlayReadActive) HoldOrDropOverlayState();
             return;
         }
         _playbackReadPending = true;
@@ -248,14 +272,41 @@ public sealed partial class WebHostWindow
         var generation = _compactGeneration;
         var presenceGeneration = _presenceGeneration;
         var presenceEpoch = _discord?.ConnectionEpoch ?? 0;
+        var overlayGeneration = _overlayGeneration;
         try
         {
-            var read = await controls.ReadPlaybackStateAsync(presenceOnly: !compact);
-            DeliverPlaybackSnapshot(read.State, compact, generation, presenceGeneration, presenceEpoch);
-        }
-        catch (Exception)
-        {
-            DeliverPlaybackSnapshot(null, compact, generation, presenceGeneration, presenceEpoch);
+            CompactPlaybackState? state;
+            try
+            {
+                state = (await controls.ReadPlaybackStateAsync(ReasonFor(demand))).State;
+            }
+            catch (Exception)
+            {
+                state = null;
+            }
+            var capturedAt = Environment.TickCount64;
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (_obsReadHold is { } hold) await hold.Task;   // command-obs-hold-read barrier; _playbackReadPending stays true
+#endif
+            try
+            {
+                DeliverPlaybackSnapshot(state, demand, generation, presenceGeneration, presenceEpoch,
+                    overlayGeneration, capturedAt);
+            }
+            catch (Exception)
+            {
+                if (state is not null)
+                {
+                    try
+                    {
+                        DeliverPlaybackSnapshot(null, demand, generation, presenceGeneration, presenceEpoch,
+                            overlayGeneration, capturedAt);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+            }
         }
         finally
         {
@@ -264,16 +315,18 @@ public sealed partial class WebHostWindow
     }
 
     // Each consumer accepts the result only if its own generation is still current. Reads made
-    // for presence demand alone (compact false) never reach Compact UI. Presence also rejects a
-    // read that started on an earlier Discord connection (checked atomically inside Observe).
-    private void DeliverPlaybackSnapshot(CompactPlaybackState? state, bool compact,
-        int generation, int presenceGeneration, int presenceEpoch)
+    // without Compact demand never reach Compact UI. Presence also rejects a read that started on an
+    // earlier Discord connection (checked atomically inside Observe). Gates are checked now, at delivery.
+    private void DeliverPlaybackSnapshot(CompactPlaybackState? state, ReaderDemand demand,
+        int generation, int presenceGeneration, int presenceEpoch, int overlayGeneration, long capturedAt)
     {
         if (PresenceReadActive && presenceGeneration == _presenceGeneration
             && presenceEpoch == _discord?.ConnectionEpoch)
             ApplyPresenceSnapshot(state, presenceEpoch);
-        if (compact && CompactActive && generation == _compactGeneration)
+        if (demand == ReaderDemand.Compact && CompactActive && generation == _compactGeneration)
             ApplyCompactSnapshot(state);
+        if (OverlayReadActive && overlayGeneration == _overlayGeneration)
+            ApplyOverlaySnapshot(state, capturedAt);
     }
 
     // Null means no coherent player (or a failed read): hold briefly, then drop.

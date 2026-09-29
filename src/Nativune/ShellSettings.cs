@@ -30,6 +30,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public DiscordPresenceOptions Discord { get; init; } = DiscordPresenceOptions.Default;
     // Barebones Better Lyrics (Settings > Lyrics). On by default (owner decision, 28 September 2026); missing loads on.
     public bool BetterLyricsEnabled { get; init; } = true;
+    // Opt-in OBS overlay (Settings > OBS). Off by default; missing or older files load off.
+    public bool ObsOverlay { get; init; }
+    // Hide the pill while paused (plan D15). On by default; missing loads on.
+    public bool ObsHidePaused { get; init; } = true;
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -220,7 +224,9 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 StatusLine = Enum.IsDefined(settings.Discord.StatusLine) ? settings.Discord.StatusLine
                     : DiscordStatusLine.Artist
             },
-            BetterLyricsEnabled = settings.BetterLyricsEnabled
+            BetterLyricsEnabled = settings.BetterLyricsEnabled,
+            ObsOverlay = settings.ObsOverlay,
+            ObsHidePaused = settings.ObsHidePaused
         };
     }
 
@@ -283,7 +289,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         bool SleepInBackground = true, bool StartCompact = false, bool? AutoCheckUpdates = null,
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
         AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
-        bool DiscordOpenButton = true, bool DiscordShowAuthor = true, bool BetterLyricsEnabled = true)
+        bool DiscordOpenButton = true, bool DiscordShowAuthor = true, bool BetterLyricsEnabled = true,
+        bool ObsOverlay = false, bool ObsHidePaused = true)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -310,7 +317,9 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 Enum.IsDefined((Nativune.DiscordStatusLine)DiscordStatusLine)
                     ? (Nativune.DiscordStatusLine)DiscordStatusLine : Nativune.DiscordStatusLine.Artist,
                 DiscordOpenButton, DiscordShowAuthor),
-            BetterLyricsEnabled = BetterLyricsEnabled
+            BetterLyricsEnabled = BetterLyricsEnabled,
+            ObsOverlay = ObsOverlay,
+            ObsHidePaused = ObsHidePaused
         };
 
         public static PersistedSettings FromSettings(ShellSettings settings)
@@ -321,6 +330,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
                 settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
                 settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton,
-                settings.Discord.ShowAuthor, settings.BetterLyricsEnabled);
+                settings.Discord.ShowAuthor, settings.BetterLyricsEnabled, settings.ObsOverlay,
+                settings.ObsHidePaused);
     }
 }

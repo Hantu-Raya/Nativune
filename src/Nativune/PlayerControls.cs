@@ -4,12 +4,19 @@ using System.Text.Json;
 
 namespace Nativune;
 
+// Why a shared playback read runs; labels test-hook diagnostics only (every reason runs the same full read).
+internal enum ReadReason { Compact, Presence, Overlay }
+
 internal sealed class PlayerControls : IDisposable
 {
     private const int MaxScriptResultLength = 4096;
     internal const string CompactRequestedStatus = "Player control click sent.";
     private static readonly TimeSpan ScriptTimeout = TimeSpan.FromMilliseconds(2500);
     private static readonly TimeSpan DispatchWindow = TimeSpan.FromMilliseconds(1200);
+
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    internal static volatile bool HookForceUnavailable;   // IsAvailable returns false while set; nothing else changes
+#endif
 
     private readonly CoreWebView2 _core;
     private readonly Func<bool> _hostReady;
@@ -47,6 +54,9 @@ internal sealed class PlayerControls : IDisposable
     {
         get
         {
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (HookForceUnavailable) return false;
+#endif
             lock (_gate)
             {
                 if (!CanAttemptLocked()) return false;
@@ -136,8 +146,7 @@ internal sealed class PlayerControls : IDisposable
         if (!IsAvailable || !TryStart("compact-readiness", out var request, out _)) return false;
         try
         {
-            var script = CompactPlayback.BuildScript("ready", null, request.Href,
-                DateTimeOffset.UtcNow.Add(ScriptTimeout).ToUnixTimeMilliseconds());
+            var script = CompactPlayback.BuildScript("ready", null, request.Href, ReadDeadline(ScriptTimeout));
             var json = await RunCompactScriptAsync(request, script);
             return json is not null && Owns(request) && CompactPlayback.IsTransportReadyResponse(json);
         }
@@ -148,17 +157,34 @@ internal sealed class PlayerControls : IDisposable
     // what they already show. Sampled with a null state means the website had no coherent player.
     internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
 
-    // presenceOnly labels test-hook read diagnostics only; every caller runs the same full read.
-    internal async Task<CompactRead> ReadPlaybackStateAsync(bool presenceOnly = false)
+    // reason labels test-hook read diagnostics only; every caller runs the same full read.
+    internal async Task<CompactRead> ReadPlaybackStateAsync(ReadReason reason)
     {
         if (!IsAvailable) return default;
         if (!TryStart("compact-state", out var request, out _)) return default;
         try
         {
-            var script = CompactPlayback.BuildScript("state", null, request.Href,
-                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
 #if NATIVUNE_DISCORD_TEST_HOOKS
-            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(presenceOnly ? "Presence" : "Compact", script.Length);
+            // Bench probe (hook builds only): "noop" measures the ExecuteScriptAsync round trip alone for
+            // overlay reads; the overlay is fed the last successfully parsed state again (its position does
+            // not advance). Until a full read has parsed a state, reads take the normal full path once so
+            // there is a state to replay. Compact and Presence reads are unchanged.
+            if (reason == ReadReason.Overlay && OverlayReadProbeNoop && _probeLastRead is not null)
+            {
+                var probeId = DiscordPresenceDiagnostics.RecordStateReadStarted(reason, 1);
+                var probeOk = false;
+                try
+                {
+                    if (await RunCompactScriptAsync(request, "0") is null || !OwnsDocument(request)) return default;
+                    probeOk = _probeLastRead is { State: not null };
+                    return _probeLastRead ?? default;
+                }
+                finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(probeId, probeOk); }
+            }
+#endif
+            var script = CompactPlayback.BuildScript("state", null, request.Href, ReadDeadline(DispatchWindow));
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            var diagnosticId = DiscordPresenceDiagnostics.RecordStateReadStarted(reason, script.Length);
             var diagnosticValid = false;
             try
             {
@@ -169,7 +195,11 @@ internal sealed class PlayerControls : IDisposable
 #if NATIVUNE_DISCORD_TEST_HOOKS
             diagnosticValid = parsed && state is not null;
 #endif
-            return new CompactRead(true, parsed ? state : null);
+            var read = new CompactRead(true, parsed ? state : null);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (read.State is not null) _probeLastRead = read;
+#endif
+            return read;
 #if NATIVUNE_DISCORD_TEST_HOOKS
             }
             finally { DiscordPresenceDiagnostics.RecordStateReadCompleted(diagnosticId, diagnosticValid); }
@@ -187,8 +217,7 @@ internal sealed class PlayerControls : IDisposable
         if (!TryStart("compact-playlists", out var request, out _)) return null;
         try
         {
-            var script = CompactPlayback.BuildScript("playlists", null, request.Href,
-                DateTimeOffset.UtcNow.Add(DispatchWindow).ToUnixTimeMilliseconds());
+            var script = CompactPlayback.BuildScript("playlists", null, request.Href, ReadDeadline(DispatchWindow));
             var json = await RunCompactScriptAsync(request, script);
             return json is not null && OwnsDocument(request)
                 && CompactPlayback.TryParsePlaylists(json, out var playlists) ? playlists : null;
@@ -564,6 +593,25 @@ internal sealed class PlayerControls : IDisposable
         return !new[] { "/signin", "/signout", "/logout", "/account", "/channel_switcher" }
             .Any(path => uri.AbsolutePath.Equals(path, StringComparison.OrdinalIgnoreCase)
                 || uri.AbsolutePath.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase));
+    }
+
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    private static readonly bool OverlayReadProbeNoop = string.Equals(
+        Environment.GetEnvironmentVariable("NATIVUNE_TEST_OVERLAY_READ_PROBE"), "noop", StringComparison.Ordinal);
+    private CompactRead? _probeLastRead;
+#endif
+
+    // Read-only modes ("ready", "state", "playlists") only query the DOM; they never click, dispatch or
+    // otherwise mutate the page. Their deadline is rounded UP to the next 10 s boundary, so it is never
+    // earlier than the exact one and at most 10 s later, and repeated reads of the same href produce
+    // byte-identical script text (fixed anonymous-type field order; command, value and signature null),
+    // letting V8 reuse its compilation cache instead of recompiling the ~28 KB script every second.
+    // Commands keep their precise deadline.
+    private static long ReadDeadline(TimeSpan timeout)
+    {
+        const long QuantumMs = 10_000;
+        var exact = DateTimeOffset.UtcNow.Add(timeout).ToUnixTimeMilliseconds();
+        return (exact + QuantumMs - 1) / QuantumMs * QuantumMs;
     }
 
     private static string BuildScript(string command, string href, long notAfterUnixMs)

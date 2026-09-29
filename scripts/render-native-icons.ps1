@@ -39,7 +39,7 @@ $allowedAttributes = @(
 $iconNames = @(
     'app-mark', 'back', 'cancel-timer', 'close', 'compact', 'discord', 'dislike',
     'dislike-filled', 'donate', 'error', 'exit-fullscreen', 'forward', 'fullscreen', 'hide', 'home',
-    'like', 'like-filled', 'minimize', 'next', 'overflow', 'pause', 'pin', 'play-pause',
+    'like', 'like-filled', 'minimize', 'next', 'obs', 'overflow', 'pause', 'pin', 'play-pause',
     'play', 'playlist', 'previous', 'quit-timer', 'quit', 'repeat-one', 'repeat',
     'restore-section', 'restore-window', 'retry', 'settings', 'show',
     'shuffle', 'status', 'tray', 'update', 'update-available',
@@ -238,7 +238,7 @@ $expectedFiles = @($iconNames | ForEach-Object { '{0}.svg' -f $_ })
 $actualFiles = @($files.Name | Sort-Object)
 $expectedSorted = @($expectedFiles | Sort-Object)
 if ($actualFiles.Count -ne $expectedSorted.Count -or (Compare-Object $actualFiles $expectedSorted)) {
-    Fail 'mask directory must contain exactly the 45 active SVG filenames (historical notification masks live outside this input)'
+    Fail 'mask directory must contain exactly the 46 active SVG filenames (historical notification masks live outside this input)'
 }
 foreach ($file in $files) {
     if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {

@@ -31,9 +31,9 @@ internal static class DiscordPresenceDiagnostics
         public bool Valid;
     }
 
-    internal static long RecordStateReadStarted(string mode, int scriptChars)
+    internal static long RecordStateReadStarted(ReadReason reason, int scriptChars)
     {
-        var normalized = mode == "Presence" ? "Presence" : "Compact";
+        var normalized = reason.ToString();
         var qpc = Stopwatch.GetTimestamp();
         var utc = DateTime.UtcNow.Ticks;
         lock (s_gate)

@@ -52,6 +52,19 @@ Quick (delta) updates have two end-to-end checks:
 - `pwsh -NoProfile -File scripts/delta-update-fixture.ps1` builds two releases (the second reusing the first's Setup) and runs the Setup side under `.cache`: applying the update, tampered, missing and extra files, a wrong manifest hash, repairing a corrupted file, removing an obsolete file, and usage errors. Report: `artifacts/delta-update/fixture-report.json`.
 - `scripts/delta-update-app-e2e.ps1` drives the real app through Update now against the local server (`--delta-dir`). It needs `%LOCALAPPDATA%\Nativune-fixture`, so ask the owner first. Its Setup runs with `--test-no-shell`, because the real shortcuts and uninstall entry share names with an installed Nativune. The steps are in the script header.
 
+### Testing the OBS overlay
+
+`pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario All` uses the test-hook build (`-p:DiscordPresenceTestHooks=true`) against the fixture player and checks the overlay server, stream, page and Settings › OBS. It needs no OBS. The scenario names, build steps and regenerate command are in the script header. Report: `artifacts/obs-overlay/<utc>/report.json`. It uses the fixed port 47813, so don't run it at the same time as a Discord E2E run.
+
+The real-OBS test, `scripts/obs-overlay-obs-e2e.ps1`, runs a disposable portable copy of OBS with its WebSocket server listening on all interfaces while it runs. It needs the owner's explicit approval before every run; no answer is not approval.
+
+The guide images in `docs/images/obs-overlay/` use fixture songs and fixture artwork only (no real album art or personal data).
+
+- `04-overlay.gif` and `05-paused-dimmed.png` come from the real-OBS run: window-scoped captures of the disposable OBS window, each GIF at most 3 MB.
+- The step-by-step images in `setup/` come from a from-scratch walkthrough. `obs-overlay-obs-e2e.ps1 -Scenario GUIDE` launches a disposable Nativune (overlay off) and a disposable OBS (empty scene) and holds them open. Someone, or a computer-use agent, then follows the guide in those two windows and saves a screenshot per step. The steps are recorded in `artifacts/obs-overlay-obs/<utc>/guide/steps.md`.
+
+To re-record either set, get the owner's approval, run the test, check the images in `artifacts/obs-overlay-obs/<utc>/`, and copy the approved ones over the old files with the same names.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).

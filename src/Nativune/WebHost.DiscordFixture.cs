@@ -66,12 +66,17 @@ public sealed partial class WebHostWindow
         // generated locally under their allowed URLs; nothing is fetched from Google.
         if (https && uri!.Host.Equals(DiscordFixtureArtworkHost, StringComparison.OrdinalIgnoreCase)
             && args.ResourceContext == CoreWebView2WebResourceContext.Image
-            && (uri.AbsolutePath is "/fixture-a=w544-h544" or "/fixture-b=w544-h544"
+            && (System.Text.RegularExpressions.Regex.Match(uri.AbsolutePath,
+                    "^/fixture-([abc])=w544-h544(?:-d[0-9]{1,4})?$") is { Success: true }
                 || uri.AbsolutePath == DiscordFixtureLongArtworkPath))
         {
+            // fixture-c and the -d<ms> delay suffix serve the OBS overlay fixture; the delay applies only on
+            // the overlay server (ObsOverlay.Hooks.cs), never here.
             var png = uri.AbsolutePath.StartsWith("/fixture-a", StringComparison.Ordinal)
                 ? DiscordFixturePng(0xE0, 0x3E, 0x52)
-                : DiscordFixturePng(0x2E, 0x7D, 0xD7);
+                : uri.AbsolutePath.StartsWith("/fixture-c", StringComparison.Ordinal)
+                    ? DiscordFixturePng(0x3A, 0xB0, 0x5E)
+                    : DiscordFixturePng(0x2E, 0x7D, 0xD7);
             args.Response = DiscordFixtureResponse(sender, png, 200, "OK", "image/png");
             return;
         }
@@ -134,7 +139,7 @@ public sealed partial class WebHostWindow
         return png.ToArray();
     }
 
-    private static void WriteDiscordFixtureChunk(Stream output, string type, byte[] data)
+    internal static void WriteDiscordFixtureChunk(Stream output, string type, byte[] data)
     {
         Span<byte> number = stackalloc byte[4];
         BinaryPrimitives.WriteInt32BigEndian(number, data.Length);
@@ -216,7 +221,9 @@ public sealed partial class WebHostWindow
         {
         }
         string? error = null;
-        if (profile is not ("Playing" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap")) error = "invalid-profile";
+        if (profile is not ("Playing" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap"
+            or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback"))
+            error = "invalid-profile";
         else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
         else if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
             error = "invalid-prefix";
@@ -300,6 +307,9 @@ public sealed partial class WebHostWindow
             if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
             if (_discordBenchProfile is "Playing" or "ArtGap" && paused != false) return;
             if (_discordBenchProfile is "Paused" or "SameTitle" or "ReaderGap" && paused != true) return;
+            if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback"
+                && paused != false) return;
+            if (_discordBenchProfile is "PausedSeek" && paused != true) return;
             _discordBenchPageReady = true;
         }
 
@@ -413,6 +423,7 @@ public sealed partial class WebHostWindow
         if (TakeDiscordBenchCommand("command-power-resume")) HandlePowerEvent(PbtApmresumesuspend);
         if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
             await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
+        await ProcessObsBenchCommandsAsync();
         if (_closing || _disposed) return;
         if (!TakeDiscordBenchCommand("command-quit")) return;
         DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-quit.json"), "quit");
@@ -430,7 +441,8 @@ public sealed partial class WebHostWindow
             ("trayVisible", _tray?.IsVisible), ("width", size?.Width), ("height", size?.Height),
             ("clientWidth", client.Width), ("clientHeight", client.Height), ("probes", _discordBenchProbes),
             ("qpc", Stopwatch.GetTimestamp()), ("qpcFrequency", Stopwatch.Frequency),
-            ("utc", DateTime.UtcNow.ToString("o")), ("processId", Environment.ProcessId));
+            ("utc", DateTime.UtcNow.ToString("o")), ("processId", Environment.ProcessId),
+            ("overlay", ObsBenchStateJson()));
     }
 
     private static string DiscordBenchJson(params (string Name, object? Value)[] fields)
@@ -447,6 +459,8 @@ public sealed partial class WebHostWindow
                     case bool b: json.WriteBoolean(name, b); break;
                     case int i: json.WriteNumber(name, i); break;
                     case long l: json.WriteNumber(name, l); break;
+                    case double d: json.WriteNumber(name, d); break;
+                    case DiscordBenchRawJson raw: json.WritePropertyName(name); json.WriteRawValue(raw.Json); break;
                     default: json.WriteString(name, value.ToString()); break;
                 }
             }
@@ -455,4 +469,7 @@ public sealed partial class WebHostWindow
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 }
+
+// Pre-serialised JSON value for DiscordBenchJson (nested objects such as the OBS overlay bench state).
+internal readonly record struct DiscordBenchRawJson(string Json);
 #endif

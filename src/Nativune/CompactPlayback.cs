@@ -94,7 +94,8 @@ internal static class CompactPlayback
                 mediaPosition, OptionalText(root, "artist"),
                 OptionalUrl(root, "artistUrl", ChannelPrefix, 24, "UC"),
                 OptionalUrl(root, "trackUrl", WatchPrefix, 11, null),
-                OptionalFlag(root, "ended"), OptionalFlag(root, "seeking"), OptionalRate(root));
+                OptionalFlag(root, "ended"), OptionalFlag(root, "seeking"), OptionalRate(root),
+                OptionalFlag(root, "isAd"));
             return true;
         }
         catch (JsonException)
@@ -615,7 +616,9 @@ try {
       signature:metadata.signature, ...detailsFor(acquired, metadata.title),
       ended:acquired.element.ended === true, seeking:media.seeking,
       playbackRate:finite(acquired.element.playbackRate) && acquired.element.playbackRate > 0
-        && acquired.element.playbackRate <= 16 ? acquired.element.playbackRate : null};
+        && acquired.element.playbackRate <= 16 ? acquired.element.playbackRate : null,
+      isAd:requestDocument.querySelectorAll(
+        'ytmusic-player :is(#movie_player,.html5-video-player):is(.ad-showing,.ad-interrupting)').length > 0};
   };
   const transportReady = () => {
     const bars = requestDocument.querySelectorAll('ytmusic-player-bar');

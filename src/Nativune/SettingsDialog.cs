@@ -19,6 +19,9 @@ namespace Nativune;
 // Registry change requested by Save; the caller applies it with StartupRegistration.
 internal enum StartupChange { None, Enable, Disable, RemoveStale }
 
+// Status the host computes; the dialog owns the wording.
+internal enum ObsOverlayStatus { Off, Waiting, Connected, PrefixInUse, AccessDenied, Failed }
+
 public sealed partial class SettingsDialog : Window
 {
     private static readonly (string Command, string Label)[] Actions =
@@ -55,6 +58,8 @@ public sealed partial class SettingsDialog : Window
     private bool _closed;
     private bool _closeRequested;
     private DiscordPresenceStatus _discordStatus = DiscordPresenceStatus.Off;
+    private ObsOverlayStatus _obsStatus = ObsOverlayStatus.Off;
+    private int _obsStreams;
 
     internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings,
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
@@ -97,6 +102,7 @@ public sealed partial class SettingsDialog : Window
         InitializeUpdatesAndStartup(initial);
         InitializeDiscord(initial);
         InitializeLyrics(initial);
+        InitializeObs(initial);
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -333,6 +339,8 @@ public sealed partial class SettingsDialog : Window
                 SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true,
                 DiscordShowAuthorCheckBox.IsChecked == true),
             BetterLyricsEnabled = LyricsEnabledCheckBox.IsChecked == true,
+            ObsOverlay = ObsOverlayCheckBox.IsChecked == true,
+            ObsHidePaused = ObsHidePausedCheckBox.IsChecked == true,
             Shortcuts = bindings
         };
         (StartWithWindows, StartupChange) = ResolveStartupChange();
@@ -522,6 +530,85 @@ public sealed partial class SettingsDialog : Window
         => DiscordStatusLineComboBox.SelectedIndex is >= 0 and <= 2
             ? (DiscordStatusLine)DiscordStatusLineComboBox.SelectedIndex : DiscordStatusLine.Artist;
 
+    internal event EventHandler? OpenObsGuideRequested;
+
+    private void InitializeObs(ShellSettings initial)
+    {
+        ObsOverlayCheckBox.IsChecked = initial.ObsOverlay;
+        ObsHidePausedCheckBox.IsChecked = initial.ObsHidePaused;
+        _obsStatus = initial.ObsOverlay ? ObsOverlayStatus.Waiting : ObsOverlayStatus.Off;
+        UpdateObsControls(announce: false);
+        ObsOverlayCheckBox.Checked += (_, _) => UpdateObsControls(announce: true);
+        ObsOverlayCheckBox.Unchecked += (_, _) => UpdateObsControls(announce: true);
+        ObsCopyLinkButton.Click += (_, _) => CopyObsLink();
+        ObsGuideButton.Click += (_, _) => OpenObsGuideRequested?.Invoke(this, EventArgs.Empty);
+        // Navigation only: the Block ads value is changed on the Privacy page, never here.
+        ObsOpenBlockAdsButton.Click += (_, _) => Nav.SelectedItem = PrivacyNavItem;
+    }
+
+    internal void SelectObsPage() => Nav.SelectedItem = ObsNavItem;
+
+    // Called by the owner with the live overlay state; the text never contains track data.
+    internal void SetObsStatus(ObsOverlayStatus status, int streams)
+    {
+        if (_obsStatus == status && _obsStreams == streams)
+            return;
+        _obsStatus = status;
+        _obsStreams = streams;
+        UpdateObsControls(announce: true);
+    }
+
+    internal void SetObsGuideResult(string text)
+    {
+        if (_closed)
+            return;
+        ObsGuideResult.Text = text;
+        if (FrameworkElementAutomationPeer.FromElement(ObsGuideResult) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    private void UpdateObsControls(bool announce)
+    {
+        var on = ObsOverlayCheckBox.IsChecked == true;
+        ObsHidePausedCheckBox.IsEnabled = on;
+        var text = on == _initial.ObsOverlay
+            ? ObsStatusMessage(_obsStatus, _obsStreams)
+            : on ? "Turns on after Save" : "Turns off after Save";
+        if (ObsStatusText.Text == text)
+            return;
+        ObsStatusText.Text = text;
+        AutomationProperties.SetName(ObsStatusText, text.Length == 0 ? "OBS overlay status" : text);
+        if (announce && FrameworkElementAutomationPeer.FromElement(ObsStatusText) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    private static string ObsStatusMessage(ObsOverlayStatus status, int n) => status switch
+    {
+        ObsOverlayStatus.Waiting => "Waiting for OBS",
+        ObsOverlayStatus.Connected => $"Connected to {n} source{(n == 1 ? "" : "s")}",
+        ObsOverlayStatus.PrefixInUse => "Couldn't start: another app, or another Nativune, is using the overlay link.",
+        ObsOverlayStatus.AccessDenied => "Couldn't start: Windows blocked the overlay link.",
+        ObsOverlayStatus.Failed => "Couldn't start the overlay.",
+        _ => "Off"
+    };
+
+    private void CopyObsLink()
+    {
+        try
+        {
+            var package = new DataPackage();
+            package.SetText(ObsLinkTextBox.Text);
+            Clipboard.SetContent(package);
+            ObsCopyLinkResult.Text = "Link copied.";
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        {
+            ObsCopyLinkResult.Text = "The clipboard is not available right now.";
+        }
+        if (FrameworkElementAutomationPeer.FromElement(ObsCopyLinkResult) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         var tag = (args.SelectedItem as NavigationViewItem)?.Tag as string ?? "General";
@@ -530,6 +617,7 @@ public sealed partial class SettingsDialog : Window
         ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
         DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
+        ObsPage.Visibility = tag == "Obs" ? Visibility.Visible : Visibility.Collapsed;
         LyricsPage.Visibility = tag == "Lyrics" ? Visibility.Visible : Visibility.Collapsed;
         AboutPage.Visibility = tag == "About" ? Visibility.Visible : Visibility.Collapsed;
         RestoreButton.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
