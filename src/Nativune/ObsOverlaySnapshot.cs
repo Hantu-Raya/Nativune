@@ -26,6 +26,16 @@ internal sealed record ObsOverlaySnapshot(
 
     internal static ObsOverlaySnapshot None(long captureTicks) =>
         new(ObsOverlayState.None, null, null, null, null, null, 0, 0, false, captureTicks);
+    internal static ObsOverlaySnapshot Sample(string sampleState, double position, long captureTicks)
+    {
+        return sampleState switch
+        {
+            "playing" => new(ObsOverlayState.Playing, null, "Sample song", "Sample artist", "/art/sample", 240, position, 1, true, captureTicks),
+            "noart" => new(ObsOverlayState.Playing, null, "Sample song", "Sample artist", null, 240, position, 1, true, captureTicks),
+            "paused" => new(ObsOverlayState.Paused, null, "Sample song", "Sample artist", "/art/sample", 240, 84, 1, true, captureTicks),
+            _ => throw new ArgumentOutOfRangeException(nameof(sampleState))
+        };
+    }
 
     internal static ObsOverlaySnapshot FromState(CompactPlaybackState state, long captureTicks)
     {

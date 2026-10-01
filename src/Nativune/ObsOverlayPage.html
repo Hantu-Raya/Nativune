@@ -5,29 +5,50 @@
 <meta name="referrer" content="no-referrer">
 <title>Nativune now playing</title>
 <style>
-  html, body { margin: 0; width: 440px; height: 96px; overflow: hidden; background: transparent; }
+  /* The pill consumes the look's custom properties; every fallback below is the plain link's frozen value
+     (440 x 96 source, 400 x 56 pill at 20,20, r 28, centred Segoe UI text), so the plain page renders as before. */
+  html, body { margin: 0; width: var(--sw, 440px); height: var(--sh, 96px); overflow: hidden; background: transparent; }
+  html[data-preview="1"], html[data-preview="1"] body { overflow: auto; }
+  #backdrop { display: none; position: fixed; left: 0; top: 0; right: 0; bottom: 0; }
+  html[data-preview="1"] #backdrop {
+    display: block;
+    background: linear-gradient(45deg, #bdbdbd 25%, transparent 25%) 0 0 / 16px 16px,
+      linear-gradient(-45deg, #bdbdbd 25%, transparent 25%) 0 8px / 16px 16px,
+      linear-gradient(45deg, transparent 75%, #bdbdbd 75%) 8px -8px / 16px 16px,
+      linear-gradient(-45deg, transparent 75%, #bdbdbd 75%) -8px 0 / 16px 16px,
+      #e6e6e6;
+  }
+  html[data-backdrop="dark"] #backdrop { background: #202020; }
+  html[data-backdrop="light"] #backdrop { background: #e8e8e8; }
+  html[data-backdrop="custom"] #backdrop { background: var(--backdrop, #202020); }
   #pill {
-    position: absolute; left: 20px; top: 20px; width: 400px; height: 56px;
-    border-radius: 28px; overflow: hidden; background: #202020;
+    position: absolute; left: 20px; top: 20px; width: var(--w, 400px); height: calc(56px * var(--k, 1));
+    border-radius: calc(28px * var(--k, 1)); overflow: hidden; background: #202020;
     box-shadow: 6px 8px 14px rgba(0, 0, 0, .65);
     opacity: 0; transform: translateY(12px);
+    color: var(--fg, #fff); text-align: var(--align, center);
+    font-family: var(--font, "Segoe UI Variable Text", "Segoe UI", sans-serif);
+    text-shadow: var(--shadow, 0 1px 3px rgba(0, 0, 0, .8));
   }
-  #pill canvas { position: absolute; left: 0; top: 0; width: 400px; height: 56px; }
-  #clip { position: absolute; left: 0; top: 0; width: 400px; height: 56px; overflow: hidden; transform: translateX(100%); }
+  #pill canvas { position: absolute; left: 0; top: 0; width: var(--w, 400px); height: calc(56px * var(--k, 1)); }
+  #clip {
+    position: absolute; left: 0; top: 0; width: var(--w, 400px); height: calc(56px * var(--k, 1));
+    overflow: hidden; transform: translateX(100%);
+  }
   #text {
-    position: absolute; left: 28px; right: 28px; top: 0; bottom: 0;
+    position: absolute; left: calc(28px * var(--k, 1)); right: calc(28px * var(--k, 1)); top: 0; bottom: 0;
     display: flex; flex-direction: column; justify-content: center;
-    color: #fff; text-align: center; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
   }
   #title, #artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
-  #title { font-size: 18px; font-weight: 700; }
-  #artist { font-size: 15px; font-weight: 400; }
+  #title { font-size: calc(18px * var(--k, 1)); font-weight: 700; }
+  #artist { font-size: calc(15px * var(--k, 1)); font-weight: 400; }
   #artist:empty { display: none; }
+  html[data-show-artist="false"] #artist { display: none; }
 </style>
 <script src="/overlay.js" defer></script>
 </head>
 <body>
+<div id="backdrop"></div>
 <div id="pill">
   <canvas id="colour" width="400" height="56"></canvas>
   <div id="clip"><canvas id="grey" width="400" height="56"></canvas></div>

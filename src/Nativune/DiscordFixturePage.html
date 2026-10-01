@@ -74,8 +74,13 @@
     PausedSeek track A (1800 s) paused at 60 s; 10 s position 120 s, 25 s position 150 s, still paused
     AdFallback the default timeline, but 65-75 s adds only .ad-interrupting (never ad-showing) and the
                title link keeps the song's own text and /watch?v= URL
+    PlayingLong track A (14,400 s) playing from 0 with the Playing profile's unmuted silent PCM; no timeline
+               events (long-track overlay progress cadence, read at playback rates 0.25 to 4)
   window.__nativuneFixture.setClockMismatch(on): while on, time-info shows the position + 30 s, so the
   reader reports clockMismatch (all profiles).
+  window.__nativuneFixture.setPlaybackRate(rate): 0.25, 1, 2 or 4 sets the media element's playbackRate (all
+  profiles), so the page clock advances rate x faster and the reader reports it as PlaybackRate; any other value
+  is ignored (null).
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -145,7 +150,14 @@
   let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
   let clockMismatch = false;
   window.__nativuneFixture = {
-    setClockMismatch(on) { clockMismatch = !!on; render(); }
+    setClockMismatch(on) { clockMismatch = !!on; render(); },
+    setPlaybackRate(rate) {
+      const value = Number(rate);
+      if (![0.25, 1, 2, 4].includes(value)) return null;
+      media.defaultPlaybackRate = value;
+      media.playbackRate = value;
+      return media.playbackRate;
+    }
   };
 
   // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
@@ -180,7 +192,8 @@
     if (!ended) {
       let delta = now - lastMediaTime;
       if (delta < 0 && Number.isFinite(media.duration)) delta += media.duration;
-      if (!media.paused && delta > 0 && delta < 2) position = Math.min(position + delta, track.duration);
+      // A tick may cover up to 2 s of media time at rates up to 1 and 2 x rate above that (rate 4: 1 s per 250 ms tick).
+      if (!media.paused && delta > 0 && delta < 2 * Math.max(1, media.playbackRate)) position = Math.min(position + delta, track.duration);
     }
     lastMediaTime = now;
     render();
@@ -233,14 +246,14 @@
   ];
 
   const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
-  if (profile === 'Playing' || profile === 'Paused') {
-    load(Object.assign({}, tracks.A, { duration: 1800 }));
+  if (profile === 'Playing' || profile === 'Paused' || profile === 'PlayingLong') {
+    load(Object.assign({}, tracks.A, { duration: profile === 'PlayingLong' ? 14400 : 1800 }));
     // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
     // audible YouTube Music playback never hits. The PCM is silence, so nothing is audible.
     media.muted = false;
     media.src = silentWav();
-    if (profile === 'Playing') play();
-    else { position = 60; media.pause(); }
+    if (profile === 'Paused') { position = 60; media.pause(); }
+    else play();
     setInterval(tick, 250);
   } else if (profile === 'ArtGap') {
     load(tracks.A);

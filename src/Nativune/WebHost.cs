@@ -1491,6 +1491,7 @@ public sealed partial class WebHostWindow : Window
                 ApplyDiscordOptions(_settings.Discord);
                 RefreshDiscordSurfaces();
                 ApplyObsHidePaused(_settings.ObsHidePaused);
+                ApplyObsReduceMotion(_settings.ReduceMotion);
                 await ReconcileObsOverlayAsync();
                 if (restoreChanged)
                     _settings = _settings with { LastSection = "home" };
@@ -2271,6 +2272,7 @@ public sealed partial class WebHostWindow : Window
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
         // Close overlay streams before Discord so no delivery runs after the server is gone.
         try { await StopObsOverlayAsync(); } catch (Exception ex) { RememberFailure(ex); }
+        try { await StopObsLookCommitsAsync(); } catch (Exception ex) { RememberFailure(ex); }
         // Clear presence while the module can still write (bounded to about 1 s internally).
         try { await StopDiscordAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { _lifetime.Cancel(); } catch (Exception ex) { RememberFailure(ex); }

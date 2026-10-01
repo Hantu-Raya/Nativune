@@ -221,7 +221,7 @@ public sealed partial class WebHostWindow
         {
         }
         string? error = null;
-        if (profile is not ("Playing" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap"
+        if (profile is not ("Playing" or "PlayingLong" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap"
             or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback"))
             error = "invalid-profile";
         else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
@@ -305,7 +305,7 @@ public sealed partial class WebHostWindow
             if (!root.TryGetProperty("profile", out var pr) || pr.ValueKind != JsonValueKind.String
                 || pr.GetString() != _discordBenchProfile) return;
             if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
-            if (_discordBenchProfile is "Playing" or "ArtGap" && paused != false) return;
+            if (_discordBenchProfile is "Playing" or "PlayingLong" or "ArtGap" && paused != false) return;
             if (_discordBenchProfile is "Paused" or "SameTitle" or "ReaderGap" && paused != true) return;
             if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback"
                 && paused != false) return;

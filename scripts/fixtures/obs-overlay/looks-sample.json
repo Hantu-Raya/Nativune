@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "looks": [
+    {
+      "id": "sampl001",
+      "name": "Sample isolation",
+      "options": {
+        "theme": "pill",
+        "font": null,
+        "scale": 100,
+        "width": 400,
+        "align": "center",
+        "colours": "auto",
+        "text": "#ffffff",
+        "background": "#202020",
+        "backgroundOpacity": 100,
+        "accent": "#8a8a95",
+        "textShadow": true,
+        "showArt": true,
+        "showArtist": true,
+        "showProgress": true,
+        "showTimes": true,
+        "paused": "hide",
+        "showAnimation": "slide-up",
+        "hideAnimation": "fade"
+      }
+    }
+  ],
+  "retired": []
+}

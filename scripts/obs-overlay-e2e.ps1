@@ -1,14 +1,15 @@
 <#
-E2E-A for the opt-in OBS now-playing overlay (notes/research/obs-overlay-2026-09-28/plan.md §6.1; hook surface in
-design.md §2.8). It drives the real app (WebHostWindow, the shared reader, ObsOverlayServer on
-http://localhost:47813/) against the local fixture page. No OBS, YouTube, Google or Discord request is involved,
-except A-PROD, whose release build has no fixture page and loads the normal site. A-PROD never clicks the
-"How to set up…" button (that would open the real default browser); it checks the guide URL statically instead.
+E2E-A for the opt-in OBS now-playing overlay and the P0 overlay designer transport/store contract (plan v5
+`notes/research/obs-overlay-themes-2026-09-29/plan.md` §§8–10; previous overlay plan §6.1 and hook surface design §2.8).
+It drives the real app against the repository-local synthetic player page. No OBS, YouTube, Google or Discord request
+is involved, except A-PROD's release build, which loads the normal site. A-PROD never clicks the setup-guide button
+(that would open the real default browser); it checks the guide URL statically instead.
 
 Regenerate:
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario All -OutputDirectory artifacts/obs-overlay
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-SEC,A-TIME          # a subset
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-SEC -SkipPublish    # reuse the published builds
+  pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-PLAIN -CapturePlainBaseline
 
 Steps: publish the hook build (-p:DiscordPresenceTestHooks=true) to artifacts/obs-overlay/app (never ship it) and,
 for A-PROD, the release build to artifacts/obs-overlay/release-app; per scenario create fresh roots
@@ -21,28 +22,45 @@ spec, sets the environment, starts the app and writes its PID. That token has BU
 oracle is "Administrators group not enabled in the app token" (WindowsPrincipal.IsInRole(Administrator) on the app's
 process token is false). When the harness is not elevated the app is started directly and the same oracle applies.
 Integrity is recorded as information only (as the built-in Administrator with admin approval off, every process is
-High). Scenarios run serially (the port 47813 is fixed; never run two overlay E2Es at once).
-The owner's data/ and installed profile are never touched.
+High). Scenarios run serially (the port 47813 is fixed; never run two overlay E2Es at once). The owner's data/ and
+installed profile are never touched.
 
-Readers: an SSE reader child process (HttpClient streaming) writes events-<name>.jsonl lines
-{qpc, utc, kind: open|retry|comment|data|close|error, text|json}; a raw TcpClient covers A-SEC/A-LIFE/A-LIVE;
-the installed Google Chrome (headless, CDP, --user-data-dir under the run root) checks page behaviour through the
-DOM and window.__state (absent Chrome -> blocked). App state comes from the hook commands and
+Readers: an SSE reader child process writes events-<name>.jsonl lines
+{qpc,utc,kind: open|retry|comment|data|look|close|error,text|json}; a raw TcpClient covers A-SEC/A-LIFE/A-LIVE; the
+installed Google Chrome (headless, CDP, --user-data-dir under the run root) checks page behaviour through the DOM
+and `window.__state` (absent Chrome -> blocked). App state comes from hook commands and
 state-<label>.json (overlay{...}) / diagnostics-<label>.json under <root>/data/discord-bench.
 
-Scenarios (plan §6.1):
-  A-OFF        no key / false / true then command-obs-off: prefix registrable by another process, no app response
+Scenarios (plan v5; `deferred:P1` / `deferred:P2` checks are retained in the report and do not fail the P0 gate):
+  A-PLAIN     plain pill pixel identity, 440x96/DPR1 Chrome screenshots at projected positions 8 s/18 s, saved
+               baselines/meta, look-first/default options, global hidePaused and ReduceMotion behaviour.
+  A-LOOK      P0 pill option rows and geometry, long-text containment, pill cadence, show/hide motion matrix,
+               bounded-pump and blocked-write/lifetime backpressure, and exact query grammar. Other themes and
+               times-slot rows are generated and reported deferred:P1.
+  A-RECON     Chrome error page when off then reload connects; restart after options A→B look-file reload; 30 s without
+               streams; 9th-stream 503 then retry after 30 s; lifetime renewal without hiding; lookEpoch changes and
+               first post-restart lookSeq 1 is accepted.
+  A-STORE-1   whole-file validation/read-only reasons and byte preservation; BOM/future versions, normalization,
+               duplicates/quarantine/names/fonts/retired ids, commit/tombstone/cap/fault/downgrade checks.
+  A-SAMPLE    synthetic playing/noart/paused phases, 240 s re-anchor during draft pushes and pump hold, real/sample
+               isolation, synthetic hidePaused, demand independence, source counts and lifetime phase reset.
+  A-SEC       raw request matrix (LAN IPv4 row blocked if none), loopback/Host/Origin/Fetch/method/body guards,
+               exact routes/query grammar and headers, current/stale/retired/rotated/closed pv rows, 8 streams + 9th
+               503. Preview-host NavigationStarting/window/download/permission handlers are deferred:P2.
+  A-PROD      release fallback routes, hook-string scan, stylesheet tokenizer/allowlists, forbidden JavaScript sinks.
+  A-OFF       no key / false / true then command-obs-off: prefix registrable by another process, no app response
                on :47813, streams 0, no overlay reads.
-  A-TIME       default timeline scored from the initial event through page 143 s, hidePaused true and false, and the
-               AdFallback profile: exact semantic event sequence, no other data events, no album canary; privacy: no video id,
-               song link or Google URL in any event, opaque 16-hex id (one per track), /art/<key> artwork (A and B share one),
-               GET /art/<key> 200 image/png and /art/0000000000000000 404, page CSP img-src 'self' only.
-  A-AD         Chrome page on the default timeline and AdFallback; hide-when-paused off saved at page 70 s (in the ad):
+  A-TIME      default timeline scored from the initial event through page 143 s, hidePaused true and false, and the
+               AdFallback profile: exact semantic event sequence, no other data events, no album canary; privacy:
+               no video id, song link or Google URL in any event, opaque 16-hex id (one per track), /art/<key>
+               artwork (A and B share one), GET /art/<key> 200 image/png and /art/0000000000000000 404, page CSP
+               img-src 'self' only.
+  A-AD        Chrome page on the default timeline and AdFallback; hide-when-paused off saved at page 70 s (in the ad):
                pill hidden by 67.5 s, back with A's title by 77.5 s, no data between ad and restore, restore carries
                the new hidePaused.
-  A-SAME       IdOnly profile: exactly one new event, only id changed.
-  A-CLOCK      command-clock-mismatch-on/off: clock:false, silence until off, then clock:true with a fresh anchor.
-  A-GAP        ShortGap (no none), ReaderGap, DomGap, native controls-unavailable (none at gapStartQpc + 8 +-1.2 s;
+  A-SAME      IdOnly profile: exactly one new event, only id changed.
+  A-CLOCK     command-clock-mismatch-on/off: clock:false, silence until off, then clock:true with a fresh anchor.
+  A-GAP       ShortGap (no none), ReaderGap, DomGap, native controls-unavailable (none at gapStartQpc + 8 +-1.2 s;
                fresh playing <= 2 s after -off).
   A-INV        power suspend, command-navigate, renderer kill (ProcessFailed): none <= 1 s; hold-read + off/on +
                release: the held sample is not sent and off closes the stream <= 1 s.
@@ -54,45 +72,47 @@ Scenarios (plan §6.1):
                lifetime (Lifetime), pending write observed, no crash.
   A-LIFE       quit with 0, 2, 8 streams and during a pending write (exit <= 5 s, prefix registrable after), off/on x20,
                start while another process holds the prefix then recover, Administrators group not enabled in the app token.
-  A-SEC        raw request table (LAN IPv4 row blocked when the PC has no LAN IPv4), headers, 8 streams + 9th 503.
-  A-RECON      Chrome: error page when off then reload connects; server restart; 30 s without streams; 9th-stream 503
-               then retry after 30 s; lifetime renewal without hiding.
   A-TEXT       Chrome: Text profile literal text + ellipsis, projection within 1 %; ArtSwap sequence guard (final B).
-  A-ART        ArtGap profile: a loadable page image the proxy cannot fetch answers 502 (no image, not counted as served) and a
-               good key keeps working; the page's failing "missing" artwork is never published (artwork null).
+  A-ART        ArtGap profile: a loadable page image the proxy cannot fetch answers 502 (no image, not counted as
+               served) and a good key keeps working; the page's failing "missing" artwork is never published.
   A-SET        UI Automation of Settings > OBS (names, live region, Cancel/Save/relaunch, missing key, hide-paused
                broadcast, Copy link, guide URI recorder, Block ads link, keyboard focus, save failure, bind conflict).
-  A-PROD       release build: no /fixture-art route, unknown /art/ key 404, CSP img-src 'self' only, no fixture-art in /overlay.js, no hook strings
-               (launched-uri, command-obs, command-controls, fixture-art) in Nativune.dll/resources (UTF-8 and UTF-16),
-               guide URL present in the release assembly/resources (static check; the button is not clicked).
   A-PAUSEVIEW  Chrome: paused view (0.7 opacity, frozen fill, no running animations), PausedSeek, hidePaused switch.
-  A-TOOLBAR    UI Automation of the toolbar's OBS button (left of the toolbar, after Home): off at launch (name, no listener,
-               no red dot); one invoke -> 200 on the port <= 5 s, ObsOverlay=true saved, name "OBS overlay: on…", red
-               recording dot in a window-scoped capture; a second invoke reverses all of it; five quick invokes end on with
-               exactly one listener.
+  A-TOOLBAR    UI Automation of the toolbar's OBS button (left of the toolbar, after Home): off at launch (name, no
+               listener, no red dot); one invoke -> 200 on the port <= 5 s, ObsOverlay=true saved, name
+               "OBS overlay: on…", red recording dot in a window-scoped capture; a second invoke reverses all of it;
+               five quick invokes end on with exactly one listener.
 
-Report: <OutputDirectory>/<utc>/report.json (each check {name, expected, observed, status pass|fail|blocked}),
-events.json (every reader's lines), screenshots/. Blocked never counts as pass; the exit code is 1 when any check
-fails or is blocked.
+`-CapturePlainBaseline` runs only A-PLAIN and writes `plain-8s.png`, `plain-18s.png` and `plain-meta.json` under
+scripts/fixtures/obs-overlay. It is intentionally explicit because it replaces the committed visual oracle. Normal
+A-PLAIN compares against those files (≤ 0.5% of pixels differ by > 8/255 in any channel) and retains diff PNGs.
+
+Report: <OutputDirectory>/<utc>/report.json (each check status pass|fail|blocked|deferred:P1|deferred:P2),
+events.json (every reader's lines) and screenshots/. Blocked counts as non-passing; deferred checks are visible with
+their phase but do not count as failures. The exit code is 1 if any check fails or is blocked.
 #>
 [CmdletBinding()]
 param(
-    # One scenario id, All, or a comma-separated list (A-SEC,A-TIME).
+    # One scenario id, All, or a comma-separated list.
     [string[]] $Scenario = @('All'),
     [string] $OutputDirectory = 'artifacts/obs-overlay',
     [switch] $SkipPublish,
-    [switch] $KeepRoot
+    [switch] $KeepRoot,
+    [switch] $CapturePlainBaseline
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$allScenarios = @('A-OFF', 'A-TIME', 'A-AD', 'A-SAME', 'A-CLOCK', 'A-GAP', 'A-INV', 'A-IDLE', 'A-DEMAND', 'A-LIVE', 'A-LIFE',
-    'A-SEC', 'A-RECON', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR')
+$allScenarios = @('A-PLAIN', 'A-LOOK', 'A-OFF', 'A-TIME', 'A-AD', 'A-SAME', 'A-CLOCK', 'A-GAP', 'A-INV', 'A-IDLE', 'A-DEMAND', 'A-LIVE', 'A-LIFE',
+    'A-SEC', 'A-RECON', 'A-STORE-1', 'A-SAMPLE', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $Scenario) {
     if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
 }
-$selected = if ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
+if ($CapturePlainBaseline -and @($Scenario | Where-Object { $_ -notin @('All', 'A-PLAIN') }).Count -gt 0) {
+    throw '-CapturePlainBaseline may be combined only with -Scenario All or -Scenario A-PLAIN.'
+}
+$selected = if ($CapturePlainBaseline) { @('A-PLAIN') } elseif ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $commandLine = 'pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 ' + (($PSBoundParameters.GetEnumerator() | ForEach-Object {
@@ -122,6 +142,11 @@ $overlayUrl = "http://localhost:$port/"
 $guideUri = 'https://github.com/Hantu-Raya/Nativune/blob/main/docs/obs-overlay.md'
 $guideFailedMessage = 'The setup guide could not be opened. Visit github.com/Hantu-Raya/Nativune/blob/main/docs/obs-overlay.md in your browser.'
 $chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+$fixtureDirectory = Join-Path $PSScriptRoot 'fixtures/obs-overlay'
+$plainBaseline8 = Join-Path $fixtureDirectory 'plain-8s.png'
+$plainBaseline18 = Join-Path $fixtureDirectory 'plain-18s.png'
+$plainBaselineMeta = Join-Path $fixtureDirectory 'plain-meta.json'
+$plainChromeFlags = @('--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb')
 $freq = [double] [Diagnostics.Stopwatch]::Frequency
 $prefix = 'nativune-test-' + [guid]::NewGuid().ToString('N') + '-discord-ipc-'
 $testEnv = [ordered]@{
@@ -253,6 +278,10 @@ function Add-Check([string] $Name, $Expected, $Observed, [bool] $Passed) {
 }
 function Add-Blocked([string] $Name, $Expected, [string] $Reason) {
     $checks.Add([ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = 'blocked' })
+}
+function Add-Deferred([string] $Phase, [string] $Name, $Expected, [string] $Reason) {
+    if ($Phase -notin @('P1', 'P2')) { throw "Invalid deferred phase '$Phase'." }
+    $checks.Add([ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = "deferred:$Phase" })
 }
 function Get-Prop($Object, [string] $Name) {
     if ($null -eq $Object) { return $null }
@@ -407,14 +436,33 @@ function Send-HookCommand([string] $Root, [string] $Name) {
     [IO.File]::WriteAllText((Join-Path $directory $Name), 'go')
     $qpc
 }
+function Queue-ObsHookCommand([string] $Root, [string] $Name, [string] $Payload = 'go') {
+    if ($Name -notmatch '^command-obs-[a-z0-9-]+$') { throw "Invalid OBS hook command name '$Name'." }
+    $directory = Get-BenchDirectory $Root
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $path = Join-Path $directory $Name
+    if (Test-Path -LiteralPath $path) { return $null }
+    $qpc = Get-Qpc
+    [IO.File]::WriteAllText($path, $Payload, [Text.UTF8Encoding]::new($false))
+    $qpc
+}
+function Send-ObsHookCommand([string] $Root, [string] $Name, [string] $Payload = 'go') {
+    if (-not (Wait-For { -not (Test-Path -LiteralPath (Join-Path (Get-BenchDirectory $Root) $Name)) } 10 25)) { throw "Previous hook command is still pending: $Name." }
+    $qpc = Queue-ObsHookCommand $Root $Name $Payload
+    if ($null -eq $qpc) { throw "Previous hook command is still pending: $Name." }
+    $path = Join-Path (Get-BenchDirectory $Root) $Name
+    if (-not (Wait-For { -not (Test-Path -LiteralPath $path) } 10 25)) { throw "Hook command was not consumed: $Name." }
+    Start-Sleep -Milliseconds 50
+    $qpc
+}
 function Wait-BenchReady([string] $Root, [double] $Seconds = 90) {
     $directory = Get-BenchDirectory $Root
     [void] (Wait-For { (Test-Path -LiteralPath (Join-Path $directory 'ready.json')) -or (Test-Path -LiteralPath (Join-Path $directory 'failed.json')) } $Seconds)
     $path = Join-Path $directory 'ready.json'
     if (Test-Path -LiteralPath $path) { Get-Content -Raw -LiteralPath $path | ConvertFrom-Json } else { $null }
 }
-# Requests diagnostics-<label>.json and state-<label>.json; returns { diag, state, overlay } or $null after 10 s.
-function Get-State([string] $Root, [string] $Tag = 's') {
+# Requests diagnostics-<label>.json and state-<label>.json; returns { diag, state, overlay } or $null on timeout.
+function Get-State([string] $Root, [string] $Tag = 's', [double] $Seconds = 10) {
     $script:labelSeq++
     $label = ('s{0}-{1}' -f $script:labelSeq, ((ConvertTo-SafeName $Tag).ToLowerInvariant())).TrimEnd('-')
     if ($label.Length -gt 32) { $label = $label.Substring(0, 32).TrimEnd('-') }
@@ -422,7 +470,7 @@ function Get-State([string] $Root, [string] $Tag = 's') {
     $statePath = Join-Path $directory "state-$label.json"
     $diagPath = Join-Path $directory "diagnostics-$label.json"
     [void] (Send-HookCommand $Root "command-snapshot-$label")
-    if (-not (Wait-For { (Test-Path -LiteralPath $statePath) -and (Test-Path -LiteralPath $diagPath) } 10 100)) { return $null }
+    if (-not (Wait-For { (Test-Path -LiteralPath $statePath) -and (Test-Path -LiteralPath $diagPath) } $Seconds 100)) { return $null }
     $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json -Depth 16
     $diag = Get-Content -Raw -LiteralPath $diagPath | ConvertFrom-Json -Depth 16
     [pscustomobject]@{ label = $label; state = $state; diag = $diag; overlay = (Get-Prop $state 'overlay'); qpc = [double] (Get-Prop $diag 'boundaryQpc') }
@@ -522,24 +570,37 @@ while (-not $response) {
 }
 Log 'open' 'text' ('{0} {1}' -f [int] $response.StatusCode, $response.Content.Headers.ContentType)
 $reader = [IO.StreamReader]::new($response.Content.ReadAsStream(), [Text.UTF8Encoding]::new($false))
+$eventName = ''
+$dataLines = [Collections.Generic.List[string]]::new()
 try {
     while ($null -ne ($line = $reader.ReadLine())) {
-        if ($line.StartsWith('data:')) { $v = $line.Substring(5); if ($v.StartsWith(' ')) { $v = $v.Substring(1) }; Log 'data' 'json' $v }
-        elseif ($line.StartsWith(':')) { Log 'comment' 'text' $line }
+        if ($line -eq '') {
+            if ($dataLines.Count -gt 0) {
+                $kind = if ($eventName) { $eventName } else { 'data' }
+                Log $kind 'json' ($dataLines -join "`n")
+                $dataLines.Clear(); $eventName = ''
+            }
+        } elseif ($line.StartsWith('data:')) {
+            $v = $line.Substring(5); if ($v.StartsWith(' ')) { $v = $v.Substring(1) }; $dataLines.Add($v)
+        } elseif ($line.StartsWith('event:')) {
+            $eventName = $line.Substring(6).Trim()
+        } elseif ($line.StartsWith(':')) { Log 'comment' 'text' $line }
         elseif ($line.StartsWith('retry:')) { Log 'retry' 'text' $line }
-        elseif ($line -ne '') { Log 'other' 'text' $line }
+        else { Log 'other' 'text' $line }
     }
+    if ($dataLines.Count -gt 0) { Log $(if ($eventName) { $eventName } else { 'data' }) 'json' ($dataLines -join "`n") }
     Log 'close' 'text' 'eof'
 } catch { Log 'close' 'text' $_.Exception.GetBaseException().Message }
 '@
 
-function Start-SseReader([string] $Name, [double] $ConnectSeconds = 120) {
+function Start-SseReader([string] $Name, [double] $ConnectSeconds = 120, [string] $Path = '/events') {
     $safe = ConvertTo-SafeName $Name
     $out = Join-Path $runDirectory "events-$safe.jsonl"
-    $command = "& { $sseReaderScript } -Url '$($overlayUrl)events' -Out '$($out -replace "'", "''")' -ConnectSeconds $ConnectSeconds"
+    $url = $overlayUrl.TrimEnd('/') + $Path
+    $command = "& { $sseReaderScript } -Url '$($url -replace "'", "''")' -Out '$($out -replace "'", "''")' -ConnectSeconds $ConnectSeconds"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $process = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
-    $reader = [pscustomobject]@{ Name = $safe; Path = $out; Process = $process; Stopped = $false }
+    $reader = [pscustomobject]@{ Name = $safe; Path = $out; Url = $url; Process = $process; Stopped = $false }
     $readers.Add($reader)
     $reader
 }
@@ -550,15 +611,18 @@ function Read-Sse($Reader) {
     $list = [Collections.Generic.List[object]]::new()
     foreach ($line in ($text -split "`n")) {
         if (-not $line.Trim()) { continue }
-        $o = try { $line | ConvertFrom-Json -Depth 8 } catch { $null }
+        $o = try { $line | ConvertFrom-Json -Depth 16 } catch { $null }
         if (-not $o) { continue }
         $data = $null
-        if ($o.kind -eq 'data') { $data = try { [string] $o.json | ConvertFrom-Json -Depth 8 } catch { $null } }
+        if ($o.kind -in @('data', 'look')) { $data = try { [string] $o.json | ConvertFrom-Json -Depth 16 } catch { $null } }
         $list.Add([pscustomobject]@{ qpc = [double] $o.qpc; kind = $o.kind; text = (Get-Prop $o 'text'); json = (Get-Prop $o 'json'); data = $data })
     }
     return $list.ToArray()
 }
-# Only kind=data events with a parsed payload carrying a state; open/retry/comment/close/error/other never count.
+function Get-LookEvents($Events) {
+    @(@($Events) | Where-Object { $null -ne $_ -and (Get-Prop $_ 'kind') -eq 'look' -and $null -ne (Get-Prop $_ 'data') })
+}
+# Only kind=data events with a parsed payload carrying a state; look/open/retry/comment/close/error never count.
 function Get-DataEvents($Events) {
     $out = [Collections.Generic.List[object]]::new()
     foreach ($e in @($Events)) {
@@ -582,11 +646,26 @@ function Stop-SseReader($Reader) {
     try { if (-not $Reader.Process.HasExited) { [void] [ObsE2E]::Suspend($Reader.Process.Id, $true); Stop-Process -Id $Reader.Process.Id -Force -ErrorAction SilentlyContinue; [void] $Reader.Process.WaitForExit(5000) } } catch { }
     $eventsByReader[$Reader.Name] = @(@(Read-Sse $Reader) | Where-Object { $null -ne $_ } | ForEach-Object { [ordered]@{ qpc = $_.qpc; kind = $_.kind; text = $_.text; json = $_.json } })
 }
+$ordinaryStreamReleaseSeconds = 12 # Graceful FIN can need two 5 s heartbeats; allow 2 s observation margin.
+function Wait-OverlayStreams($Run, [int] $Expected, [string] $Label) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($ordinaryStreamReleaseSeconds)
+    $snapshot = Wait-For {
+        $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds - 0.1
+        if ($remaining -le 0) { return $null }
+        $s = Get-State $Run.Root $Label $remaining
+        if ((Get-Overlay $s 'streams') -eq $Expected) { $s }
+    } $ordinaryStreamReleaseSeconds 100
+    if (-not $snapshot) { throw "$($Run.Name): expected $Expected open streams after $Label within $ordinaryStreamReleaseSeconds s." }
+    $snapshot
+}
 function Wait-SseOpen($Reader, [double] $Seconds = 30) {
     Wait-For { @(@(Read-Sse $Reader) | Where-Object { $null -ne $_ -and $_.kind -eq 'open' }) | Select-Object -First 1 } $Seconds
 }
 function Wait-SseData($Reader, [scriptblock] $Predicate, [double] $Seconds, [double] $AfterQpc = 0) {
     Wait-For { Get-DataEvents (Read-Sse $Reader) | Where-Object { $null -ne $_ -and $_.qpc -gt $AfterQpc -and (& $Predicate $_.data) } | Select-Object -First 1 } $Seconds
+}
+function Wait-SseLook($Reader, [scriptblock] $Predicate, [double] $Seconds, [double] $AfterQpc = 0) {
+    Wait-For { Get-LookEvents (Read-Sse $Reader) | Where-Object { $_.qpc -gt $AfterQpc -and (& $Predicate $_.data) } | Select-Object -First 1 } $Seconds
 }
 # The stream's id is an opaque per-session key, never the video ID, so fixture tracks are recognised by their title.
 $script:fixtureTitles = @{ fixtureSngA = 'Fixture Song A'; fixtureSngB = 'Fixture Song B'; fixtureSngC = 'Fixture Song C' }
@@ -653,25 +732,29 @@ function Invoke-RawHttp([string] $Address, [string] $Request, [byte[]] $Body = $
     $result.origin = if ($null -eq $result.status) { 'none' } elseif ($result.headers.Contains('x-content-type-options')) { 'app' } else { 'kernel' }
     [pscustomobject] $result
 }
-# Opens /events and returns after the status line; -NoRead keeps a tiny receive window and never reads again.
-function Open-RawStream([string] $Address = '127.0.0.1', [switch] $NoRead) {
+# Opens a raw SSE stream; `-NoRead` keeps a tiny receive window. `Path` supports exact `/events` grammar cases.
+function Open-RawStream([string] $Address = '127.0.0.1', [switch] $NoRead, [string] $Path = '/events') {
     $ip = [Net.IPAddress]::Parse($Address)
     $client = [Net.Sockets.TcpClient]::new($ip.AddressFamily)
     if ($NoRead) { $client.ReceiveBufferSize = 1024 }
     $openQpc = Get-Qpc
     $client.ConnectAsync($ip, $port).Wait(3000) | Out-Null
     $stream = $client.GetStream(); $stream.ReadTimeout = 3000
-    $bytes = [Text.Encoding]::ASCII.GetBytes((New-Request -Path '/events' -KeepAlive))
+    $bytes = [Text.Encoding]::ASCII.GetBytes((New-Request -Path $Path -KeepAlive))
     $stream.Write($bytes, 0, $bytes.Length); $stream.Flush()
-    $ms = [IO.MemoryStream]::new(); $buf = [byte[]]::new(512)
-    while ($true) {
-        $n = try { $stream.Read($buf, 0, $buf.Length) } catch { -1 }
+    # Read one byte at a time through the header terminator so a coalesced SSE packet is not discarded.
+    $ms = [IO.MemoryStream]::new(); $one = [byte[]]::new(1)
+    while ($ms.Length -lt 65536) {
+        $n = try { $stream.Read($one, 0, 1) } catch { -1 }
         if ($n -le 0) { break }
-        $ms.Write($buf, 0, $n)
-        if ([Text.Encoding]::ASCII.GetString($ms.ToArray()).Contains("`r`n`r`n")) { break }
+        $ms.WriteByte($one[0])
+        if ($ms.Length -ge 4) {
+            $b = $ms.ToArray()
+            if ($b[$b.Length - 4] -eq 13 -and $b[$b.Length - 3] -eq 10 -and $b[$b.Length - 2] -eq 13 -and $b[$b.Length - 1] -eq 10) { break }
+        }
     }
     $parsed = ConvertFrom-RawResponse $ms.ToArray()
-    [pscustomobject]@{ Client = $client; Status = $parsed.status; Headers = $parsed.headers; OpenQpc = $openQpc }
+    [pscustomobject]@{ Client = $client; Stream = $stream; Status = $parsed.status; Headers = $parsed.headers; OpenQpc = $openQpc; Path = $Path }
 }
 function Close-RawStream($Raw) { if ($Raw) { try { $Raw.Client.Close() } catch { } } }
 
@@ -681,27 +764,48 @@ function Close-RawStream($Raw) { if ($Raw) { try { $Raw.Client.Close() } catch {
 $chromeProbeJs = @'
 (() => {
   const s = window.__state ? Object.assign({}, window.__state) : null;
-  const pill = document.getElementById('pill'), clip = document.getElementById('clip');
+  const root = document.documentElement, pill = document.getElementById('pill'), clip = document.getElementById('clip');
   const t = document.getElementById('title'), a = document.getElementById('artist');
-  let frac = null;
-  if (clip) { const m = new DOMMatrixReadOnly(getComputedStyle(clip).transform); frac = m.m41 / (clip.offsetWidth || 400); }
-  const anims = document.getAnimations().map(x => x.playState);
+  const artistStyle = a ? getComputedStyle(a) : null;
+  const cs = pill ? getComputedStyle(pill) : null, titleStyle = t ? getComputedStyle(t) : null;
+  let frac = null, clipPx = null;
+  if (clip) { const m = new DOMMatrixReadOnly(getComputedStyle(clip).transform); clipPx = m.m41; frac = m.m41 / (clip.offsetWidth || 400); }
+  const anims = document.getAnimations().map(x => ({
+    playState: x.playState, currentTime: x.currentTime, duration: x.effect ? x.effect.getTiming().duration : null,
+    keyframes: x.effect ? x.effect.getKeyframes().map(k => ({ opacity: k.opacity ?? null, transform: k.transform ?? null })) : []
+  }));
   return JSON.stringify({
-    href: location.href, s, opacity: pill ? Number(getComputedStyle(pill).opacity) : null, frac,
+    href: location.href, s, opacity: pill ? Number(cs.opacity) : null, frac, clipPx, pageNow: performance.now(),
+    boxRect: pill ? (() => { const r = pill.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() : null,
+    pageSize: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+    css: cs ? { width: cs.width, height: cs.height, radius: cs.borderRadius, shadow: cs.boxShadow, color: cs.color,
+      font: cs.fontFamily, align: cs.textAlign, textShadow: cs.textShadow, k: cs.getPropertyValue('--k').trim(),
+      w: cs.getPropertyValue('--w').trim(), fg: cs.getPropertyValue('--fg').trim(), fontVar: cs.getPropertyValue('--font').trim() } : null,
+    attrs: root ? { theme: root.getAttribute('data-theme'), colours: root.getAttribute('data-colours'),
+      showArt: root.getAttribute('data-show-art'), showArtist: root.getAttribute('data-show-artist'),
+      showProgress: root.getAttribute('data-show-progress'), showTimes: root.getAttribute('data-show-times'),
+      paused: root.getAttribute('data-paused'), animShow: root.getAttribute('data-anim-show'), animHide: root.getAttribute('data-anim-hide') } : null,
     title: t ? t.textContent : null, artist: a ? a.textContent : null, titleChildren: t ? t.children.length : null,
-    titleEllipsis: t ? (getComputedStyle(t).textOverflow === 'ellipsis' && t.scrollWidth > t.clientWidth) : null,
-    running: anims.filter(p => p === 'running').length, animations: anims.length,
-    art: performance.getEntriesByType('resource').filter(e => /\/art\/[0-9a-f]{16}$/.test(new URL(e.name).pathname))
+    titleEllipsis: t ? (titleStyle.textOverflow === 'ellipsis' && t.scrollWidth > t.clientWidth) : null,
+    titleRect: t ? (() => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: titleStyle.textOverflow }; })() : null,
+    artistRect: a ? (() => { const r = a.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, display: artistStyle.display }; })() : null,
+    running: anims.filter(x => x.playState === 'running').length, animations: anims.length, animationDetails: anims,
+    reducedMotionMedia: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    resources: performance.getEntriesByType('resource').map(e => { const u = new URL(e.name); return { origin: u.origin, path: u.pathname }; }),
+    art: performance.getEntriesByType('resource').filter(e => /\/art\/(?:[0-9a-f]{16}|sample)$/.test(new URL(e.name).pathname))
       .map(e => ({ name: new URL(e.name).pathname, start: e.startTime, end: e.responseEnd }))
   });
 })()
 '@
 
-function Start-Chrome([string] $Name) {
+function Start-Chrome([string] $Name, [switch] $Plain) {
     $dir = Join-Path $rootBase "chrome-$(ConvertTo-SafeName $Name)"
     [IO.Directory]::CreateDirectory($dir) | Out-Null
-    $process = Start-Process -FilePath $chromeExe -PassThru -ArgumentList @('--headless=new', '--remote-debugging-port=0', "--user-data-dir=$dir",
-        '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--window-size=440,96', 'about:blank')
+    $arguments = @('--headless=new', '--remote-debugging-port=0', "--user-data-dir=$dir", '--no-first-run',
+        '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--window-size=440,96')
+    if ($Plain) { $arguments += $plainChromeFlags; $arguments += '--force-device-scale-factor=1' }
+    $arguments += 'about:blank'
+    $process = Start-Process -FilePath $chromeExe -PassThru -ArgumentList $arguments
     $portFile = Join-Path $dir 'DevToolsActivePort'
     if (-not (Wait-For { Test-Path -LiteralPath $portFile } 30)) { throw 'Chrome wrote no DevToolsActivePort.' }
     $cdpPort = [int] ((Get-Content -LiteralPath $portFile | Select-Object -First 1).Trim())
@@ -709,7 +813,7 @@ function Start-Chrome([string] $Name) {
     $ws = [Net.WebSockets.ClientWebSocket]::new()
     # GetResult() on a non-generic Task surfaces a VoidTaskResult in PowerShell; it must not leak into the output.
     [void] $ws.ConnectAsync([Uri] $page.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-    $chrome = [pscustomobject]@{ Name = $Name; Process = $process; Ws = $ws; Next = 0; Dir = $dir }
+    $chrome = [pscustomobject]@{ Name = $Name; Process = $process; Ws = $ws; Next = 0; Dir = $dir; CdpPort = $cdpPort; Plain = [bool] $Plain; TargetId = [string] $page.id }
     [void] $chromes.Add($chrome)
     [void] (Invoke-Cdp $chrome 'Page.enable')
     return $chrome
@@ -743,19 +847,64 @@ function Invoke-Cdp($Chrome, [string] $Method, [hashtable] $Params = @{}, [doubl
     }
 }
 function Invoke-ChromeNavigate($Chrome, [string] $Url) { Invoke-Cdp $Chrome 'Page.navigate' @{ url = $Url } }
+function Reset-ChromeCasePage($Chrome) {
+    # A Page.navigate ACK does not prove unload: history/BFCache may retain the old document.
+    # Destroy the exact owned target, keeping a new blank target alive for the next case.
+    $oldTarget = $Chrome.TargetId
+    $created = Invoke-Cdp $Chrome 'Target.createTarget' @{ url = 'about:blank' }
+    $newTarget = [string] (Get-Prop $created 'targetId')
+    if (-not $newTarget) { throw 'Chrome did not create the next case target.' }
+    $page = Wait-For {
+        Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($Chrome.CdpPort)/json/list" |
+            ForEach-Object { $_ } | Where-Object { $_.id -eq $newTarget } | Select-Object -First 1
+    } 5 50
+    if (-not $page) { throw "Chrome target $newTarget was not exposed." }
+    $ws = [Net.WebSockets.ClientWebSocket]::new()
+    [void] $ws.ConnectAsync([Uri] $page.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    $oldWs = $Chrome.Ws
+    $Chrome.Ws = $ws; $Chrome.Next = 0; $Chrome.TargetId = $newTarget
+    try {
+        [void] (Invoke-Cdp $Chrome 'Page.enable')
+        $closed = Invoke-Cdp $Chrome 'Target.closeTarget' @{ targetId = $oldTarget }
+        if ((Get-Prop $closed 'success') -ne $true) { throw "Chrome refused to close target $oldTarget." }
+        $gone = Wait-For {
+            $targets = @(Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($Chrome.CdpPort)/json/list" | ForEach-Object { $_ })
+            @($targets | Where-Object { $_.id -eq $oldTarget }).Count -eq 0
+        } 5 50
+        if (-not $gone) { throw "Chrome target $oldTarget survived closeTarget." }
+        Set-PlainViewport $Chrome
+        [ordered]@{ oldTarget = $oldTarget; newTarget = $newTarget; closeSucceeded = $true; oldTargetGone = $true }
+    } finally { $oldWs.Dispose() }
+}
 function Get-PageProbe($Chrome) {
     $result = Invoke-Cdp $Chrome 'Runtime.evaluate' @{ expression = $chromeProbeJs; returnByValue = $true }
     $value = Get-Prop (Get-Prop $result 'result') 'value'
-    $probe = if ($value) { $value | ConvertFrom-Json -Depth 8 } else { [pscustomobject]@{ href = $null; s = $null; opacity = $null; frac = $null; title = $null; artist = $null; titleChildren = $null; titleEllipsis = $null; running = $null; animations = $null; art = @() } }
+    $probe = if ($value) { $value | ConvertFrom-Json -Depth 16 } else { [pscustomobject]@{
+        href = $null; s = $null; opacity = $null; frac = $null; clipPx = $null; title = $null; artist = $null
+        titleChildren = $null; titleEllipsis = $null; running = $null; animations = $null; animationDetails = @(); art = @(); resources = @()
+    } }
     $probe | Add-Member -NotePropertyName qpc -NotePropertyValue (Get-Qpc) -Force
     $probe
 }
 function Get-PageField($Probe, [string] $Field) { Get-Prop (Get-Prop $Probe 's') $Field }
+function Get-ChromeVersion($Chrome) {
+    $result = Invoke-Cdp $Chrome 'Browser.getVersion'
+    $product = [string] (Get-Prop $result 'product')
+    $match = [regex]::Match($product, '(?:Chrome|Chromium)/([0-9]+(?:\.[0-9]+){0,3})')
+    [pscustomobject]@{ product = $product; version = if ($match.Success) { $match.Groups[1].Value } else { $null }
+        major = if ($match.Success) { [int] ($match.Groups[1].Value -split '\.')[0] } else { $null } }
+}
+function Set-PlainViewport($Chrome) {
+    [void] (Invoke-Cdp $Chrome 'Emulation.setDeviceMetricsOverride' @{ width = 440; height = 96; deviceScaleFactor = 1; mobile = $false })
+}
+function Get-ChromeShotBytes($Chrome) {
+    $shot = Invoke-Cdp $Chrome 'Page.captureScreenshot' @{ format = 'png'; fromSurface = $true }
+    [Convert]::FromBase64String([string] $shot.data)
+}
 function Save-ChromeShot($Chrome, [string] $Name) {
     try {
-        $shot = Invoke-Cdp $Chrome 'Page.captureScreenshot' @{ format = 'png' }
         $file = Join-Path $shotDirectory "$(ConvertTo-SafeName $Name).png"
-        [IO.File]::WriteAllBytes($file, [Convert]::FromBase64String($shot.data))
+        [IO.File]::WriteAllBytes($file, (Get-ChromeShotBytes $Chrome))
         [IO.Path]::GetRelativePath($runDirectory, $file)
     } catch { $null }
 }
@@ -970,12 +1119,38 @@ function Get-NonNullSets($Server) {
 # ---------------------------------------------------------------------------------------------------------------
 # Scenario helpers
 
+function New-DefaultPillOptions {
+    [ordered]@{
+        theme = 'pill'; font = $null; scale = 100; width = 400; align = 'center'; colours = 'auto'
+        text = '#ffffff'; background = '#202020'; backgroundOpacity = 100; accent = '#8a8a95'
+        textShadow = $true; showArt = $true; showArtist = $true; showProgress = $true; showTimes = $true
+        paused = 'hide'; showAnimation = 'slide-up'; hideAnimation = 'fade'
+    }
+}
+function New-ObsLook([string] $Id, [string] $Name, $Options = $null) {
+    if ($null -eq $Options) { $Options = New-DefaultPillOptions }
+    [ordered]@{ id = $Id; name = $Name; options = $Options }
+}
+function New-ObsLooksDocument([object[]] $Looks = @(), [string[]] $Retired = @(), [int] $Version = 1) {
+    [ordered]@{ version = $Version; looks = @($Looks); retired = @($Retired) }
+}
+function ConvertTo-ObsLooksJson($Document) { $Document | ConvertTo-Json -Depth 16 }
+function Write-ObsLooksFile([string] $Root, [string] $Json) {
+    $path = Join-Path $Root 'data/obs-looks.json'
+    [IO.File]::WriteAllText($path, $Json, [Text.UTF8Encoding]::new($false))
+    $path
+}
+function Read-ObsLooksFile([string] $Root) {
+    Get-Content -Raw -LiteralPath (Join-Path $Root 'data/obs-looks.json') | ConvertFrom-Json -Depth 16
+}
+
 # Starts the app with the overlay on (plus options) and an SSE reader; returns the context.
 function Start-OverlayRun([string] $Name, [hashtable] $Settings = @{}, [string] $BenchProfile = $null, [string] $BenchState = 'Full',
-    [switch] $NoReader, [hashtable] $Override = @{}) {
+    [switch] $NoReader, [hashtable] $Override = @{}, [string] $LooksJson = $null) {
     $root = New-Root $Name
     $s = @{ ObsOverlay = $true }; foreach ($k in $Settings.Keys) { $s[$k] = $Settings[$k] }
     Write-Settings $root $s
+    if ($null -ne $LooksJson) { [void] (Write-ObsLooksFile $root $LooksJson) }
     $launchEnv = @{}; foreach ($k in $Override.Keys) { $launchEnv[$k] = $Override[$k] }
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = $BenchState }
     $app = Start-App $root $launchEnv
@@ -995,6 +1170,1623 @@ function Wait-Initial($Run, [string] $Id = 'fixtureSngA', [string] $State = 'pla
 }
 function Get-ReadyQpc($Ready) { if ($Ready) { [double] (Get-Prop $Ready 'qpc') } else { $null } }
 
+function Get-ThemeDefaults([string] $Theme) {
+    $options = New-DefaultPillOptions
+    $options['theme'] = $Theme
+    $options['width'] = switch ($Theme) { 'pill' { 400 } { $_ -in @('matte', 'matte-light', 'standard', 'classic', 'simple') } { 440 } 'album-art' { 200 } 'card' { 280 } }
+    $options['align'] = if ($Theme -eq 'pill') { 'center' } else { 'left' }
+    $options['textShadow'] = $Theme -notin @('matte', 'matte-light')
+    if ($Theme -eq 'matte') { $options['background'] = '#1c1c1e'; $options['backgroundOpacity'] = 94 }
+    if ($Theme -eq 'matte-light') { $options['text'] = '#141414'; $options['background'] = '#f5f5f7'; $options['backgroundOpacity'] = 94; $options['textShadow'] = $false }
+    if ($Theme -in @('standard', 'classic', 'card')) { $options['background'] = '#1a1a1a'; $options['backgroundOpacity'] = 94 }
+    if ($Theme -eq 'album-art') { $options['background'] = '#000000'; $options['backgroundOpacity'] = 80 }
+    $options
+}
+function Copy-LookOptions($Options) {
+    $copy = [ordered]@{}
+    foreach ($key in $Options.Keys) { $copy[$key] = $Options[$key] }
+    $copy
+}
+function Add-LookCase($Cases, [string] $Theme, [string] $Label, $Options) {
+    $Cases.Add([ordered]@{ case = $Label; theme = $Theme; options = (Copy-LookOptions $Options); lookId = $null })
+}
+# Generates the entire §8.1 case matrix (all eight themes); A-LOOK executes pill in P0 and reports other rows deferred:P1.
+function New-LookCases {
+    $themes = @('pill', 'matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')
+    $cases = [Collections.Generic.List[object]]::new()
+    $sequence = 0
+    foreach ($theme in $themes) {
+        $base = Get-ThemeDefaults $theme
+        Add-LookCase $cases $theme 'default' $base
+        foreach ($option in @('showArt', 'showArtist', 'showProgress', 'showTimes')) {
+            if ($option -eq 'showArt' -and $theme -eq 'pill') { continue }
+            if ($option -eq 'showTimes' -and $theme -in @('pill', 'album-art')) { continue }
+            $changed = Copy-LookOptions $base; $changed[$option] = $false
+            Add-LookCase $cases $theme "$option-off" $changed
+        }
+        $alignments = if ($theme -eq 'pill') { @('left', 'right') } else { @('center', 'right') }
+        foreach ($align in $alignments) { $changed = Copy-LookOptions $base; $changed['align'] = $align; Add-LookCase $cases $theme "align-$align" $changed }
+        $custom = Copy-LookOptions $base; $custom['colours'] = 'custom'; $custom['text'] = '#1e90ff'
+        if ($theme -notin @('pill', 'simple')) { $custom['background'] = '#101820'; $custom['accent'] = '#ff8c00' }
+        Add-LookCase $cases $theme 'custom-colours' $custom
+        foreach ($scale in @(50, 200)) {
+            $changed = Copy-LookOptions $base; $changed['scale'] = $scale
+            $minimum = switch ($theme) { 'pill' { 320 } { $_ -in @('matte', 'matte-light', 'standard', 'classic', 'simple') } { 360 } 'album-art' { 160 } 'card' { 200 } }
+            $minimum = [int] ([Math]::Ceiling(($minimum * [Math]::Max(1, $scale / 100.0)) / 10) * 10)
+            $changed['width'] = [int] [Math]::Max($minimum, [int] (Get-Prop $base 'width'))
+            Add-LookCase $cases $theme "scale-$scale" $changed
+        }
+        $baseMin = switch ($theme) { 'pill' { 320 } { $_ -in @('matte', 'matte-light', 'standard', 'classic', 'simple') } { 360 } 'album-art' { 160 } 'card' { 200 } }
+        $maxWidth = switch ($theme) { 'pill' { 800 } { $_ -in @('matte', 'matte-light', 'standard', 'classic', 'simple') } { 1200 } 'album-art' { 600 } 'card' { 600 } }
+        foreach ($scale in @(100, 200)) {
+            $minimum = [int] ([Math]::Ceiling(($baseMin * [Math]::Max(1, $scale / 100.0)) / 10) * 10)
+            foreach ($width in @($minimum, $maxWidth)) {
+                $changed = Copy-LookOptions $base; $changed['scale'] = $scale; $changed['width'] = $width
+                Add-LookCase $cases $theme "width-$width-k$scale" $changed
+            }
+        }
+        $dim = Copy-LookOptions $base; $dim['paused'] = 'dim'; Add-LookCase $cases $theme 'paused-dim' $dim
+        foreach ($animation in @('fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'none')) {
+            $changed = Copy-LookOptions $base; $changed['showAnimation'] = $animation
+            Add-LookCase $cases $theme "show-$animation" $changed
+            $changed = Copy-LookOptions $base; $changed['hideAnimation'] = $animation
+            Add-LookCase $cases $theme "hide-$animation" $changed
+        }
+        if ($theme -eq 'pill') {
+            $font = Copy-LookOptions $base; $font['font'] = 'Arial'; Add-LookCase $cases $theme 'font-arial' $font
+            $shadow = Copy-LookOptions $base; $shadow['textShadow'] = $false; Add-LookCase $cases $theme 'shadow-off' $shadow
+            foreach ($width in @(320, 800)) { $changed = Copy-LookOptions $base; $changed['width'] = $width; Add-LookCase $cases $theme "width-$width" $changed }
+            $artist = Copy-LookOptions $base; $artist['showArtist'] = $false; Add-LookCase $cases $theme 'artist-off' $artist
+        }
+    }
+    foreach ($case in $cases) {
+        $sequence++
+        $case.lookId = 'lk{0:D6}' -f $sequence
+        $case.phase = if ($case.theme -eq 'pill') { 'P0' } else { 'P1' }
+        $case.batch = [int] [Math]::Floor(($sequence - 1) / 16) + 1
+    }
+    $json = ConvertTo-Json -InputObject @($cases) -Depth 16
+    [IO.Directory]::CreateDirectory($fixtureDirectory) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fixtureDirectory 'looks-cases.json'), $json, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $runDirectory 'looks-cases.json'), $json, [Text.UTF8Encoding]::new($false))
+    $cases.ToArray()
+}
+function Get-PillExpectedBox($Options) {
+    $k = [double] (Get-Prop $Options 'scale') / 100
+    [ordered]@{
+        x = 20; y = 20; width = [int] (Get-Prop $Options 'width'); height = 56 * $k
+        sourceWidth = [int] ([Math]::Ceiling(([int] (Get-Prop $Options 'width') + 40) / 2.0) * 2)
+        sourceHeight = [int] ([Math]::Ceiling((56 * $k + 40) / 2.0) * 2)
+    }
+}
+function Get-Sha256([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+function Compare-Png([byte[]] $ExpectedBytes, [byte[]] $ActualBytes, [string] $DiffPath) {
+    $expectedStream = [IO.MemoryStream]::new($ExpectedBytes)
+    $actualStream = [IO.MemoryStream]::new($ActualBytes)
+    $expected = $null; $actual = $null; $diff = $null
+    try {
+        $expected = [Drawing.Bitmap]::new($expectedStream); $actual = [Drawing.Bitmap]::new($actualStream)
+        if ($expected.Width -ne $actual.Width -or $expected.Height -ne $actual.Height) {
+            $diff = [Drawing.Bitmap]::new($actual.Width, $actual.Height)
+            for ($y = 0; $y -lt $actual.Height; $y++) {
+                for ($x = 0; $x -lt $actual.Width; $x++) { $diff.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, 255, 0, 0)) }
+            }
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $DiffPath)) | Out-Null
+            $diff.Save($DiffPath, [Drawing.Imaging.ImageFormat]::Png)
+            return [ordered]@{ width = $actual.Width; height = $actual.Height; expectedWidth = $expected.Width; expectedHeight = $expected.Height
+                differing = $null; pixels = $null; percent = 100.0 }
+        }
+        $diff = [Drawing.Bitmap]::new($expected.Width, $expected.Height)
+        $differing = 0
+        for ($y = 0; $y -lt $expected.Height; $y++) {
+            for ($x = 0; $x -lt $expected.Width; $x++) {
+                $a = $expected.GetPixel($x, $y); $b = $actual.GetPixel($x, $y)
+                $over = ([Math]::Abs($a.R - $b.R) -gt 8 -or [Math]::Abs($a.G - $b.G) -gt 8 -or
+                    [Math]::Abs($a.B - $b.B) -gt 8 -or [Math]::Abs($a.A - $b.A) -gt 8)
+                if ($over) { $differing++; $diff.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, 255, 0, 0)) }
+                else { $diff.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, 24, 24, 24)) }
+            }
+        }
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $DiffPath)) | Out-Null
+        $diff.Save($DiffPath, [Drawing.Imaging.ImageFormat]::Png)
+        [ordered]@{ width = $actual.Width; height = $actual.Height; expectedWidth = $expected.Width; expectedHeight = $expected.Height
+            differing = $differing; pixels = $expected.Width * $expected.Height; percent = [Math]::Round(100.0 * $differing / ($expected.Width * $expected.Height), 5) }
+    } finally {
+        if ($diff) { $diff.Dispose() }; if ($actual) { $actual.Dispose() }; if ($expected) { $expected.Dispose() }
+        $actualStream.Dispose(); $expectedStream.Dispose()
+    }
+}
+function Send-PreviewNonce([string] $Root, [string] $Nonce) {
+    if ($Nonce -ne 'clear' -and $Nonce -cnotmatch '^[a-z0-9]{8}$') { throw 'Preview nonce must be eight lowercase alphanumeric characters or clear.' }
+    Send-ObsHookCommand $Root 'command-obs-preview-nonce' $Nonce
+}
+function Send-DraftLook([string] $Root, $Look, [string] $Backdrop = 'checker', [switch] $NoWait) {
+    if ($null -eq $Look) { return Send-ObsHookCommand $Root 'command-obs-draft-look' 'clear' }
+    $payload = ConvertTo-Json -InputObject ([ordered]@{ look = $Look; backdrop = $Backdrop }) -Compress -Depth 16
+    if ($NoWait) { return Queue-ObsHookCommand $Root 'command-obs-draft-look' $payload }
+    Send-ObsHookCommand $Root 'command-obs-draft-look' $payload
+}
+function Invoke-ObsLookCommit([string] $Root, [int] $Sequence, $Mutation) {
+    $directory = Get-BenchDirectory $Root
+    $inputName = "commit-$Sequence.json"; $resultName = "commit-$Sequence-result.json"
+    $inputPath = Join-Path $directory $inputName; $resultPath = Join-Path $directory $resultName
+    Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+    [IO.File]::WriteAllText($inputPath, (ConvertTo-Json -InputObject $Mutation -Compress -Depth 16), [Text.UTF8Encoding]::new($false))
+    [void] (Send-ObsHookCommand $Root 'command-obs-looks-commit' $inputName)
+    $result = Wait-For { if (Test-Path -LiteralPath $resultPath) { Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json -Depth 16 } } 15 100
+    if (-not $result) { throw "Missing looks commit result $resultName." }
+    $result
+}
+
+function Test-APlain {
+    if (-not (Test-ChromeAvailable 'A-PLAIN')) { return }
+    $run = Start-OverlayRun 'A-PLAIN' @{ ObsOverlay = $true; ObsHidePaused = $true } 'Playing'
+    $chrome = $null
+    try {
+        $initial = Wait-Initial $run
+        $chrome = Start-Chrome 'A-PLAIN' -Plain
+        Set-PlainViewport $chrome
+        [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+        $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and (Get-PageField $p 'state') -eq 'playing') { $p } } 30 100
+        $version = Get-ChromeVersion $chrome
+        Add-Check 'A-PLAIN.chromeVersion' 'CDP reports an installed Chrome version' ([ordered]@{ product = $version.product; version = $version.version }) ($null -ne $version.major)
+        Add-Check 'A-PLAIN.viewport' 'headless Chrome page is 440x96 CSS px at DPR 1' ([ordered]@{
+            width = Get-Prop $connected 'pageSize' | ForEach-Object { Get-Prop $_ 'width' }
+            height = Get-Prop $connected 'pageSize' | ForEach-Object { Get-Prop $_ 'height' }
+            dpr = Get-Prop $connected 'pageSize' | ForEach-Object { Get-Prop $_ 'dpr' }
+        }) ($connected -and $connected.pageSize.width -eq 440 -and $connected.pageSize.height -eq 96 -and $connected.pageSize.dpr -eq 1)
+        if (-not $connected) { throw 'A-PLAIN page did not connect to the playing fixture.' }
+
+        $baselineMeta = $null
+        if (-not $CapturePlainBaseline -and (Test-Path -LiteralPath $plainBaselineMeta -PathType Leaf)) {
+            $baselineMeta = Get-Content -Raw -LiteralPath $plainBaselineMeta | ConvertFrom-Json -Depth 16
+        }
+        $pageStartQpc = Get-PageStartQpc $initial
+        $captures = [ordered]@{}; $captureBytes = [ordered]@{}; $capturePaths = [ordered]@{}; $positionResults = [ordered]@{}
+        foreach ($target in @(8, 18)) {
+            $key = "${target}s"
+            Wait-UntilQpc ($pageStartQpc + $target * $freq)
+            $probe = Wait-For {
+                $p = Get-PageProbe $chrome
+                $position = Get-PageField $p 'projectedPosition'
+                if ($null -ne $position -and [Math]::Abs([double] $position - $target) -le 0.2) { $p }
+            } 3 20
+            if (-not $probe) { $probe = Get-PageProbe $chrome }
+            $position = Get-PageField $probe 'projectedPosition'
+            $fillPx = if ($null -ne $probe.clipPx) { [int] [Math]::Round([double] $probe.clipPx) } else { $null }
+            $expectedFillPx = if ($null -ne $position) { [int] [Math]::Round([double] $position / 1800 * 400) } else { $null }
+            $bytes = Get-ChromeShotBytes $chrome
+            $capturePath = Join-Path $shotDirectory "A-PLAIN-$key-current.png"
+            [IO.File]::WriteAllBytes($capturePath, $bytes)
+            $captureBytes[$key] = $bytes
+            $capturePaths[$key] = [IO.Path]::GetRelativePath($runDirectory, $capturePath)
+            $captures[$key] = [ordered]@{ projectedPosition = $position; fillPx = $fillPx; expectedFillPx = $expectedFillPx }
+            $positionResults[$key] = $null -ne $position -and [Math]::Abs([double] $position - $target) -le 0.2
+            Add-Check "A-PLAIN.position$key" "__state.projectedPosition within 0.2 s of $target" $position $positionResults[$key]
+            Add-Check "A-PLAIN.fillPixel$key" 'DOM progress clip pixel equals round(projectedPosition / 1800 * 400)' (
+                [ordered]@{ fillPx = $fillPx; expected = $expectedFillPx }) ($null -ne $fillPx -and $fillPx -eq $expectedFillPx)
+        }
+        if ($CapturePlainBaseline) {
+            $positionsOk = @($positionResults.Values | Where-Object { -not $_ }).Count -eq 0
+            $fillsOk = @($captures.Values | Where-Object { $_.fillPx -ne $_.expectedFillPx }).Count -eq 0
+            if ($positionsOk -and $fillsOk) {
+                [IO.Directory]::CreateDirectory($fixtureDirectory) | Out-Null
+                [IO.File]::WriteAllBytes($plainBaseline8, $captureBytes['8s'])
+                [IO.File]::WriteAllBytes($plainBaseline18, $captureBytes['18s'])
+                $meta = [ordered]@{
+                    version = 1; sourceRevision = '1e8c964'; chromeVersion = $version.version; chromeProduct = $version.product
+                    flags = @($plainChromeFlags + '--force-device-scale-factor=1'); viewport = [ordered]@{ width = 440; height = 96; deviceScaleFactor = 1 }
+                    captures = $captures
+                }
+                [IO.File]::WriteAllText($plainBaselineMeta, (ConvertTo-Json -InputObject $meta -Depth 12), [Text.UTF8Encoding]::new($false))
+                Add-Check 'A-PLAIN.baselineCapture' 'wrote the 8 s/18 s PNG baselines and plain-meta.json from the unchanged 1e8c964 build' (
+                    [ordered]@{ plain8 = (Get-Item $plainBaseline8).Length; plain18 = (Get-Item $plainBaseline18).Length; meta = $plainBaselineMeta }) $true
+            } else {
+                Add-Check 'A-PLAIN.baselineCapture' 'both projected positions are within 0.2 s and rendered fill pixels match their projected positions before fixtures are written' (
+                    [ordered]@{ positions = $positionResults; captures = $captures }) $false
+            }
+            return
+        }
+
+        if (-not $baselineMeta -or -not $version.major) {
+            Add-Blocked 'A-PLAIN.chromeMajorVersion' 'Chrome major matches plain-meta.json' 'plain-meta.json is missing or Chrome version could not be parsed'
+            foreach ($target in @(8, 18)) { Add-Blocked "A-PLAIN.pixelComparison${target}s" 'at most 0.5% of pixels differ by more than 8/255 in any channel' 'no valid committed baseline metadata' }
+        } else {
+            $baselineVersion = [string] (Get-Prop $baselineMeta 'chromeVersion')
+            $baselineMajor = [int] (($baselineVersion -split '\.')[0])
+            if ([int] $version.major -ne $baselineMajor) {
+                Add-Blocked 'A-PLAIN.chromeMajorVersion' "Chrome major $baselineMajor from plain-meta.json" "installed Chrome is $($version.version); recapture from the 1e8c964 build"
+                foreach ($target in @(8, 18)) { Add-Blocked "A-PLAIN.pixelComparison${target}s" 'at most 0.5% of pixels differ by more than 8/255 in any channel' 'Chrome major-version mismatch' }
+            } else {
+                Add-Check 'A-PLAIN.chromeMajorVersion' "Chrome major $baselineMajor matches plain-meta.json" $version.version $true
+                foreach ($target in @(8, 18)) {
+                    $key = "${target}s"; $basePath = if ($target -eq 8) { $plainBaseline8 } else { $plainBaseline18 }
+                    if (-not (Test-Path -LiteralPath $basePath -PathType Leaf)) {
+                        Add-Blocked "A-PLAIN.pixelComparison$key" $basePath 'baseline PNG is missing; run -CapturePlainBaseline on the unchanged build'
+                        continue
+                    }
+                    $baseCapture = Get-Prop (Get-Prop $baselineMeta 'captures') $key
+                    $expectedFill = Get-Prop $baseCapture 'fillPx'
+                    $actualFill = Get-Prop $captures[$key] 'fillPx'
+                    Add-Check "A-PLAIN.baselineFillPixel$key" "fill pixel equals baseline metadata value $expectedFill" $actualFill ($null -ne $expectedFill -and $actualFill -eq $expectedFill)
+                    $diffPath = Join-Path $shotDirectory "A-PLAIN-$key-diff.png"
+                    $diff = Compare-Png ([IO.File]::ReadAllBytes($basePath)) $captureBytes[$key] $diffPath
+                    $diffResult = [ordered]@{ width = $diff.width; height = $diff.height; expectedWidth = $diff.expectedWidth
+                        expectedHeight = $diff.expectedHeight; differing = $diff.differing; pixels = $diff.pixels; percent = $diff.percent
+                        diffImage = [IO.Path]::GetRelativePath($runDirectory, $diffPath) }
+                    Add-Check "A-PLAIN.pixelComparison$key" '≤ 0.5% of pixels differ by > 8/255 in any channel; diff image retained' $diffResult (
+                        $diff.percent -le 0.5 -and $diff.width -eq 440 -and $diff.height -eq 96 -and (Test-Path -LiteralPath $diffPath))
+                }
+            }
+        }
+
+        if (-not $CapturePlainBaseline) {
+            $events = @(Read-Sse $run.Reader)
+            $looks = @(Get-LookEvents $events); $data = @(Get-DataEvents $events)
+            $firstLook = if ($looks.Count -gt 0) { $looks[0] } else { $null }
+            $firstData = if ($data.Count -gt 0) { $data[0] } else { $null }
+            Add-Check 'A-PLAIN.lookFirst' 'first SSE payload is the look event before initial data' ([ordered]@{
+                firstLookQpc = Get-Prop $firstLook 'qpc'; firstDataQpc = Get-Prop $firstData 'qpc' }) (
+                $firstLook -and $firstData -and $firstLook.qpc -lt $firstData.qpc)
+            $look = Get-Prop $firstLook 'data'; $options = Get-Prop $look 'options'
+            Add-Check 'A-PLAIN.lookPreset' 'plain look id is null and uses the compatibility pill defaults' ([ordered]@{
+                id = Get-Prop $look 'id'; theme = Get-Prop $options 'theme'; width = Get-Prop $options 'width'; scale = Get-Prop $options 'scale'
+                align = Get-Prop $options 'align'; textShadow = Get-Prop $options 'textShadow'; showArtist = Get-Prop $options 'showArtist'
+                showProgress = Get-Prop $options 'showProgress' }) (
+                $look -and $null -eq (Get-Prop $look 'id') -and (Get-Prop $options 'theme') -eq 'pill' -and
+                (Get-Prop $options 'width') -eq 400 -and (Get-Prop $options 'scale') -eq 100 -and
+                (Get-Prop $options 'align') -eq 'center' -and (Get-Prop $options 'textShadow') -eq $true)
+            Add-Check 'A-PLAIN.hidePaused' 'plain look carries the configured global hidePaused value' (
+                [ordered]@{ look = Get-Prop $look 'hidePaused'; settings = $true }) ($look -and (Get-Prop $look 'hidePaused') -eq $true)
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-on')
+            $reducedLook = Wait-SseLook $run.Reader { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 10
+            Add-Check 'A-PLAIN.reduceMotionPush' 'plain stream receives ReduceMotion true as a look update' ([bool] $reducedLook) ([bool] $reducedLook)
+            $scenarioResults['A-PLAIN'] = [ordered]@{ chrome = $version.version; captures = $captures; screenshotPaths = $capturePaths
+                diffImages = @('screenshots/A-PLAIN-8s-diff.png', 'screenshots/A-PLAIN-18s-diff.png') }
+        }
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+
+    if (-not $CapturePlainBaseline) {
+        foreach ($hidePaused in @($true, $false)) {
+            $label = if ($hidePaused) { 'hidden' } else { 'dimmed' }
+            $pauseRun = Start-OverlayRun "A-PLAIN-$label" @{ ObsHidePaused = $hidePaused } 'Paused'
+            $pauseChrome = $null
+            try {
+                [void] (Wait-Initial $pauseRun 'fixtureSngA' 'paused')
+                $pauseChrome = Start-Chrome "A-PLAIN-$label"
+                [void] (Invoke-ChromeNavigate $pauseChrome $overlayUrl)
+                $paused = Wait-For { $p = Get-PageProbe $pauseChrome; if ((Get-PageField $p 'state') -eq 'paused') { $p } } 20 100
+                if ($paused) { Start-Sleep -Milliseconds 700; $paused = Get-PageProbe $pauseChrome }
+                $shown = Get-PageField $paused 'shown'
+                if ($hidePaused) {
+                    Add-Check 'A-PLAIN.hidePausedHidden' 'global hidePaused true hides the paused plain pill' ([ordered]@{
+                        hidePaused = Get-PageField $paused 'hidePaused'; shown = $shown }) ($paused -and $shown -eq $false)
+                } else {
+                    Add-Check 'A-PLAIN.hidePausedDim' 'global hidePaused false shows the paused plain pill dimmed to 0.7' ([ordered]@{
+                        hidePaused = Get-PageField $paused 'hidePaused'; shown = $shown; opacity = Get-Prop $paused 'opacity' }) (
+                        $paused -and $shown -eq $true -and [Math]::Abs([double] $paused.opacity - 0.7) -le 0.02)
+                }
+            } finally { Stop-Chrome $pauseChrome; Stop-OverlayRun $pauseRun }
+        }
+        $motionRun = Start-OverlayRun 'A-PLAIN-reduce-motion' @{ ObsHidePaused = $false } 'Paused'
+        $motionChrome = $null
+        try {
+            [void] (Wait-BenchReady $motionRun.Root)
+            $motionChrome = Start-Chrome 'A-PLAIN-reduce-motion'
+            [void] (Invoke-ChromeNavigate $motionChrome $overlayUrl)
+            $visible = Wait-For { $p = Get-PageProbe $motionChrome; if ((Get-PageField $p 'shown') -eq $true) { $p } } 20 100
+            Start-Sleep -Milliseconds 700
+            [void] (Send-HookCommand $motionRun.Root 'command-obs-hide-paused-on')
+            $hiding = Wait-For { $p = Get-PageProbe $motionChrome; if ($p.running -gt 0) { $p } } 2 20
+            [void] (Send-ObsHookCommand $motionRun.Root 'command-obs-reduce-motion-on')
+            $reduced = Wait-SseLook $motionRun.Reader { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 10
+            $final = Wait-For { $p = Get-PageProbe $motionChrome; if ($p.running -eq 0) { $p } } 2 20
+            Add-Check 'A-PLAIN.reduceMotionInstant' 'ReduceMotion push cancels the currently running hide transition and applies hidden state instantly' ([ordered]@{
+                visible = Get-PageField $visible 'shown'; transitionRunning = [bool] $hiding; lookObserved = [bool] $reduced
+                finalShown = Get-PageField $final 'shown'; running = Get-Prop $final 'running' }) (
+                $visible -and $hiding -and $reduced -and $final -and
+                (Get-PageField $final 'shown') -eq $false -and $final.running -eq 0)
+        } finally { Stop-Chrome $motionChrome; Stop-OverlayRun $motionRun }
+    }
+}
+
+function Test-ALook {
+    if (-not (Test-ChromeAvailable 'A-LOOK')) { return }
+    $allCases = @(New-LookCases)
+    $pillCases = @($allCases | Where-Object { $_.theme -eq 'pill' })
+    $otherCases = @($allCases | Where-Object { $_.theme -ne 'pill' })
+    $defaultFixturePath = Join-Path $fixtureDirectory 'looks-pill-defaults.json'
+    $defaultFixtureDoc = Get-Content -Raw -LiteralPath $defaultFixturePath | ConvertFrom-Json -Depth 16
+    $defaultFixture = @($defaultFixtureDoc.looks)[0]
+    $defaultCase = $pillCases | Where-Object { $_.case -eq 'default' } | Select-Object -First 1
+    Add-Check 'A-LOOK.pill.defaultFixture' 'committed default Pill fixture matches the generated P0 default case' ([ordered]@{
+        fixturePath = [IO.Path]::GetRelativePath($repo, $defaultFixturePath); id = Get-Prop $defaultFixture 'id'
+        case = $defaultCase.case; options = Get-Prop $defaultFixture 'options' }) (
+        $defaultFixture -and $defaultCase -and $defaultFixture.id -eq $defaultCase.lookId -and
+        (ConvertTo-Json -InputObject $defaultFixture.options -Compress -Depth 8) -ceq
+        (ConvertTo-Json -InputObject $defaultCase.options -Compress -Depth 8))
+    $caseFixturePath = Join-Path $fixtureDirectory 'looks-cases.json'
+    $caseFixture = if (Test-Path -LiteralPath $caseFixturePath -PathType Leaf) { @(Get-Content -Raw -LiteralPath $caseFixturePath | ConvertFrom-Json -Depth 16) } else { @() }
+    $fixtureBatches = @($caseFixture | Group-Object { $_.batch } | ForEach-Object { $_.Count })
+    Add-Check 'A-LOOK.generatorAllThemes' 'looks-cases.json in fixtures and artifacts contains all eight plan themes, matching case count, and batches ≤ 16' (
+        [ordered]@{ fixturePath = [IO.Path]::GetRelativePath($repo, $caseFixturePath); themes = @($allCases | ForEach-Object { $_.theme } | Select-Object -Unique)
+            cases = $allCases.Count; fixtureCases = $caseFixture.Count
+            maxBatch = ($fixtureBatches | Measure-Object -Maximum).Maximum }) (
+        (Test-Path -LiteralPath $caseFixturePath -PathType Leaf) -and @($allCases | ForEach-Object { $_.theme } | Select-Object -Unique).Count -eq 8 -and
+        $caseFixture.Count -eq $allCases.Count -and ($fixtureBatches | Measure-Object -Maximum).Maximum -le 16)
+    Add-Deferred 'P1' 'A-LOOK.otherThemeMatrix' 'run the remaining generated theme cases in P1' "$($otherCases.Count) non-pill configurations are generated in looks-cases.json."
+    Add-Deferred 'P1' 'A-LOOK.timesShownAndMatteCadence' 'times-shown labels and matte cadence rows' 'P0 is pill-only; the pill has no times slot. These generated rows become active with P1 themes.'
+    Add-Deferred 'P1' 'A-LOOK.expectedSizes' 'independent expected-sizes.json generator and non-pill geometry oracle' 'The size-table generator is P1; P0 Pill sizes use the independent hand formula asserted in the E2E.'
+    $obs = [ordered]@{ pillCases = $pillCases.Count; otherCases = $otherCases.Count; cases = [ordered]@{} }
+    $batches = @($pillCases | Group-Object { $_.batch } | Sort-Object { [int] $_.Name })
+    foreach ($batch in $batches) {
+        $lookDocsList = [Collections.Generic.List[object]]::new()
+        foreach ($case in $batch.Group) {
+            if ($case.case -eq 'default') {
+                $lookDocsList.Add((New-ObsLook $case.lookId $defaultFixture.name $defaultFixture.options))
+            } else { $lookDocsList.Add((New-ObsLook $case.lookId "Pill $($case.case)" $case.options)) }
+        }
+        $lookDocs = $lookDocsList.ToArray()
+        $looksJson = ConvertTo-ObsLooksJson (New-ObsLooksDocument $lookDocs)
+        $run = Start-OverlayRun "A-LOOK-batch-$($batch.Name)" @{} 'PlayingLong' -NoReader -LooksJson $looksJson
+        $chrome = $null; $raws = [Collections.Generic.List[object]]::new()
+        try {
+            [void] (Wait-BenchReady $run.Root)
+            $reloadQpc = Send-ObsHookCommand $run.Root 'command-obs-looks-reload'
+            [void] (Wait-For { $s = Get-State $run.Root "batch$($batch.Name)"; (Get-Overlay $s 'looks').count -eq $lookDocs.Count } 15 250)
+            $chrome = Start-Chrome "A-LOOK-batch-$($batch.Name)" -Plain
+            Set-PlainViewport $chrome
+            [void] (Invoke-ChromeNavigate $chrome 'about:blank')
+            [void] (Wait-OverlayStreams $run 0 'batchInitialStreams')
+            foreach ($case in $batch.Group) {
+                $path = "/events?look=$($case.lookId)"
+                $reader = Start-SseReader "A-LOOK-$($case.case)" 30 $path
+                $raws.Add($reader)
+                $lookEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq $case.lookId } 15
+                $dataEvent = Wait-SseData $reader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+                Stop-SseReader $reader
+                [void] $raws.Remove($reader)
+                [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-reader-closed")
+                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($case.lookId)")
+                $page = Wait-For { $p = Get-PageProbe $chrome; if ($p -and (Get-PageField $p 'connection') -eq 'open' -and
+                    (Get-Prop (Get-PageField $p 'look') 'id') -eq $case.lookId) { $p } } 20 100
+                if (-not $page) { throw "A-LOOK case '$($case.case)' never reached its connected page state." }
+                $options = $case.options; $expected = Get-PillExpectedBox $options; $state = Get-Prop $page 's'
+                $box = Get-Prop $state 'box'; $source = Get-Prop $state 'source'; $actualWidth = Get-Prop (Get-Prop $page 'css') 'width'
+                $geometry = [ordered]@{ expected = $expected; box = $box; source = $source; cssWidth = $actualWidth }
+                Add-Check "A-LOOK.$($case.case).lookBeforeData" 'each new stream writes look before initial data, with matching id' ([ordered]@{
+                    lookQpc = Get-Prop $lookEvent 'qpc'; dataQpc = Get-Prop $dataEvent 'qpc'; id = Get-Prop (Get-Prop $lookEvent 'data') 'id' }) (
+                    $lookEvent -and $dataEvent -and $lookEvent.qpc -lt $dataEvent.qpc -and (Get-Prop $lookEvent.data 'id') -eq $case.lookId)
+                Add-Check "A-LOOK.$($case.case).stylesAndSizes" 'pill theme, custom properties, box/source formula and zero page box mismatch' $geometry (
+                    $page -and (Get-Prop (Get-Prop $page 'attrs') 'theme') -eq 'pill' -and
+                    [double] (Get-Prop $box 'w') -eq [double] $expected.width -and
+                    [double] (Get-Prop $box 'h') -eq [double] $expected.height -and
+                    [int] (Get-Prop $source 'w') -eq [int] $expected.sourceWidth -and
+                    [int] (Get-Prop $source 'h') -eq [int] $expected.sourceHeight -and
+                    [string] (Get-Prop $state 'boxMismatch') -in @('', 'false') -and
+                    [string] $actualWidth -eq "$($expected.width)px")
+                $rects = @((Get-Prop $page 'titleRect'), (Get-Prop $page 'artistRect')) | Where-Object { $_ -and $_.width -gt 0 }
+                $contained = $page -and @($rects | Where-Object { $_.x -lt $page.boxRect.x -or $_.x + $_.width -gt $page.boxRect.x + $page.boxRect.width -or
+                    $_.y -lt $page.boxRect.y -or $_.y + $_.height -gt $page.boxRect.y + $page.boxRect.height }).Count -eq 0
+                Add-Check "A-LOOK.$($case.case).textContainment" 'every visible text row is contained by the pill box; title uses ellipsis when overflowing' (
+                    [ordered]@{ contained = $contained; titleEllipsis = Get-Prop $page 'titleEllipsis'; title = Get-Prop $page 'title'; artist = Get-Prop $page 'artist' }) (
+                    $contained -and ((Get-Prop (Get-Prop $page 'titleRect') 'scrollWidth') -le (Get-Prop (Get-Prop $page 'titleRect') 'clientWidth') -or (Get-Prop $page 'titleEllipsis')))
+                if ($case.case -eq 'artist-off') {
+                    Add-Check 'A-LOOK.pill.artistOff' 'artist row is removed when showArtist is false' $page.artistRect.display ($page.artistRect.display -eq 'none')
+                }
+                if ($case.case -eq 'shadow-off') {
+                    Add-Check 'A-LOOK.pill.shadowOff' 'text-shadow option off removes the compatibility shadow' $page.css.textShadow ($page.css.textShadow -eq 'none')
+                }
+                if ($case.case -eq 'font-arial') {
+                    Add-Check 'A-LOOK.pill.fontOption' 'installed Arial font is selected and available' ([ordered]@{
+                        font = $page.css.font; fontAvailable = Get-Prop $state 'fontAvailable' }) (
+                        $page.css.font -match '^Arial' -and (Get-Prop $state 'fontAvailable') -eq $true)
+                }
+                $obs.cases[$case.case] = [ordered]@{ look = [bool] $lookEvent; data = [bool] $dataEvent; geometry = $geometry; titleEllipsis = $page.titleEllipsis }
+                # Close the owned target, not just navigate away: no retained EventSource can survive the case.
+                $obs.cases[$case.case]['release'] = Reset-ChromeCasePage $chrome
+                [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-released")
+            }
+            # Pill-only progress-hidden contract.
+            $progressCase = $batch.Group | Where-Object { $_.case -eq 'showProgress-off' } | Select-Object -First 1
+            if ($progressCase) {
+                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($progressCase.lookId)")
+                $hiddenProgress = Wait-For { $p = Get-PageProbe $chrome; if ((Get-Prop (Get-Prop $p 'attrs') 'showProgress') -eq 'false') { $p } } 15 100
+                Add-Check 'A-LOOK.pill.progressOffFull' 'pill progress off fills the bar and stops the progress timer' ([ordered]@{
+                    fillPx = Get-Prop $hiddenProgress 'clipPx'; fillTimer = Get-Prop (Get-Prop $hiddenProgress 's') 'fillTimer' }) (
+                    $hiddenProgress -and $hiddenProgress.clipPx -eq 400 -and (Get-Prop $hiddenProgress.s 'fillTimer') -eq 0)
+            }
+        } finally { foreach ($reader in $raws) { Stop-SseReader $reader }; Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+    # Existing Text fixture supplies a long title; every P0 pill size must clip it inside the pill with ellipsis.
+    $longRun = Start-OverlayRun 'A-LOOK-pill-long-text' @{} 'Text' -NoReader
+    $longChrome = $null
+    try {
+        [void] (Wait-BenchReady $longRun.Root)
+        $longChrome = Start-Chrome 'A-LOOK-pill-long-text'
+        [void] (Invoke-ChromeNavigate $longChrome $overlayUrl)
+        $longPage = Wait-For {
+            $p = Get-PageProbe $longChrome
+            if ($p.titleRect -and $p.titleRect.scrollWidth -gt $p.titleRect.clientWidth) { $p }
+        } 25 100
+        Add-Check 'A-LOOK.pill.longTextEllipsis' 'long fixture title overflows the text column and is rendered with text-overflow:ellipsis inside the box' ([ordered]@{
+            title = Get-Prop $longPage 'title'; rect = Get-Prop $longPage 'titleRect'; ellipsis = Get-Prop $longPage 'titleEllipsis' }) (
+            $longPage -and $longPage.titleEllipsis -eq $true -and
+            $longPage.titleRect.textOverflow -eq 'ellipsis' -and
+            $longPage.titleRect.x -ge $longPage.boxRect.x -and
+            $longPage.titleRect.x + $longPage.titleRect.width -le $longPage.boxRect.x + $longPage.boxRect.width)
+    } finally { Stop-Chrome $longChrome; Stop-OverlayRun $longRun }
+    $obs['cadence'] = Test-ALookCadence
+    $obs['motion'] = Test-ALookMotion
+    $obs['backpressure'] = Test-ALookBackpressure
+    $obs['query'] = Test-ALookQueryGrammar
+    $obs['reloadDelete'] = Test-ALookReloadDelete
+    Add-Deferred 'P1' 'A-LOOK.themeRasterCache' 'theme change invalidates raster cache exactly once' 'P0 has only the pill theme; theme-to-theme cache behavior is exercised when P1 themes exist.'
+    $scenarioResults['A-LOOK'] = $obs
+}
+
+function Test-ALookReloadDelete {
+    $options = New-DefaultPillOptions
+    $look = New-ObsLook 'reload01' 'Before rename' $options
+    $run = Start-OverlayRun 'A-LOOK-reload-delete' @{} 'PlayingLong' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+    $reader = $null; $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $reader = Start-SseReader 'A-LOOK-reload-delete' 30 '/events?look=reload01'
+        [void] (Wait-SseOpen $reader)
+        [void] (Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'reload01' } 15)
+        $chrome = Start-Chrome 'A-LOOK-reload-delete'
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=reload01")
+        $initial = Wait-For { $p = Get-PageProbe $chrome; if ((Get-Prop (Get-PageField $p 'look') 'id') -eq 'reload01') { $p } } 15 100
+        $initialCounters = Get-Prop $initial.s 'counters'
+        $blurBefore = Get-Prop $initialCounters 'blurDraws'
+        $renamed = New-ObsLook 'reload01' 'After rename only' (Copy-LookOptions $options)
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($renamed))))
+        $reloadQpc = Send-ObsHookCommand $run.Root 'command-obs-looks-reload'
+        $renamedEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'reload01' } 15 $reloadQpc
+        $renamedPage = Wait-For {
+            $p = Get-PageProbe $chrome
+            if ((Get-PageField $p 'lookSeq') -gt (Get-PageField $initial 'lookSeq')) { $p }
+        } 10 100
+        $blurAfter = Get-Prop (Get-Prop $renamedPage.s 'counters') 'blurDraws'
+        Add-Check 'A-LOOK.reload.nameOnlyNoRaster' 'look-file reload of a name-only change does not redraw artwork/quantizer' ([ordered]@{
+            reloadLook = [bool] $renamedEvent; blurDrawsBefore = $blurBefore; blurDrawsAfter = $blurAfter
+            lookApplies = Get-Prop (Get-Prop $renamedPage.s 'counters') 'lookApplies' }) (
+            $renamedEvent -and $renamedPage -and $blurBefore -eq $blurAfter)
+        $deleteQpc = Get-Qpc
+        $delete = Invoke-ObsLookCommit $run.Root 901 @{ action = 'delete'; id = 'reload01' }
+        $missingEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'reload01' -and (Get-Prop $m 'missing') -eq $true } 15 $deleteQpc
+        $missingPage = Wait-For {
+            $p = Get-PageProbe $chrome; $lookState = Get-PageField $p 'look'
+            if ((Get-Prop $lookState 'missing') -eq $true) { $p }
+        } 15 100
+        Add-Check 'A-LOOK.deleteFallsBackToPill' 'deleting a saved look live-pushes its pill fallback with missing=true' ([ordered]@{
+            commit = Get-Prop $delete 'ok'; event = Get-Prop $missingEvent 'data'; page = Get-PageField $missingPage 'look' }) (
+            (Get-Prop $delete 'ok') -eq $true -and $missingEvent -and $missingPage -and
+            (Get-Prop $missingEvent.data 'missing') -eq $true -and
+            (Get-Prop $missingEvent.data 'theme') -eq 'pill' -and
+            (Get-Prop (Get-Prop $missingEvent.data 'options') 'width') -eq 400)
+    } finally { Stop-Chrome $chrome; Stop-SseReader $reader; Stop-OverlayRun $run }
+    [ordered]@{ blurDrawsBefore = $blurBefore; blurDrawsAfter = $blurAfter; deleted = [bool] (Get-Prop $delete 'ok') }
+}
+
+function Test-ALookCadence {
+    $results = [ordered]@{}
+    foreach ($rate in @(0.25, 1, 2, 4)) {
+        $run = Start-OverlayRun "A-LOOK-cadence-rate$rate" @{} 'PlayingLong' -NoReader
+        $chrome = $null
+        try {
+            [void] (Wait-BenchReady $run.Root)
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$rate")
+            $chrome = Start-Chrome "A-LOOK-cadence-rate$rate"
+            [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+            [void] (Wait-PageConnected $chrome 15)
+            Start-Sleep -Seconds 5
+            $start = Get-PageProbe $chrome
+            Start-Sleep -Seconds 60
+            $end = Get-PageProbe $chrome
+            $a = Get-Prop $start.s 'counters'; $b = Get-Prop $end.s 'counters'
+            $fillWrites = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
+            $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
+            $barPx = 400; $duration = 14400
+            $maximum = [int] [Math]::Ceiling($barPx * $rate * 60 / $duration) + 2
+            Add-Check "A-LOOK.cadence.timesHidden.rate$rate" 'after 5 s settle/60 s: fillWrites ≤ ceil(barPx*rate*60/duration)+2 and ticks=fillWrites' (
+                [ordered]@{ rate = $rate; fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }) (
+                $fillWrites -le $maximum -and $ticks -eq $fillWrites)
+            $results["rate$rate"] = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+    $run = Start-OverlayRun 'A-LOOK-cadence-sample' @{} $null -NoReader
+    $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $chrome = Start-Chrome 'A-LOOK-cadence-sample'
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?sample=playing")
+        [void] (Wait-PageConnected $chrome 15)
+        Start-Sleep -Seconds 5
+        $start = Get-PageProbe $chrome
+        Start-Sleep -Seconds 60
+        $end = Get-PageProbe $chrome
+        $a = Get-Prop $start.s 'counters'; $b = Get-Prop $end.s 'counters'
+        $fillWrites = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
+        $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
+        $maximum = [int] [Math]::Ceiling(400 * 60 / 240) + 2
+        Add-Check 'A-LOOK.cadence.sample240s' 'pill sample phase duration 240 s stays within hidden-time fillWrites/ticks budget' ([ordered]@{
+            fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }) ($fillWrites -le $maximum -and $ticks -eq $fillWrites)
+        $results.sample240s = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+
+    $progressOptions = Copy-LookOptions (New-DefaultPillOptions); $progressOptions['showProgress'] = $false
+    $progressLook = New-ObsLook 'prog0001' 'No progress' $progressOptions
+    $progressJson = ConvertTo-ObsLooksJson (New-ObsLooksDocument @($progressLook))
+    $run = Start-OverlayRun 'A-LOOK-cadence-progress-off' @{} 'PlayingLong' -NoReader -LooksJson $progressJson
+    $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $chrome = Start-Chrome 'A-LOOK-cadence-progress-off'
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=prog0001")
+        $p = Wait-For { $x = Get-PageProbe $chrome; if ((Get-Prop (Get-Prop $x 'attrs') 'showProgress') -eq 'false') { $x } } 15 100
+        Start-Sleep -Seconds 5
+        $after = Get-PageProbe $chrome
+        Add-Check 'A-LOOK.cadence.progressOffNoTimer' 'showProgress=false means fill=100%, fillTimer=0 and no ticks after settle' ([ordered]@{
+            fill = Get-Prop $after 'clipPx'; fillTimer = Get-Prop $after.s 'fillTimer'
+            ticks = Get-Prop (Get-Prop $after.s 'counters') 'ticks' }) (
+            $p -and $after.clipPx -eq 400 -and (Get-Prop $after.s 'fillTimer') -eq 0 -and
+            (Get-Prop $after.s 'counters' | ForEach-Object { Get-Prop $_ 'ticks' }) -eq 0)
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    $results
+}
+
+function Test-ALookMotion {
+    $results = [ordered]@{}
+    $expectedTranslation = @{ 'slide-up' = 'translateY(12px)'; 'slide-down' = 'translateY(-12px)'; 'slide-left' = 'translateX(12px)'; 'slide-right' = 'translateX(-12px)' }
+    foreach ($animation in @('fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'none')) {
+        $options = Copy-LookOptions (New-DefaultPillOptions); $options['showAnimation'] = $animation
+        $look = New-ObsLook 'motion01' "show-$animation" $options
+        $run = Start-OverlayRun "A-LOOK-motion-show-$animation" @{ ObsHidePaused = $true } 'Paused' -NoReader -LooksJson (
+            ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+        $chrome = $null
+        try {
+            [void] (Wait-BenchReady $run.Root)
+            $chrome = Start-Chrome "A-LOOK-motion-show-$animation"
+            [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=motion01")
+            [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'state') -eq 'paused') { $p } } 20 100)
+            [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
+            $shown = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $true) { $p } } 5 50
+            $transition = @($shown.animationDetails | Where-Object { $_.duration -eq 500 } | Select-Object -First 1)
+            $keyframes = if ($transition.Count) { @($transition[0].keyframes) } else { @() }
+            $translationOk = if ($animation -in @('fade', 'none')) { $true } else {
+                @($keyframes | Where-Object { $_.transform -like "*$($expectedTranslation[$animation])*" }).Count -gt 0
+            }
+            $fadeOpacity = @($keyframes | Where-Object { $null -ne $_.opacity }).Count -ge 2
+            $motionPass = if ($animation -eq 'none') {
+                $shown.running -eq 0 -and @($shown.animationDetails | Where-Object { $_.duration -eq 500 }).Count -eq 0
+            } else { $transition.Count -gt 0 -and $translationOk -and $fadeOpacity }
+            Add-Check "A-LOOK.motion.show.$animation" "show $animation uses finite 500 ms opacity and approved 12 px direction; none is instant" ([ordered]@{
+                shown = Get-PageField $shown 'shown'; running = $shown.running; animation = $transition
+                reducedMotion = $shown.reducedMotionMedia }) ($shown -and (Get-PageField $shown 'shown') -eq $true -and $motionPass)
+            $results["show-$animation"] = [bool] $shown
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+
+        $options = Copy-LookOptions (New-DefaultPillOptions); $options['hideAnimation'] = $animation
+        $look = New-ObsLook 'motion01' "hide-$animation" $options
+        $run = Start-OverlayRun "A-LOOK-motion-hide-$animation" @{ ObsHidePaused = $false } 'Paused' -NoReader -LooksJson (
+            ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+        $chrome = $null
+        try {
+            [void] (Wait-BenchReady $run.Root)
+            $chrome = Start-Chrome "A-LOOK-motion-hide-$animation"
+            [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=motion01")
+            $visible = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $true) { $p } } 20 100
+            [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-on')
+            $hidden = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $false) { $p } } 5 50
+            $hideTransition = @($hidden.animationDetails | Where-Object { $_.duration -eq 500 } | Select-Object -First 1)
+            $hideFrames = if ($hideTransition.Count) { @($hideTransition[0].keyframes) } else { @() }
+            $hideTranslation = if ($animation -in @('fade', 'none')) { $true } else {
+                @($hideFrames | Where-Object { $_.transform -like "*$($expectedTranslation[$animation])*" }).Count -gt 0
+            }
+            $hideOpacity = @($hideFrames | Where-Object { $null -ne $_.opacity }).Count -ge 2
+            $hidePass = if ($animation -eq 'none') {
+                $hidden.running -eq 0 -and @($hidden.animationDetails | Where-Object { $_.duration -eq 500 }).Count -eq 0
+            } else { $hideTransition.Count -gt 0 -and $hideTranslation -and $hideOpacity }
+            Add-Check "A-LOOK.motion.hide.$animation" "hide $animation uses finite 500 ms opacity and approved direction; none is instant" ([ordered]@{
+                visible = Get-PageField $visible 'shown'; hidden = Get-PageField $hidden 'shown'; animation = $hideTransition
+                configured = Get-Prop (Get-Prop $hidden 'attrs') 'animHide' }) (
+                $visible -and $hidden -and (Get-Prop $hidden.attrs 'animHide') -eq $animation -and $hidePass)
+            $results["hide-$animation"] = [bool] ($hidden -and $hidePass)
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+    # The browser's OS preference is deliberately emulated; only the app ReduceMotion hook may suppress transitions.
+    $run = Start-OverlayRun 'A-LOOK-motion-reduced-media' @{ ObsHidePaused = $true } 'Paused' -NoReader
+    $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $chrome = Start-Chrome 'A-LOOK-motion-reduced-media'
+        [void] (Invoke-Cdp $chrome 'Emulation.setEmulatedMedia' @{ features = @(@{ name = 'prefers-reduced-motion'; value = 'reduce' }) })
+        [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+        [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'state') -eq 'paused') { $p } } 20 100)
+        [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
+        $p = Wait-For { $x = Get-PageProbe $chrome; if ((Get-PageField $x 'shown') -eq $true) { $x } } 5 50
+        Add-Check 'A-LOOK.motion.ignoresReducedMedia' 'prefers-reduced-motion does not suppress the finite application transition' ([ordered]@{
+            media = Get-Prop $p 'reducedMotionMedia'; animations = Get-Prop $p 'animations'; details = Get-Prop $p 'animationDetails' }) (
+            $p -and $p.reducedMotionMedia -eq $true -and @($p.animationDetails | Where-Object { $_.duration -eq 500 }).Count -gt 0)
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    # App ReduceMotion, unlike the emulated OS preference, cancels a running transition immediately.
+    $run = Start-OverlayRun 'A-LOOK-motion-reduce-on' @{ ObsHidePaused = $true } 'Paused' -NoReader
+    $reader = $null; $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $reader = Start-SseReader 'A-LOOK-motion-reduce-on' 30 '/events'
+        [void] (Wait-SseOpen $reader)
+        $chrome = Start-Chrome 'A-LOOK-motion-reduce-on'
+        [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+        [void] (Wait-For { $x = Get-PageProbe $chrome; if ((Get-PageField $x 'state') -eq 'paused') { $x } } 20 100)
+        [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
+        $transition = Wait-For { $x = Get-PageProbe $chrome; if ($x.running -gt 0) { $x } } 3 20
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-on')
+        $reducedEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 10
+        $settled = Wait-For { $x = Get-PageProbe $chrome; if ($x.running -eq 0) { $x } } 2 20
+        Add-Check 'A-LOOK.motion.reduceMotionCancels' 'ReduceMotion look push cancels a currently running show transition and applies its final state immediately' ([ordered]@{
+            wasRunning = [bool] $transition; lookObserved = [bool] $reducedEvent; finalShown = Get-PageField $settled 'shown'
+            running = Get-Prop $settled 'running' }) ($transition -and $reducedEvent -and $settled -and $settled.running -eq 0 -and
+            (Get-PageField $settled 'shown') -eq $true)
+    } finally { Stop-SseReader $reader; Stop-Chrome $chrome; Stop-OverlayRun $run }
+    $results
+}
+function Get-PumpSlotValueCount($Value) {
+    if ($null -eq $Value) { return 0 }
+    if ($Value -is [bool]) { return [int] $Value }
+    if ($Value -is [array]) { return @($Value | Where-Object { $null -ne $_ }).Count }
+    $count = Get-Prop $Value 'count'
+    if ($null -ne $count -and "$count" -match '^\d+$') { return [int] $count }
+    1
+}
+function Get-PumpSlotMax($Node, [string] $Slot) {
+    if ($null -eq $Node) { return 0 }
+    if ($Node -is [string] -or $Node -is [ValueType]) { return 0 }
+    $direct = Get-Prop $Node $Slot
+    if ($null -ne $direct) { return Get-PumpSlotValueCount $direct }
+    $children = @()
+    if ($Node -is [Collections.IDictionary]) { $children = @($Node.Values) }
+    elseif ($Node -is [array]) { $children = $Node }
+    elseif ($Node.PSObject) { $children = @($Node.PSObject.Properties | ForEach-Object { $_.Value }) }
+    $max = 0
+    foreach ($child in $children) {
+        $value = Get-PumpSlotMax $child $Slot
+        if ($value -gt $max) { $max = $value }
+    }
+    $max
+}
+function Get-PumpSlotCount($PumpState, [string] $Section, [string] $Slot) {
+    Get-PumpSlotMax (Get-Prop $PumpState $Section) $Slot
+}
+function Get-PumpObservation($Snapshot, [int] $Index) {
+    $pump = Get-Overlay $Snapshot 'pump'
+    $streams = Get-Overlay $Snapshot 'openStreams'
+    if ($null -eq $pump -or $null -eq $streams -or $streams -le 0) { return $null }
+    $pending = @(Get-Prop $pump 'pending'); $inFlight = @(Get-Prop $pump 'inFlight')
+    if ($pending.Count -ne $streams -or $inFlight.Count -ne $streams) { return $null }
+    foreach ($slot in @($pending) + @($inFlight)) {
+        if ((Get-Prop $slot 'look') -isnot [bool] -or (Get-Prop $slot 'data') -isnot [bool]) { return $null }
+    }
+    [pscustomobject][ordered]@{
+        index = $Index; streams = $streams; holdMs = Get-Prop $pump 'holdMs'
+        inFlightLook = Get-PumpSlotCount $pump 'inFlight' 'look'; inFlightData = Get-PumpSlotCount $pump 'inFlight' 'data'
+        pendingLook = Get-PumpSlotCount $pump 'pending' 'look'; pendingData = Get-PumpSlotCount $pump 'pending' 'data'
+        inFlightPairs = @($inFlight | Where-Object { $_.look -and $_.data }).Count
+        pendingPairs = @($pending | Where-Object { $_.look -and $_.data }).Count
+    }
+}
+function Test-ALookBackpressure {
+    $results = [ordered]@{}
+    $options = New-DefaultPillOptions; $look = New-ObsLook 'back0001' 'Backpressure' $options
+    $run = Start-OverlayRun 'A-LOOK-backpressure-hold' @{} 'PlayingLong' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+    $reader = $null; $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $reader = Start-SseReader 'A-LOOK-backpressure-held' 30 '/events?look=back0001'
+        [void] (Wait-SseOpen $reader)
+        [void] (Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'back0001' } 15)
+        $chrome = Start-Chrome 'A-LOOK-backpressure-held'
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=back0001")
+        [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-Prop (Get-PageField $p 'look') 'id') -eq 'back0001') { $p } } 15 100)
+        # Warm the identical held push + snapshot workload and the full-GC hook before measuring managed retention.
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-collect-managed-bytes')
+        [void] (Get-State $run.Root 'pumpHeapWarm')
+        $samples = [Collections.Generic.List[object]]::new()
+        $startManagedBytes = $null; $endManagedBytes = $null; $startBytes = $null; $endBytes = $null
+        $prime = $null; $heldEventCount = $null; $releasedLooks = @(); $releasedData = @()
+        for ($round = 0; $round -lt 2; $round++) {
+            # One sustained hold spans all 40 commands; zero releases even an already-held pump.
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-pump-hold' '30000')
+            $beforeEvents = @(Read-Sse $reader); $beforeCount = $beforeEvents.Count
+            # Reload a genuinely changed saved look: the normal SetLooks path atomically primes look + latest data.
+            $options['width'] = if ($round -eq 0) { 410 } else { 400 }
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @(
+                (New-ObsLook 'back0001' 'Backpressure' $options)))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $primed = Wait-For {
+                $obs = Get-PumpObservation (Get-State $run.Root "prime$round") -1
+                if ($obs -and $obs.inFlightPairs -eq $obs.streams) { $obs }
+            } 5 25
+            if ($round -eq 1) {
+                $prime = $primed
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-collect-managed-bytes')
+                $startManagedBytes = Get-Overlay (Get-State $run.Root 'pumpHeapBefore') 'retainedManagedBytes'
+                $startBytes = (Get-Process -Id $run.App.Id).PrivateMemorySize64
+            }
+            for ($i = 0; $i -lt 40; $i++) {
+                $pairIndex = [int] [Math]::Floor($i / 2)
+                if (($i % 2) -eq 0) {
+                    $command = if (($pairIndex % 2) -eq 0) { 'command-obs-reduce-motion-on' } else { 'command-obs-reduce-motion-off' }
+                } else {
+                    # Existing production setting path re-sends latest real data, including on saved-look streams.
+                    $command = if (($pairIndex % 2) -eq 0) { 'command-obs-hide-paused-off' } else { 'command-obs-hide-paused-on' }
+                }
+                [void] (Send-ObsHookCommand $run.Root $command)
+                if (($i % 5) -eq 4) {
+                    $obs = Get-PumpObservation (Get-State $run.Root "pump$round-$i") $i
+                    if ($round -eq 1) { $samples.Add($obs) }
+                }
+            }
+            if ($round -eq 1) {
+                $heldEventCount = @(Read-Sse $reader).Count - $beforeCount
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-collect-managed-bytes')
+                $endManagedBytes = Get-Overlay (Get-State $run.Root 'pumpHeapAfter') 'retainedManagedBytes'
+                $endBytes = (Get-Process -Id $run.App.Id).PrivateMemorySize64
+            }
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-pump-hold' '0')
+            [void] (Wait-For { $e = @(Read-Sse $reader); if ($e.Count -ge $beforeCount + 4) { $true } } 5 25)
+            Start-Sleep -Milliseconds 250
+            if ($round -eq 1) {
+                $released = @(Read-Sse $reader | Select-Object -Skip $beforeCount)
+                $releasedLooks = @(Get-LookEvents $released); $releasedData = @(Get-DataEvents $released)
+            }
+        }
+        $heapMeasured = $null -ne $startManagedBytes -and $null -ne $endManagedBytes -and $startManagedBytes -gt 0 -and $endManagedBytes -gt 0
+        $managedDelta = if ($heapMeasured) { [long] $endManagedBytes - [long] $startManagedBytes } else { $null }
+        $validSamples = @($samples | Where-Object { $null -ne $_ })
+        $excess = @($validSamples | Where-Object { $_.inFlightLook -gt 1 -or $_.inFlightData -gt 1 -or $_.pendingLook -gt 1 -or $_.pendingData -gt 1 })
+        $coalesced = @($validSamples | Where-Object { $_.index -ge 4 -and $_.holdMs -eq 30000 -and
+            $_.inFlightPairs -eq $_.streams -and $_.pendingPairs -eq $_.streams })
+        $pairOrder = $releasedLooks.Count -eq 2 -and $releasedData.Count -eq 2 -and
+            $releasedLooks[0].qpc -lt $releasedData[0].qpc -and $releasedData[0].qpc -lt $releasedLooks[1].qpc -and
+            $releasedLooks[1].qpc -lt $releasedData[1].qpc
+        Add-Check 'A-LOOK.backpressure.pumpHoldBounded' 'after an identical warm-up, 40 alternating look/data pushes coalesce behind one sustained hold into one pending pair per stream; release delivers only the in-flight and newest pairs in order; full-GC retained managed growth < 1 MiB' (
+            [ordered]@{ samples = @($samples); validSamples = $validSamples.Count; prime = $prime; overBound = $excess.Count
+                coalescedSamples = $coalesced.Count; heldEvents = $heldEventCount; releasedLooks = $releasedLooks.Count
+                releasedData = $releasedData.Count; pairOrder = $pairOrder; warmupPushes = 40
+                retainedManagedBytesBefore = $startManagedBytes; retainedManagedBytesAfter = $endManagedBytes
+                retainedManagedBytesDelta = $managedDelta; privateBytesDelta = $endBytes - $startBytes }) (
+            $prime -and $samples.Count -eq 8 -and $validSamples.Count -eq 8 -and $excess.Count -eq 0 -and
+            $coalesced.Count -gt 0 -and $heldEventCount -eq 0 -and $pairOrder -and $heapMeasured -and $managedDelta -lt 1MB)
+        $events = @(Read-Sse $reader); $lookEvents = @(Get-LookEvents $events); $dataEvents = @(Get-DataEvents $events)
+        $finalLook = if ($lookEvents.Count) { $lookEvents[-1].data } else { $null }
+        $lastSeq = Get-Prop $finalLook 'seq'
+        $finalPage = Wait-For {
+            $p = Get-PageProbe $chrome
+            $receivedAt = Get-PageField $p 'receivedAt'; $lookReceivedAt = Get-PageField $p 'lookReceivedAt'
+            if ((Get-PageField $p 'lookSeq') -eq $lastSeq -and $null -ne $receivedAt -and
+                $null -ne $lookReceivedAt -and $receivedAt -ge $lookReceivedAt) { $p }
+        } 5 100
+        $pageLook = Get-PageField $finalPage 'look'
+        $lastData = if ($dataEvents.Count) { $dataEvents[-1].data } else { $null }
+        $pageDataMatches = $lastData -and (Get-PageField $finalPage 'state') -eq (Get-Prop $lastData 'state') -and
+            (Get-PageField $finalPage 'title') -eq (Get-Prop $lastData 'title') -and
+            (Get-PageField $finalPage 'hidePaused') -eq (Get-Prop $lastData 'hidePaused') -and
+            (Get-Prop $lastData 'hidePaused') -eq $true
+        Add-Check 'A-LOOK.backpressure.pumpFinalLatest' 'after hold release, latest __state equals the final look/data and look precedes data' ([ordered]@{
+            looks = $lookEvents.Count; data = $dataEvents.Count; reduceMotion = Get-Prop $finalLook 'reduceMotion'
+            pageSeq = Get-PageField $finalPage 'lookSeq'; eventSeq = $lastSeq; pageState = Get-PageField $finalPage 'state'
+            pageTitle = Get-PageField $finalPage 'title'; dataTitle = Get-Prop $lastData 'title'
+            pageHidePaused = Get-PageField $finalPage 'hidePaused'; dataHidePaused = Get-Prop $lastData 'hidePaused'
+            pageWidth = Get-Prop (Get-PageField $finalPage 'options') 'width'; pairOrder = $pairOrder }) (
+            $finalLook -and $finalPage -and $lastData -and (Get-Prop $finalLook 'reduceMotion') -eq $false -and
+            (Get-Prop $pageLook 'reduceMotion') -eq $false -and (Get-PageField $finalPage 'lookSeq') -eq $lastSeq -and
+            $pageDataMatches -and (Get-Prop (Get-PageField $finalPage 'options') 'width') -eq 400 -and $pairOrder)
+    } finally { Stop-SseReader $reader; Stop-Chrome $chrome; Stop-OverlayRun $run }
+
+    # A blocked data write must not absorb an independent pending look update; close then verify a fresh stream.
+    $run = Start-OverlayRun 'A-LOOK-backpressure-resume' @{} 'PlayingLong' -NoReader
+    $raw = $null; $fresh = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $raw = Open-RawStream -Path '/events' -NoRead
+        [void] (Wait-For { (Get-Overlay (Get-State $run.Root 'write0') 'streams') -eq 1 } 10 250)
+        [void] (Send-HookCommand $run.Root 'command-obs-burst')
+        $pending = Wait-For { $s = Get-State $run.Root 'writePending'; if ((Get-Overlay $s 'pendingWrite') -eq $true) { $s } } 20 250
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-on')
+        $queued = Get-Overlay (Get-State $run.Root 'lookQueued') 'pump'
+        $queuedLook = Get-PumpSlotCount $queued 'pending' 'look'
+        Close-RawStream $raw; $raw = $null
+        [void] (Wait-For { $s = Get-State $run.Root 'writeClosed'; if ((Get-Overlay $s 'lastStreamEndReason') -eq 'Closed') { $s } } 10 250)
+        $fresh = Start-SseReader 'A-LOOK-backpressure-after-close' 30 '/events'
+        $firstLook = Wait-SseLook $fresh { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 15
+        $firstData = Wait-SseData $fresh { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+        Add-Check 'A-LOOK.backpressure.blockedWriteResumed' '8 MiB blocked data write does not swallow a later look; after client close a fresh stream receives the latest look before data' (
+            [ordered]@{ pendingWrite = [bool] $pending; queuedLook = $queuedLook; lookQpc = Get-Prop $firstLook 'qpc'; dataQpc = Get-Prop $firstData 'qpc' }) (
+            $pending -and $queuedLook -ge 1 -and $firstLook -and $firstData -and $firstLook.qpc -lt $firstData.qpc)
+    } finally { Close-RawStream $raw; Stop-SseReader $fresh; Stop-OverlayRun $run }
+
+    # The same blocked writer is cancelled at its five-minute stream lifetime, then a new stream receives the latest slots.
+    $run = Start-OverlayRun 'A-LOOK-backpressure-lifetime' @{} 'PlayingLong' -NoReader
+    $raw = $null; $fresh = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $raw = Open-RawStream -Path '/events' -NoRead
+        [void] (Wait-For { (Get-Overlay (Get-State $run.Root 'life0') 'streams') -eq 1 } 10 250)
+        [void] (Send-HookCommand $run.Root 'command-obs-burst')
+        $pending = Wait-For { if ((Get-Overlay (Get-State $run.Root 'lifePending') 'pendingWrite') -eq $true) { $true } } 20 250
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-on')
+        $lifetime = Wait-For {
+            $s = Get-State $run.Root 'lifeEnd'
+            if ((Get-Overlay $s 'lastStreamEndReason') -eq 'Lifetime' -and (Get-Overlay $s 'streams') -eq 0) { $s }
+        } 330 1000
+        Close-RawStream $raw; $raw = $null
+        $fresh = Start-SseReader 'A-LOOK-backpressure-after-lifetime' 30 '/events'
+        $latestLook = Wait-SseLook $fresh { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 15
+        $latestData = Wait-SseData $fresh { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+        Add-Check 'A-LOOK.backpressure.blockedWriteLifetime' 'blocked write is aborted at Lifetime, no stale bytes follow and reconnect gets the latest look before data' (
+            [ordered]@{ pendingWrite = [bool] $pending; endReason = Get-Overlay $lifetime 'lastStreamEndReason'
+                streams = Get-Overlay $lifetime 'streams'; lookQpc = Get-Prop $latestLook 'qpc'; dataQpc = Get-Prop $latestData 'qpc' }) (
+            $pending -and $lifetime -and $latestLook -and $latestData -and $latestLook.qpc -lt $latestData.qpc)
+    } finally { Close-RawStream $raw; Stop-SseReader $fresh; Stop-OverlayRun $run }
+    $results
+}
+
+function Test-ALookQueryGrammar {
+    $saved = New-ObsLook 'look0001' 'Query grammar' (New-DefaultPillOptions)
+    $run = Start-OverlayRun 'A-LOOK-query' @{} 'PlayingLong' -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($saved)))
+    $streams = [Collections.Generic.List[object]]::new()
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        [void] (Send-PreviewNonce $run.Root 'pv000001')
+        [void] (Send-DraftLook $run.Root (New-ObsLook 'draft' 'Draft query' (New-DefaultPillOptions)))
+        $acceptedPages = @('/', '/?look=look0001', '/?look=draft&preview=1&pv=pv000001&sample=playing',
+            '/?look=look0001&sample=paused', '/?sample=noart')
+        $pageResults = [Collections.Generic.List[object]]::new()
+        foreach ($path in $acceptedPages) {
+            $response = Invoke-RawHttp '127.0.0.1' (New-Request -Path $path)
+            $pageResults.Add([ordered]@{ path = $path; status = $response.status; type = $response.headers['content-type'] })
+        }
+        Add-Check 'A-LOOK.query.allowedPageGrammar' 'all five §2.1 page query forms return 200 text/html' @($pageResults) (
+            $pageResults.Count -eq 5 -and @($pageResults | Where-Object { $_.status -ne 200 -or $_.type -notlike 'text/html*' }).Count -eq 0)
+        $validEventPaths = @('/events', '/events?look=look0001', '/events?look=draft&pv=pv000001&sample=playing',
+            '/events?look=look0001&sample=paused', '/events?sample=playing')
+        $eventResults = [Collections.Generic.List[object]]::new()
+        foreach ($path in $validEventPaths) {
+            $stream = Open-RawStream -Path $path
+            $streams.Add($stream)
+            $eventResults.Add([ordered]@{ path = $path; status = $stream.Status; contentType = $stream.Headers['content-type'] })
+            Close-RawStream $stream; [void] $streams.Remove($stream)
+        }
+        Add-Check 'A-LOOK.query.allowedEventGrammar' 'all five §2.1 events query forms return 200 event-stream' @($eventResults) (
+            $eventResults.Count -eq 5 -and @($eventResults | Where-Object { $_.status -ne 200 -or $_.contentType -notlike 'text/event-stream*' }).Count -eq 0)
+        $badPaths = @(
+            '/?LOOK=look0001', '/?look=LOOK0001', '/?look=', '/?look=look0001&look=look0001', '/?look=look0001&x=1',
+            '/?sample=playing&look=look0001', '/?look=look0001%26sample=playing', '/?sample=play+ing',
+            '/?look=draft&pv=pv000001', '/?look=draft&preview=1&pv=bad', '/?look=draft&preview=2&pv=pv000001',
+            '/events?LOOK=look0001', '/events?look=LOOK0001', '/events?look=', '/events?look=look0001&look=look0001',
+            '/events?look=look0001&x=1', '/events?sample=playing&look=look0001', '/events?look=look0001%26sample=playing',
+            '/events?sample=play+ing', '/events?pv=pv000001', '/overlay.js?x=1', '/art/sample?x=1'
+        )
+        $badResults = [Collections.Generic.List[object]]::new()
+        foreach ($path in $badPaths) {
+            $response = Invoke-RawHttp '127.0.0.1' (New-Request -Path $path)
+            $badResults.Add([ordered]@{ path = $path; status = $response.status; origin = $response.origin })
+        }
+        Add-Check 'A-LOOK.query.rejectsMalformedAndReordered' 'every malformed, duplicate, extra, case-variant, encoded, plus, wrong-order, and wrong-route query returns 400 from the app' (
+            @($badResults | Where-Object { $_.status -ne 400 -or $_.origin -ne 'app' })) (
+            $badResults.Count -eq $badPaths.Count -and @($badResults | Where-Object { $_.status -ne 400 -or $_.origin -ne 'app' }).Count -eq 0)
+
+        $firstPreview = Open-RawStream -Path '/events?look=draft&pv=pv000001&sample=playing'
+        $streams.Add($firstPreview)
+        $countBeforeUnknown = Get-Overlay (Get-State $run.Root 'pvUnknownBefore') 'streams'
+        $unknown = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=unknown1')
+        $countAfterUnknown = Get-Overlay (Get-State $run.Root 'pvUnknownAfter') 'streams'
+        [void] (Send-PreviewNonce $run.Root 'pv000002')
+        $countBeforeRetired = Get-Overlay (Get-State $run.Root 'pvRetiredBefore') 'streams'
+        $retired = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=pv000001')
+        $countAfterRetired = Get-Overlay (Get-State $run.Root 'pvRetiredAfter') 'streams'
+        $newPreview = Open-RawStream -Path '/events?look=draft&pv=pv000002&sample=playing'
+        $streams.Add($newPreview)
+        for ($i = 3; $i -le 11; $i++) { [void] (Send-PreviewNonce $run.Root ('pv{0:D6}' -f $i)) }
+        $afterEightSwitches = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=pv000001')
+        $lastNonce = 'pv000011'
+        $lastPreview = Open-RawStream -Path "/events?look=draft&pv=$lastNonce"
+        $streams.Add($lastPreview)
+        Close-RawStream $lastPreview; [void] $streams.Remove($lastPreview)
+        [void] (Send-DraftLook $run.Root $null)
+        [void] (Send-PreviewNonce $run.Root 'clear')
+        $countBeforeClosedPv = Get-Overlay (Get-State $run.Root 'pvClosedBefore') 'streams'
+        $afterClose = Invoke-RawHttp '127.0.0.1' (New-Request -Path "/events?look=draft&pv=$lastNonce")
+        $countAfterClosedPv = Get-Overlay (Get-State $run.Root 'pvClosedAfter') 'streams'
+        Add-Check 'A-LOOK.query.previewNonceRotation' 'current pv admits 200; unknown/rotated/>8-switch/closed well-formed tokens are 410; 410s never change stream counts' ([ordered]@{
+            first = $firstPreview.Status; next = $newPreview.Status; last = $lastPreview.Status; unknown = $unknown.status
+            retired = $retired.status; afterEight = $afterEightSwitches.status; afterClose = $afterClose.status
+            unknownCounts = @($countBeforeUnknown, $countAfterUnknown); retiredCounts = @($countBeforeRetired, $countAfterRetired)
+            closedCounts = @($countBeforeClosedPv, $countAfterClosedPv) }) (
+            $firstPreview.Status -eq 200 -and $newPreview.Status -eq 200 -and $lastPreview.Status -eq 200 -and
+            $unknown.status -eq 410 -and $retired.status -eq 410 -and $afterEightSwitches.status -eq 410 -and $afterClose.status -eq 410 -and
+            $countBeforeUnknown -eq $countAfterUnknown -and $countBeforeRetired -eq $countAfterRetired -and
+            $countBeforeClosedPv -eq $countAfterClosedPv)
+        Add-Check 'A-LOOK.query.previewNonceHeaders' '410 responses carry standard app headers, no CSP and no CORS headers' ([ordered]@{
+            unknown = $unknown.headers; retired = $retired.headers; afterEight = $afterEightSwitches.headers; afterClose = $afterClose.headers }) (
+            $unknown.status -eq 410 -and $unknown.origin -eq 'app' -and $unknown.headers['x-content-type-options'] -eq 'nosniff' -and
+            $unknown.headers['cache-control'] -like '*no-store*' -and $unknown.headers['referrer-policy'] -eq 'no-referrer' -and
+            -not $unknown.headers.Contains('content-security-policy') -and
+            @($unknown.headers.Keys | Where-Object { $_ -like 'access-control-*' }).Count -eq 0)
+    } finally { foreach ($s in $streams) { Close-RawStream $s }; Stop-OverlayRun $run }
+}
+function Test-StoreReadOnlyCase([string] $Root, [string] $Label, [byte[]] $Bytes, [switch] $DenyRead) {
+    $path = Join-Path $Root 'data/obs-looks.json'
+    [IO.File]::WriteAllBytes($path, $Bytes)
+    $beforeHash = Get-Sha256 $path
+    $aclApplied = $false
+    try {
+        if ($DenyRead) {
+            & icacls.exe $path /deny '*S-1-1-0:(R)' | Out-Null
+            $aclApplied = $LASTEXITCODE -eq 0
+            if ($aclApplied) { $aclDenied.Add($path) }
+        }
+        [void] (Send-ObsHookCommand $Root 'command-obs-looks-reload')
+        $snapshot = Get-State $Root "store-$Label"
+    } finally {
+        if ($aclApplied) {
+            & icacls.exe $path /remove:d '*S-1-1-0' | Out-Null
+            [void] $aclDenied.Remove($path)
+        }
+    }
+    $afterHash = Get-Sha256 $path
+    $store = Get-Overlay $snapshot 'looks'
+    $readOnly = Get-Prop $store 'readOnly'
+    $reason = Get-Prop $store 'reason'
+    if ($DenyRead -and -not $aclApplied) {
+        Add-Blocked "A-STORE-1.$Label.acl" 'unreadable looks file enters read-only state' 'icacls could not apply an Everyone read-deny rule on this PC'
+    } else {
+        Add-Check "A-STORE-1.$Label.readOnlyReason" 'whole-file failure is read-only with a non-empty diagnostic reason' ([ordered]@{
+            readOnly = $readOnly; reason = $reason }) ($readOnly -eq $true -and -not [string]::IsNullOrWhiteSpace([string] $reason))
+        Add-Check "A-STORE-1.$Label.bytesPreserved" 'invalid looks bytes remain unchanged' ([ordered]@{ before = $beforeHash; after = $afterHash }) ($beforeHash -ceq $afterHash)
+        if ($DenyRead) { Add-Check 'A-STORE-1.acl.unreadable' 'ACL failure is reported read-only and leaves source bytes unchanged' $aclApplied ($readOnly -eq $true -and $beforeHash -ceq $afterHash) }
+        if ($readOnly -eq $true) {
+            $writeBlockedHash = Get-Sha256 $path
+            $sequence = 10000 + $script:labelSeq
+            $writeBlocked = Invoke-ObsLookCommit $Root $sequence @{ action = 'create'; name = 'Must remain blocked'; options = (New-DefaultPillOptions) }
+            $afterBlockedHash = Get-Sha256 $path
+            Add-Check "A-STORE-1.$Label.writeBlocked" 'read-only state blocks mutations without changing source bytes' ([ordered]@{
+                ok = Get-Prop $writeBlocked 'ok'; reason = Get-Prop $writeBlocked 'reason'
+                before = $writeBlockedHash; after = $afterBlockedHash }) (
+                (Get-Prop $writeBlocked 'ok') -eq $false -and $writeBlockedHash -ceq $afterBlockedHash)
+        }
+    }
+    $reader = Start-SseReader "A-STORE-1-$Label-fallback" 20 '/events?look=store001'
+    try {
+        $look = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'store001' } 10
+        Add-Check "A-STORE-1.$Label.pillFallback" 'an id served from a whole-file failure receives the pill preset with missing=true' ([ordered]@{
+            id = Get-Prop (Get-Prop $look 'data') 'id'; missing = Get-Prop (Get-Prop $look 'data') 'missing'
+            theme = Get-Prop (Get-Prop (Get-Prop $look 'data') 'options') 'theme' }) (
+            $look -and (Get-Prop $look.data 'missing') -eq $true -and
+            (Get-Prop (Get-Prop $look.data 'options') 'theme') -eq 'pill')
+    } finally { Stop-SseReader $reader }
+    [pscustomobject]@{ store = $store; readOnly = $readOnly; reason = $reason; beforeHash = $beforeHash; afterHash = $afterHash }
+}
+
+function Test-AStore1 {
+    $empty = ConvertTo-ObsLooksJson (New-ObsLooksDocument @())
+    $run = Start-OverlayRun 'A-STORE-1' @{} 'PlayingLong' -NoReader -LooksJson $empty
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $badFiles = @(
+            @{ name = 'oversize'; bytes = [byte[]]::new(65537) },
+            @{ name = 'invalidUtf8'; bytes = [byte[]] @(0xC3, 0x28) },
+            @{ name = 'malformed'; bytes = [Text.Encoding]::UTF8.GetBytes('{ "version": 1, ') },
+            @{ name = 'depth9'; bytes = [Text.Encoding]::UTF8.GetBytes('{"version":1,"looks":[],"retired":[],"x":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":1}}}}}}}}}') },
+            @{ name = 'rootArray'; bytes = [Text.Encoding]::UTF8.GetBytes('[]') },
+            @{ name = 'versionZero'; bytes = [Text.Encoding]::UTF8.GetBytes('{"version":0,"looks":[],"retired":[]}') },
+            @{ name = 'versionString'; bytes = [Text.Encoding]::UTF8.GetBytes('{"version":"1","looks":[],"retired":[]}') },
+            @{ name = 'versionMissing'; bytes = [Text.Encoding]::UTF8.GetBytes('{"looks":[],"retired":[]}') },
+            @{ name = 'looksObject'; bytes = [Text.Encoding]::UTF8.GetBytes('{"version":1,"looks":{},"retired":[]}') },
+            @{ name = 'retiredObject'; bytes = [Text.Encoding]::UTF8.GetBytes('{"version":1,"looks":[],"retired":{}}') }
+        )
+        foreach ($entry in $badFiles) { [void] (Test-StoreReadOnlyCase $run.Root $entry.name $entry.bytes) }
+        $aclBytes = [Text.Encoding]::UTF8.GetBytes('{"version":1,"looks":[],"retired":[]}')
+        [void] (Test-StoreReadOnlyCase $run.Root 'acl' $aclBytes -DenyRead)
+
+        # A UTF-8 BOM is accepted; malformed whole-file input above stays byte-for-byte untouched.
+        $validEmpty = [Text.Encoding]::UTF8.GetBytes((ConvertTo-ObsLooksJson (New-ObsLooksDocument @())))
+        $bom = [byte[]]::new($validEmpty.Length + 3)
+        $bom[0] = 0xEF; $bom[1] = 0xBB; $bom[2] = 0xBF
+        [Array]::Copy($validEmpty, 0, $bom, 3, $validEmpty.Length)
+        [IO.File]::WriteAllBytes((Join-Path $run.Root 'data/obs-looks.json'), $bom)
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $bomState = Get-State $run.Root 'bom'
+        $bomStore = Get-Overlay $bomState 'looks'
+        Add-Check 'A-STORE-1.bomAccepted' 'UTF-8 BOM is stripped and an otherwise valid file is writable/empty' ([ordered]@{
+            readOnly = Get-Prop $bomStore 'readOnly'; reason = Get-Prop $bomStore 'reason'; count = Get-Prop $bomStore 'count' }) (
+            (Get-Prop $bomStore 'readOnly') -eq $false -and (Get-Prop $bomStore 'count') -eq 0)
+
+        $unknownOptions = New-DefaultPillOptions
+        $unknownOptions['theme'] = 'PILL'; $unknownOptions['scale'] = 'wrong'; $unknownOptions['width'] = 401
+        $unknownOptions['align'] = 'CENTER'; $unknownOptions['colours'] = 'CUSTOM'; $unknownOptions['text'] = '#FF00AA'
+        $unknownOptions['background'] = 'bad'; $unknownOptions['backgroundOpacity'] = 101; $unknownOptions['accent'] = 7
+        $unknownOptions['textShadow'] = 'false'; $unknownOptions['showArtist'] = $false; $unknownOptions['showProgress'] = 1
+        $unknownOptions['showTimes'] = $null; $unknownOptions['paused'] = 'Dim'; $unknownOptions['showAnimation'] = 'slide-Up'
+        $unknownOptions['hideAnimation'] = 'slide-down'; $unknownOptions['font'] = 7; $unknownOptions['ignoredFutureField'] = 'not copied'
+        $outOfRangeOptions = New-DefaultPillOptions; $outOfRangeOptions['scale'] = 999; $outOfRangeOptions['width'] = 100
+        $outOfRangeOptions['font'] = ('F' * 65) -join ''
+        $outOfRange = New-ObsLook 'rng00001' 'Range defaults' $outOfRangeOptions
+        $controlFontOptions = New-DefaultPillOptions; $controlFontOptions['font'] = "Bad$([char] 1)font"
+        $controlFont = New-ObsLook 'fontctl1' 'Control font' $controlFontOptions
+        $normalized = New-ObsLook 'norm0001' 'Normalized' $unknownOptions
+        $missingOptionsLook = New-ObsLook 'miss0001' 'Missing fields use defaults' ([ordered]@{})
+        $doc = New-ObsLooksDocument @($normalized, $missingOptionsLook, $outOfRange, $controlFont) @() 2
+        [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), (ConvertTo-ObsLooksJson $doc), [Text.UTF8Encoding]::new($false))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $futureReader = Start-SseReader 'A-STORE-1-version2' 20 '/events?look=norm0001'
+        try {
+            $futureLook = Wait-SseLook $futureReader { param($m) (Get-Prop $m 'id') -eq 'norm0001' } 10
+            $futureOptions = Get-Prop (Get-Prop $futureLook 'data') 'options'
+            $futureStore = Get-Overlay (Get-State $run.Root 'futureVersion') 'looks'
+            Add-Check 'A-STORE-1.version2ReadOnlyAndServed' 'version 2 is read-only as newer data, but a valid record is served with known fields normalized and unknown fields ignored' ([ordered]@{
+                readOnly = Get-Prop $futureStore 'readOnly'; reason = Get-Prop $futureStore 'reason'; theme = Get-Prop $futureOptions 'theme'
+                scale = Get-Prop $futureOptions 'scale'; width = Get-Prop $futureOptions 'width'; align = Get-Prop $futureOptions 'align'
+                colours = Get-Prop $futureOptions 'colours'; text = Get-Prop $futureOptions 'text'; background = Get-Prop $futureOptions 'background'
+                backgroundOpacity = Get-Prop $futureOptions 'backgroundOpacity'; accent = Get-Prop $futureOptions 'accent'
+                textShadow = Get-Prop $futureOptions 'textShadow'; showArtist = Get-Prop $futureOptions 'showArtist'
+                showProgress = Get-Prop $futureOptions 'showProgress'; showTimes = Get-Prop $futureOptions 'showTimes'
+                paused = Get-Prop $futureOptions 'paused'; showAnimation = Get-Prop $futureOptions 'showAnimation'
+                hideAnimation = Get-Prop $futureOptions 'hideAnimation'; font = Get-Prop $futureOptions 'font'
+                unknown = Get-Prop $futureOptions 'ignoredFutureField' }) (
+                $futureLook -and (Get-Prop $futureStore 'readOnly') -eq $true -and
+                (Get-Prop $futureOptions 'theme') -eq 'pill' -and (Get-Prop $futureOptions 'scale') -eq 100 -and
+                (Get-Prop $futureOptions 'width') -eq 400 -and (Get-Prop $futureOptions 'text') -ceq '#ff00aa' -and
+                (Get-Prop $futureOptions 'align') -eq 'center' -and (Get-Prop $futureOptions 'colours') -eq 'auto' -and
+                (Get-Prop $futureOptions 'background') -ceq '#202020' -and (Get-Prop $futureOptions 'backgroundOpacity') -eq 100 -and
+                (Get-Prop $futureOptions 'accent') -ceq '#8a8a95' -and (Get-Prop $futureOptions 'textShadow') -eq $true -and
+                (Get-Prop $futureOptions 'showArtist') -eq $false -and (Get-Prop $futureOptions 'showProgress') -eq $true -and
+                (Get-Prop $futureOptions 'showTimes') -eq $true -and (Get-Prop $futureOptions 'paused') -eq 'hide' -and
+                (Get-Prop $futureOptions 'showAnimation') -eq 'slide-up' -and (Get-Prop $futureOptions 'hideAnimation') -eq 'slide-down' -and
+                $null -eq (Get-Prop $futureOptions 'font') -and $null -eq (Get-Prop $futureOptions 'ignoredFutureField'))
+        } finally { Stop-SseReader $futureReader }
+        $missingReader = Start-SseReader 'A-STORE-1-missing-options' 20 '/events?look=miss0001'
+        try {
+            $missingOptionLook = Wait-SseLook $missingReader { param($m) (Get-Prop $m 'id') -eq 'miss0001' } 10
+            $missingOptions = Get-Prop (Get-Prop $missingOptionLook 'data') 'options'
+            Add-Check 'A-STORE-1.missingOptionDefaults' 'missing option fields receive schema defaults' ([ordered]@{
+                theme = Get-Prop $missingOptions 'theme'; width = Get-Prop $missingOptions 'width'; scale = Get-Prop $missingOptions 'scale'
+                text = Get-Prop $missingOptions 'text'; showProgress = Get-Prop $missingOptions 'showProgress'
+                showArtist = Get-Prop $missingOptions 'showArtist'; textShadow = Get-Prop $missingOptions 'textShadow' }) (
+                $missingOptionLook -and (Get-Prop $missingOptions 'theme') -eq 'pill' -and
+                (Get-Prop $missingOptions 'width') -eq 400 -and (Get-Prop $missingOptions 'scale') -eq 100 -and
+                (Get-Prop $missingOptions 'text') -ceq '#ffffff' -and
+                (Get-Prop $missingOptions 'showProgress') -eq $true -and
+                (Get-Prop $missingOptions 'showArtist') -eq $true -and (Get-Prop $missingOptions 'textShadow') -eq $true)
+        } finally { Stop-SseReader $missingReader }
+        $rangeReader = Start-SseReader 'A-STORE-1-out-of-range' 20 '/events?look=rng00001'
+        $controlReader = Start-SseReader 'A-STORE-1-control-font' 20 '/events?look=fontctl1'
+        try {
+            $rangeLook = Wait-SseLook $rangeReader { param($m) (Get-Prop $m 'id') -eq 'rng00001' } 10
+            $controlLook = Wait-SseLook $controlReader { param($m) (Get-Prop $m 'id') -eq 'fontctl1' } 10
+            $rangeOptions = Get-Prop (Get-Prop $rangeLook 'data') 'options'
+            $controlOptions = Get-Prop (Get-Prop $controlLook 'data') 'options'
+            Add-Check 'A-STORE-1.outOfRangeAndFontValidation' 'scale/width outside dependent ranges use effective defaults; fonts over 64 units or containing controls normalize to null' ([ordered]@{
+                scale = Get-Prop $rangeOptions 'scale'; width = Get-Prop $rangeOptions 'width'; longFont = Get-Prop $rangeOptions 'font'
+                controlFont = Get-Prop $controlOptions 'font' }) (
+                $rangeLook -and $controlLook -and (Get-Prop $rangeOptions 'scale') -eq 100 -and
+                (Get-Prop $rangeOptions 'width') -eq 400 -and $null -eq (Get-Prop $rangeOptions 'font') -and
+                $null -eq (Get-Prop $controlOptions 'font'))
+        } finally { Stop-SseReader $rangeReader; Stop-SseReader $controlReader }
+
+        # A v1 normalization result remains stable after the production serializer writes and re-reads it.
+        [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($normalized))), [Text.UTF8Encoding]::new($false))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $normReader = Start-SseReader 'A-STORE-1-normalize-once' 20 '/events?look=norm0001'
+        $normFirst = Wait-SseLook $normReader { param($m) (Get-Prop $m 'id') -eq 'norm0001' } 10
+        $normFirstOptions = Get-Prop (Get-Prop $normFirst 'data') 'options'
+        $normCommit = Invoke-ObsLookCommit $run.Root 600 @{ action = 'create'; name = 'Idempotence check'; options = (New-DefaultPillOptions) }
+        $writtenOptions = (Read-ObsLooksFile $run.Root).looks | Where-Object { $_.id -eq 'norm0001' } | Select-Object -First 1
+        Stop-SseReader $normReader
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $normAgainReader = Start-SseReader 'A-STORE-1-normalize-twice' 20 '/events?look=norm0001'
+        $normAgain = Wait-SseLook $normAgainReader { param($m) (Get-Prop $m 'id') -eq 'norm0001' } 10
+        $normAgainOptions = Get-Prop (Get-Prop $normAgain 'data') 'options'
+        $diskOptions = Get-Prop $writtenOptions 'options'
+        Add-Check 'A-STORE-1.normalizeIdempotent' 'production write/reload preserves the first normalized option set (Normalize(Normalize(x)) == Normalize(x))' ([ordered]@{
+            commit = Get-Prop $normCommit 'ok'; first = $normFirstOptions; disk = $diskOptions; reloaded = $normAgainOptions }) (
+            (Get-Prop $normCommit 'ok') -eq $true -and $normFirst -and $normAgain -and
+            (ConvertTo-Json -InputObject $normFirstOptions -Compress -Depth 8) -ceq
+            (ConvertTo-Json -InputObject $diskOptions -Compress -Depth 8) -and
+            (ConvertTo-Json -InputObject $normFirstOptions -Compress -Depth 8) -ceq
+            (ConvertTo-Json -InputObject $normAgainOptions -Compress -Depth 8))
+        Stop-SseReader $normAgainReader
+
+        $seventeen = [Collections.Generic.List[object]]::new()
+        for ($i = 1; $i -le 17; $i++) { $seventeen.Add((New-ObsLook ('look{0:D4}' -f $i) "Look $i" (New-DefaultPillOptions))) }
+        [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), (ConvertTo-ObsLooksJson (New-ObsLooksDocument $seventeen.ToArray())), [Text.UTF8Encoding]::new($false))
+        $quarantineHashBefore = Get-Sha256 (Join-Path $run.Root 'data/obs-looks.json')
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $quarantine = Get-Overlay (Get-State $run.Root 'quarantine17') 'looks'
+        $quarantineHashAfter = Get-Sha256 (Join-Path $run.Root 'data/obs-looks.json')
+        $quarantineReader = Start-SseReader 'A-STORE-1-quarantine17' 20 '/events?look=look0017'
+        $servedReader = Start-SseReader 'A-STORE-1-served16' 20 '/events?look=look0016'
+        try {
+            $excessLook = Wait-SseLook $quarantineReader { param($m) (Get-Prop $m 'id') -eq 'look0017' } 10
+            $servedLook = Wait-SseLook $servedReader { param($m) (Get-Prop $m 'id') -eq 'look0016' } 10
+            Add-Check 'A-STORE-1.seventeenQuarantined' '17 valid records leave the first 16 served; the excess record is quarantined, read-only and file bytes untouched' ([ordered]@{
+                count = Get-Prop $quarantine 'count'; readOnly = Get-Prop $quarantine 'readOnly'; reason = Get-Prop $quarantine 'reason'
+                excessMissing = Get-Prop $excessLook.data 'missing'; first16Missing = Get-Prop $servedLook.data 'missing'
+                hashBefore = $quarantineHashBefore; hashAfter = $quarantineHashAfter }) (
+                (Get-Prop $quarantine 'count') -eq 16 -and (Get-Prop $quarantine 'readOnly') -eq $true -and
+                -not [string]::IsNullOrWhiteSpace([string] (Get-Prop $quarantine 'reason')) -and
+                $excessLook -and (Get-Prop $excessLook.data 'missing') -eq $true -and
+                $servedLook -and (Get-Prop $servedLook.data 'missing') -eq $false -and $quarantineHashBefore -ceq $quarantineHashAfter)
+        } finally { Stop-SseReader $quarantineReader; Stop-SseReader $servedReader }
+
+        $duplicateFirst = New-DefaultPillOptions; $duplicateFirst['width'] = 320
+        $duplicateSecond = New-DefaultPillOptions; $duplicateSecond['width'] = 800
+        $invalidName = "control$([char] 1)name"
+        $separatorName = "bad$([char] 0x2028)name"
+        $maliciousName = '<img src=x onerror=alert(1)>'
+        $records = @(
+            (New-ObsLook 'dupe0001' 'first record' $duplicateFirst),
+            (New-ObsLook 'dupe0001' 'second record' $duplicateSecond),
+            (New-ObsLook 'good0001' $invalidName (New-DefaultPillOptions)),
+            (New-ObsLook 'good0002' $separatorName (New-DefaultPillOptions)),
+            (New-ObsLook 'good0003' $maliciousName (New-DefaultPillOptions)),
+            (New-ObsLook 'tomb0001' 'Active tombstone' (New-DefaultPillOptions)),
+            [ordered]@{ id = 'bad'; name = 'Bad id'; options = (New-DefaultPillOptions) }
+        )
+        [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), (ConvertTo-ObsLooksJson (New-ObsLooksDocument $records @('tomb0001', 'tomb0001', 'BAD00001'))), [Text.UTF8Encoding]::new($false))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $dedupe = Start-SseReader 'A-STORE-1-duplicate' 20 '/events?look=dupe0001'
+        $literal = Start-SseReader 'A-STORE-1-malicious-name' 20 '/events?look=good0003'
+        try {
+            $first = Wait-SseLook $dedupe { param($m) (Get-Prop $m 'id') -eq 'dupe0001' } 10
+            $literalLook = Wait-SseLook $literal { param($m) (Get-Prop $m 'id') -eq 'good0003' } 10
+            $eventsWire = Read-SseRaw $literal
+            $state = Get-Overlay (Get-State $run.Root 'normalizedRecords') 'looks'
+            $nameRecord = (Read-ObsLooksFile $run.Root).looks | Where-Object { $_.id -eq 'good0003' } | Select-Object -First 1
+            Add-Check 'A-STORE-1.duplicatesAndNames' 'first duplicate id wins; control/separator names and invalid ids are skipped; malicious name stays literal; retired ids dedupe/filter' ([ordered]@{
+                firstWidth = Get-Prop (Get-Prop (Get-Prop $first 'data') 'options') 'width'; count = Get-Prop $state 'count'
+                literalNameInSse = $eventsWire.Contains($maliciousName); storedName = $nameRecord.name }) (
+                $first -and (Get-Prop (Get-Prop $first.data 'options') 'width') -eq 320 -and
+                $literalLook -and -not $eventsWire.Contains($maliciousName) -and
+                $nameRecord.name -ceq $maliciousName -and (Get-Prop $state 'count') -eq 3)
+        } finally { Stop-SseReader $dedupe; Stop-SseReader $literal }
+
+        $retiredWrite = Invoke-ObsLookCommit $run.Root 80 @{ action = 'create'; name = 'Normalize retired'; options = (New-DefaultPillOptions) }
+        $retiredDocument = Read-ObsLooksFile $run.Root
+        $retiredIds = @($retiredDocument.retired)
+        Add-Check 'A-STORE-1.retiredNormalization' 'retired ids are grammar-checked and deduplicated; an active id wins its intersection with retired' ([ordered]@{
+            save = Get-Prop $retiredWrite 'ok'; retired = $retiredIds
+            active = @($retiredDocument.looks | ForEach-Object { $_.id }) }) (
+            (Get-Prop $retiredWrite 'ok') -eq $true -and
+            @($retiredIds | Select-Object -Unique).Count -eq $retiredIds.Count -and
+            @($retiredIds | Where-Object { $_ -cnotmatch '^[a-z0-9]{8}$' }).Count -eq 0 -and
+            'tomb0001' -in @($retiredDocument.looks | ForEach-Object { $_.id }) -and 'tomb0001' -notin $retiredIds)
+        # Font injection seam: forced available must still form exactly one quoted family token; without it, use only the fixed stack.
+        if (Test-ChromeAvailable 'A-STORE-1') {
+            $fontName = 'Bad "family\); url(evil)'
+            $fontOptions = New-DefaultPillOptions; $fontOptions['font'] = $fontName
+            $fontLook = New-ObsLook 'font0001' 'Font escape' $fontOptions
+            $fontJson = ConvertTo-ObsLooksJson (New-ObsLooksDocument @($fontLook))
+            [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), $fontJson, [Text.UTF8Encoding]::new($false))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-font-force-available' $fontName)
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $chrome = Start-Chrome 'A-STORE-1-font'
+            try {
+                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=font0001")
+                $fontPage = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open') { $p } } 15 100
+                $fontVar = [string] (Get-Prop (Get-Prop $fontPage 'css') 'fontVar')
+                $escapedName = '"' + $fontName.Replace('\', '\\').Replace('"', '\"') + '"'
+                $expectedPrefix = $escapedName + ', "Segoe UI Variable Text", "Segoe UI", Arial, sans-serif'
+                Add-Check 'A-STORE-1.fontEscapeForced' 'command-obs-font-force-available permits a safe single CSS string token with quote/backslash escaping' ([ordered]@{
+                    fontAvailable = Get-Prop (Get-Prop $fontPage 's') 'fontAvailable'; fontVar = $fontVar }) (
+                    $fontPage -and (Get-Prop $fontPage.s 'fontAvailable') -eq $true -and $fontVar -ceq $expectedPrefix)
+                Stop-Chrome $chrome; $chrome = $null
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-font-force-available' 'different-test-font')
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+                $chrome = Start-Chrome 'A-STORE-1-font-no-seam'
+                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=font0001")
+                $fallback = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+                    (Get-Prop (Get-Prop $p 's') 'fontAvailable') -eq $false) { $p } } 15 100
+                Add-Check 'A-STORE-1.fontEscapeNoSeam' 'without the exact availability seam, saved value stays but page selects only the fixed fallback stack' (
+                    [ordered]@{ fontAvailable = Get-Prop (Get-Prop $fallback 's') 'fontAvailable'; fontVar = Get-Prop (Get-Prop $fallback 'css') 'fontVar' }) (
+                    $fallback -and (Get-Prop $fallback.s 'fontAvailable') -eq $false -and
+                    [string] (Get-Prop $fallback.css 'fontVar') -ceq '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif')
+            } finally { Stop-Chrome $chrome }
+        } else { Add-Blocked 'A-STORE-1.fontEscape' 'font seam escaping with and without forced availability' 'Chrome is not installed; CSSOM parsing requires CDP' }
+
+        # Durable mutation contract; input/result JSON lives under data/discord-bench and never reaches release code.
+        [IO.File]::WriteAllText((Join-Path $run.Root 'data/obs-looks.json'), (ConvertTo-ObsLooksJson (New-ObsLooksDocument @())), [Text.UTF8Encoding]::new($false))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $settingsHash = Get-Sha256 (Join-Path $run.Root 'data/settings.json')
+        $cycle = Invoke-ObsLookCommit $run.Root 100 @{ action = 'cycle'; count = 100; name = 'Cycle'; options = (New-DefaultPillOptions) }
+        $cycleDocument = Read-ObsLooksFile $run.Root
+        $cycleIds = @($cycle.ids)
+        Add-Check 'A-STORE-1.commitCycles100' '100 create/delete cycles write 100 distinct tombstones; result includes success/reason/ids/revision' ([ordered]@{
+            ok = Get-Prop $cycle 'ok'; reason = Get-Prop $cycle 'reason'; ids = $cycleIds.Count; distinct = @($cycleIds | Select-Object -Unique).Count
+            retired = @($cycleDocument.retired).Count; revision = Get-Prop $cycle 'revision' }) (
+            (Get-Prop $cycle 'ok') -eq $true -and $cycleIds.Count -eq 100 -and @($cycleIds | Select-Object -Unique).Count -eq 100 -and
+            @($cycleDocument.retired).Count -eq 100 -and [int] (Get-Prop $cycle 'revision') -ge 200)
+        $collision = Invoke-ObsLookCommit $run.Root 101 @{ action = 'create'; name = 'Collision retry'; options = (New-DefaultPillOptions)
+            testIdCandidates = @([string] $cycleIds[0], 'newid001') }
+        Add-Check 'A-STORE-1.forcedCollisionRetry' 'an id candidate already in retired is rejected and the next valid candidate is used' ([ordered]@{
+            ok = Get-Prop $collision 'ok'; id = @($collision.ids | Select-Object -First 1); retiredCollision = $cycleIds[0] }) (
+            (Get-Prop $collision 'ok') -eq $true -and @($collision.ids).Count -eq 1 -and
+            @($collision.ids)[0] -ceq 'newid001' -and @($collision.ids)[0] -cne $cycleIds[0])
+        $deleteCollision = Invoke-ObsLookCommit $run.Root 102 @{ action = 'delete'; id = 'newid001' }
+        Add-Check 'A-STORE-1.deletedIdNotReused' 'deleted look id remains tombstoned and is never reused' ([ordered]@{
+            deleted = Get-Prop $deleteCollision 'ok'; retired = @((Read-ObsLooksFile $run.Root).retired).Count }) (
+            (Get-Prop $deleteCollision 'ok') -eq $true -and 'newid001' -in @((Read-ObsLooksFile $run.Root).retired))
+        Add-Check 'A-STORE-1.settingsUnchangedByCommit' 'settings.json hash is unchanged across looks mutations' (
+            [ordered]@{ before = $settingsHash; after = Get-Sha256 (Join-Path $run.Root 'data/settings.json') }) (
+            $settingsHash -ceq (Get-Sha256 (Join-Path $run.Root 'data/settings.json')))
+
+        # Faults before atomic replacement leave the old file and stream view intact.
+        $stableHash = Get-Sha256 (Join-Path $run.Root 'data/obs-looks.json')
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-store-fault' 'replace')
+        $fault = Invoke-ObsLookCommit $run.Root 103 @{ action = 'create'; name = 'Faulted'; options = (New-DefaultPillOptions) }
+        $faultHash = Get-Sha256 (Join-Path $run.Root 'data/obs-looks.json')
+        Add-Check 'A-STORE-1.replaceFaultAtomic' 'replace fault reports failure and leaves the old file byte-for-byte unchanged' ([ordered]@{
+            ok = Get-Prop $fault 'ok'; reason = Get-Prop $fault 'reason'; before = $stableHash; after = $faultHash }) (
+            (Get-Prop $fault 'ok') -eq $false -and $stableHash -ceq $faultHash)
+        $tmpPath = (Join-Path $run.Root 'data/obs-looks.json') + '.tmp'
+        [IO.File]::WriteAllText($tmpPath, 'stale tmp is ignored', [Text.UTF8Encoding]::new($false))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $ignoredTmp = Get-Overlay (Get-State $run.Root 'staleTmp') 'looks'
+        $save = Invoke-ObsLookCommit $run.Root 104 @{ action = 'create'; name = 'After tmp'; options = (New-DefaultPillOptions) }
+        Add-Check 'A-STORE-1.staleTmpAndSuccessfulWrite' 'stale .tmp is ignored on reload and removed after the next successful production write' ([ordered]@{
+            count = Get-Prop $ignoredTmp 'count'; saved = Get-Prop $save 'ok'; tmpExists = Test-Path -LiteralPath $tmpPath }) (
+            (Get-Prop $ignoredTmp 'readOnly') -eq $false -and (Get-Prop $save 'ok') -eq $true -and -not (Test-Path -LiteralPath $tmpPath))
+        $tmpLookId = @($save.ids | Select-Object -First 1)[0]
+        $clearTmpLook = Invoke-ObsLookCommit $run.Root 105 @{ action = 'delete'; id = $tmpLookId }
+        Add-Check 'A-STORE-1.tmpFixtureCleanup' 'temporary successful-write look removed before cap fixture is built' $clearTmpLook (Get-Prop $clearTmpLook 'ok')
+
+        # Sixteen maximal records round-trip through the production serializer, reopen and reload.
+        $maxName = ('界' * 40) -join ''; $maxFont = ('F' * 64) -join ''
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-font-force-available' $maxFont)
+        $maxOptions = New-DefaultPillOptions; $maxOptions['font'] = $maxFont
+        $maxOptions['text'] = '#ABCDEF'; $maxOptions['background'] = '#123456'; $maxOptions['accent'] = '#654321'
+        $maxOptions['colours'] = 'custom'; $maxOptions['scale'] = 200; $maxOptions['width'] = 640
+        $maxOptions['showArtist'] = $false; $maxOptions['showProgress'] = $true; $maxOptions['showTimes'] = $false
+        $maxOptions['paused'] = 'dim'; $maxOptions['showAnimation'] = 'slide-left'; $maxOptions['hideAnimation'] = 'slide-down'
+        $maxOk = 0
+        for ($i = 1; $i -le 16; $i++) {
+            $result = Invoke-ObsLookCommit $run.Root (200 + $i) @{ action = 'create'; name = $maxName; options = $maxOptions }
+            if ((Get-Prop $result 'ok') -eq $true) { $maxOk++ } else { break }
+        }
+        $maxFile = Join-Path $run.Root 'data/obs-looks.json'
+        $maxDoc = Read-ObsLooksFile $run.Root
+        $maxBytes = (Get-Item -LiteralPath $maxFile).Length
+        Add-Check 'A-STORE-1.maximal16RoundTrip' '16 maximal records (40 UTF-16-unit names, 64-unit installed fonts, all options) fit and round-trip under the 64 KiB cap' ([ordered]@{
+            created = $maxOk; fileBytes = $maxBytes; names = @($maxDoc.looks | ForEach-Object { $_.name.Length } | Select-Object -Unique)
+            fonts = @($maxDoc.looks | ForEach-Object { $_.options.font.Length } | Select-Object -Unique) }) (
+            $maxOk -eq 16 -and $maxDoc.looks.Count -eq 16 -and $maxBytes -le 65536 -and
+            @($maxDoc.looks | Where-Object { $_.name.Length -ne 40 -or $_.options.font.Length -ne 64 }).Count -eq 0)
+        Stop-App $run.App $run.Root
+        $run.App = Start-App $run.Root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'PlayingLong'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        [void] (Wait-BenchReady $run.Root)
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $reopened = Get-Overlay (Get-State $run.Root 'maxReopen') 'looks'
+        Add-Check 'A-STORE-1.maximal16Reopen' 'reopened app reloads all 16 records with no read-only state' ([ordered]@{
+            count = Get-Prop $reopened 'count'; readOnly = Get-Prop $reopened 'readOnly'; fileHash = Get-Prop $reopened 'fileHash' }) (
+            (Get-Prop $reopened 'count') -eq 16 -and (Get-Prop $reopened 'readOnly') -eq $false)
+
+        # Keep 16 live records while production-serializer cycles increase the retired-id list to its size boundary.
+        $growth = Invoke-ObsLookCommit $run.Root 5000 @{ action = 'cycle'; count = 5000; name = $maxName; options = $maxOptions }
+        $growthDocument = Read-ObsLooksFile $run.Root
+        Add-Check 'A-STORE-1.capGrowthStopsAtFirstLimit' 'tombstone cycles stop at the first >64 KiB production-serializer write' ([ordered]@{
+            ok = Get-Prop $growth 'ok'; reason = Get-Prop $growth 'reason'; fileBytes = (Get-Item -LiteralPath $maxFile).Length
+            createdIds = @($growth.ids).Count; remainingLooks = $growthDocument.looks.Count; retired = $growthDocument.retired.Count }) (
+            (Get-Prop $growth 'ok') -eq $false -and [string] (Get-Prop $growth 'reason') -match 'too large|64 KiB' -and
+            (Get-Item -LiteralPath $maxFile).Length -le 65536 -and $growthDocument.looks.Count -in @(15, 16))
+        $capFailure = $null; $capBefore = $null; $capAfter = $null; $sequence = 6000
+        for ($attempt = 0; $attempt -lt 32 -and -not $capFailure; $attempt++) {
+            $current = Read-ObsLooksFile $run.Root
+            $before = Get-Sha256 $maxFile
+            if ($current.looks.Count -lt 16) { $mutation = @{ action = 'create'; name = $maxName; options = $maxOptions } }
+            else { $mutation = @{ action = 'delete'; id = $current.looks[0].id } }
+            $result = Invoke-ObsLookCommit $run.Root $sequence $mutation; $sequence++
+            if ((Get-Prop $result 'ok') -ne $true) {
+                $capFailure = $result; $capBefore = $before; $capAfter = Get-Sha256 $maxFile
+            }
+        }
+        Add-Check 'A-STORE-1.capBoundaryRejectAtomic' 'the first rejected mutation reports the cap error and leaves the file hash unchanged' ([ordered]@{
+            ok = Get-Prop $capFailure 'ok'; reason = Get-Prop $capFailure 'reason'; beforeHash = $capBefore; afterHash = $capAfter }) (
+            $capFailure -and (Get-Prop $capFailure 'ok') -eq $false -and
+            [string] (Get-Prop $capFailure 'reason') -match 'too large|64 KiB' -and $capBefore -ceq $capAfter)
+        $postCapDocument = Read-ObsLooksFile $run.Root
+        $expectedPostCapCount = $postCapDocument.looks.Count
+        Stop-App $run.App $run.Root
+        $run.App = Start-App $run.Root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'PlayingLong'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        [void] (Wait-BenchReady $run.Root)
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $afterCap = Get-Overlay (Get-State $run.Root 'capReopen') 'looks'
+        Add-Check 'A-STORE-1.capFailureReopen' 'after the rejected mutation, reopening loads the last complete file and remains writable' ([ordered]@{
+            count = Get-Prop $afterCap 'count'; expected = $expectedPostCapCount; readOnly = Get-Prop $afterCap 'readOnly'; fileHash = Get-Prop $afterCap 'fileHash' }) (
+            (Get-Prop $afterCap 'count') -eq $expectedPostCapCount -and (Get-Prop $afterCap 'readOnly') -eq $false -and
+            (Get-Prop $afterCap 'fileHash') -ceq $capAfter)
+
+        $olderSettingsHash = Get-Sha256 (Join-Path $run.Root 'data/settings.json')
+        Write-Settings $run.Root @{ ObsOverlay = $true }
+        $looksHashAfterOlderSettings = Get-Sha256 $maxFile
+        Add-Check 'A-STORE-1.downgradeLeavesLooks' 'rewriting old-format settings.json leaves the separate looks file intact' ([ordered]@{
+            settingsChanged = $olderSettingsHash -cne (Get-Sha256 (Join-Path $run.Root 'data/settings.json')); looks = $looksHashAfterOlderSettings }) (
+            $looksHashAfterOlderSettings -ceq $capAfter -and $olderSettingsHash -cne (Get-Sha256 (Join-Path $run.Root 'data/settings.json')))
+    } finally { Stop-OverlayRun $run }
+    $scenarioResults['A-STORE-1'] = [ordered]@{ root = [IO.Path]::GetRelativePath($repo, $run.Root); hookPayload = 'commit-<n>.json' }
+}
+function Test-ASampleDemand {
+    foreach ($presence in @($false, $true)) {
+        $name = if ($presence) { 'presence-on' } else { 'presence-off' }
+        $settings = @{ DiscordPresence = $presence }
+        $run = Start-OverlayRun "A-SAMPLE-demand-$name" $settings 'Playing' -NoReader
+        $server = $null; $reader = $null
+        try {
+            if ($presence) { $server = Start-FakeServer "A-SAMPLE-$name" }
+            [void] (Wait-BenchReady $run.Root)
+            $reader = Start-SseReader "A-SAMPLE-demand-$name" 30 '/events?sample=playing'
+            [void] (Wait-SseData $reader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15)
+            $start = Get-State $run.Root "demand-$name-start"
+            Start-Sleep -Seconds 10
+            $end = Get-State $run.Root "demand-$name-end"
+            $reads = Get-ReadStats $start $end
+            $real = Get-Overlay $end 'realStreams'; $samples = Get-Overlay $end 'sampleStreams'
+            Add-Check "A-SAMPLE.demand.$name" 'a sample-only SSE stream exposes Sample/Open counts and causes zero Overlay reads with Presence on or off' ([ordered]@{
+                realStreams = $real; sampleStreams = $samples; openStreams = Get-Overlay $end 'streams'; reads = $reads }) (
+                $reads.overlay -eq 0 -and $real -eq 0 -and $samples -eq 1 -and (Get-Overlay $end 'streams') -eq 1)
+        } finally {
+            Stop-SseReader $reader
+            if ($server) { Stop-FakeServer $server }
+            Stop-OverlayRun $run
+        }
+    }
+}
+
+function Test-ASample {
+    $sampleLookFile = Join-Path $fixtureDirectory 'looks-sample.json'
+    $sampleLookDoc = Get-Content -Raw -LiteralPath $sampleLookFile | ConvertFrom-Json -Depth 16
+    $saved = @($sampleLookDoc.looks)[0]
+    $run = Start-OverlayRun 'A-SAMPLE-core' @{ ObsHidePaused = $true } 'AdFallback' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($saved)))
+    $allReaders = [Collections.Generic.List[object]]::new()
+    $realPreview = $null; $realExtra = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        [void] (Send-PreviewNonce $run.Root 'sample01')
+        $draftOptions = New-DefaultPillOptions
+        [void] (Send-DraftLook $run.Root (New-ObsLook 'draft' 'Sample draft' $draftOptions))
+        $paths = [ordered]@{
+            plain = '/events?sample=playing'; noart = '/events?sample=noart'; paused = '/events?sample=paused'
+            draft = '/events?look=draft&pv=sample01&sample=playing'; real = '/events'
+            missing = '/events?look=missing1'; saved = '/events?look=sampl001'
+        }
+        $readersByKind = [ordered]@{}
+        foreach ($key in $paths.Keys) {
+            $r = Start-SseReader "A-SAMPLE-$key" 30 $paths[$key]
+            $allReaders.Add($r); $readersByKind[$key] = $r
+        }
+        $openEvents = [ordered]@{}
+        foreach ($key in @('plain', 'noart', 'paused', 'draft')) { $openEvents[$key] = Wait-SseOpen $readersByKind[$key] 20 }
+        $first = [ordered]@{
+            plain = Wait-SseData $readersByKind['plain'] { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+            noart = Wait-SseData $readersByKind['noart'] { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+            paused = Wait-SseData $readersByKind['paused'] { param($d) (Get-Prop $d 'state') -eq 'paused' } 15
+            draft = Wait-SseData $readersByKind['draft'] { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+            real = Wait-SseData $readersByKind['real'] { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+        }
+        $playingValid = $first.plain -and (Get-Prop $first.plain.data 'title') -eq 'Sample song' -and
+            (Get-Prop $first.plain.data 'artist') -eq 'Sample artist' -and (Get-Prop $first.plain.data 'artwork') -eq '/art/sample' -and
+            (Get-Prop $first.plain.data 'duration') -eq 240 -and (Get-Prop $first.plain.data 'rate') -eq 1 -and
+            (Get-Prop $first.plain.data 'clock') -eq $true -and [Math]::Abs([double] (Get-Prop $first.plain.data 'position')) -le 0.5
+        Add-Check 'A-SAMPLE.playingTable' 'sample=playing uses synthetic song/artist, /art/sample, 240 s, rate 1, clock=true and phase 0' $first.plain $playingValid
+        Add-Check 'A-SAMPLE.noartTable' 'sample=noart uses the playing row with artwork=null' ([ordered]@{
+            state = Get-Prop $first.noart.data 'state'; artwork = Get-Prop $first.noart.data 'artwork'; title = Get-Prop $first.noart.data 'title' }) (
+            $first.noart -and (Get-Prop $first.noart.data 'state') -eq 'playing' -and
+            $null -eq (Get-Prop $first.noart.data 'artwork') -and (Get-Prop $first.noart.data 'title') -eq 'Sample song')
+        Add-Check 'A-SAMPLE.pausedAt84' 'sample=paused is static at state=paused, position=84 and artwork=/art/sample' ([ordered]@{
+            state = Get-Prop $first.paused.data 'state'; position = Get-Prop $first.paused.data 'position'; artwork = Get-Prop $first.paused.data 'artwork' }) (
+            $first.paused -and (Get-Prop $first.paused.data 'state') -eq 'paused' -and
+            (Get-Prop $first.paused.data 'position') -eq 84 -and (Get-Prop $first.paused.data 'artwork') -eq '/art/sample')
+        Add-Check 'A-SAMPLE.previewSampleKind' 'pv sample stream is tagged preview=true, kind=sample and uses the synthetic sample snapshot' ([ordered]@{
+            preview = Get-Prop (Get-Prop (Wait-SseLook $readersByKind['draft'] { param($m) (Get-Prop $m 'id') -eq 'draft' } 10) 'data') 'preview'
+            title = Get-Prop $first.draft.data 'title' }) (
+            $first.draft -and (Get-Prop $first.draft.data 'title') -eq 'Sample song')
+
+        $countsSnap = Wait-OverlayStreams $run 7 'counts7'
+        $realCount = Get-Overlay $countsSnap 'realStreams'; $sampleCount = Get-Overlay $countsSnap 'sampleStreams'
+        $openCount = Get-Overlay $countsSnap 'openStreams'
+        if ($null -eq $openCount) { $openCount = Get-Overlay $countsSnap 'streams' }
+        Add-Check 'A-SAMPLE.streamCountsExposed' 'the seven admitted readers expose 3 Real and 4 Sample streams (the single preview is Sample)' ([ordered]@{
+            realStreams = $realCount; sampleStreams = $sampleCount; openStreams = $openCount }) (
+            $realCount -eq 3 -and $sampleCount -eq 4 -and $openCount -eq 7)
+
+        $initialReal = $first.real
+        $pauseEvent = $null; $adEvent = $null; $trackBEvent = $null
+        $noneEvent = $null; $sampleAfterSuspend = $false; $sampleAfterNavigate = $false
+        $controlsSent = $false; $powerSent = $false; $navigateSent = $false; $hidePausedSent = $false; $hideChecked = $false
+        $hideQpc = 0; $pumpSent = $false; $draftPushes = 0
+        $draftLookAfter = $null; $plainLookAfter = $null; $missingLookAfter = $null; $draftDataAfter = $null
+        $plainSampleLookAfter = $null; $plainSampleDataAfter = $null
+        $realEventsAfter = @(); $missingEventsAfter = @(); $savedEventsAfter = @()
+        $draftStartQpc = $openEvents.draft.qpc
+        $reanchorBaseQpc = [Math]::Min([double] $openEvents.plain.qpc, [Math]::Min([double] $openEvents.noart.qpc, [double] $draftStartQpc))
+        $deadlineQpc = $reanchorBaseQpc + 245 * $freq
+        $nextPushQpc = $draftStartQpc
+        $suspendQpc = 0; $navigateQpc = 0
+        $reanchorPlain = $null; $reanchorNoart = $null; $reanchorDraft = $null
+        while ((Get-Qpc) -lt $deadlineQpc -and (-not $reanchorPlain -or -not $reanchorNoart -or -not $reanchorDraft)) {
+            $now = Get-Qpc
+            if ($now -ge $nextPushQpc) {
+                $draftOptions['textShadow'] = (($draftPushes % 2) -eq 0)
+                $draftName = if (($draftPushes % 2) -eq 0) { 'Draft A' } else { 'Draft B' }
+                $queuedPush = Send-DraftLook $run.Root (New-ObsLook 'draft' $draftName $draftOptions) -NoWait
+                # A still-pending hook is backpressure, not a successfully delivered 500 ms push.
+                if ($null -ne $queuedPush) {
+                    $draftPushes++
+                    $nextPushQpc += 0.5 * $freq
+                }
+            }
+            $realEvents = @(Get-DataEvents (Read-Sse $readersByKind['real']))
+            if (-not $pauseEvent) { $pauseEvent = $realEvents | Where-Object { (Get-Prop $_.data 'state') -eq 'paused' } | Select-Object -First 1 }
+            if (-not $adEvent) { $adEvent = $realEvents | Where-Object { (Get-Prop $_.data 'state') -eq 'ad' } | Select-Object -First 1 }
+            if (-not $trackBEvent) { $trackBEvent = $realEvents | Where-Object { (Get-Prop $_.data 'title') -eq 'Fixture Song B' } | Select-Object -First 1 }
+            if ($trackBEvent -and -not $controlsSent) {
+                [void] (Send-HookCommand $run.Root 'command-controls-unavailable-on'); $controlsSent = $true
+            }
+            if ($controlsSent -and -not $noneEvent) {
+                $noneEvent = $realEvents | Where-Object { $_.qpc -gt $trackBEvent.qpc -and (Get-Prop $_.data 'state') -eq 'none' } | Select-Object -First 1
+            }
+            if ($noneEvent -and -not $hidePausedSent) {
+                $hideQpc = Send-HookCommand $run.Root 'command-obs-hide-paused-off'; $hidePausedSent = $true
+            }
+            if ($hidePausedSent -and -not $hideChecked -and (Get-Qpc) -ge ($hideQpc + $freq)) {
+                $draftEvents = @(Read-Sse $readersByKind['draft'] | Where-Object { $_.qpc -gt $hideQpc -and $_.qpc -le $hideQpc + $freq })
+                $realWindow = @(Read-Sse $readersByKind['real'] | Where-Object { $_.qpc -gt $hideQpc -and $_.qpc -le $hideQpc + $freq })
+                $missingWindow = @(Read-Sse $readersByKind['missing'] | Where-Object { $_.qpc -gt $hideQpc -and $_.qpc -le $hideQpc + $freq })
+                $savedEventsAfter = @(Read-Sse $readersByKind['saved'] | Where-Object { $_.qpc -gt $hideQpc -and $_.qpc -le $hideQpc + $freq -and $_.kind -in @('look', 'data') })
+                $draftLookAfter = Get-LookEvents $draftEvents | Where-Object { (Get-Prop $_.data 'hidePaused') -eq $false } | Select-Object -First 1
+                $plainLookAfter = Get-LookEvents $realWindow | Where-Object { (Get-Prop $_.data 'hidePaused') -eq $false } | Select-Object -First 1
+                $missingLookAfter = Get-LookEvents $missingWindow | Where-Object { (Get-Prop $_.data 'hidePaused') -eq $false } | Select-Object -First 1
+                $draftDataAfter = Get-DataEvents $draftEvents | Where-Object { (Get-Prop $_.data 'title') -eq 'Sample song' } | Select-Object -First 1
+                $plainSampleEvents = @(Read-Sse $readersByKind['plain'] | Where-Object { $_.qpc -gt $hideQpc -and $_.qpc -le $hideQpc + $freq })
+                $plainSampleLookAfter = Get-LookEvents $plainSampleEvents | Where-Object { (Get-Prop $_.data 'hidePaused') -eq $false } | Select-Object -First 1
+                $plainSampleDataAfter = Get-DataEvents $plainSampleEvents | Where-Object { (Get-Prop $_.data 'title') -eq 'Sample song' } | Select-Object -First 1
+                $realEventsAfter = @($realWindow | Where-Object { $_.kind -eq 'data' })
+                $missingEventsAfter = @($missingWindow | Where-Object { $_.kind -eq 'data' })
+                $hideChecked = $true
+            }
+            if ($hidePausedSent -and -not $powerSent -and (Get-Seconds $reanchorBaseQpc (Get-Qpc)) -ge 90) {
+                $suspendQpc = Send-HookCommand $run.Root 'command-power-suspend'
+                [void] (Send-HookCommand $run.Root 'command-power-resume'); $powerSent = $true
+            }
+            if ($powerSent -and -not $navigateSent -and (Get-Seconds $reanchorBaseQpc (Get-Qpc)) -ge 100) {
+                $navigateQpc = Send-HookCommand $run.Root 'command-navigate'
+                $navigateSent = $true
+            }
+            $elapsed = Get-Seconds $reanchorBaseQpc (Get-Qpc)
+            if ($elapsed -ge 235) {
+                $plainData = @(Get-DataEvents (Read-Sse $readersByKind['plain']))
+                $noartData = @(Get-DataEvents (Read-Sse $readersByKind['noart']))
+                $draftData = @(Get-DataEvents (Read-Sse $readersByKind['draft']))
+                if (-not $reanchorPlain) { $reanchorPlain = $plainData | Where-Object { $_.qpc -gt $openEvents.plain.qpc + 235 * $freq -and [double] (Get-Prop $_.data 'position') -le 1 } | Select-Object -Last 1 }
+                if (-not $reanchorNoart) { $reanchorNoart = $noartData | Where-Object { $_.qpc -gt $openEvents.noart.qpc + 235 * $freq -and [double] (Get-Prop $_.data 'position') -le 1 } | Select-Object -Last 1 }
+                if (-not $reanchorDraft) { $reanchorDraft = $draftData | Where-Object { $_.qpc -gt $openEvents.draft.qpc + 235 * $freq -and [double] (Get-Prop $_.data 'position') -le 1 } | Select-Object -Last 1 }
+            }
+            $elapsed = Get-Seconds $reanchorBaseQpc (Get-Qpc)
+            if ($elapsed -ge 239 -and -not $pumpSent) {
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-pump-hold' '200')
+                $pumpSent = $true
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        $sampleEvents = @(Get-DataEvents (Read-Sse $readersByKind['draft']))
+        $sampleAfterSuspend = $powerSent -and $suspendQpc -gt 0 -and @($sampleEvents | Where-Object { $_.qpc -gt $suspendQpc -and (Get-Prop $_.data 'title') -eq 'Sample song' }).Count -gt 0
+        $sampleAfterNavigate = $navigateSent -and $navigateQpc -gt 0 -and @($sampleEvents | Where-Object { $_.qpc -gt $navigateQpc -and (Get-Prop $_.data 'title') -eq 'Sample song' }).Count -gt 0
+        $sampleWire = (@(Read-Sse $readersByKind['draft']) | ForEach-Object { "$($_.json)$($_.text)" }) -join "`n"
+        $samplePrivacyLeaks = @([regex]::Matches($sampleWire, 'fixtureSng|watch\?v=|youtube\.com|googleusercontent|ytimg|ggpht|https?:', 'IgnoreCase') | ForEach-Object { $_.Value } | Select-Object -Unique)
+        Add-Check 'A-SAMPLE.noIdentifiersOrUrls' 'sample feed contains no YouTube fixture id, Google host or URL' $samplePrivacyLeaks ($samplePrivacyLeaks.Count -eq 0)
+        $plainDue = if ($reanchorPlain) { Get-Seconds $openEvents.plain.qpc $reanchorPlain.qpc }
+        $draftDue = if ($reanchorDraft) { Get-Seconds $openEvents.draft.qpc $reanchorDraft.qpc }
+        $noartDue = if ($reanchorNoart) { Get-Seconds $openEvents.noart.qpc $reanchorNoart.qpc }
+        Add-Check 'A-SAMPLE.reanchorDuringDraftPush' 'playing sample re-anchors at 240 ±1 s while a current-nonce draft look is pushed every 500 ms' ([ordered]@{
+            seconds = $draftDue; position = Get-Prop $reanchorDraft.data 'position'; pushes = $draftPushes }) (
+            $reanchorDraft -and $draftPushes -ge 450 -and $draftDue -ge 239 -and $draftDue -le 241 -and
+            [double] (Get-Prop $reanchorDraft.data 'position') -le 1)
+        Add-Check 'A-SAMPLE.reanchorDuringPumpHold' 'plain playing/noart sample rows re-anchor at 240 ±1 s during a 200 ms pump hold' ([ordered]@{
+            plainSeconds = $plainDue; plainPosition = Get-Prop $reanchorPlain.data 'position'
+            noartSeconds = $noartDue; noartPosition = Get-Prop $reanchorNoart.data 'position'; pumpHeld = $pumpSent }) (
+            $pumpSent -and $reanchorPlain -and $reanchorNoart -and $plainDue -ge 239 -and $plainDue -le 241 -and
+            $noartDue -ge 239 -and $noartDue -le 241 -and
+            (Get-Prop $reanchorNoart.data 'artwork') -eq $null)
+        # Reconnect/static observation runs after the timed draft workload, not before its producer starts.
+        # Paused sample reconnect is a fresh stream at the fixed position 84.
+        Stop-SseReader $readersByKind['paused']; [void] $allReaders.Remove($readersByKind['paused'])
+        [void] (Wait-OverlayStreams $run 6 'pausedClosed')
+        $pausedAgainReader = Start-SseReader 'A-SAMPLE-paused-reconnect' 30 '/events?sample=paused'
+        $allReaders.Add($pausedAgainReader)
+        $pausedAgain = Wait-SseData $pausedAgainReader { param($d) (Get-Prop $d 'state') -eq 'paused' } 15
+        [void] (Wait-OverlayStreams $run 7 'pausedReopened')
+        Add-Check 'A-SAMPLE.pausedReconnect' 'closing/reopening a paused sample starts at position 84 again' ([ordered]@{
+            position = Get-Prop (Get-Prop $pausedAgain 'data') 'position'; qpc = Get-Prop $pausedAgain 'qpc' }) (
+            $pausedAgain -and (Get-Prop $pausedAgain.data 'position') -eq 84)
+        Start-Sleep -Seconds 5
+        $pausedWindow = @(Get-DataEvents (Read-Sse $pausedAgainReader))
+        Add-Check 'A-SAMPLE.pausedStatic' 'paused sample has no due-work updates while position remains fixed at 84' ([ordered]@{
+            dataEvents = $pausedWindow.Count; positions = @($pausedWindow | ForEach-Object { Get-Prop $_.data 'position' }) }) (
+            $pausedWindow.Count -eq 1 -and (Get-Prop $pausedWindow[0].data 'position') -eq 84)
+
+        if (-not $hideChecked) { Add-Check 'A-SAMPLE.hidePausedObservationWindow' '1 s window after hidePaused toggle captures sample/real events' $hideChecked $false }
+        Add-Check 'A-SAMPLE.syntheticHidePausedSamplePush' 'while real state is none, all Sample streams get a look plus current snapshot when hidePaused changes' ([ordered]@{
+            draftLook = [bool] $draftLookAfter; draftData = [bool] $draftDataAfter; plainLook = [bool] $plainSampleLookAfter
+            plainData = [bool] $plainSampleDataAfter; hidePaused = Get-Prop (Get-Prop $draftLookAfter 'data') 'hidePaused' }) (
+            $hidePausedSent -and $draftLookAfter -and $draftDataAfter -and $plainSampleLookAfter -and $plainSampleDataAfter -and
+            (Get-Prop $draftLookAfter.data 'hidePaused') -eq $false -and
+            (Get-Prop $plainSampleLookAfter.data 'hidePaused') -eq $false)
+        Add-Check 'A-SAMPLE.syntheticHidePausedPillFallbackOnly' 'plain and missing-fallback Real streams get a look but no data event; saved-look Real gets nothing' ([ordered]@{
+            plainLook = [bool] $plainLookAfter; missingLook = [bool] $missingLookAfter; plainData = $realEventsAfter.Count
+            missingData = $missingEventsAfter.Count; savedEvents = $savedEventsAfter.Count }) (
+            $hidePausedSent -and $plainLookAfter -and $missingLookAfter -and $realEventsAfter.Count -eq 0 -and
+            $missingEventsAfter.Count -eq 0 -and $savedEventsAfter.Count -eq 0)
+
+        $transitionEvents = @(@($pauseEvent, $adEvent, $trackBEvent, $noneEvent) | Where-Object { $null -ne $_ })
+        $transitionStates = @($transitionEvents | ForEach-Object { Get-Prop $_.data 'state' })
+        $sampleEvents = @(Get-DataEvents (Read-Sse $readersByKind['draft']))
+        $sampleLeak = @($sampleEvents | Where-Object {
+            (Get-Prop $_.data 'title') -ne 'Sample song' -or (Get-Prop $_.data 'artist') -ne 'Sample artist' -or
+            (Get-Prop $_.data 'artwork') -notin @('/art/sample', $null)
+        })
+        Add-Check 'A-SAMPLE.realStateIsolation' 'sample stream remains synthetic across real pause/ad/track/none, suspend and navigation transitions' ([ordered]@{
+            realStates = $transitionStates; sampleLeakCount = $sampleLeak.Count; afterSuspend = $sampleAfterSuspend; afterNavigate = $sampleAfterNavigate }) (
+            $pauseEvent -and $adEvent -and $trackBEvent -and $noneEvent -and $powerSent -and $navigateSent -and
+            $sampleAfterSuspend -and $sampleAfterNavigate -and $sampleLeak.Count -eq 0)
+
+        Stop-SseReader $readersByKind['draft']; [void] $allReaders.Remove($readersByKind['draft'])
+        [void] (Wait-OverlayStreams $run 6 'draftSampleClosed')
+        # One Real preview plus one normal Real stream: Settings' status count must exclude only that preview.
+        $realPreview = Start-SseReader 'A-SAMPLE-real-preview' 30 '/events?look=draft&pv=sample01'
+        $allReaders.Add($realPreview)
+        $realExtra = Start-SseReader 'A-SAMPLE-real-extra' 30 '/events'
+        $allReaders.Add($realExtra)
+        [void] (Wait-SseLook $realPreview { param($m) (Get-Prop $m 'id') -eq 'draft' } 15)
+        [void] (Wait-SseData $realExtra { param($d) (Get-Prop $d 'state') -eq 'none' } 15)
+        $statusSnap = Wait-OverlayStreams $run 8 'status-minus-preview'
+        $statusReal = Get-Overlay $statusSnap 'realStreams'
+        $statusSourceCount = Get-Overlay $statusSnap 'statusSourceCount'
+        $nonces = Get-Overlay $statusSnap 'previewNonces'
+        Add-Check 'A-SAMPLE.statusCountsExcludePreview' 'statusSourceCount equals realStreams minus one admitted current-nonce Real preview' ([ordered]@{
+            realStreams = $statusReal; statusSourceCount = $statusSourceCount; previewNonces = $nonces }) (
+            $statusReal -eq 5 -and $statusSourceCount -eq 4 -and (Get-Prop $nonces 'current') -eq 'sample01' -and
+            (Get-Prop $nonces 'open') -ge 1)
+
+        $countNow = Get-Overlay (Get-State $run.Root 'sampleBeforeLifetime') 'streams'
+        $lifetime = Wait-For {
+            $s = Get-State $run.Root 'sampleLifetime'
+            if ((Get-Overlay $s 'lastStreamEndReason') -eq 'Lifetime') { $s }
+        } 90 1000
+        $renewReader = Start-SseReader 'A-SAMPLE-after-renewal' 30 '/events?sample=playing'
+        $allReaders.Add($renewReader)
+        $renewed = Wait-SseData $renewReader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+        Add-Check 'A-SAMPLE.lifetimeRenewalPhaseZero' 'after the five-minute lifetime closes streams, a newly admitted sample stream starts at phase 0' ([ordered]@{
+            priorStreams = $countNow; endReason = Get-Overlay $lifetime 'lastStreamEndReason'; renewedPosition = Get-Prop $renewed.data 'position' }) (
+            $lifetime -and (Get-Overlay $lifetime 'lastStreamEndReason') -eq 'Lifetime' -and
+            $renewed -and [Math]::Abs([double] (Get-Prop $renewed.data 'position')) -le 0.5)
+        $scenarioResults['A-SAMPLE'] = [ordered]@{ reanchor = [ordered]@{ plain = $plainDue; noart = $noartDue; draft = $draftDue }
+            draftPushes = $draftPushes; statusSourceCount = $statusSourceCount; lifetime = [bool] $lifetime }
+    } finally {
+        foreach ($reader in $allReaders) { Stop-SseReader $reader }
+        if ($realPreview) { Stop-SseReader $realPreview }; if ($realExtra) { Stop-SseReader $realExtra }
+        Stop-OverlayRun $run
+    }
+    $demand = Test-ASampleDemand
+    $scenarioResults['A-SAMPLE']['demand'] = $demand
+}
 # ---------------------------------------------------------------------------------------------------------------
 # A-OFF
 
@@ -1681,8 +3473,10 @@ function Get-LanIPv4 {
     if ($a) { $a.IPAddress } else { $null }
 }
 function Test-ASec {
-    $run = Start-OverlayRun 'A-SEC' @{} 'Playing' -NoReader
+$savedLook = New-ObsLook 'sec00001' 'Security look' (New-DefaultPillOptions)
+    $run = Start-OverlayRun 'A-SEC' @{} 'Playing' -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($savedLook)))
     $raws = [Collections.Generic.List[object]]::new(); $table = [ordered]@{}; $responses = [Collections.Generic.List[object]]::new()
+    $previewReader = $null; $newNonceReader = $null; $lastReader = $null
     try {
         [void] (Wait-BenchReady $run.Root)
         $rows = @(
@@ -1729,18 +3523,147 @@ function Test-ASec {
         $cspParts = @("default-src 'none'", "script-src 'self'", "style-src 'unsafe-inline'", "connect-src 'self'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'",
             "img-src 'self';")
         Add-Check 'A-SEC.htmlCsp' "HTML carries the plan §3 CSP with img-src 'self' only (artwork is served by the app, no Google host)" $csp ($csp -and -not ($cspParts | Where-Object { -not $csp.Contains($_) }) -and $csp -notmatch 'googleusercontent|ytimg|ggpht')
-        # 8 streams + 9th 503, close one, 9th succeeds.
-        # Release earlier streams (e.g. the 'events' row) and wait until the app has deregistered them.
+        $nonce = 'pv000001'
+        [void] (Send-PreviewNonce $run.Root $nonce)
+        [void] (Send-DraftLook $run.Root (New-ObsLook 'draft' 'Security draft' (New-DefaultPillOptions)))
+        $routeMatrix = [Collections.Generic.List[object]]::new()
+        foreach ($path in @('/', '/?look=sec00001', "/?look=draft&preview=1&pv=$nonce&sample=playing", '/?sample=noart')) {
+            $response = Invoke-RawHttp '127.0.0.1' (New-Request -Path $path)
+            $responses.Add($response); $routeMatrix.Add([ordered]@{ kind = 'html'; path = $path; status = $response.status
+                headers = $response.headers; origin = $response.origin })
+        }
+        $sampleArt = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/art/sample')
+        $responses.Add($sampleArt); $routeMatrix.Add([ordered]@{ kind = 'art'; path = '/art/sample'; status = $sampleArt.status
+            headers = $sampleArt.headers; origin = $sampleArt.origin })
+        $sampleStream = Open-RawStream -Path '/events?sample=playing'
+        $raws.Add($sampleStream); $responses.Add([pscustomobject]@{ status = $sampleStream.Status; headers = $sampleStream.Headers; origin = 'app' })
+        $routeMatrix.Add([ordered]@{ kind = 'events'; path = '/events?sample=playing'; status = $sampleStream.Status
+            headers = $sampleStream.Headers; origin = 'app' })
+        $pageMatrix = @($routeMatrix | Where-Object { $_.kind -eq 'html' })
+        $htmlCsp = $pageMatrix[0].headers['content-security-policy']
+        $expectedCsp = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        $scriptResponse = $responses | Where-Object { "$($_.headers['content-type'])" -like 'text/javascript*' } | Select-Object -First 1
+        $eventResponse = $routeMatrix | Where-Object { $_.kind -eq 'events' } | Select-Object -First 1
+        $noCspBad = @($routeMatrix | Where-Object { $_.kind -ne 'html' -and $_.headers.Contains('content-security-policy') })
+        $typeBad = @($pageMatrix | Where-Object { "$($_.headers['content-type'])" -cne 'text/html; charset=utf-8' })
+        Add-Check 'A-SEC.headerMatrix' 'allowed / queries are 200 text/html with exact CSP; /art/sample is image/png; /events is chunked event-stream; non-HTML routes have no CSP' ([ordered]@{
+            routes = @($routeMatrix | ForEach-Object { [ordered]@{ kind = $_.kind; path = $_.path; status = $_.status; type = $_.headers['content-type']; transfer = $_.headers['transfer-encoding'] } })
+            csp = $htmlCsp; scriptNoCsp = ($scriptResponse -and -not $scriptResponse.headers.Contains('content-security-policy'))
+            nonHtmlCspCount = $noCspBad.Count; badHtmlTypeCount = $typeBad.Count }) (
+            $pageMatrix.Count -eq 4 -and @($pageMatrix | Where-Object { $_.status -ne 200 }).Count -eq 0 -and
+            $typeBad.Count -eq 0 -and $htmlCsp -ceq $expectedCsp -and
+            $sampleArt.status -eq 200 -and "$($sampleArt.headers['content-type'])" -like 'image/png*' -and
+            $sampleStream.Status -eq 200 -and "$($sampleStream.Headers['content-type'])" -like 'text/event-stream*' -and
+            "$($sampleStream.Headers['transfer-encoding'])" -eq 'chunked' -and
+            $scriptResponse -and -not $scriptResponse.headers.Contains('content-security-policy') -and $noCspBad.Count -eq 0)
+        Close-RawStream $sampleStream; [void] $raws.Remove($sampleStream)
+        [void] (Wait-OverlayStreams $run 0 'headerMatrixReleased')
+
+        $previewReader = Start-SseReader 'A-SEC-preview-current' 20 "/events?look=draft&pv=$nonce&sample=playing"
+        $previewOpen = Wait-SseOpen $previewReader 15
+        $previewLook = Wait-SseLook $previewReader { param($m) (Get-Prop $m 'preview') -ne $null } 10
+        $countBefore410 = Get-Overlay (Get-State $run.Root 'pvBefore410') 'streams'
+        $unknownPv = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=unknown1')
+        $retiredPv = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=retired1')
+        $malformedPv = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events?look=draft&pv=BAD00001')
+        $countAfter410 = Get-Overlay (Get-State $run.Root 'pvAfter410') 'streams'
+        $responses.Add($unknownPv); $responses.Add($retiredPv); $responses.Add($malformedPv)
+        Add-Check 'A-SEC.pvCurrentNonce200' 'current preview nonce admits an event stream and its first look carries preview mode' ([ordered]@{
+            open = Get-Prop $previewOpen 'text'; look = Get-Prop $previewLook 'data' }) (
+            $previewOpen -and $previewLook -and (Get-Prop $previewLook.data 'preview') -ne $null)
+        Add-Check 'A-SEC.pvUnknownRetired410' 'unknown and retired well-formed pv values return 410 with standard headers and no stream count change' ([ordered]@{
+            unknown = $unknownPv.status; retired = $retiredPv.status; before = $countBefore410; after = $countAfter410 }) (
+            $unknownPv.status -eq 410 -and $retiredPv.status -eq 410 -and $unknownPv.origin -eq 'app' -and
+            $retiredPv.origin -eq 'app' -and $countBefore410 -eq $countAfter410)
+        Add-Check 'A-SEC.pvMalformed400' 'malformed pv value remains 400, distinct from the valid-unknown 410 response' ([ordered]@{
+            status = $malformedPv.status; origin = $malformedPv.origin }) ($malformedPv.status -eq 400 -and $malformedPv.origin -eq 'app')
+        $previewData = Wait-SseData $previewReader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+        $lookObject = Get-Prop $previewLook 'data'
+        $lookKeys = @($lookObject.PSObject.Properties.Name)
+        $dataKeys = @($previewData.data.PSObject.Properties.Name)
+        $allowedLookKeys = @('v','epoch','seq','id','missing','kind','theme','box','source','reduceMotion','fontAvailable','hidePaused','options','preview')
+        $allowedDataKeys = @('v','state','id','title','artist','artwork','duration','position','rate','clock','ageMs','hidePaused')
+        $extraLookKeys = @($lookKeys | Where-Object { $_ -notin $allowedLookKeys })
+        $extraDataKeys = @($dataKeys | Where-Object { $_ -notin $allowedDataKeys })
+        $previewWire = Read-SseRaw $previewReader
+        $previewPrivacyLeaks = @([regex]::Matches($previewWire, 'fixtureSng|watch\?v=|youtube\.com|googleusercontent|ytimg|ggpht|https?:', 'IgnoreCase') | ForEach-Object { $_.Value } | Select-Object -Unique)
+        Add-Check 'A-SEC.wireShapeAndPrivacy' 'look/data carry only plan fields, opaque ids and same-origin art paths; no video id, Google URL or new metadata field' ([ordered]@{
+            lookKeys = $lookKeys; dataKeys = $dataKeys; extraLook = $extraLookKeys; extraData = $extraDataKeys
+            privacyLeaks = $previewPrivacyLeaks }) (
+            $previewLook -and $previewData -and $extraLookKeys.Count -eq 0 -and $extraDataKeys.Count -eq 0 -and
+            $previewPrivacyLeaks.Count -eq 0 -and (Get-Prop $previewData.data 'artwork') -eq '/art/sample')
+
+        Stop-SseReader $previewReader
+        [void] (Send-PreviewNonce $run.Root 'pv000002')
+        $newNonceReader = Start-SseReader 'A-SEC-preview-rotated' 20 '/events?look=draft&pv=pv000002'
+        $rotatedOpen = Wait-SseOpen $newNonceReader 15
+        $oldAfterRotate = Invoke-RawHttp '127.0.0.1' (New-Request -Path "/events?look=draft&pv=$nonce")
+        [void] (Send-PreviewNonce $run.Root 'pv000003')
+        for ($i = 4; $i -le 11; $i++) { [void] (Send-PreviewNonce $run.Root ('pv{0:D6}' -f $i)) }
+        $oldAfterMany = Invoke-RawHttp '127.0.0.1' (New-Request -Path "/events?look=draft&pv=$nonce")
+        $lastNonce = 'pv000011'
+        $lastReader = Start-SseReader 'A-SEC-preview-after-eight-switches' 20 "/events?look=draft&pv=$lastNonce"
+        $lastOpen = Wait-SseOpen $lastReader 15
+        [void] (Send-DraftLook $run.Root $null)
+        [void] (Send-PreviewNonce $run.Root 'clear')
+        $afterClosePv = Invoke-RawHttp '127.0.0.1' (New-Request -Path "/events?look=draft&pv=$lastNonce")
+        $responses.Add($oldAfterRotate); $responses.Add($oldAfterMany); $responses.Add($afterClosePv)
+        Add-Check 'A-SEC.pvRotationAndRetirement' 'old nonce is 410 after rotation and after >8 switches; current nonce stays 200; after close any prior token is 410' ([ordered]@{
+            rotatedStatus = Get-Prop $rotatedOpen 'text'; oldAfterRotate = $oldAfterRotate.status; oldAfterMany = $oldAfterMany.status
+            lastNonceStatus = Get-Prop $lastOpen 'text'; afterClose = $afterClosePv.status }) (
+            $rotatedOpen -and $oldAfterRotate.status -eq 410 -and $oldAfterMany.status -eq 410 -and
+            $lastOpen -and $afterClosePv.status -eq 410)
+        Stop-SseReader $newNonceReader; Stop-SseReader $lastReader; Stop-SseReader $previewReader
+        [void] (Wait-OverlayStreams $run 0 'previewMatrixReleased')
+        Add-Deferred 'P2' 'A-SEC.previewHostHandler' 'preview host cancels disallowed NavigationStarting URLs, window.open, downloads and permissions' 'NativeBrowserHost and OverlayDesignerWindow are P2; this P0 script records the check as deferred until that owner-approved phase.'
+        if (Test-ChromeAvailable 'A-SEC') {
+            $evilFont = 'Bad "family\); url(http://localhost:47813/unexpected.png)'
+            $evilOptions = New-DefaultPillOptions
+            $evilOptions['font'] = $evilFont; $evilOptions['colours'] = 'custom'
+            $evilOptions['text'] = 'red; background:url(http://localhost:47813/unexpected.png)'
+            $evilOptions['background'] = 'url(http://localhost:47813/unexpected.png)'
+            $evilOptions['accent'] = '#fff);url(http://localhost:47813/unexpected.png)'
+            $evilLook = New-ObsLook 'evil0001' '<img src=x onerror=alert(1)>' $evilOptions
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($savedLook, $evilLook))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-font-force-available' $evilFont)
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $securityReader = Start-SseReader 'A-SEC-typed-look' 20 '/events?look=evil0001'
+            $securityChrome = $null
+            try {
+                $securityLook = Wait-SseLook $securityReader { param($m) (Get-Prop $m 'id') -eq 'evil0001' } 15
+                $securityChrome = Start-Chrome 'A-SEC-typed-sinks'
+                [void] (Invoke-ChromeNavigate $securityChrome "$($overlayUrl)?look=evil0001")
+                $securityPage = Wait-For { $p = Get-PageProbe $securityChrome; if ((Get-PageField $p 'connection') -eq 'open') { $p } } 15 100
+                $resources = @($securityPage.resources)
+                $external = @($resources | Where-Object { $_.origin -cne "http://localhost:$port" })
+                $unexpectedRoute = @($resources | Where-Object { $_.path -eq '/unexpected.png' })
+                $securityWire = Read-SseRaw $securityReader
+                $wireLeaks = @([regex]::Matches($securityWire, 'googleusercontent|ytimg|ggpht|youtube\.com|watch\?v=', 'IgnoreCase') | ForEach-Object { $_.Value } | Select-Object -Unique)
+                Add-Check 'A-SEC.typedSinksNoNetwork' 'malicious name/font/colour values stay data-only, are normalized/escaped and cause no non-local or attacker-selected resource request' ([ordered]@{
+                    id = Get-Prop $securityLook.data 'id'; nameInWire = $securityWire.Contains('<img')
+                    fontAvailable = Get-Prop $securityPage.s 'fontAvailable'; fontVar = Get-Prop $securityPage.css 'fontVar'
+                    text = Get-Prop $securityPage.css 'fg'; external = $external; unexpected = $unexpectedRoute
+                    privacyLeaks = $wireLeaks }) (
+                    $securityLook -and $securityPage -and (Get-Prop $securityPage.s 'fontAvailable') -eq $true -and
+                    [string] (Get-Prop $securityPage.css 'fontVar') -match '^"Bad \\"family\\\\\); url\(http://localhost:47813/unexpected\.png\)",' -and
+                    (Get-Prop $securityPage.css 'fg') -eq '#ffffff' -and
+                    -not $securityWire.Contains('<img') -and $external.Count -eq 0 -and $unexpectedRoute.Count -eq 0 -and $wireLeaks.Count -eq 0)
+            } finally { Stop-Chrome $securityChrome; Stop-SseReader $securityReader }
+        } else { Add-Blocked 'A-SEC.typedSinksNoNetwork' 'typed malicious values create no external resource requests' 'Chrome is not installed; page/CDP Network observation cannot run' }
+        # The server's eight-slot cap is tested from a clean listener with zero foreign viewers.
         foreach ($r in $raws) { Close-RawStream $r }; $raws.Clear()
-        [void] (Wait-For { (Get-Overlay (Get-State $run.Root 'streams0') 'streams') -eq 0 } 10 500)
+        [void] (Wait-OverlayStreams $run 0 'capacityPreviousReadersClosed')
         $streamsBefore = Get-Overlay (Get-State $run.Root 'streams0b') 'streams'
         for ($i = 0; $i -lt 8; $i++) { $raws.Add((Open-RawStream)) }
+        [void] (Wait-OverlayStreams $run 8 'capacityEightAdmitted')
         $ninth = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/events')
         $responses.Add($ninth)
-        Add-Check 'A-SEC.ninthStream503' '0 streams before; 8 streams open (200), the 9th gets 503 from the app' ([ordered]@{ streamsBefore = $streamsBefore; open = @($raws | ForEach-Object { $_.Status }); ninth = $ninth.status; origin = $ninth.origin }) (
-            $streamsBefore -eq 0 -and -not ($raws | Where-Object { $_.Status -ne 200 }) -and $ninth.status -eq 503 -and $ninth.origin -eq 'app')
+        Add-Check 'A-SEC.ninthStream503' '0 streams before; 8 streams open (200), the 9th gets 503 from the app' ([ordered]@{
+            streamsBefore = $streamsBefore; opened = $raws.Count; open = @($raws | ForEach-Object { $_.Status }); ninth = $ninth.status; origin = $ninth.origin }) (
+            $streamsBefore -eq 0 -and $raws.Count -eq 8 -and
+            -not ($raws | Where-Object { $_.Status -ne 200 }) -and $ninth.status -eq 503 -and $ninth.origin -eq 'app')
         Close-RawStream $raws[0]; $raws.RemoveAt(0)
-        [void] (Wait-For { (Get-Overlay (Get-State $run.Root 'seven') 'streams') -eq 7 } 10 500)
+        [void] (Wait-OverlayStreams $run 7 'capacityOneClosed')
         $again = Open-RawStream; $raws.Add($again)
         Add-Check 'A-SEC.ninthAfterCloseSucceeds' 'after one closes, the next stream gets 200' $again.Status ($again.Status -eq 200)
         foreach ($r in $raws) { $responses.Add([pscustomobject]@{ status = $r.Status; headers = $r.Headers; origin = if ($r.Headers.Contains('x-content-type-options')) { 'app' } else { 'kernel' } }) }
@@ -1749,7 +3672,13 @@ function Test-ASec {
         Add-Check 'A-SEC.appHeadersEverywhere' 'nosniff, no-store, no-referrer on every app response' ([ordered]@{ appResponses = $appResponses.Count; missing = $missing.Count }) ($appResponses.Count -gt 0 -and $missing.Count -eq 0)
         $cors = @($responses | Where-Object { @($_.headers.Keys | Where-Object { $_ -like 'access-control-*' }).Count -gt 0 })
         Add-Check 'A-SEC.noAccessControlHeaders' 'no Access-Control-* on any response' $cors.Count ($cors.Count -eq 0)
-    } finally { foreach ($r in $raws) { Close-RawStream $r }; Stop-OverlayRun $run }
+        $nonHtmlCsp = @($appResponses | Where-Object { "$($_.headers['content-type'])" -notlike 'text/html*' -and $null -ne $_.headers['content-security-policy'] })
+        Add-Check 'A-SEC.nonHtmlNoCsp' 'scripts, art, SSE and admission failures carry no CSP header' @($nonHtmlCsp) ($nonHtmlCsp.Count -eq 0)
+    } finally {
+        foreach ($r in $raws) { Close-RawStream $r }
+        Stop-SseReader $previewReader; Stop-SseReader $newNonceReader; Stop-SseReader $lastReader
+        Stop-OverlayRun $run
+    }
     $scenarioResults['A-SEC'] = [ordered]@{ lanIPv4Present = [bool] (Get-LanIPv4); table = $table }
 }
 
@@ -1761,7 +3690,9 @@ function Wait-PageConnected($Chrome, [double] $Seconds) {
 }
 function Test-ARecon {
     if (-not (Test-ChromeAvailable 'A-RECON')) { return }
-    $run = Start-OverlayRun 'A-RECON' @{ ObsOverlay = $false } 'Playing' -NoReader
+$optionsA = New-DefaultPillOptions; $optionsA['width'] = 320
+    $lookA = New-ObsLook 'recn0001' 'Restart A' $optionsA
+    $run = Start-OverlayRun 'A-RECON' @{ ObsOverlay = $false } 'Playing' -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($lookA)))
     $chrome = $null; $raws = [Collections.Generic.List[object]]::new(); $obs = [ordered]@{}
     try {
         [void] (Wait-BenchReady $run.Root)
@@ -1779,17 +3710,47 @@ function Test-ARecon {
         $obs['reloadHref'] = if ($connected) { $connected.href } else { (Get-PageProbe $chrome).href }
         Add-Check 'A-RECON.1.connectedAfterReload' 'after on + CDP reload: connection open, pill shown with playing state' ([bool] $connected) ([bool] $connected)
         $obs['shot1'] = Save-ChromeShot $chrome 'A-RECON-1-connected'
-        # (2) server restart.
+        $lookUrl = "$($overlayUrl)?look=recn0001"
+        [void] (Invoke-ChromeNavigate $chrome $lookUrl)
+        $optionA = Wait-For {
+            $p = Get-PageProbe $chrome; $look = Get-PageField $p 'look'
+            if ((Get-Prop $look 'id') -eq 'recn0001' -and (Get-Prop (Get-Prop $look 'options') 'width') -eq 320) { $p }
+        } 15 100
+        Add-Check 'A-RECON.restartOptionsA' 'connected page begins on saved options A before file replacement' ([ordered]@{
+            look = Get-PageField $optionA 'look'; epoch = Get-PageField $optionA 'lookEpoch'; seq = Get-PageField $optionA 'lookSeq' }) (
+            $optionA -and (Get-Prop (Get-PageField $optionA 'look') 'id') -eq 'recn0001' -and
+            (Get-Prop (Get-Prop (Get-PageField $optionA 'look') 'options') 'width') -eq 320)
+        $epochA = Get-PageField $optionA 'lookEpoch'
+        $optionsB = Copy-LookOptions $optionsA; $optionsB['width'] = 800
+        $lookB = New-ObsLook 'recn0001' 'Restart B' $optionsB
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($lookB))))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $reloadedB = Wait-For {
+            $p = Get-PageProbe $chrome; $look = Get-PageField $p 'look'
+            if ((Get-Prop $look 'id') -eq 'recn0001' -and (Get-Prop (Get-Prop $look 'options') 'width') -eq 800) { $p }
+        } 15 100
+        Add-Check 'A-RECON.restartLookFileReload' 'writing options B and command-obs-looks-reload live-pushes B before restart' ([ordered]@{
+            look = Get-PageField $reloadedB 'look'; epoch = Get-PageField $reloadedB 'lookEpoch'; seq = Get-PageField $reloadedB 'lookSeq' }) (
+            $reloadedB -and (Get-Prop (Get-Prop (Get-PageField $reloadedB 'look') 'options') 'width') -eq 800)
+        # (2) server restart after the durable look-file reload.
         [void] (Send-HookCommand $run.Root 'command-obs-off')
         [void] (Wait-For { $pp = Get-PageProbe $chrome; (Get-PageField $pp 'connection') -ne 'open' } 5)
         $onQpc = Send-HookCommand $run.Root 'command-obs-on'
         $back = Wait-PageConnected $chrome 10
+        $restartLook = Get-PageField $back 'look'
         Add-Check 'A-RECON.2.reconnectedWithin5s' 'page reconnected with state <= 5 s after the server is back' $(if ($back) { Round3 (Get-Seconds $onQpc $back.qpc) }) (
             $back -and (Get-Seconds $onQpc $back.qpc) -le 5)
+        Add-Check 'A-RECON.restartEpochAndSeq' 'server epoch changes and first post-restart look sequence 1 is accepted with options B' ([ordered]@{
+            epochA = $epochA; epochB = Get-PageField $back 'lookEpoch'; seq = Get-PageField $back 'lookSeq'
+            width = Get-Prop (Get-Prop $restartLook 'options') 'width' }) (
+            $back -and (Get-PageField $back 'lookEpoch') -cne $epochA -and (Get-PageField $back 'lookSeq') -eq 1 -and
+            (Get-Prop $restartLook 'id') -eq 'recn0001' -and (Get-Prop (Get-Prop $restartLook 'options') 'width') -eq 800)
         # (3) no streams for 30 s while Playing, then reconnect.
-        [void] (Invoke-ChromeNavigate $chrome 'about:blank')
-        $zero = Wait-For { $s = Get-State $run.Root 'blank'; if ((Get-Overlay $s 'streams') -eq 0) { $s } } 10 500
+        $obs['release3'] = Reset-ChromeCasePage $chrome
+        $zero = Wait-OverlayStreams $run 0 'blank'
         Start-Sleep -Seconds 30
+        $zeroAfterWait = Get-State $run.Root 'blankAfter30'
+        if ((Get-Overlay $zeroAfterWait 'streams') -eq 0) { $zero = $zeroAfterWait }
         $navQpc = Get-Qpc
         [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
         $initial = Wait-PageConnected $chrome 5
@@ -1797,8 +3758,8 @@ function Test-ARecon {
             streamsWhileAway = Get-Overlay $zero 'streams'; seconds = if ($initial) { Round3 (Get-Seconds $navQpc $initial.qpc) } }) (
             $zero -and $initial -and (Get-Seconds $navQpc $initial.qpc) -le 2)
         # (4) 9th stream 503 -> CLOSED -> retry after 30 s.
-        [void] (Invoke-ChromeNavigate $chrome 'about:blank')
-        [void] (Wait-For { (Get-Overlay (Get-State $run.Root 'blank2') 'streams') -eq 0 } 10 500)
+        $obs['release4'] = Reset-ChromeCasePage $chrome
+        [void] (Wait-OverlayStreams $run 0 'blank2')
         for ($i = 0; $i -lt 8; $i++) { $raws.Add((Open-RawStream)) }
         [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
         $closed = Wait-For { $pp = Get-PageProbe $chrome; if ((Get-PageField $pp 'connection') -eq 'closed' -and (Get-PageField $pp 'shown') -eq $false) { $pp } } 8
@@ -2122,6 +4083,78 @@ function Find-Bytes([byte[]] $Haystack, [byte[]] $Needle) {
     }
     $false
 }
+function Test-OverlayCssSyntax([string] $Html) {
+    $styles = [regex]::Matches($Html, '(?is)<style\b[^>]*>(.*?)</style>')
+    $violations = [Collections.Generic.List[string]]::new()
+    $properties = [Collections.Generic.List[string]]::new()
+    $selectors = [Collections.Generic.List[string]]::new()
+    $functions = [Collections.Generic.List[string]]::new()
+    $atRules = [Collections.Generic.List[string]]::new()
+    if ($styles.Count -eq 0) {
+        $violations.Add('missing inline style block')
+        return [ordered]@{ styles = 0; properties = @(); selectors = @(); functions = @(); atRules = @(); violations = @($violations); passed = $false }
+    }
+    $css = (@($styles | ForEach-Object { $_.Groups[1].Value }) -join "`n")
+    $css = [regex]::Replace($css, '(?s)/\*.*?\*/', '')
+    $forbidden = [regex]::Matches($css, '(?i)&|@layer\b|@scope\b|@container\b|:has\s*\(|color-mix\s*\(')
+    foreach ($match in $forbidden) { $violations.Add("forbidden syntax: $($match.Value)") }
+    $allowedProperties = @(
+        'position','left','right','top','bottom','width','height','min-width','max-width','margin','padding','gap',
+        'display','flex','flex-direction','flex-grow','flex-shrink','justify-content','align-items','align-self',
+        'color','background','background-color','background-image','border-radius','box-shadow','opacity','transform',
+        'overflow','overflow-x','overflow-y','font-family','font-size','font-weight','font-variant-numeric',
+        'text-align','text-shadow','white-space','text-overflow','line-height','object-fit','object-position',
+        'animation','animation-name','animation-duration','animation-timing-function','animation-fill-mode'
+    )
+    $allowedFunctions = @('calc','var','rgba','linear-gradient','translateX','translateY')
+    foreach ($match in [regex]::Matches($css, '@([A-Za-z-]+)')) {
+        $name = '@' + $match.Groups[1].Value
+        $atRules.Add($name)
+        if ($name -cne '@keyframes') { $violations.Add("disallowed at-rule: $name") }
+    }
+    $keyframesRemoved = [regex]::Replace($css, '(?is)@keyframes\s+[\w-]+\s*\{(?:[^{}]|\{[^{}]*\})*\}', '')
+    if ($keyframesRemoved -match '\{[^{}]*\{') { $violations.Add('nested CSS rule') }
+    $open = ([regex]::Matches($css, '\{')).Count; $close = ([regex]::Matches($css, '\}')).Count
+    if ($open -ne $close) { $violations.Add("unbalanced braces: $open open / $close close") }
+    foreach ($rule in [regex]::Matches($css, '(?s)([^{}]+)\{([^{}]*)\}')) {
+        $header = $rule.Groups[1].Value.Trim()
+        if (-not $header) { continue }
+        $isKeyframeStep = $header -match '^(from|to|(?:100|[0-9]{1,2})(?:\.[0-9]+)?%)$'
+        if (-not $isKeyframeStep) {
+            foreach ($selector in ($header -split ',')) {
+                $selector = $selector.Trim()
+                $selectors.Add($selector)
+                if ($selector -match '\.[A-Za-z_-]' -or $selector -match '[>+~&]' -or $selector -match ':(?!empty\b|root\b)[A-Za-z-]+' -or
+                    $selector -notmatch '^[A-Za-z0-9_#:\[\]=""''\-%\s]+$') {
+                    $violations.Add("selector outside allowlist: $selector")
+                }
+            }
+        }
+        foreach ($declaration in ($rule.Groups[2].Value -split ';')) {
+            if (-not $declaration.Trim()) { continue }
+            $colon = $declaration.IndexOf(':')
+            if ($colon -le 0) { $violations.Add("invalid declaration: $($declaration.Trim())"); continue }
+            $property = $declaration.Substring(0, $colon).Trim().ToLowerInvariant()
+            $value = $declaration.Substring($colon + 1).Trim()
+            $properties.Add($property)
+            if ($property -notin $allowedProperties -and $property -notmatch '^--[a-z0-9-]+$') { $violations.Add("property outside allowlist: $property") }
+            foreach ($fn in [regex]::Matches($value, '\b([A-Za-z][A-Za-z0-9-]*)\s*\(')) {
+                $function = $fn.Groups[1].Value
+                $functions.Add($function)
+                if ($function -cnotin $allowedFunctions) { $violations.Add("value function outside allowlist: $function") }
+            }
+        }
+    }
+    [ordered]@{ styles = $styles.Count; properties = @($properties | Select-Object -Unique); selectors = @($selectors | Select-Object -Unique)
+        functions = @($functions | Select-Object -Unique); atRules = @($atRules | Select-Object -Unique)
+        violations = @($violations); passed = $violations.Count -eq 0 }
+}
+function Find-ForbiddenJsSinks([string] $JavaScript) {
+    $sinks = @('innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'cssText', 'insertRule', 'eval(', 'new Function')
+    $found = [Collections.Generic.List[string]]::new()
+    foreach ($sink in $sinks) { if ($JavaScript.Contains($sink)) { $found.Add($sink) } }
+    $found.ToArray()
+}
 function Test-AProd {
     if (-not (Test-Path -LiteralPath $releaseExe -PathType Leaf)) { throw "Release build not found at $releaseExe." }
     $releaseGuideUrl = 'https://github.com/Hantu-Raya/Nativune/blob/main/docs/obs-overlay.md'
@@ -2129,7 +4162,7 @@ function Test-AProd {
     $files = @(Get-ChildItem -LiteralPath $releaseDirectory -File | Where-Object { $_.Name -like 'Nativune*.dll' -or $_.Name -like 'Nativune*.pri' -or $_.Name -like '*.resources.dll' })
     foreach ($f in $files) {
         $bytes = [IO.File]::ReadAllBytes($f.FullName)
-        foreach ($needle in @('launched-uri', 'command-obs', 'command-controls', 'fixture-art')) {
+        foreach ($needle in @('launched-uri', 'command-obs', 'command-controls', 'fixture-art', 'NATIVUNE_TEST_OBS_')) {
             if ((Find-Bytes $bytes ([Text.Encoding]::UTF8.GetBytes($needle))) -or (Find-Bytes $bytes ([Text.Encoding]::Unicode.GetBytes($needle)))) {
                 $scan["$($f.Name):$needle"] = $true
             }
@@ -2138,12 +4171,13 @@ function Test-AProd {
             $guideFound.Add($f.Name)
         }
     }
-    Add-Check 'A-PROD.assemblyStringScan' 'no launched-uri, command-obs, command-controls or fixture-art in Nativune.dll/resources (UTF-8 and UTF-16)' ([ordered]@{
+    Add-Check 'A-PROD.assemblyStringScan' 'release Nativune.dll/resources contain no test-hook markers/commands in UTF-8 or UTF-16' ([ordered]@{
         files = @($files | ForEach-Object { $_.Name }); hits = @($scan.Keys) }) ($files.Count -gt 0 -and $scan.Count -eq 0 -and ($files | Where-Object { $_.Name -eq 'Nativune.dll' }))
     Add-Check 'A-PROD.guideUrlInAssembly' "release assembly/resources contain $releaseGuideUrl (UTF-8 or UTF-16; button not clicked)" ([ordered]@{
         foundIn = @($guideFound) }) ($guideFound.Count -gt 0)
     $root = New-Root 'A-PROD'
     Write-Settings $root @{ ObsOverlay = $true }
+$releaseReaders = [Collections.Generic.List[object]]::new()
     $app = $null; $obs = [ordered]@{}
     try {
         $app = Start-App $root @{} $releaseExe
@@ -2159,12 +4193,31 @@ function Test-AProd {
         $js = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/overlay.js')
         Add-Check 'A-PROD.scriptNoFixtureArt' 'served /overlay.js has no fixture-art (and no __state hook)' ([ordered]@{ status = $js.status; length = $js.body.Length }) (
             $js.status -eq 200 -and $js.body.Length -gt 0 -and $js.body -notmatch 'fixture-art' -and $js.body -notmatch '__state')
+        $unknownRoute = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/?look=unknown1')
+        $draftRoute = Invoke-RawHttp '127.0.0.1' (New-Request -Path '/?look=draft')
+        $unknownReader = Start-SseReader 'A-PROD-unknown-look' 20 '/events?look=unknown1'
+        $draftReader = Start-SseReader 'A-PROD-draft-look' 20 '/events?look=draft'
+        $releaseReaders.Add($unknownReader); $releaseReaders.Add($draftReader)
+        $unknownLook = Wait-SseLook $unknownReader { param($m) (Get-Prop $m 'id') -eq 'unknown1' } 15
+        $draftLook = Wait-SseLook $draftReader { param($m) (Get-Prop $m 'id') -eq 'draft' } 15
+        Add-Check 'A-PROD.fallbackLookRoutes' 'release /?look=<unknown> and /?look=draft are 200; both streams use pill with missing=true' ([ordered]@{
+            unknownPage = $unknownRoute.status; draftPage = $draftRoute.status
+            unknown = Get-Prop $unknownLook 'data'; draft = Get-Prop $draftLook 'data' }) (
+            $unknownRoute.status -eq 200 -and $draftRoute.status -eq 200 -and
+            $unknownLook -and $draftLook -and
+            (Get-Prop $unknownLook.data 'missing') -eq $true -and (Get-Prop $draftLook.data 'missing') -eq $true -and
+            (Get-Prop $unknownLook.data 'theme') -eq 'pill' -and (Get-Prop $draftLook.data 'theme') -eq 'pill')
+        $cssLint = Test-OverlayCssSyntax $page.body
+        Add-Check 'A-PROD.cssLint' 'served stylesheet uses only allowlisted properties, at-rules, selectors and value functions; no nesting/forbidden syntax' $cssLint (
+            $cssLint.passed -eq $true -and $cssLint.violations.Count -eq 0)
+        $sinks = @(Find-ForbiddenJsSinks $js.body)
+        Add-Check 'A-PROD.forbiddenSinks' 'served /overlay.js contains no HTML parser, cssText/insertRule or dynamic-code sinks' $sinks ($js.status -eq 200 -and $sinks.Count -eq 0)
         $ui = Open-ObsSettings $app
         # The "How to set up…" button is deliberately not clicked: in the release build it opens the owner's real
         # default browser. The guide URL is verified statically by A-PROD.guideUrlInAssembly above.
         $obs['shot'] = Save-WindowShot $ui.Hwnd 'A-PROD-settings-obs'
         Close-Settings $ui 'CancelButton'
-    } finally { Stop-App $app $root -Kill; Copy-AppLog $root 'A-PROD' }
+    } finally { foreach ($reader in $releaseReaders) { Stop-SseReader $reader }; Stop-App $app $root -Kill; Copy-AppLog $root 'A-PROD' }
     $scenarioResults['A-PROD'] = $obs
 }
 
@@ -2365,9 +4418,11 @@ function Test-AToolbar {
 $appVersion = $null
 $scenarioErrors = [ordered]@{}
 $functions = [ordered]@{
-    'A-OFF' = { Test-AOff }; 'A-TIME' = { Test-ATime }; 'A-AD' = { Test-AAd }; 'A-SAME' = { Test-ASame }; 'A-CLOCK' = { Test-AClock }
-    'A-GAP' = { Test-AGap }; 'A-INV' = { Test-AInv }; 'A-IDLE' = { Test-AIdle }; 'A-DEMAND' = { Test-ADemand }; 'A-LIVE' = { Test-ALive }
-    'A-LIFE' = { Test-ALife }; 'A-SEC' = { Test-ASec }; 'A-RECON' = { Test-ARecon }; 'A-TEXT' = { Test-AText }; 'A-ART' = { Test-AArt }; 'A-SET' = { Test-ASet }
+    'A-PLAIN' = { Test-APlain }; 'A-LOOK' = { Test-ALook }; 'A-OFF' = { Test-AOff }; 'A-TIME' = { Test-ATime }
+    'A-AD' = { Test-AAd }; 'A-SAME' = { Test-ASame }; 'A-CLOCK' = { Test-AClock }; 'A-GAP' = { Test-AGap }
+    'A-INV' = { Test-AInv }; 'A-IDLE' = { Test-AIdle }; 'A-DEMAND' = { Test-ADemand }; 'A-LIVE' = { Test-ALive }
+    'A-LIFE' = { Test-ALife }; 'A-SEC' = { Test-ASec }; 'A-RECON' = { Test-ARecon }; 'A-STORE-1' = { Test-AStore1 }
+    'A-SAMPLE' = { Test-ASample }; 'A-TEXT' = { Test-AText }; 'A-ART' = { Test-AArt }; 'A-SET' = { Test-ASet }
     'A-PROD' = { Test-AProd }; 'A-PAUSEVIEW' = { Test-APauseView }; 'A-TOOLBAR' = { Test-AToolbar }
 }
 try {
@@ -2383,7 +4438,29 @@ try {
     }
     if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) { throw "Hook build not found at $appExe; run without -SkipPublish." }
     $appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
+    $foreignStreams = $null; $foreignDiagnostic = $null; $preflight = $null
+    if (-not (Test-PrefixRegistrable)) {
+        $foreignDiagnostic = 'the overlay prefix is already owned before the harness preflight'
+    } else {
+        try {
+            $preflight = Start-OverlayRun 'harness-preflight' @{} 'Playing' -NoReader
+            [void] (Wait-BenchReady $preflight.Root)
+            Start-Sleep -Seconds 4
+            $preflightState = Get-State $preflight.Root 'foreign-viewer-preflight'
+            $foreignStreams = Get-Overlay $preflightState 'streams'
+            if ($null -eq $foreignStreams) { $foreignDiagnostic = 'the preflight stream count was unavailable' }
+            elseif ($foreignStreams -gt 0) { $foreignDiagnostic = "found $foreignStreams pre-existing viewer stream(s) on $overlayUrl" }
+        } catch { $foreignDiagnostic = "preflight failed: $($_.Exception.Message)" }
+        finally { if ($preflight) { Stop-OverlayRun $preflight } }
+    }
+    Add-Check 'harness.foreignViewersAbsent' 'the overlay starts with zero non-harness streams on localhost:47813' ([ordered]@{
+        streams = $foreignStreams; diagnostic = $foreignDiagnostic }) ($null -ne $foreignStreams -and $foreignStreams -eq 0)
     foreach ($name in $selected) {
+        if ($null -eq $foreignStreams -or $foreignStreams -ne 0) {
+            $why = if ($foreignDiagnostic) { $foreignDiagnostic } else { 'preflight could not verify zero foreign viewers' }
+            Add-Blocked "$name.foreignViewer" 'zero non-harness viewers on localhost:47813 before scenarios' $why
+            continue
+        }
         if (-not (Test-PrefixRegistrable)) {
             Add-Blocked "$name.portFree" "http://localhost:$port/ free before the scenario" 'another process holds the overlay prefix'
             continue
@@ -2455,11 +4532,16 @@ foreach ($name in $selected) {
 }
 $failed = @($checks | Where-Object { $_.status -eq 'fail' })
 $blocked = @($checks | Where-Object { $_.status -eq 'blocked' })
+$deferredP1 = @($checks | Where-Object { $_.status -eq 'deferred:P1' })
+$deferredP2 = @($checks | Where-Object { $_.status -eq 'deferred:P2' })
 $passed = $checks.Count -gt 0 -and $failed.Count -eq 0 -and $blocked.Count -eq 0
 $report = [ordered]@{
     command = $commandLine; runId = $runId; appVersion = $appVersion; pipePrefix = $prefix; harnessElevated = $isElevated
     launches = @($launches); scenarios = $scenarioResults
-    summary = [ordered]@{ pass = @($checks | Where-Object { $_.status -eq 'pass' }).Count; fail = $failed.Count; blocked = $blocked.Count }
+    summary = [ordered]@{
+        pass = @($checks | Where-Object { $_.status -eq 'pass' }).Count; fail = $failed.Count; blocked = $blocked.Count
+        deferred = [ordered]@{ P1 = $deferredP1.Count; P2 = $deferredP2.Count; total = $deferredP1.Count + $deferredP2.Count }
+    }
     checks = @($checks); passed = [bool] $passed
 }
 [IO.File]::WriteAllText((Join-Path $runDirectory 'report.json'), ($report | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))

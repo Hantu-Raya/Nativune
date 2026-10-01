@@ -7,7 +7,8 @@ namespace Nativune;
 
 // Hook state reported in the bench "overlay" object (design.md §2.8). Wire state names are lower case.
 internal readonly record struct ObsOverlayHookState(string LatestState, bool LatestStale, double LatestPosition,
-    double? LatestDuration, int FixtureArtServed, bool PendingWrite, string? LastStreamEndReason, bool HidePaused);
+    double? LatestDuration, int FixtureArtServed, bool PendingWrite, string? LastStreamEndReason, bool HidePaused,
+    ObsOverlayHookDiagnostics Diagnostics);
 
 // Test-hook half of ObsOverlayServer (design.md §2.8, §4); compiled only with -p:DiscordPresenceTestHooks=true.
 // It is the only code that names the fixture artwork URLs, delayMs/-d<ms> delays or the hooks script.
@@ -91,24 +92,29 @@ internal sealed partial class ObsOverlayServer
         else Interlocked.Decrement(ref _hookPendingWrites);
     }
 
-    // command-obs-burst: one 8 MiB comment queued to the first registered stream. No-op once stopped.
+    // command-obs-burst: one 8 MiB comment queued to the first registered stream (its pump writes it after any look or
+    // data it already took out of the slots). No-op once stopped.
     internal void HookBurst()
     {
+        StreamEntry target;
         lock (_gate)
         {
             if (_stopping || _streams.Count == 0) return;
-            _streams[0].Messages.Writer.TryWrite(": " + new string('x', 8 * 1024 * 1024) + "\n\n");
+            target = _streams[0];
+            target.PendingComment = ": " + new string('x', 8 * 1024 * 1024) + "\n\n";
         }
+        target.Wake();
     }
 
     internal ObsOverlayHookState HookState()
     {
+        var diagnostics = HookDiagnostics();
         lock (_gate)
         {
             var latest = _latest;
             return new ObsOverlayHookState(latest.State.ToString().ToLowerInvariant(), _latestStale, latest.Position,
                 latest.Duration, Volatile.Read(ref _hookFixtureArtServed), Volatile.Read(ref _hookPendingWrites) > 0,
-                Volatile.Read(ref _hookLastStreamEnd), _hidePaused);
+                Volatile.Read(ref _hookLastStreamEnd), _hidePaused, diagnostics);
         }
     }
 

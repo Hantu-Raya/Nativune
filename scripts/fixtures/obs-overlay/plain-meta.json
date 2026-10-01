@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "sourceRevision": "1e8c964",
+  "chromeVersion": "148.0.7778.179",
+  "chromeProduct": "Chrome/148.0.7778.179",
+  "flags": [
+    "--font-render-hinting=none",
+    "--disable-lcd-text",
+    "--force-color-profile=srgb",
+    "--force-device-scale-factor=1"
+  ],
+  "viewport": {
+    "width": 440,
+    "height": 96,
+    "deviceScaleFactor": 1
+  },
+  "captures": {
+    "8s": {
+      "projectedPosition": 7.8084999999999996,
+      "fillPx": 2,
+      "expectedFillPx": 2
+    },
+    "18s": {
+      "projectedPosition": 17.8095,
+      "fillPx": 4,
+      "expectedFillPx": 4
+    }
+  }
+}

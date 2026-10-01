@@ -18,13 +18,46 @@ public sealed partial class WebHostWindow
     private bool _overlayNoneSent;                    // 'none' already broadcast for the current gap
     private bool _obsApplyRunning;                    // the single apply loop is in flight
     private Task _obsApplyTask = Task.CompletedTask;  // that loop; callers await it instead of starting a second
+    private readonly SemaphoreSlim _looksSaveLock = new(1, 1);
+    private readonly CancellationTokenSource _looksShutdownCts = new();
+    private CancellationTokenSource? _activeLooksCommit;
+    private ObsLookState _looks = ObsLookState.Empty;
+    private bool _looksLoaded;
+    private long _looksRevision;
+    private ObsLook? _draftLook;
+    private string _draftBackdrop = "checker";
+    private string? _previewNonce;
 
-    private bool OverlayReadActive => _obsOverlay is { IsRunning: true, OpenStreams: > 0 }
+    private bool OverlayReadActive => _obsOverlay is { IsRunning: true, RealStreams: > 0 }
         && !_closing && !_disposed && !_playerSuspended;
 
     private void InitializeObsOverlay()
     {
+        EnsureObsLooksLoaded();
         if (_settings.ObsOverlay) _ = ReconcileObsOverlayAsync();
+    }
+
+    private void EnsureObsLooksLoaded()
+    {
+        if (_looksLoaded) return;
+        _looks = ObsLookStore.Load(_root);
+        _looksLoaded = true;
+    }
+
+    private async Task ReloadObsLooksAsync()
+    {
+        await _looksSaveLock.WaitAsync();
+        try
+        {
+            _looks = ObsLookStore.Load(_root);
+            _looksLoaded = true;
+            _looksRevision++;
+            _obsOverlay?.SetLooks(_looks);
+        }
+        finally
+        {
+            _looksSaveLock.Release();
+        }
     }
 
     // The toolbar button and More item: same shape as SetDiscordEnabled. The setting is persisted at once and the
@@ -84,8 +117,18 @@ public sealed partial class WebHostWindow
             if (_closing || _disposed || _obsOverlay is { IsRunning: true }) return;
             await StopObsOverlayAsync();
             if (_closing || _disposed) return;
-            _overlayGeneration++;
-            var server = new ObsOverlayServer(_settings.ObsHidePaused);
+            await _looksSaveLock.WaitAsync();
+            ObsLookState looks;
+            try
+            {
+                EnsureObsLooksLoaded();
+                looks = _looks;
+            }
+            finally
+            {
+                _looksSaveLock.Release();
+            }
+            var server = new ObsOverlayServer(new ObsOverlayOptions(_settings.ObsHidePaused, _settings.ReduceMotion, looks));
             server.StreamsChanged += OnOverlayStreamsChanged;
             _obsStartResult = server.Start();
             if (_obsStartResult == ObsOverlayStartResult.Started)
@@ -110,6 +153,78 @@ public sealed partial class WebHostWindow
     }
 
     private void ApplyObsHidePaused(bool hidePaused) => _obsOverlay?.SetHidePaused(hidePaused);
+
+    private void ApplyObsReduceMotion(bool reduceMotion) => _obsOverlay?.SetReduceMotion(reduceMotion);
+
+    private void ApplyObsDraft(ObsLook? look, string backdrop, string? nonce)
+    {
+        _draftLook = look;
+        _draftBackdrop = ObsLookValidation.NormalizeBackdrop(backdrop);
+        _previewNonce = nonce;
+        _obsOverlay?.SetDraftLook(look, _draftBackdrop, nonce);
+    }
+
+    private readonly record struct ObsLookCommitOutcome(bool Ok, string? Reason, string[] Ids, long Revision);
+
+    private async Task<ObsLookCommitOutcome> CommitLooksAsync(
+        Func<ObsLookState, (ObsLookState? State, string[] Ids, string? Error)> prepare)
+    {
+        await _looksSaveLock.WaitAsync();
+        try
+        {
+            EnsureObsLooksLoaded();
+            if (_looks.IsReadOnly)
+                return new(false, _looks.ReadOnlyReason ?? "The looks file is read-only", [], _looksRevision);
+
+            var mutation = prepare(_looks);
+            if (mutation.Error is not null)
+                return new(false, mutation.Error, mutation.Ids, _looksRevision);
+            if (mutation.State is null)
+                return new(false, "No look changes were produced", mutation.Ids, _looksRevision);
+
+            using var commit = CancellationTokenSource.CreateLinkedTokenSource(_looksShutdownCts.Token);
+            _activeLooksCommit = commit;
+            var saved = await ObsLookStore.SaveAsync(_root, mutation.State, commit.Token);
+            if (!saved.Committed)
+                return new(false, saved.Reason, mutation.Ids, _looksRevision);
+
+            _looks = mutation.State;
+            _looksRevision++;
+            _obsOverlay?.SetLooks(_looks);
+            return new(true, null, mutation.Ids, _looksRevision);
+        }
+        catch (OperationCanceledException)
+        {
+            return new(false, "The looks save was cancelled", [], _looksRevision);
+        }
+        catch (Exception ex)
+        {
+            return new(false, $"Could not save: {ex.GetType().Name}", [], _looksRevision);
+        }
+        finally
+        {
+            _activeLooksCommit = null;
+            _looksSaveLock.Release();
+        }
+    }
+    private async Task StopObsLookCommitsAsync()
+    {
+        var acquired = false;
+        try
+        {
+            await _looksSaveLock.WaitAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            acquired = true;
+        }
+        catch (TimeoutException)
+        {
+            try { _activeLooksCommit?.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        finally
+        {
+            if (acquired) _looksSaveLock.Release();
+            _looksShutdownCts.Cancel();
+        }
+    }
 
     // Hard invalidation (navigation, browser failure, power suspend): 'none' now, latest stale.
     private void InvalidateOverlay()
@@ -150,7 +265,7 @@ public sealed partial class WebHostWindow
     }
 
     // Raised on a server thread; the count is re-read on the UI thread.
-    private void OnOverlayStreamsChanged(int streams)
+    private void OnOverlayStreamsChanged(ObsOverlayStreamCounts streams)
     {
         _dispatcherQueue.TryEnqueue(() =>
         {
@@ -166,7 +281,7 @@ public sealed partial class WebHostWindow
         {
             if (!_settings.ObsOverlay) return ObsOverlayStatus.Off;
             if (_obsOverlay is { IsRunning: true } server)
-                return server.OpenStreams > 0 ? ObsOverlayStatus.Connected : ObsOverlayStatus.Waiting;
+                return server.StatusSourceCount > 0 ? ObsOverlayStatus.Connected : ObsOverlayStatus.Waiting;
             return _obsStartResult switch
             {
                 ObsOverlayStartResult.PrefixInUse => ObsOverlayStatus.PrefixInUse,
@@ -180,7 +295,7 @@ public sealed partial class WebHostWindow
     private void RefreshObsStatus()
     {
         if (_closing || _disposed) return;
-        _settingsDialog?.SetObsStatus(CurrentObsStatus, _obsOverlay?.OpenStreams ?? 0);
+        _settingsDialog?.SetObsStatus(CurrentObsStatus, _obsOverlay?.StatusSourceCount ?? 0);
         RefreshObsSurfaces();
     }
 
@@ -189,7 +304,7 @@ public sealed partial class WebHostWindow
     {
         if (_closing || _disposed) return;
         var enabled = _settings.ObsOverlay;
-        var streams = _obsOverlay?.OpenStreams ?? 0;
+        var streams = _obsOverlay?.StatusSourceCount ?? 0;
         var state = !enabled
             ? "off"
             : CurrentObsStatus switch
