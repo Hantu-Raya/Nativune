@@ -1,60 +1,50 @@
 <#
-G3 performance bench for the OBS now-playing overlay in real OBS (notes/research/obs-overlay-2026-09-28/plan.md §6.3 G3).
-Needs the owner's explicit E2E-B approval before it is run: it launches a disposable portable OBS 32.2.2 copy
-(scripts/obs-portable.ps1) on screen.
+Full-length overlay designer plan v5 §7.3/7.4. Runtime OBS commands need explicit
+per-block owner approval; no answer is not approval. Never shorten this protocol.
+-DryRun prints/self-checks schedules without creating roots, building, opening
+listeners or starting app/OBS/Chrome. Its synthetic schema fixture is not evidence.
 
-Regenerate:
-  pwsh -NoProfile -File scripts/obs-overlay-bench.ps1 -OutputDirectory artifacts/obs-overlay-obs
-  pwsh -NoProfile -File scripts/obs-overlay-bench.ps1 -Workload Playing -SkipPublish -TimeBoxMinutes 45
+Playing: -Protocol SharedBaseline -Looks All -Workload Playing -TimeBoxMinutes 150
+Paused: -Workload Paused -Look pill -TimeBoxMinutes 30
+Worst: -Workload Playing -WorstFrom <frames-worst.json> -TimeBoxMinutes 30
+Designer: -Designer -WorstFrom <frames-worst.json> -TimeBoxMinutes 180 (no OBS)
+OBS also requires -FramesFrom <frames-worst.json> and -StillsReport <B-LOOK report.json>.
 
-Environment: the E2E-B setup (Initialize-ObsOverlayScene after connecting: one scene 'Overlay' with the browser source 'Nativune Overlay',
-shutdown-when-hidden on, no outputs), Studio Mode forced off and recorded, preview and browser hardware acceleration
-at OBS defaults (read from the portable config and recorded), no output active (checked). Nativune: the hook build
-(artifacts/obs-overlay/app, -p:DiscordPresenceTestHooks=true), fresh root, settings v7 with ObsOverlay=true,
-SleepInBackground=true, DiscordPresence=false, started Full and tray-hidden by the fixture bench state 'Hidden'
-(Compact off). Launch order per block: app, its bench ready.json, 200 on http://localhost:47813/, then OBS.
-
-Protocol per workload (Playing = the 1800 s steady profile from 0 s; Paused = paused at 60 s):
-  block    fresh app + OBS launch; 4 pairs as ABBA x2 (A B | B A | A B | B A). A = source item enabled,
-           B = source item disabled (shutdown on, so the page is destroyed).
-  arm      30 s settle + 120 s measure. Validity from hook state (never inside the 120 s window):
-           A  settle: streams >= 1, latestState = workload, fixtureArtServed >= 1 (it counts since the last stream
-              opened), and (Playing) latestPosition <= elapsed-since-ready + 5 s and latestPosition + 150 <= duration - 60;
-              after measure: streams >= 1, latestState = workload (fixtureArtServed is not re-checked: it resets to 0
-              when the 5-minute stream lifetime renews, and the page keeps its already-loaded image).
-           B  settle: streams reach 0 and no Overlay-mode read from then to the settle end;
-              after measure: streams 0 and no Overlay-mode read during measure.
-           Also invalid: a ROOT process (Nativune.exe or obs64.exe, PID + creation time) exits or restarts, or a sample
-           gap > 3 s. Child processes (WebView2/CEF utility, GPU, renderer helpers) may appear or exit: recorded per arm
-           (count + names), not invalidating; exited children keep their last CPU time in the tree sum.
-           An invalid arm is rerun once; a second failure makes the pair invalid and the workload gate blocked.
-  -AppOnly no OBS. A = one SSE client (background pwsh HttpClient reader) on http://localhost:47813/events, B = no
-           client. Same app launch/settle/measure/pairing/scoring, only the app budgets. A needs streams >= 1 and
-           latestState (settle and after measure); B as above. Report: <OutputDirectory>/<utc>-apponly/.
-  -Pairs   pairs per block (default 4, ABBA order continued); -Workloads is an alias of -Workload.
-  age      Playing only: an arm (or rerun) starts only if elapsed-since-ready + 150 <= duration - 60 (1740 s);
-           otherwise the unfinished pair is discarded and the block continues on a fresh app + OBS launch.
-  samples  every 1 s: both trees' CPU time and private bytes, and the sum of \GPU Engine(*)\Utilization Percentage
-           over instances whose pid_<n> is in the OBS tree (labelled engine-percent sum; unavailable -> blocked);
-           OBS GetStats every 5 s (renderSkippedFrames delta, mean averageFrameRenderTime).
-  scoring  paired delta = A - B per pair. pass: max delta <= budget; fail: min delta > budget; otherwise one extra
-           fresh block for that workload, then still between -> inconclusive, reported as fail (no merge).
-  time box OBS on-screen seconds (launch to stop) are totalled; an arm starts only if it fits in -TimeBoxMinutes
-           (default 90: the 2 h G3 box less the 30 min of B-LOOK/B-VIS/B-DOCS). Unfinished checks stay blocked.
-
-Artifacts: <OutputDirectory>/<utc>/bench-report.json (same check format as the E2E reports) and perf.csv (one row per
-tree per 1 s sample). No screenshots, no page probes, no websocket password (it stays in the portable copy's config).
+Shared: B0, four seeded/reversed/rotated rounds of A B A quartets, B_end (50 arms).
+Every arm: 30 s settle + 120 s measurement; once-only 180 s warm-up visits all looks.
+Standard: four AB/BA pairs, same windows/warm-up, one configuration per command.
+Designer: four AB/BA pairs and 60 s first-open warm-up in each of eight conditions.
+Complete trees are sampled at 1 s; any root/descendant exit or ProcessFailed,
+>3 s gap, wrong workload/count, missing GPU counter or renewal invalidates.
+Retry each invalid arm once, then blocked. Teardown/switching is outside windows.
+Shared retains adjacent immediate pairs, brackets and conservative observed extremes;
+mixed/drift/cold-cost/retention needs a separately approved fresh standard command
+(-FallbackFrom <bench-report.json> -Look <theme>, box 30).
+Fresh mixed is inconclusive: no merge. Paused extensions need separate approved blocks.
+Artifacts: bench-report.json, perf.csv, fixture-ready epoch, seed/order, shapes, triggers.
 #>
 [CmdletBinding()]
 param(
-    [Alias('Workloads')] [ValidateSet('Playing', 'Paused')] [string[]] $Workload = @('Playing', 'Paused'),
-    [ValidateRange(1, 16)] [int] $Pairs = 4,
+    [Alias('Workloads')] [ValidateSet('Playing', 'Paused')] [string[]] $Workload = @('Playing'),
+    [ValidateRange(4, 4)] [int] $Pairs = 4,
+    [switch] $Designer,
+    [switch] $DryRun,
+    [ValidateSet('Standard', 'SharedBaseline')] [string] $Protocol = 'Standard',
+    [string[]] $Looks = @('All'),
+    [ValidateSet('pill','matte','matte-light','standard','classic','simple','album-art','card')] [string] $Look = 'pill',
+    [int] $Width = 0,
+    [int] $Scale = 100,
+    [string] $WorstFrom,
+    [string] $FramesFrom,
+    [string] $StillsReport,
+    [string] $FallbackFrom,
+    [int] $Seed = 47813,
     [switch] $AppOnly,
-    [ValidateRange(0, 3600)] [double] $WarmupSeconds = 180,
-    [ValidateRange(0, 3600)] [double] $WarmupASeconds = 60,
+    [ValidateSet(60,180)] [double] $WarmupSeconds = 180,
+    [ValidateRange(60, 60)] [double] $WarmupASeconds = 60,
     [ValidateSet('none', 'noop')] [string] $ReadProbe = 'none',
     [string] $OutputDirectory = 'artifacts/obs-overlay-obs',
-    [double] $TimeBoxMinutes = 90,
+    [double] $TimeBoxMinutes = 0,
     [double] $ObsCpuBudgetPp = 1.0,
     [double] $ObsPrivateBudgetMiB = 60,
     [double] $ObsGpuBudgetEnginePp = 1.0,
@@ -70,6 +60,66 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'obs-portable.ps1')
+. (Join-Path $PSScriptRoot 'obs-overlay-bench-protocol.ps1')
+if ($Workload.Count -ne 1) { throw 'One approved block per command: select one workload.' }
+if ($PSBoundParameters.ContainsKey('WarmupSeconds') -and $WarmupSeconds -ne $(if ($Designer) {60} else {180})) {throw 'Full protocol warm-up is 60 seconds for Designer, 180 otherwise.'}
+if ($FallbackFrom) {
+    if ($Protocol -ne 'Standard' -or $Designer -or $WorstFrom) {throw 'FallbackFrom requires a standard single-look block.'}
+    $previous=Get-Content -Raw -LiteralPath $FallbackFrom | ConvertFrom-Json -AsHashtable -Depth 32
+    $fallback=$previous.workloads.Playing[$Look]
+    if (-not $fallback -or $fallback.status -ne 'fresh-block-required') {throw 'FallbackFrom does not request this look.'}
+}
+if ($Designer -and ($AppOnly -or $Protocol -ne 'Standard')) { throw '-Designer cannot be combined with AppOnly or SharedBaseline.' }
+if ($Protocol -eq 'SharedBaseline' -and ($Workload[0] -ne 'Playing' -or ($Looks -join ',') -ne 'All' -or $WorstFrom -or $Width -or $Scale -ne 100)) {
+    throw 'SharedBaseline requires -Workload Playing -Looks All at defaults.'
+}
+$allThemes = @('pill','matte','matte-light','standard','classic','simple','album-art','card')
+$worstData = if ($WorstFrom) { Read-ObsFramesWorst $WorstFrom } else { $null }
+$selectedOptions = if ($worstData) { $worstData.worst.options } else { New-ObsBenchOptions $Look $Width $Scale }
+$selectedThemes = if ($Protocol -eq 'SharedBaseline') { $allThemes } else { @($selectedOptions.theme) }
+$schedule = @(New-ObsBenchSchedule $Protocol $selectedThemes $Seed)
+if (-not $TimeBoxMinutes) { $TimeBoxMinutes = if ($Designer) { 180 } elseif ($Protocol -eq 'SharedBaseline') { 150 } else { 30 } }
+if ($DryRun) {
+    . (Join-Path $PSScriptRoot 'obs-overlay-bench-selfcheck.ps1')
+    Test-ObsBenchSchedule
+    $count = if ($Designer) { 8 } else { 1 }
+    $warmup = if ($Designer) { 60 } else { 180 }
+    $reserve = if ($Designer) { 0 } elseif ($Protocol -eq 'SharedBaseline') { 240 } else { 120 }
+    $windows = $schedule.Count * 150
+    $minutes = ($windows + $warmup + $reserve) / 60
+    $total = $minutes * $count
+    if ($total -gt $TimeBoxMinutes) { throw "Full protocol requires $total minutes including switching reserve; box is $TimeBoxMinutes." }
+    Write-Output "Mode: $(if ($Designer) {'Designer'} elseif ($WorstFrom) {'Worst'} else {$Protocol}) / $($Workload[0]); seed=$Seed"
+    if ($Designer) {
+        foreach ($lyrics in @('closed','open')) {
+            foreach ($condition in @('sample-playing','sample-paused','current-playing','max-area')) {
+                $theme = if ($condition -eq 'max-area') { $selectedOptions.theme } else { 'pill' }
+                Write-Output "Schedule [$condition / $theme / Lyrics $lyrics]: A B | B A | A B | B A (30+120s each)"
+            }
+        }
+    } else { Write-Output "Schedule: $(($schedule | ForEach-Object { $_.id + $(if ($_.theme) { ':' + $_.theme }) }) -join ' ')" }
+    Write-Output "Arithmetic: $($schedule.Count) arms x (30+120)s + ${warmup}s warm-up + ${reserve}s switching reserve = $minutes min/block; $count block(s) = $total min; time box=$TimeBoxMinutes min; fits=True"
+    if ($Designer) { Write-Output 'Conditions: sample Playing, sample Paused, current Playing, max-area fixture-max; each Lyrics closed/open. A=preview Open+visible; B=closed; budgets +80 MiB/+0.5 pp. WorstFrom required for live max-area row.' }
+    if ($Protocol -eq 'SharedBaseline') { Write-Output '32 A + 18 B (B0/B_end included); only adjacent A share each B; conservative brackets; drift/cold-cost/retention/mixed -> separately approved fresh four-pair 30-minute command.' }
+    if ($Workload[0] -eq 'Paused') { Write-Output 'Pill standard baseline; frames-worst.json pausedExtensions each require a separate 30-minute command.' }
+    return
+}
+if (-not $Designer -and -not $AppOnly) {
+    $gatePath = if ($FramesFrom) { $FramesFrom } elseif ($WorstFrom) { $WorstFrom } else { throw 'Real OBS requires -FramesFrom frames-worst.json certifying all A-FRAMES rows.' }
+    $gate = Read-ObsFramesWorst $gatePath
+    if ($gate.framesGreen -ne $true) { throw 'A-FRAMES not certified green.' }
+    if (-not $StillsReport) { throw 'Real OBS requires -StillsReport from the approved B-LOOK run.' }
+    $stills = Get-Content -Raw -LiteralPath $StillsReport | ConvertFrom-Json -Depth 32
+    $lookChecks = @($stills.checks | Where-Object { $_.name -like 'B-LOOK*' })
+    if (-not $stills.passed -or $lookChecks.Count -eq 0 -or @($lookChecks | Where-Object status -ne pass).Count) { throw 'B-LOOK stills are not certified green.' }
+}
+if ($Designer) {
+    if (-not $worstData) { throw '-Designer requires -WorstFrom for the max-area preview condition.' }
+    if (-not (Test-Path (Join-Path $repo '.tools/better-lyrics/2.4.1.2.fingerprint.json'))) { throw 'P2 blocked: provision the lyrics fixture before Designer bench.' }
+    $AppOnly = $true
+    $WarmupSeconds = 60
+    $AppPrivateBudgetMiB = 80
+}
 $commandLine = 'pwsh -NoProfile -File scripts/obs-overlay-bench.ps1 ' + (($PSBoundParameters.GetEnumerator() | ForEach-Object {
     if ($_.Value -is [switch]) { if ($_.Value) { "-$($_.Key)" } } else { "-$($_.Key) $(@($_.Value) -join ',')" } }) -join ' ')
 $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $repo $OutputDirectory }
@@ -93,7 +143,7 @@ $port = 47813
 $overlayUrl = "http://localhost:$port/"
 $sceneName = 'Overlay'
 $sourceName = 'Nativune Overlay'
-$trackSeconds = 1800.0
+$trackSeconds = if ($Designer) {1800.0} else {14400.0}
 $ageMarginSeconds = 60.0
 $settleSeconds = 30.0
 $measureSeconds = 120.0
@@ -174,6 +224,7 @@ function Get-Seconds($From, $To) { ([double] $To - [double] $From) / $freq }
 function Wait-UntilQpc([double] $Qpc) {
     while ($true) {
         $left = ($Qpc - (Get-Qpc)) / $freq
+        if (($Designer -or -not $AppOnly) -and (Get-ObsOnScreenSeconds) -ge $timeBoxSeconds) {$script:timeBoxHit=$true;throw 'TIMEBOX reached; unfinished gates blocked.'}
         if ($left -le 0) { return }
         Start-Sleep -Milliseconds ([int] [Math]::Max(10, [Math]::Min(250, $left * 1000)))
     }
@@ -365,10 +416,12 @@ while ($true) {
 '@
 function Start-BenchReader($Ctx) {
     $command = "& { $benchReaderScript } -Url '$($overlayUrl)events'"
+    if ($Designer) { Start-DesignerPreview $Ctx; return }
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $Ctx.Reader = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
 }
 function Stop-BenchReader($Ctx) {
+    if ($Designer -and $Ctx -and $Ctx.Reader) { Stop-DesignerPreview $Ctx; return }
     if (-not $Ctx -or -not $Ctx.Reader) { return }
     try { if (-not $Ctx.Reader.HasExited) { Stop-Process -Id $Ctx.Reader.Id -Force -ErrorAction SilentlyContinue; [void] $Ctx.Reader.WaitForExit(5000) } } catch { }
     $Ctx.Reader = $null
@@ -515,8 +568,10 @@ function Clear-GpuCounters { foreach ($c in @($script:gpuCounters.Values)) { try
 # ---------------------------------------------------------------------------------------------------------------
 # Launch (app first, then OBS) and environment
 
+. (Join-Path $PSScriptRoot 'obs-overlay-bench-runtime.ps1')
 function Get-ObsOnScreenSeconds {
     $s = $script:obsUsedSeconds
+    if ($Designer -and (Get-Variable designerRunStart -Scope Script -ErrorAction SilentlyContinue)) {return (Get-Seconds $script:designerRunStart (Get-Qpc))}
     if ($null -ne $script:obsLaunchQpc) { $s += Get-Seconds $script:obsLaunchQpc (Get-Qpc) }
     $s
 }
@@ -542,10 +597,25 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     if (-not (Test-PrefixFree)) { throw "http://localhost:$port/ is held by another process before $name." }
     $root = New-Root $name
     Write-Settings $root
-    $app = Start-App $root $WorkloadName
+    $configurations = @{}
+    $specs = @(for ($i=0; $i -lt $allThemes.Count; $i++) {
+        $theme = $allThemes[$i]; $id = 'bench00' + $i
+        $options = if ($Protocol -ne 'SharedBaseline' -and $theme -eq $selectedOptions.theme) { $selectedOptions } else { New-ObsBenchOptions $theme }
+        $configurations[$theme] = @{id=$id;name="Bench $theme";options=$options}
+        $size=Get-ObsBenchSourceSize $options
+        [pscustomobject]@{theme=$theme;id=$id;url="http://localhost:47813/?look=$id";width=$size.w;height=$size.h}
+    })
+    [IO.File]::WriteAllText((Join-Path $root 'data/obs-looks.json'),(@{version=1;looks=@($configurations.Values);retired=@()}|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+    if ($Designer) {
+        Copy-Item -LiteralPath (Join-Path $repo '.tools/better-lyrics') -Destination (Join-Path $root '.tools/better-lyrics') -Recurse
+    }
+    $profile=if ($Designer) {'Playing'} elseif ($WorkloadName -eq 'Playing') {'PlayingLong'} else {'Paused'}
+    $app = Start-App $root $profile
+    $record['fixtureProfile']=$profile
     $ctx = [pscustomobject]@{ Name = $name; Workload = $WorkloadName; Block = $Block; Launch = $script:launchIndex; Root = $root
         App = $app; AppStart = $app.StartTime; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
-        ReadyQpc = $null; ItemEnabled = $true; PageArtBaseline = 0; Record = $record; Reader = $null }
+        ReadyQpc = $null; ItemEnabled = $false; PageArtBaseline = 0; Record = $record; Reader = $null
+        Items = $null; ActiveTheme = $selectedOptions.theme; LookId = $configurations[$selectedOptions.theme].id; Shape0 = $null; ArmTrace = $null }
     $script:currentCtx = $ctx
     $ready = Wait-BenchReady $root
     if (-not $ready) { throw "$name`: no fixture ready.json (failed.json or timeout)." }
@@ -561,6 +631,13 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     if (-not $ok) { throw "$name`: $overlayUrl did not answer 200 before OBS launch." }
     # Every arm before the first A has its baseline from before OBS existed.
     $ctx.PageArtBaseline = [int] (Get-Overlay $hidden 'fixtureArtServed')
+    $record['fixtureReadyEpochQpc'] = $ctx.ReadyQpc
+    if ($WorstFrom -or ($Designer -and $script:designerCondition.worst)) { Send-ObsBenchPayload $ctx 'command-obs-fixture-art' 'fixture-max' }
+    if ($Designer) {
+        Send-HookCommand $root $(if ($script:designerCondition.lyrics) {'command-lyrics-open'} else {'command-lyrics-close'})
+        $lyricsReady = Wait-For {$s=Get-State $root 'lyrics';if ((Get-Prop (Get-Prop $s.state 'lyrics') 'open') -eq $script:designerCondition.lyrics) {$s}} 30
+        if (-not $lyricsReady) { throw 'P2 blocked: lyrics window did not reach the requested state.' }
+    }
     $record['mode'] = if ($AppOnly) { 'apponly' } else { 'obs' }
     if ($AppOnly) { return $ctx }
 
@@ -569,9 +646,9 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     $ctx.ObsProcess = Start-ObsPortable $ctx.Obs
     $ctx.ObsStart = $ctx.ObsProcess.StartTime
     $ctx.Session = Connect-ObsWebSocket $ctx.Obs
-    # Scene 'Overlay' + browser input 'Nativune Overlay' (shutdown on, item enabled) created through obs-websocket.
-    $initScene = Initialize-ObsOverlayScene $ctx.Session -Shutdown $true -ItemEnabled $true
-    $record['sceneInitItemId'] = $initScene.sceneItemId
+    $ctx.Items = Initialize-ObsOverlayEightSourceScene $ctx.Session $specs
+    $record['sceneSpecs'] = $specs
+    $record['sceneItems'] = $ctx.Items
     $version = Invoke-ObsRequest $ctx.Session 'GetVersion' @{}
     $record['obsVersion'] = Get-Prop $version 'obsVersion'
     # Environment: Studio Mode off, no outputs, preview + browser HW acceleration at defaults (recorded).
@@ -589,12 +666,12 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     $record['browserHWAccel'] = Read-IniValue $configDir 'General' 'BrowserHWAccel'
     $record['previewEnabledNote'] = 'absent key = OBS default (preview shown)'
     $record['browserHWAccelNote'] = 'absent key = OBS default (enabled)'
-    $settings = Get-Prop (Invoke-ObsRequest $ctx.Session 'GetInputSettings' @{ inputName = $sourceName }) 'inputSettings'
+    $settings = $ctx.Items[$ctx.ActiveTheme].settings
     $record['source'] = [ordered]@{ url = Get-Prop $settings 'url'; width = Get-Prop $settings 'width'; height = Get-Prop $settings 'height'
         shutdown = Get-Prop $settings 'shutdown'; fps = Get-Prop $settings 'fps'; fps_custom = Get-Prop $settings 'fps_custom' }
-    $ctx.ItemId = [int] (Get-Prop (Invoke-ObsRequest $ctx.Session 'GetSceneItemId' @{ sceneName = $sceneName; sourceName = $sourceName }) 'sceneItemId')
-    $ctx.ItemEnabled = [bool] (Get-Prop (Invoke-ObsRequest $ctx.Session 'GetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $ctx.ItemId }) 'sceneItemEnabled')
-    $envOk = ($record['studioModeEnabled'] -eq $false) -and -not (@($outputs.Values) -contains $true) -and
+    $ctx.ItemId = $ctx.Items[$ctx.ActiveTheme].itemId
+    $ctx.ItemEnabled = $false
+    $envOk = ($record['studioModeEnabled'] -eq $false) -and @($outputs.Values | Where-Object {$_ -ne $false}).Count -eq 0 -and
         (Get-Prop $settings 'shutdown') -eq $true -and "$($record['obsVersion'])" -like "$script:ObsPortableVersion*"
     $record['environmentOk'] = $envOk
     if (-not $envOk) { throw "$name`: OBS environment differs from the G3 seeds (see launches[$($script:launchIndex - 1)])." }
@@ -602,7 +679,8 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
 }
 function Stop-Launch($Ctx) {
     if (-not $Ctx) { return }
-    Stop-BenchReader $Ctx
+    if ($Ctx.ArmTrace) { try { [void](Stop-ObsArmTrace $Ctx.ArmTrace) } catch {} ; $Ctx.ArmTrace=$null }
+    try { Stop-BenchReader $Ctx } catch { $Ctx.Record['readerStopError']=$_.Exception.Message }
     Clear-GpuCounters
     if ($Ctx.Obs) {
         try { Stop-ObsPortable $Ctx.Obs } catch { $Ctx.Record['obsStopError'] = $_.Exception.Message }
@@ -617,14 +695,23 @@ function Stop-Launch($Ctx) {
     $script:currentCtx = $null
 }
 function Set-SourceEnabled($Ctx, [bool] $Enabled) {
-    [void] (Invoke-ObsRequest $Ctx.Session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $Ctx.ItemId; sceneItemEnabled = $Enabled })
+    Set-ObsOverlayEightSource $Ctx.Session $Ctx.Items $(if ($Enabled) {$Ctx.ActiveTheme} else {$null})
     $Ctx.ItemEnabled = $Enabled
+    if (-not $Enabled) {
+        [void](Wait-For {$s=Get-State $Ctx.Root 'switchzero';Test-ObsBenchB $s} 10)
+        $shapeDeadline=(Get-Qpc)+10*$freq
+        do {
+            $shape=Get-ObsOffShape $Ctx
+            if (-not $Ctx.Shape0 -or $shape -eq $Ctx.Shape0) {break}
+            Start-Sleep -Milliseconds 250
+        } while ((Get-Qpc) -lt $shapeDeadline)
+    }
 }
 function Get-ObsStats($Ctx) {
     $s = Invoke-ObsRequest $Ctx.Session 'GetStats' @{}
     [pscustomobject]@{ skipped = [double] (Get-Prop $s 'renderSkippedFrames'); renderMs = [double] (Get-Prop $s 'averageFrameRenderTime') }
 }
-# Only the ROOT processes decide validity (PID + start time); children may come and go.
+# Root identity guard supplements full-tree tracing and sampled descendant identities.
 function Test-RootsAlive($Ctx) {
     $a = Get-Process -Id $Ctx.App.Id -ErrorAction SilentlyContinue
     $appOk = $a -and $a.StartTime -eq $Ctx.AppStart
@@ -639,12 +726,16 @@ function Test-RootsAlive($Ctx) {
 function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     $arm = [ordered]@{ workload = $Ctx.Workload; block = $Ctx.Block; launch = $Ctx.Launch; pair = $Pair; condition = $Condition
         attempt = $Attempt; valid = $true; reasons = [Collections.Generic.List[string]]::new() }
+    $arm['id'] = "l$($Ctx.Launch)-p$Pair-$Condition-a$Attempt"
+    $arm['theme'] = $Ctx.ActiveTheme
     $arms.Add($arm)
     $invalid = { param($r) $arm.valid = $false; $arm.reasons.Add($r) }
     $wantState = $Ctx.Workload.ToLowerInvariant()
     $settleStart = Get-Qpc
     $settleEnd = $settleStart + $settleSeconds * $freq
     $arm['elapsedSinceReadyAtStart'] = Round3 (Get-Seconds $Ctx.ReadyQpc $settleStart)
+    # Source/designer teardown is outside both windows.
+    $switchStart = Get-Qpc
 
     if ($Condition -eq 'A') {
         # Fixture art is fetched only by a fresh page/stream, and fixtureArtServed resets on stream renewal while the page
@@ -669,8 +760,9 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if (-not $AppOnly) { $arm['artBaseline'] = $Ctx.PageArtBaseline }
         # Settle-start validity: the stream, workload state, fixture art (page only), and (Playing) a fresh position.
         # fixtureArtServed resets when a stream opens, so require >= 1 from a snapshot taken with streams >= 1.
-        $settleOk = { param($s) $s -and (Get-Overlay $s 'streams') -ge 1 -and (Get-Overlay $s 'latestState') -eq $wantState -and
-            ($AppOnly -or [int] (Get-Overlay $s 'fixtureArtServed') -ge 1) }
+        $settleStart = Get-Qpc; $settleEnd = $settleStart + $settleSeconds * $freq
+        $Ctx.ArmTrace = Start-ObsArmTrace $Ctx
+        $settleOk = { param($s) Test-ObsBenchA $Ctx $s }
         $open = Wait-For { $s = Get-State $Ctx.Root 'aopen'; if ((Get-Overlay $s 'streams') -ge 1) { $s } } ($settleSeconds - 8) 500
         $fresh = if ($open) { Start-Sleep -Milliseconds 1500; Get-State $Ctx.Root 'afresh' } else { $null }
         $okSettle = [bool] (& $settleOk $fresh)
@@ -681,7 +773,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $arm['settle'] = [ordered]@{ recycled = $recycled; streams = Get-Overlay $fresh 'streams'; latestState = Get-Overlay $fresh 'latestState'
             latestStale = Get-Overlay $fresh 'latestStale'; fixtureArtServed = Get-Overlay $fresh 'fixtureArtServed'; latestPosition = Get-Overlay $fresh 'latestPosition' }
         if (-not $okSettle) { & $invalid 'A settle: streams>=1, latestState, fixtureArtServed>=1 not all met' }
-        if ($Ctx.Workload -eq 'Playing' -and $fresh) {
+        if ($Ctx.Workload -eq 'Playing' -and $fresh -and (-not $Designer -or $script:designerCondition.kind -eq 'current')) {
             # Throttled fixture timers drop ticks, so position may lag wall time but never lead it,
             # and the arm (position + 150 s) must end before the last 60 s of the track.
             $elapsed = Get-Seconds $Ctx.ReadyQpc $fresh.qpc
@@ -692,21 +784,34 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
             $arm['settle']['positionMaxAllowed'] = Round3 ($elapsed + $positionTolerance)
             $arm['settle']['positionPlusArm'] = if ($null -ne $position) { Round3 ([double] $position + 150) } else { $null }
             $arm['settle']['durationLimit'] = if ($null -ne $duration) { Round3 ([double] $duration - 60) } else { $null }
-            if ($null -eq $position -or [double] $position -gt $elapsed + $positionTolerance) {
-                & $invalid "A settle: latestPosition $position ahead of elapsed $(Round3 $elapsed) + $positionTolerance s"
-            } elseif ($null -eq $duration -or [double] $position + 150 -gt [double] $duration - 60) {
-                & $invalid "A settle: latestPosition $position + 150 s exceeds duration $duration - 60 s"
+            if ($null -eq $position -or [Math]::Abs([double]$position-$elapsed) -gt $positionTolerance) {
+                & $invalid "A settle: position $position differs from fixture epoch $(Round3 $elapsed) by > $positionTolerance s"
+            } elseif ($null -eq $duration -or [double]$duration -lt $trackSeconds -or $elapsed + 150 -gt [double]$duration - 60) {
+                & $invalid "A settle: elapsed $(Round3 $elapsed) + 150 exceeds duration $duration - 60, or duration <14400"
             }
         }
     } else {
         if ($AppOnly) { Stop-BenchReader $Ctx } elseif ($Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $false }
+        $settleStart = Get-Qpc; $settleEnd = $settleStart + $settleSeconds * $freq
+        $Ctx.ArmTrace = Start-ObsArmTrace $Ctx
         $zero = Wait-For { $s = Get-State $Ctx.Root 'bzero'; if ((Get-Overlay $s 'streams') -eq 0) { $s } } ($settleSeconds - 8) 500
         $arm['settle'] = [ordered]@{ streamsZero = [bool] $zero; secondsToZero = if ($zero) { Round3 (Get-Seconds $settleStart $zero.qpc) } }
         $script:bZero = $zero
         if (-not $zero) { & $invalid 'B settle: streams did not reach 0' }
     }
+    if (-not (Test-AgeFits $Ctx)) { & $invalid 'fixture elapsed +150 exceeds duration -60 at arm start' }
     Wait-UntilQpc $settleEnd
     $sPre = Get-State $Ctx.Root "$($Condition.ToLowerInvariant())pre"
+    $arm['switchSeconds'] = Round3 (Get-Seconds $switchStart $settleStart)
+    $arm['pre'] = Get-Prop $sPre 'state'
+    if ($Condition -eq 'A' -and -not (Test-ObsBenchA $Ctx $sPre)) { & $invalid 'A pre-window workload/preview/count mismatch' }
+    if ($Condition -eq 'B' -and -not (Test-ObsBenchB $sPre)) { & $invalid 'B pre-window designer/count mismatch' }
+    if (-not $AppOnly -and $Condition -eq 'B') {
+        $shape=Get-ObsOffShape $Ctx; $arm['shapePre']=$shape
+        if ($shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $shape" }
+    }
+    $failureLog=Join-Path $Ctx.Root 'data/nativune.log'
+    $failureCountBefore = $Ctx.ArmTrace.failureCountBefore
     if ($Condition -eq 'B') {
         $reads = if ($script:bZero -and $sPre) { Get-OverlayReads $script:bZero $sPre } else { $null }
         $arm['settle']['overlayReads'] = $reads
@@ -714,7 +819,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     }
 
     # Measure: no hook probes, no page probes, no screenshots.
-    # Tree rule: only the roots (Test-RootsAlive) invalidate; child processes that appear or exit are recorded.
+    # Any descendant exit invalidates; trace also covers children born/exited between samples.
     $all0 = Get-AllProcesses
     $appTree0 = Get-AppTree $Ctx.App.Id $Ctx.Root $all0
     $obsTree0 = if ($AppOnly) { @() } else { Get-ObsTree $Ctx.ObsProcess.Id }
@@ -751,6 +856,9 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if ($newObsPid -and $gpuOk) { [void] (Update-GpuCounters $obsPids) }
         $q = Get-Qpc
         $a = Measure-Tree $appTree $appSeen; $o = Measure-Tree $obsTree $obsSeen
+        foreach ($processEntry in @($appTree)+@($obsTree)) {[void]$Ctx.ArmTrace.ids.Add($processEntry.pid)}
+        $liveAppKeys = @($appTree.key); $liveObsKeys = @($obsTree.key)
+        if (@($appNames.Keys | Where-Object {$_ -notin $liveAppKeys}).Count -or @($obsNames.Keys | Where-Object {$_ -notin $liveObsKeys}).Count) { & $invalid 'descendant process exited inside measurement window' }
         $rc = Get-RoleCpu $appSeen $roleByKey
         $gpu = if ($gpuOk) { Read-GpuSum $obsPids } else { $null }
         if ($null -ne $lastQpc) { $maxGap = [Math]::Max($maxGap, (Get-Seconds $lastQpc $q)) }
@@ -781,6 +889,11 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         gpuCounters = $script:gpuCounters.Count }
     if ($maxGap -gt $maxGapSeconds) { & $invalid "sample gap $(Round3 $maxGap) s > $maxGapSeconds s" }
     if (-not (Test-RootsAlive $Ctx)) { & $invalid 'Nativune or obs64 root process restarted or exited' }
+    $arm['treeExits'] = @(Stop-ObsArmTrace $Ctx.ArmTrace); $Ctx.ArmTrace=$null
+    if ($arm.treeExits.Count) { & $invalid 'root or descendant process exited inside settle/measurement window' }
+    if (-not $AppOnly -and (-not $gpuOk -or $script:gpuCounters.Count -eq 0)) { & $invalid 'missing GPU counter' }
+    $failureCountAfter=if (Test-Path $failureLog) {@(Select-String -LiteralPath $failureLog -Pattern 'process-failed').Count} else {0}
+    if ($failureCountAfter -gt $failureCountBefore) { & $invalid 'ProcessFailed inside window' }
 
     # Post-measure validity.
     $sPost = Get-State $Ctx.Root "$($Condition.ToLowerInvariant())post"
@@ -805,12 +918,16 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
             overlayScriptChars = if ($sPre -and $sPostWindow) { Get-OverlayScriptChars $sPre $sPostWindow } else { $null } }
         # fixtureArtServed is recorded but not required: it resets to 0 when the 5-minute stream lifetime renews and
         # the page keeps its already-loaded image (checked once, at settle).
-        if (-not ($sPost -and (Get-Overlay $sPost 'streams') -ge 1 -and (Get-Overlay $sPost 'latestState') -eq $wantState)) {
-            & $invalid 'A after measure: streams>=1 and latestState not both met' }
+        if (-not (Test-ObsBenchA $Ctx $sPost)) { & $invalid 'A after measure: exact stream/workload/preview state not met' }
+        if ($renewalRetry -gt 0 -or ((Get-Overlay $sPost 'lastStreamEndReason') -eq 'Lifetime' -and (Get-Overlay $sPre 'lastStreamEndReason') -ne 'Lifetime')) { & $invalid 'unexpected lifetime renewal' }
     } else {
         $reads = if ($sPre -and $sPost) { Get-OverlayReads $sPre $sPost } else { $null }
         $arm['post'] = [ordered]@{ streams = Get-Overlay $sPost 'streams'; overlayReadsDuringMeasure = $reads }
-        if (-not ($sPost -and (Get-Overlay $sPost 'streams') -eq 0 -and $reads -eq 0)) { & $invalid 'B after measure: streams 0 and no overlay reads not both met' }
+        if (-not (Test-ObsBenchB $sPost) -or $reads -ne 0) { & $invalid 'B after measure: streams 0 and no overlay reads not both met' }
+        if (-not $AppOnly) {
+            $shape=Get-ObsOffShape $Ctx; $arm['shapePost']=$shape
+            if ($shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $shape" }
+        }
     }
 
     if ($samples.Count -ge 2) {
@@ -836,24 +953,29 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
 # ---------------------------------------------------------------------------------------------------------------
 # Blocks, pairs, reruns, fixture-age bound, time box
 
-# Warm-up after each fresh launch so the first arm does not measure app/OBS start-up or one-time JIT of the read path.
-# Part 1 (-WarmupASeconds) runs in the A condition (SSE client / source enabled, so overlay reads run); the rest runs in
-# the B condition (source disabled / no SSE client), so the first measured arm starts from a settled state. The A part
-# never needs a settle check: it is discarded. B's zero-read settle is done by the arm itself (bzero -> bpre window).
-# OBS stays on screen, so the whole warm-up counts toward the time box.
+# Once-only full warm-up after every fresh launch; never scored.
 function Invoke-Warmup($Ctx) {
     $start = Get-Qpc
-    if ($WarmupASeconds -gt 0) {
-        if ($AppOnly) { if (-not $Ctx.Reader) { Start-BenchReader $Ctx } }
-        elseif (-not $Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $true }
-        Wait-UntilQpc ($start + $WarmupASeconds * $freq)
+    if ($Designer) {
+        Start-BenchReader $Ctx
+        if (-not (Wait-For {$s=Get-State $Ctx.Root 'warmopen';if (Test-ObsBenchA $Ctx $s) {$s}} 30)) {throw 'Designer warmup preview did not connect visibly.'}
+        $start=Get-Qpc; Wait-UntilQpc ($start+60*$freq); Stop-BenchReader $Ctx
+    } elseif ($AppOnly) {
+        Start-BenchReader $Ctx
+        Wait-UntilQpc ($start+60*$freq); Stop-BenchReader $Ctx
+        Wait-UntilQpc ($start+180*$freq)
+    } else {
+        foreach ($theme in $allThemes) {
+            $Ctx.ActiveTheme=$theme; Set-SourceEnabled $Ctx $true
+            Wait-UntilQpc ((Get-Qpc)+15*$freq); Set-SourceEnabled $Ctx $false
+            if (-not (Wait-For {$s=Get-State $Ctx.Root 'warmzero';if (Test-ObsBenchB $s) {$s}} 10)) {throw 'Warmup source failed to release stream.'}
+        }
+        $Ctx.ActiveTheme=$selectedOptions.theme; $Ctx.LookId=$Ctx.Items[$Ctx.ActiveTheme].lookId
+        Wait-UntilQpc ($start+180*$freq)
+        $Ctx.Shape0=Get-ObsOffShape $Ctx; $Ctx.Record['shape0']=$Ctx.Shape0
+        if ($Ctx.Shape0 -notmatch '\|renderers:0$') {throw 'Warmup off-state retains a renderer; shape0 cannot certify it.'}
     }
-    $bStart = Get-Qpc
-    if ($AppOnly) { Stop-BenchReader $Ctx } elseif ($Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $false }
-    Wait-UntilQpc ($start + $WarmupSeconds * $freq)
-    $Ctx.Record['warmup'] = [ordered]@{ seconds = Round3 (Get-Seconds $start (Get-Qpc)); condition = 'A+B'
-        aSeconds = Round3 (Get-Seconds $start $bStart); bSeconds = Round3 (Get-Seconds $bStart (Get-Qpc))
-        elapsedSinceReadyAtEnd = Round3 (Get-Seconds $Ctx.ReadyQpc (Get-Qpc)) }
+    $Ctx.Record['warmup']=@{seconds=Round3 (Get-Seconds $start (Get-Qpc));minimumSeconds=$(if ($Designer) {60} else {180});allSourcesOff=$true}
 }
 function Test-AgeFits($Ctx) {
     if ($Ctx.Workload -ne 'Playing') { return $true }
@@ -901,6 +1023,7 @@ function Invoke-Block([string] $WorkloadName, [int] $Block) {
                 $roleDelta[$r] = if ($ra -and $rb) { Round3 ([double] $ra[$r].cpuPp - [double] $rb[$r].cpuPp) } else { $null }
             }
             $pairs.Add([ordered]@{ block = $Block; pair = $p; order = ($order -join ''); launch = $ctx.Launch; delta = $delta; roleDelta = $roleDelta
+                a = $pairArms['A'].id; b = $pairArms['B'].id; look = $ctx.ActiveTheme
                 overlayScriptChars = $pairArms['A'].post['overlayScriptChars'] })
         }
         @{ pairs = $pairs; blocked = $null }
@@ -924,7 +1047,7 @@ function Invoke-Workload([string] $WorkloadName) {
     $result = [ordered]@{ blocks = 0; blocked = $null; pairs = $all; metrics = [ordered]@{} }
     $workloadResults[$WorkloadName] = $result
     $verdicts = $null
-    for ($block = 1; $block -le 2; $block++) {
+    for ($block = 1; $block -le 1; $block++) {
         $b = Invoke-Block $WorkloadName $block
         $result.blocks = $block
         foreach ($x in $b.pairs) { $all.Add($x) }
@@ -933,20 +1056,23 @@ function Invoke-Workload([string] $WorkloadName) {
         foreach ($m in $budgets.Keys) { $verdicts[$m] = Get-Verdict @($all | ForEach-Object { $_.delta[$m] }) $budgets[$m] }
         $between = @($verdicts.Keys | Where-Object { $verdicts[$_].verdict -eq 'between' })
         if ($between.Count -eq 0) { break }
-        # Otherwise one more fresh 4-pair block for this workload.
+        # Any additional block needs a separate invocation and owner approval.
     }
     if ($all.Count -gt 0) { $result['roleDeltaPp'] = Get-RoleDeltaSummary $all }
     if ($all.Count -gt 0) { $result['overlayScriptChars'] = Merge-ScriptCharCounts @($all | ForEach-Object { $_.overlayScriptChars }) }
     foreach ($m in $budgets.Keys) {
         $name = "G3.$WorkloadName.$m"
-        $expected = "paired delta A-B <= $($budgets[$m]) (pass: max <= budget; fail: min > budget; else +1 block, then inconclusive = fail)"
+        $expected = "four paired deltas A-B <= $($budgets[$m]); observed extremes, never averaged; mixed requires separately approved fresh block"
         if ($result.blocked) { Add-Blocked $name $expected $result.blocked; continue }
         if ($m -eq 'obs.gpuEnginePp' -and $script:gpuUnavailable) { Add-Blocked $name $expected $script:gpuUnavailable; continue }
         $v = $verdicts[$m]; $result.metrics[$m] = $v
         switch ($v.verdict) {
             'pass' { Add-Check $name $expected $v $true }
             'fail' { Add-Check $name $expected $v $false }
-            'between' { $v['inconclusive'] = $true; Add-Check $name $expected $v $false }
+            'between' {
+                $v['inconclusive'] = [bool]$FallbackFrom
+                Add-Blocked $name $expected $(if ($FallbackFrom) {'fresh block still mixed: inconclusive, no merge'} else {"mixed: approve a fresh four-pair -Workload $WorkloadName -Look $Look -TimeBoxMinutes 30 command"})
+            }
             default { Add-Blocked $name $expected 'no paired values' }
         }
     }
@@ -965,12 +1091,13 @@ try {
     if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) { throw "Hook build not found at $appExe; run without -SkipPublish." }
     $appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
     $ownerBefore = Get-OwnerObsProfileSnapshot
+    if ($Designer) {$script:designerRunStart=Get-Qpc}
     foreach ($w in $Workload) {
         if ($script:timeBoxHit) {
             foreach ($m in $budgets.Keys) { Add-Blocked "G3.$w.$m" "paired delta A-B <= $($budgets[$m])" 'time box reached before this workload' }
             continue
         }
-        try { Invoke-Workload $w } catch {
+        try { if ($Designer) {Invoke-DesignerBench} elseif ($Protocol -eq 'SharedBaseline') {Invoke-SharedBench} else {Invoke-Workload $w} } catch {
             Add-RunError 'workload' $w $null $null $_
             Add-Check "G3.$w.runner.completed" 'workload ran to completion' $_.Exception.Message $false
             try { Stop-Launch $script:currentCtx } catch { }
@@ -1009,6 +1136,7 @@ try {
     } catch { Add-RunError 'cleanup.root' $null $null $null $_ }
 }
 
+if ($Designer -and (Get-Variable designerRunStart -Scope Script -ErrorAction SilentlyContinue)) { $script:obsUsedSeconds = Get-Seconds $script:designerRunStart (Get-Qpc) }
 if ($script:timeBoxHit) { Add-Blocked 'G3.timeBox' "all blocks within $TimeBoxMinutes min of OBS on screen" "stopped at $(Round3 ($script:obsUsedSeconds / 60)) min; owner approval needed for more time" }
 $failed = @($checks | Where-Object { $_.status -eq 'fail' })
 $blocked = @($checks | Where-Object { $_.status -eq 'blocked' })
@@ -1017,6 +1145,9 @@ $report = [ordered]@{
     command = $commandLine; runId = $runId; appVersion = $(if (Get-Variable appVersion -ErrorAction SilentlyContinue) { $appVersion }); pipePrefix = $prefix
     harnessElevated = $isElevated; budgets = $budgets; timeBoxMinutes = $TimeBoxMinutes; obsOnScreenMinutes = Round3 ($script:obsUsedSeconds / 60)
     appOnly = [bool] $AppOnly; pairsPerBlock = $pairsPerBlock; warmupSeconds = $WarmupSeconds; warmupASeconds = $WarmupASeconds; readProbe = $ReadProbe
+    mode = $Protocol; designer = [bool]$Designer; seed = $Seed; schedule = $schedule; options = $selectedOptions
+    framesFrom = $FramesFrom; worstFrom = $WorstFrom; stillsReport = $StillsReport; fallbackFrom = $FallbackFrom
+    pausedExtensions = $(if (Get-Variable gate -ErrorAction SilentlyContinue) { @($gate.pausedExtensions) } else { @() })
     protocol = [ordered]@{ settleSeconds = $settleSeconds; measureSeconds = $measureSeconds; sampleSeconds = 1; statsEverySeconds = $statsEverySeconds
         trackSeconds = $trackSeconds; ageLimitSeconds = $trackSeconds - $ageMarginSeconds; positionToleranceSeconds = $positionTolerance
         maxGapSeconds = $maxGapSeconds; pairOrders = @($pairOrders | ForEach-Object { $_ -join '' }); gpuMetric = 'engine-percent sum (not Task Manager %)' }
@@ -1024,7 +1155,7 @@ $report = [ordered]@{
     summary = [ordered]@{ pass = @($checks | Where-Object { $_.status -eq 'pass' }).Count; fail = $failed.Count; blocked = $blocked.Count }
     checks = @($checks); passed = [bool] $passed
 }
-[IO.File]::WriteAllText((Join-Path $runDirectory 'bench-report.json'), ($report | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $runDirectory 'bench-report.json'), ($report | ConvertTo-Json -Depth 32), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllLines((Join-Path $runDirectory 'perf.csv'), $csv, [Text.UTF8Encoding]::new($false))
 $report.summary | ConvertTo-Json
 Write-Host "Report: $(Join-Path $runDirectory 'bench-report.json')"

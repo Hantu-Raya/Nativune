@@ -77,6 +77,7 @@ param(
     [string] $OutputDirectory = 'artifacts/obs-overlay-obs',
     [switch] $UpdateDocsImages,
     [double] $TimeBoxMinutes = 30,
+    [ValidateRange(0,65535)] [int] $RemoteDebuggingPort = 0,
     [switch] $SkipPublish,
     # GUIDE only: how long the environment is held open (minutes) unless <run>/guide-stop appears first.
     [ValidateRange(0.1, 240)] [double] $HoldMinutes = 30
@@ -543,19 +544,29 @@ function Get-PageStartQpc($Initial) {
 
 # $ItemHidden: create the scene item disabled. $ShutdownOff: create the browser input with shutdown=false.
 # The scene is created through obs-websocket right after connecting (Initialize-ObsOverlayScene).
-function Start-ObsSession([string] $Label, [string] $CheckPrefix, $App, [switch] $ItemHidden, [switch] $ShutdownOff) {
+function Start-ObsSession([string] $Label, [string] $CheckPrefix, $App, [switch] $ItemHidden, [switch] $ShutdownOff, [object[]] $SceneSpecs = @()) {
     Assert-TimeBox
     Assert-OverlayServing $App $Label "$CheckPrefix.$Label.appListeningBeforeObs"
-    $obs = New-ObsPortable -RunDir (Join-Path $repo ".cache/obs-portable/$runId-$Label")
+    $obs = New-ObsPortable -RunDir (Join-Path $repo ".cache/obs-portable/$runId-$Label") -RemoteDebuggingPort $RemoteDebuggingPort
     $obsInstances.Add($obs)
     $record = [ordered]@{ label = $Label; itemHidden = [bool] $ItemHidden; shutdownOff = [bool] $ShutdownOff; owned = $null; paths = $null; scene = $null }
     $obsLaunches.Add($record)
     try { [void] (Start-ObsPortable $obs) } finally { $record.owned = $obs.OwnedCheck }
     Add-Check "$CheckPrefix.$Label.ownedInstance" "launched PID+creation time, websocket listener PID = OBS PID, GetVersion $script:ObsPortableVersion" $obs.OwnedCheck ([bool] $obs.OwnedCheck.passed)
     $ws = Connect-ObsWebSocket $obs
-    $scene = Initialize-ObsOverlayScene $ws -Shutdown (-not $ShutdownOff) -ItemEnabled (-not $ItemHidden)
-    $record.scene = [ordered]@{ sceneItemId = $scene.sceneItemId; shutdown = Get-Prop $scene.settings 'shutdown'; itemEnabled = -not $ItemHidden }
-    [pscustomobject]@{ Label = $Label; Obs = $obs; Ws = $ws; Record = $record; Prefix = $CheckPrefix; ItemId = $scene.sceneItemId }
+    $items = $null
+    if ($SceneSpecs.Count) {
+        if ($ShutdownOff) { throw 'Eight-source scene requires shutdown on.' }
+        $items = Initialize-ObsOverlayEightSourceScene $ws $SceneSpecs
+        $first = $SceneSpecs[0].theme
+        if (-not $ItemHidden) { Set-ObsOverlayEightSource $ws $items $first }
+        $scene = [pscustomobject]@{sceneItemId=$items[$first].itemId;settings=$items[$first].settings}
+    } else {
+        $scene = Initialize-ObsOverlayScene $ws -Shutdown (-not $ShutdownOff) -ItemEnabled (-not $ItemHidden)
+    }
+    $record.scene = [ordered]@{ sceneItemId = $scene.sceneItemId; shutdown = Get-Prop $scene.settings 'shutdown'; itemEnabled = -not $ItemHidden; sources = $items }
+    $record['debugListener'] = $obs.DebugListener
+    [pscustomobject]@{ Label = $Label; Obs = $obs; Ws = $ws; Record = $record; Prefix = $CheckPrefix; ItemId = $scene.sceneItemId; Items = $items }
 }
 # Graceful close + relaunch of the same run folder; reconnects the session's websocket.
 function Restart-ObsSession($Session) {
