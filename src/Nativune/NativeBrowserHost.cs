@@ -197,17 +197,24 @@ internal sealed class NativeBrowserHost : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _slot.SizeChanged -= OnSlotChanged;
-        _slot.LayoutUpdated -= OnSlotLayoutUpdated;
-        _slot.Loaded -= OnSlotLoaded;
-        _slot.Unloaded -= OnSlotUnloaded;
-        Core.NavigationCompleted -= OnNavigationCompleted;
-        DetachXamlRoot();
-        try { _controller.IsVisible = false; }
-        catch (Exception) { }
-        try { _controller.Close(); }
-        catch (Exception) { }
-        DestroyContainerWindow(_containerWindow);
+        try
+        {
+            _slot.SizeChanged -= OnSlotChanged;
+            _slot.LayoutUpdated -= OnSlotLayoutUpdated;
+            _slot.Loaded -= OnSlotLoaded;
+            _slot.Unloaded -= OnSlotUnloaded;
+            try { Core.NavigationCompleted -= OnNavigationCompleted; }
+            catch (Exception) { }
+            DetachXamlRoot();
+            try { _controller.IsVisible = false; }
+            catch (Exception) { }
+            try { _controller.Close(); }
+            catch (Exception) { }
+        }
+        finally
+        {
+            DestroyContainerWindow(_containerWindow);
+        }
     }
 
     private void OnSlotLoaded(object sender, RoutedEventArgs args)

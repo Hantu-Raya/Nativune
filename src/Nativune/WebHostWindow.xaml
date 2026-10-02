@@ -137,6 +137,7 @@
             <Button.ContextFlyout>
               <MenuFlyout>
                 <MenuFlyoutItem x:Name="ObsSettingsContextItem" Text="OBS overlay settings…" />
+                <MenuFlyoutItem x:Name="ObsDesignerContextItem" Text="Overlay designer…" IsEnabled="False" />
               </MenuFlyout>
             </Button.ContextFlyout>
           </Button>

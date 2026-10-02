@@ -546,6 +546,7 @@ public sealed partial class WebHostWindow : Window
         DiscordSettingsContextItem.Click += (_, _) => ShowSettings(discordPage: true);
         ObsButton.Click += (_, _) => SetObsOverlayEnabled(!_settings.ObsOverlay);
         ObsSettingsContextItem.Click += (_, _) => ShowSettings(obsPage: true);
+        ObsDesignerContextItem.Click += (_, _) => _ = OpenOverlayDesignerAsync(ObsButton);
         UpdateButton.Click += (_, _) => OnUpdateButtonClick();
         RootGrid.KeyDown += OnRootKeyDown;
         WebViewSlot.GotFocus += (_, _) =>
@@ -1441,8 +1442,10 @@ public sealed partial class WebHostWindow : Window
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
         dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
         dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
-        dialog.SetObsStatus(CurrentObsStatus, _obsOverlay?.OpenStreams ?? 0);
+        dialog.SetObsStatus(CurrentObsStatus, _obsOverlay?.StatusSourceCount ?? 0);
         dialog.OpenObsGuideRequested += (_, _) => _ = OpenObsGuideAsync();
+        dialog.SetObsDesignerAvailable(DesignerOverlayRunning);
+        dialog.OpenObsDesignerRequested += (_, _) => _ = OpenOverlayDesignerAsync(dialog.ObsDesignerInvoker);
         if (discordPage)
             dialog.SelectDiscordPage();
         else if (obsPage)
@@ -2270,6 +2273,7 @@ public sealed partial class WebHostWindow : Window
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
+        try { CloseOverlayDesignerWindow(); } catch (Exception ex) { RememberFailure(ex); }
         // Close overlay streams before Discord so no delivery runs after the server is gone.
         try { await StopObsOverlayAsync(); } catch (Exception ex) { RememberFailure(ex); }
         try { await StopObsLookCommitsAsync(); } catch (Exception ex) { RememberFailure(ex); }

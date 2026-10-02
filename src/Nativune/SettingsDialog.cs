@@ -131,6 +131,7 @@ public sealed partial class SettingsDialog : Window
     }
 
     internal ShellSettings Result { get; private set; }
+    internal FrameworkElement ObsDesignerInvoker => ObsDesignerButton;
 
     // Desired start-with-Windows state after Save (registry is the source of truth, not settings.json).
     internal bool StartWithWindows { get; private set; }
@@ -531,6 +532,7 @@ public sealed partial class SettingsDialog : Window
             ? (DiscordStatusLine)DiscordStatusLineComboBox.SelectedIndex : DiscordStatusLine.Artist;
 
     internal event EventHandler? OpenObsGuideRequested;
+    internal event EventHandler? OpenObsDesignerRequested;
 
     private void InitializeObs(ShellSettings initial)
     {
@@ -542,8 +544,23 @@ public sealed partial class SettingsDialog : Window
         ObsOverlayCheckBox.Unchecked += (_, _) => UpdateObsControls(announce: true);
         ObsCopyLinkButton.Click += (_, _) => CopyObsLink();
         ObsGuideButton.Click += (_, _) => OpenObsGuideRequested?.Invoke(this, EventArgs.Empty);
+        ObsDesignerButton.Click += (_, _) => OpenObsDesignerRequested?.Invoke(this, EventArgs.Empty);
         // Navigation only: the Block ads value is changed on the Privacy page, never here.
         ObsOpenBlockAdsButton.Click += (_, _) => Nav.SelectedItem = PrivacyNavItem;
+    }
+
+    internal void SetObsDesignerAvailable(bool available)
+    {
+        if (_closed) return;
+        ObsDesignerButton.IsEnabled = available;
+    }
+
+    internal void SetObsDesignerResult(string message)
+    {
+        if (_closed) return;
+        ObsDesignerResult.Text = message;
+        if (FrameworkElementAutomationPeer.FromElement(ObsDesignerResult) is { } peer)
+            peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
     }
 
     internal void SelectObsPage() => Nav.SelectedItem = ObsNavItem;
