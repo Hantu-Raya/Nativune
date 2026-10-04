@@ -1,6 +1,7 @@
 <#
 E2E-B for the opt-in OBS now-playing overlay against a real, disposable OBS Studio 32.2.2
 (notes/research/obs-overlay-2026-09-28/plan.md §6.2; design notes in design.md). Helper: scripts/obs-portable.ps1.
+P1 per-theme B-LOOK: notes/research/obs-overlay-themes-2026-09-29/plan.md §3.5, §8.2 (font/fidelity rows deferred to P3).
 
 APPROVAL: running this script needs the owner's explicit approval for this run (plan §6.2 heading: no answer is not
 approval). It puts a disposable OBS window on screen for up to -TimeBoxMinutes (default 30, the B-LOOK/B-VIS/B-DOCS
@@ -33,23 +34,20 @@ Scenarios (plan §6.2):
           come from a GUIDE hold driven by a computer-use walkthrough (steps recorded in <run>/guide/steps.md), copied to
           docs/images/obs-overlay/setup/ after owner approval. Cleanup: OBS, then the app; checks
           GUIDE.ownerObsProfileUnchanged and GUIDE.obsMinutes. The fixture track is 1800 s long.
-  B-LOOK  GetSourceScreenshot of the input 'Nativune Overlay' (PNG, native 440x96). After command-navigate restarts
-          the fixture timeline (page 0 = new page load): stills at page 8 s (t0) and 18 s (t0+10 s); capture windows
-          -0.5..+3.5 s around seek (25 s), pause (45 s, hide: hidePaused on), play (resume 60 s, show) and track B
-          (80 s) at 10 fps with the achieved rate recorded (< 8 fps -> blocked). Event time = receipt of the matching
-          SSE data event by the harness reader (fallback: predicted page time). Oracles (Pillow, analyze-look.py):
-            mask      alpha >= 0.9 inside the rounded rect (20,20,400,56,r28) inset 2 px; the alpha > 200 bounding box
-                      equals (20,20,420,76) +-1 px; outside the rect beyond a 2 px anti-alias ring every pixel has
-                      alpha <= 170 (the box-shadow rgba(0,0,0,.65) maximum 166 plus rounding); counts reported.
-            reveal    saturation step x at 20 + 400 p +-6 px (stills and the settled seek frame).
-            artFixed  the art's luminance profile right of both reveal boundaries shifts <= 3 px between t0 and
-                      t0+10 s. (The fixture's bright top-left 48x48 quadrant is cropped out of the 56 px band by the
-                      cover scaling, so the diagonal gradient profile is the feature.)
-            show      >= 2 frames with normalized opacity 0.1-0.9 (vs the settled +3.5 s frame), top edge rising
-                      from 32+-2 (first visible frame >= 26, <= 34) to 20+-2, non-increasing, settled <= 2.5 s.
-            hide      >= 2 intermediate frames (vs the pre-event frames), alpha <= 0.1 from 2.5 s after pause.
-            text      text region (white glyph mask) differs between the last A frame and the settled B frame.
-          Frames: look/<event>/*.png, look/look.gif (owner review, G2).
+  B-LOOK  GetSourceScreenshot of 'Nativune Overlay' at each theme's native source size (expected-sizes.json).
+          Eight default looks from looks-cases.json are loaded through data/obs-looks.json. Sample-playing stills
+          at settled t0 and t0+10 s: look/themes/<theme>-t0.png and -t10.png, with §3.5 mask/progress/text/cover
+          oracles. Pill uses today's saturation reveal/art profile; other themes use the generated bar centre row,
+          run = bar.width * p +-3 px and luminance step >= 0.25; matte-light glyphs are dark. Classic masks cover
+          and panel separately (gap alpha <= 170 beyond their AA rings); simple masks cover/text/time/bar only.
+          Real-fixture series for pill (existing check names and look.gif) and matte (B-LOOK.matte.<event>.*):
+          command-navigate restarts page 0; windows -0.5..+3.5 s around seek (25 s), pause (45 s), play (60 s),
+          track B (80 s), at 10 fps (<8 fps -> blocked). SSE receipt anchors events (predicted page time fallback).
+          Show: >=2 intermediate frames, 12 px rise, settled <=2.5 s; hide: >=2 intermediate frames and alpha
+          <=0.1 from 2.5 s; track B: glyph mask differs; seek: reveal for pill, luminance bar for matte.
+          Frames: look/<event>/*.png (pill), look/matte/<event>/*.png, look/look.gif; stills retained for G2.
+          Budget: typically <10 min OBS with B-DOCS, target <=30 min, owner-approved box 45 min. Pill input is
+          restored in finally so B-DOCS remains unchanged. Font/CDP/fidelity rows are P3, not this pass.
   B-VIS   Supported mode (shutdown on). Showing steps: settled >= 7 s, then two hook snapshots 3 s apart: overlay.streams
           >= 1 and Overlay-mode reads >= 1 in between. Not-showing steps: streams must reach 0 within 11 s of the step
           (2 x 5 s SSE heartbeat + 1 s: after CEF closes the page cleanly the first keep-alive write still succeeds and
@@ -154,6 +152,8 @@ $bLookInputs = @(
             look = [ordered]@{ id = $case.lookId; name = "OBS $($case.theme)"; options = $case.options }; spec = $spec }
     }
 )
+if ($bLookInputs.Count -ne 8 -or @($bLookInputs.theme | Sort-Object -Unique).Count -ne 8 -or
+    @($bLookInputs.id | Sort-Object -Unique).Count -ne 8) { throw 'B-LOOK: exactly one distinct default look/id per theme is required.' }
 $prefix = 'nativune-test-' + [guid]::NewGuid().ToString('N') + '-discord-ipc-'
 $testEnv = [ordered]@{
     NATIVUNE_TEST_DISCORD_PIPE_PREFIX = $prefix
@@ -477,9 +477,12 @@ function Assert-OverlayServing($App, [string] $Label, [string] $CheckName) {
     }
 }
 # Starts the app first (plan D13); the serving wait runs in Start-ObsSession before every OBS launch.
-function Start-OverlayApp([string] $Name, [string] $BenchProfile = $null, [string] $CheckPrefix, [hashtable] $SettingsOverride = @{}) {
+function Start-OverlayApp([string] $Name, [string] $BenchProfile = $null, [string] $CheckPrefix, [hashtable] $SettingsOverride = @{}, [string] $LooksJson = $null) {
     $root = New-Root $Name
     Write-Settings $root $true $SettingsOverride
+    if ($null -ne $LooksJson) {
+        [IO.File]::WriteAllText((Join-Path $root 'data/obs-looks.json'), $LooksJson, [Text.UTF8Encoding]::new($false))
+    }
     $launchEnv = @{}
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = 'Full' }
     $app = Start-App $root $launchEnv
@@ -633,8 +636,9 @@ function Get-ObsMainWindow($Session) {
     $h
 }
 # Window-scoped capture helpers were removed with the setup images (they come from a GUIDE hold now).
-function Get-SourceShotBytes($Session) {
-    $r = Obs $Session 'GetSourceScreenshot' @{ sourceName = $sourceName; imageFormat = 'png'; imageWidth = 440; imageHeight = 96 }
+function Get-SourceShotBytes($Session, [int] $Width = 440, [int] $Height = 96) {
+    Assert-TimeBox
+    $r = Obs $Session 'GetSourceScreenshot' @{ sourceName = $sourceName; imageFormat = 'png'; imageWidth = $Width; imageHeight = $Height }
     $data = [string] $r.imageData
     [Convert]::FromBase64String($data.Substring($data.IndexOf(',') + 1))
 }
@@ -803,6 +807,158 @@ def look(spec):
         out['seekReveal'] = {'x': x, 'expected': round(exp, 1), 'strength': strength, 'pass': x is not None and abs(x - exp) <= 6}
     return out
 
+def text_rect(g):
+    return {'x': g['box']['x'] + g['column']['start'], 'y': g['textBand'][0],
+            'w': g['column']['end'] - g['column']['start'], 'h': g['textBand'][1] - g['textBand'][0], 'r': 0}
+
+def round_contains(x, y, rect, pad=0):
+    return in_round(x, y, rect['x'] - pad, rect['y'] - pad,
+                    rect['w'] + 2 * pad, rect['h'] + 2 * pad, max(0, rect['r'] + pad))
+
+def theme_mask(img, g):
+    expected_size = (int(g['source']['w']), int(g['source']['h']))
+    if img.size != expected_size:
+        return {'size': list(img.size), 'expectedSize': list(expected_size), 'pass': False}
+    kind = g['maskKind']
+    if kind == 'rounded-box':
+        solid = allowed = [g['box']]
+    elif kind == 'rounded-cover-and-panel':
+        solid = allowed = [g['cover'], g['panel']]
+    elif kind == 'cover-text-and-bar':
+        solid = [g['cover']]
+        b = g['sourceBar']; text = text_rect(g)
+        allowed = solid + [text, {'x': b['start'], 'y': b['y'], 'w': b['width'], 'h': b['h'], 'r': b['h'] / 2}]
+        # Default simple also shows two 44px time labels in the generated 14px bottom row, not a solid panel.
+        for x in (text['x'], b['end'] + 6):
+            allowed.append({'x': x, 'y': b['y'] + b['h'] / 2 - 7, 'w': 44, 'h': 14, 'r': 0})
+    else:
+        raise ValueError('unknown maskKind: ' + kind)
+    a = img.getchannel('A'); px = a.load()
+    inside_n = inside_low = outside_bad = gap_bad = 0; max_out = 0
+    for y in range(img.height):
+        for x in range(img.width):
+            v = px[x, y]
+            if any(round_contains(x, y, rect, -2) for rect in solid):
+                inside_n += 1; inside_low += v < 0.9 * 255
+            elif not any(round_contains(x, y, rect, 2) for rect in allowed):
+                max_out = max(max_out, v); outside_bad += v > g['outsideAlphaCap']
+                if kind == 'rounded-cover-and-panel' and g['cover']['x'] + g['cover']['w'] <= x < g['panel']['x']:
+                    gap_bad += v > g['outsideAlphaCap']
+    bbox = a.point(lambda v: 255 if v > 200 else 0).getbbox()
+    expected_bbox = [min(r['x'] for r in solid), min(r['y'] for r in solid),
+                     max(r['x'] + r['w'] for r in solid), max(r['y'] + r['h'] for r in solid)]
+    # Simple has no opaque box: cover interior + outside union + independent text/bar oracles are its mask.
+    bbox_ok = kind == 'cover-text-and-bar' or (bbox is not None and all(abs(p - q) <= 1 for p, q in zip(bbox, expected_bbox)))
+    return {'maskKind': kind, 'insidePixels': inside_n, 'insideBelow09': inside_low,
+            'alpha200BBox': bbox, 'expectedBBox': None if kind == 'cover-text-and-bar' else expected_bbox,
+            'bboxOk': bbox_ok, 'outsideAboveCap': outside_bad, 'maxOutsideAlpha': max_out, 'gapAboveCap': gap_bad,
+            'pass': inside_n > 0 and inside_low == 0 and bbox_ok and outside_bad == 0 and gap_bad == 0}
+
+def theme_progress(img, g, p):
+    if g['progressKind'] == 'saturation-reveal':
+        x, strength = reveal(img); exp = g['box']['x'] + g['box']['w'] * p
+        return {'x': x, 'expected': exp, 'strength': strength,
+                'pass': x is not None and abs(x - exp) <= g['progressTolerance']}
+    if g['progressKind'] != 'luminance-bar':
+        raise ValueError('unknown progressKind: ' + g['progressKind'])
+    b = g['sourceBar']; x0, x1 = int(b['start']), int(b['end']); y = int(b['y'] + b['h'] / 2)
+    px = img.load()
+    # Alpha-composited luminance also handles the transparent black track of simple.
+    vals = [lum(*px[x, y][:3]) * px[x, y][3] / 255 for x in range(x0, x1)]
+    best = None; edge = None; k = 3
+    for i in range(k, len(vals) - k):
+        d = sum(vals[i-k:i]) / k - sum(vals[i:i+k]) / k
+        if best is None or abs(d) > abs(best): best, edge = d, i
+    # Classic's 8px round head is centred on the fill end; its centre-row right edge is 4px beyond the run.
+    head = b['h'] if g['theme'] == 'classic' else 0
+    run = None if edge is None else edge - head
+    expected = b['width'] * p
+    step = abs(best) if best is not None else 0
+    return {'row': y, 'run': run, 'expectedRun': expected, 'edgeX': None if edge is None else x0 + edge,
+            'headRadius': head, 'step': step, 'signedStep': best,
+            'pass': run is not None and abs(run - expected) <= g['progressTolerance'] and step >= g['minimumLuminanceStep']}
+
+def theme_glyphs(img, g):
+    rect = text_rect(g); px = img.load(); found = set()
+    for y in range(int(rect['y']), int(rect['y'] + rect['h'])):
+        for x in range(int(rect['x']), int(rect['x'] + rect['w'])):
+            r, green, b, a = px[x, y]
+            if a > 200 and (max(r, green, b) < 60 if g['darkGlyphs'] else min(r, green, b) > 200):
+                found.add((x, y))
+    return found
+
+def thumb_fixed(a, b, g):
+    rect = g['cover']; bar = g['sourceBar']; text = text_rect(g)
+    if a.size != b.size: return {'pass': False, 'reason': 'different source sizes'}
+    pa, pb = a.load(), b.load(); differences = []; colours = []
+    for y in range(int(rect['y']), int(rect['y'] + rect['h'])):
+        for x in range(int(rect['x']), int(rect['x'] + rect['w'])):
+            if not round_contains(x, y, rect, -2): continue
+            # Album-art's cover contains text and a moving bar: compare only the unobscured art.
+            if round_contains(x, y, text, 2) or (bar['start'] - 2 <= x < bar['end'] + 2 and bar['y'] - 2 <= y < bar['y'] + bar['h'] + 2): continue
+            colours.append(pa[x, y]); differences.append(max(abs(v - w) for v, w in zip(pa[x, y], pb[x, y])))
+    variation = max((max(c[i] for c in colours) - min(c[i] for c in colours) for i in range(3)), default=0)
+    opaque = bool(colours) and all(c[3] >= 0.9 * 255 for c in colours)
+    maximum = max(differences, default=None)
+    return {'pixels': len(colours), 'maxChannelDiff': maximum, 'colourRange': variation,
+            'pass': opaque and variation >= 3 and maximum is not None and maximum <= 1}
+
+def theme_stills(spec):
+    g = spec['themeSpec']; stills = spec['stills']; imgs = {k: load(stills[k]) for k in ('t0', 't10')}
+    out = {}
+    for name, fn in (('mask', lambda k, i: theme_mask(i, g)),
+                     ('progress', lambda k, i: theme_progress(i, g, stills['p_' + k])),
+                     ('text', lambda k, i: {'glyphPixels': len(theme_glyphs(i, g)), 'pass': bool(theme_glyphs(i, g))})):
+        rows = {k: fn(k, i) for k, i in imgs.items()}; out[name] = dict(rows, **{'pass': all(r['pass'] for r in rows.values())})
+    if g['thumbFixed']: out['thumbFixed'] = thumb_fixed(imgs['t0'], imgs['t10'], g)
+    if g['artFixed']:
+        start = max([v['x'] for v in (out['progress']['t0'], out['progress']['t10']) if v['x'] is not None] or [g['box']['x']]) + 12
+        shift, err = profile_shift(imgs['t0'], imgs['t10'], int(start))
+        out['artFixed'] = {'shiftPx': shift, 'meanAbsDiff': err, 'fromX': start, 'pass': shift is not None and abs(shift) <= 3}
+    return out
+
+def theme_alpha(img, g):
+    box = g['box']; x0, x1 = int(box['x'] + box['r'] + 2), int(box['x'] + box['w'] - box['r'] - 2)
+    px = img.getchannel('A').load()
+    rows = [sum(px[x, y] for x in range(x0, x1)) / (x1 - x0) / 255 for y in range(img.height)]
+    opacity = max(rows); top = next((y for y, v in enumerate(rows) if opacity > 0.02 and v >= opacity / 2), None)
+    return opacity, top
+
+def theme_events(spec):
+    g = spec['themeSpec']; out = {}; ev = spec['events']; top = g['box']['y']
+    def series(name): return [(f['t'], load(f['path'])) for f in ev.get(name, [])]
+    fr = series('play')
+    if fr:
+        settled = theme_alpha(fr[-1][1], g)[0] or 1e-6
+        rows = [{'t': t, 'o': theme_alpha(i, g)[0] / settled, 'top': theme_alpha(i, g)[1]} for t, i in fr]
+        after = [r for r in rows if r['t'] >= 0]; inter = [r for r in after if 0.1 < r['o'] < 0.9]
+        tops = [r['top'] for r in after if r['o'] >= 0.05 and r['top'] is not None]
+        mono = all(tops[i+1] <= tops[i] + 1 for i in range(len(tops)-1))
+        settled_at = next((r['t'] for n, r in enumerate(after) if all(abs(q['o'] - 1) <= 0.05 and q['top'] is not None and abs(q['top'] - top) <= 2 for q in after[n:])), None)
+        out['play'] = {'frames': rows, 'intermediate': len(inter), 'firstVisibleTop': tops[0] if tops else None,
+            'settledTop': rows[-1]['top'], 'monotone': mono, 'settledAt': settled_at,
+            'passIntermediate': len(inter) >= 2,
+            'passRise': bool(tops) and top + 6 <= tops[0] <= top + 14 and rows[-1]['top'] is not None and abs(rows[-1]['top'] - top) <= 2 and mono,
+            'passSettled': settled_at is not None and settled_at <= 2.5}
+    fr = series('pause')
+    if fr:
+        pre = [theme_alpha(i, g)[0] for t, i in fr if t < 0] or [theme_alpha(fr[0][1], g)[0]]
+        ref = sum(pre) / len(pre) or 1e-6
+        rows = [{'t': t, 'o': theme_alpha(i, g)[0] / ref, 'alpha': theme_alpha(i, g)[0]} for t, i in fr]
+        inter = [r for r in rows if r['t'] >= 0 and 0.1 < r['o'] < 0.9]; late = [r for r in rows if r['t'] >= 2.5]
+        out['pause'] = {'frames': rows, 'intermediate': len(inter), 'lateMaxAlpha': max([r['alpha'] for r in late], default=None),
+            'passIntermediate': len(inter) >= 2, 'passGone': bool(late) and all(r['alpha'] <= 0.1 for r in late)}
+    fr = series('trackB')
+    if fr:
+        before = [i for t, i in fr if t < 0]
+        a, b = theme_glyphs(before[-1] if before else fr[0][1], g), theme_glyphs(fr[-1][1], g)
+        rect = text_rect(g); diff = len(a ^ b); fraction = diff / (rect['w'] * rect['h'])
+        out['trackB'] = {'glyphsA': len(a), 'glyphsB': len(b), 'differing': diff, 'fraction': fraction,
+                         'pass': bool(before) and bool(a) and bool(b) and fraction >= 0.01}
+    fr = series('seek')
+    if fr: out['seek'] = theme_progress(fr[-1][1], g, spec['seekP'])
+    return out
+
 def gif(spec):
     import os
     frames = [Image.open(p).convert('RGBA') for p in spec['frames']]
@@ -830,10 +986,12 @@ def flatten(spec):
     Image.alpha_composite(Image.new('RGBA', f.size, tuple(spec['background'])), f).convert('RGB').save(spec['out'])
     return {'out': spec['out']}
 
-mode, path = sys.argv[1], sys.argv[2]
-spec = json.load(open(path, encoding='utf-8'))
-res = {'look': look, 'gif': gif, 'still': alpha_at, 'flatten': flatten}[mode](spec)
-print(json.dumps(res))
+if __name__ == '__main__':
+    mode, path = sys.argv[1], sys.argv[2]
+    spec = json.load(open(path, encoding='utf-8'))
+    res = {'look': look, 'theme-stills': theme_stills, 'theme-events': theme_events,
+           'gif': gif, 'still': alpha_at, 'flatten': flatten}[mode](spec)
+    print(json.dumps(res))
 '@, [Text.UTF8Encoding]::new($false))
 
 function Resolve-Python {
@@ -859,8 +1017,8 @@ function Invoke-Pillow([string] $Mode, $Spec) {
 # ---------------------------------------------------------------------------------------------------------------
 # B-LOOK
 
-# Captures GetSourceScreenshot frames at 10 fps between two QPC instants; returns frame records and the achieved rate.
-function Invoke-CaptureWindow($Session, [string] $Name, [double] $FromQpc, [double] $ToQpc) {
+# Captures native-size GetSourceScreenshot frames at 10 fps; returns frames and achieved rate.
+function Invoke-CaptureWindow($Session, [string] $Name, [double] $FromQpc, [double] $ToQpc, [int] $Width = 440, [int] $Height = 96) {
     $dir = Join-Path $lookDirectory $Name
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     Wait-UntilQpc $FromQpc
@@ -868,7 +1026,7 @@ function Invoke-CaptureWindow($Session, [string] $Name, [double] $FromQpc, [doub
     $next = $FromQpc
     while ((Get-Qpc) -lt $ToQpc) {
         $q = Get-Qpc
-        $bytes = Get-SourceShotBytes $Session
+        $bytes = Get-SourceShotBytes $Session $Width $Height
         $raw.Add([pscustomobject]@{ qpc = ($q + (Get-Qpc)) / 2; bytes = $bytes })
         $next += 0.1 * $freq
         while ($next -lt (Get-Qpc)) { $next += 0.1 * $freq }
@@ -882,10 +1040,11 @@ function Invoke-CaptureWindow($Session, [string] $Name, [double] $FromQpc, [doub
     }
     [pscustomobject]@{ Name = $Name; Frames = @($frames); Fps = Round3 ($raw.Count / $seconds); Seconds = Round3 $seconds }
 }
-function Save-SourceStill($Session, [string] $Name) {
+function Save-SourceStill($Session, [string] $Name, [int] $Width = 440, [int] $Height = 96) {
     $q = Get-Qpc
-    $bytes = Get-SourceShotBytes $Session
+    $bytes = Get-SourceShotBytes $Session $Width $Height
     $path = Join-Path $lookDirectory "$Name.png"
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
     [IO.File]::WriteAllBytes($path, $bytes)
     [pscustomobject]@{ path = $path; qpc = ($q + (Get-Qpc)) / 2 }
 }
@@ -896,12 +1055,143 @@ $lookEvents = @(
     @{ name = 'play'; at = 60; test = { param($d) Test-Data $d 'playing' 'fixtureSngA' } },
     @{ name = 'trackB'; at = 80; test = { param($d) Test-Data $d 'playing' 'fixtureSngB' } })
 
+# Uses the existing Browser Source; scene shutdown releases the previous stream before counting the next one.
+function Set-BLookSource($Session, [string] $Url, [int] $Width, [int] $Height) {
+    [void] (Obs $Session 'SetInputSettings' @{ inputName = $sourceName; inputSettings = @{ url = $Url; width = $Width; height = $Height }; overlay = $true })
+    [void] (Obs $Session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $Session.ItemId; sceneItemEnabled = $true })
+}
+function Connect-BLookSource($App, $Session, $lookInput, [switch] $Sample) {
+    Assert-TimeBox
+    # The OBS page owns exactly one stream; wait for it to go. Harness readers can end on their own at the 5-minute
+    # stream lifetime (4 October), so the condition counts only the drop from the pre-release snapshot.
+    $beforeRelease = Get-State $App.Root 'look-before-release'
+    $ownedBefore = [int] (Get-Overlay $beforeRelease 'streams')
+    [void] (Obs $Session 'SetSceneItemEnabled' @{ sceneName = $sceneName; sceneItemId = $Session.ItemId; sceneItemEnabled = $false })
+    $released = $ownedBefore -eq 0 -or (Wait-For {
+        Assert-TimeBox
+        $s = Get-State $App.Root 'look-release'
+        $s -and (Get-Overlay $s 'sampleStreams') -eq 0 -and [int] (Get-Overlay $s 'streams') -le $ownedBefore - 1
+    } 20 250)
+    if (-not $released) { throw "B-LOOK: previous OBS stream did not release within 20 s (streams before: $ownedBefore)." }
+    $url = if ($Sample) { $lookInput.url } else { "$($overlayUrl)?look=$($lookInput.id)" }
+    $lo = Get-Qpc
+    Set-BLookSource $Session $url $lookInput.width $lookInput.height
+    $until = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $until) {
+        Assert-TimeBox
+        $before = Get-Qpc; $s = Get-State $App.Root 'look-connect'; $hi = Get-Qpc
+        $connected = if ($Sample) { (Get-Overlay $s 'sampleStreams') -eq 1 } else {
+            (Get-Prop (Get-Overlay $s 'streamsByLook') $lookInput.id) -eq 1
+        }
+        if ($connected) {
+            # Sample position starts at this OBS stream's open, not command-navigate or a second SSE reader's open.
+            # Last absent -> first present snapshots bracket the epoch without requiring OBS CDP/new app hooks.
+            return [ordered]@{ url = $url; width = $lookInput.width; height = $lookInput.height; startQpc = ($lo + $hi) / 2
+                epochSpanSeconds = Round3 (($hi - $lo) / $freq); streams = Get-Overlay $s 'streams'; sample = [bool] $Sample }
+        }
+        if ($s) { $lo = $before }
+        Wait-Seconds 0.1
+    }
+    throw 'B-LOOK: OBS page did not connect within 30 s.'
+}
+function Test-BLookThemes($App, $Session, $Observed) {
+    $Observed.themes = [ordered]@{}
+    foreach ($lookInput in $bLookInputs) {
+        Assert-TimeBox
+        $theme = $lookInput.theme; $prefix = "B-LOOK.$theme"; $row = [ordered]@{ spec = $lookInput.spec }
+        $Observed.themes[$theme] = $row
+        try {
+            $connection = Connect-BLookSource $App $Session $lookInput -Sample
+            $row.connection = $connection
+            Add-Check "$prefix.sourceConnected" 'one sample stream after previous OBS stream released' $connection $true
+            # Eight seconds after observed connection is beyond the <=2.5s show animation/art load.
+            Wait-Seconds 8
+            $t0 = Save-SourceStill $Session "themes/$theme-t0" $lookInput.width $lookInput.height
+            Wait-UntilQpc ($t0.qpc + 10 * $freq)
+            $t10 = Save-SourceStill $Session "themes/$theme-t10" $lookInput.width $lookInput.height
+            $stills = [ordered]@{ t0 = $t0.path; t10 = $t10.path
+                p_t0 = (($t0.qpc - $connection.startQpc) / $freq % 240) / 240
+                p_t10 = (($t10.qpc - $connection.startQpc) / $freq % 240) / 240 }
+            $row.stills = [ordered]@{ t0 = Get-RelativePath $t0.path; t10 = Get-RelativePath $t10.path
+                elapsedSeconds = Round3 (($t10.qpc - $t0.qpc) / $freq); p_t0 = $stills.p_t0; p_t10 = $stills.p_t10 }
+            $a = Invoke-Pillow 'theme-stills' ([ordered]@{ themeSpec = $lookInput.spec; stills = $stills })
+            $row.analysis = $a
+            foreach ($oracle in @('mask', 'progress', 'text') + $(if ($lookInput.spec.thumbFixed) { 'thumbFixed' } else { 'artFixed' })) {
+                $value = Get-Prop $a $oracle
+                if ($oracle -eq 'progress' -and $connection.epochSpanSeconds -gt 2) {
+                    Add-Blocked "$prefix.$oracle" 'sample epoch bracket <=2 s for the specified pixel tolerance' "epoch uncertainty $($connection.epochSpanSeconds) s; stills retained, analysis not accepted"
+                } else {
+                    Add-Check "$prefix.$oracle" $(switch ($oracle) {
+                        'mask' { "$($lookInput.spec.maskKind): inset alpha >=0.9; outside AA ring <=$($lookInput.spec.outsideAlphaCap); native source size" }
+                        'progress' { if ($lookInput.spec.progressKind -eq 'saturation-reveal') { 'saturation step at box.x + box.w * p +-6 px, both stills' }
+                            else { 'bar run = sourceBar.width * p +-3 px; luminance step >=0.25, both stills' } }
+                        'text' { 'glyph pixels in generated column/text band (dark for matte-light, white otherwise), both stills' }
+                        'thumbFixed' { 'opaque, nonuniform cover stable (max RGBA difference <=1); album-art text/bar excluded' }
+                        'artFixed' { 'pill luminance profile shift <=3 px right of both reveal boundaries' }
+                    }) $value ([bool] (Get-Prop $value 'pass'))
+                }
+            }
+        } catch {
+            if ($_.Exception.Message -like 'TIMEBOX:*') { throw }
+            $row.error = $_.Exception.Message
+            Add-RunnerFailure $prefix $_
+        }
+    }
+}
+function Test-BLookMatte($App, $Session, $Reader, $Observed) {
+    $lookInput = @($bLookInputs | Where-Object { $_.theme -eq 'matte' })[0]
+    $row = [ordered]@{}; $Observed.matteSeries = $row
+    $row.connection = Connect-BLookSource $App $Session $lookInput
+    Add-Check 'B-LOOK.matte.seriesConnected' 'real OBS stream tagged with the matte look' $row.connection $true
+    $navQpc = Send-HookCommand $App.Root 'command-navigate'
+    $initial = Wait-SseData $Reader { param($d) (Test-Data $d 'playing' 'fixtureSngA') -and [double] (Get-Prop $d 'position') -lt 15 } 60 $navQpc
+    if (-not $initial) { Add-Blocked 'B-LOOK.matte.timeline' 'fixture timeline restarted' 'no playing A event within 60 s'; return }
+    $start = Get-PageStartQpc $initial; $duration = [double] (Get-Prop $initial.data 'duration')
+    $windows = [ordered]@{}; $events = [ordered]@{}; $info = [ordered]@{}
+    foreach ($e in $lookEvents) {
+        $w = Invoke-CaptureWindow $Session "matte/$($e.name)" ($start + ($e.at - 0.5) * $freq) ($start + ($e.at + 3.5) * $freq) $lookInput.width $lookInput.height
+        $windows[$e.name] = $w
+        if ($w.Frames.Count -eq 0) { throw "B-LOOK.matte: no $($e.name) frames captured." }
+    }
+    Wait-Seconds 1
+    foreach ($e in $lookEvents) {
+        $predicted = $start + $e.at * $freq; $hit = Find-SseData $Reader $e.test ($predicted - 2 * $freq)
+        $evQpc = if ($hit -and $hit.qpc -lt $predicted + 3.5 * $freq) { $hit.qpc } else { $predicted }
+        $w = $windows[$e.name]
+        $info[$e.name] = [ordered]@{ predictedPage = $e.at; receivedPage = if ($hit) { Round3 (($hit.qpc - $start) / $freq) } else { $null }
+            source = if ($hit -and $evQpc -eq $hit.qpc) { 'sse' } else { 'predicted' }; fps = $w.Fps; frames = $w.Frames.Count }
+        if ($w.Fps -lt 8) { Add-Blocked "B-LOOK.matte.$($e.name).captureRate" '>=8 fps (target10)' "achieved $($w.Fps) fps" }
+        else { Add-Check "B-LOOK.matte.$($e.name).captureRate" '>=8 fps (target10)' $w.Fps $true }
+        $events[$e.name] = @($w.Frames | ForEach-Object { [ordered]@{ path = $_.path; t = Round3 (($_.qpc - $evQpc) / $freq) } })
+    }
+    $row.events = $info; $row.durationA = $duration
+    $seekP = (100 + ($windows['seek'].Frames[-1].qpc - $start) / $freq - 25) / $duration
+    $a = Invoke-Pillow 'theme-events' ([ordered]@{ themeSpec = $lookInput.spec; events = $events; seekP = $seekP })
+    $row.analysis = $a
+    $add = { param($eventName, $name, $expected, $field)
+        $v = Get-Prop $a $eventName; $n = "B-LOOK.matte.$eventName.$name"
+        if ($windows[$eventName].Fps -lt 8) { Add-Blocked $n $expected 'capture below 8 fps; see event analysis' }
+        else { Add-Check $n $expected $v ([bool] (Get-Prop $v $field)) }
+    }
+    & $add 'seek' 'progress' 'settled seek: expected bar run +-3 px; luminance step >=0.25' 'pass'
+    & $add 'pause' 'intermediateFrames' '>=2 intermediate opacity frames' 'passIntermediate'
+    & $add 'pause' 'goneBy2500ms' 'alpha <=0.1 from 2.5 s after pause' 'passGone'
+    & $add 'play' 'intermediateFrames' '>=2 intermediate opacity frames' 'passIntermediate'
+    & $add 'play' 'rise12px' 'top edge 32+-2 to 20+-2, non-increasing' 'passRise'
+    & $add 'play' 'settledBy2500ms' 'settled <=2.5 s after play' 'passSettled'
+    & $add 'trackB' 'text.differsAB' 'nonempty glyph masks A/B differ by >=1% of generated text region' 'pass'
+}
+
 function Test-BLook($App, $Session) {
     $obs = [ordered]@{}
     $reader = Start-SseReader 'B-LOOK'
     try {
         $showing = Wait-For { $s = Get-State $App.Root 'look-streams'; if ((Get-Overlay $s 'streams') -ge 2) { $s } } 60 1000
         Add-Check 'B-LOOK.sourceConnected' 'OBS page and harness reader both connected (streams >= 2)' (Get-Overlay $showing 'streams') ([bool] $showing)
+        $loaded = Get-Overlay $showing 'looks'
+        $loadedOk = (Get-Prop $loaded 'count') -eq 8 -and (Get-Prop $loaded 'readOnly') -eq $false
+        Add-Check 'B-LOOK.defaultLooksLoaded' 'eight editable default looks loaded from the disposable app data/obs-looks.json' $loaded $loadedOk
+        if (-not $loadedOk) { throw 'B-LOOK: default looks were not loaded; refuse fallback-pill screenshots.' }
         Test-ObsPaths $Session $true $App
         $navQpc = Send-HookCommand $App.Root 'command-navigate'
         $initial = Wait-SseData $reader { param($d) (Test-Data $d 'playing' 'fixtureSngA') -and [double] (Get-Prop $d 'position') -lt 15 } 60 $navQpc
@@ -963,9 +1253,17 @@ function Test-BLook($App, $Session) {
         Add-Check 'B-LOOK.framesSaved' 'PNG frames and look.gif written for owner review (G2)' ([ordered]@{ frames = $all.Count; gif = $obs.gif }) ($all.Count -gt 0 -and (Test-Path -LiteralPath $g.out))
         $script:lookFrames = [ordered]@{ play = @($windows['play'].Frames | ForEach-Object { $_.path }); trackB = @($windows['trackB'].Frames | ForEach-Object { $_.path })
             pause = @($windows['pause'].Frames | ForEach-Object { $_.path }) }
-    } finally {
+        Test-BLookThemes $App $Session $obs
+        # A fresh reader: the first one ends at the 5-minute stream lifetime during the theme stills.
         Stop-SseReader $reader
-        $scenarioResults['B-LOOK'] = $obs
+        $reader = Start-SseReader 'B-LOOK-matte'
+        Test-BLookMatte $App $Session $reader $obs
+    } finally {
+        # Restore the plain preset even after a per-theme failure; B-DOCS captures must stay pill-sized.
+        try { Set-BLookSource $Session $overlayUrl 440 96 } finally {
+            Stop-SseReader $reader
+            $scenarioResults['B-LOOK'] = $obs
+        }
     }
 }
 
@@ -1311,7 +1609,8 @@ try {
     if ($lookSet) {
         $first = $lookSet[0]
         try {
-            $lookApp = Start-OverlayApp 'look' $null $first
+            $looksJson = [ordered]@{ version = 1; looks = @($bLookInputs | ForEach-Object { $_.look }); retired = @() } | ConvertTo-Json -Depth 16
+            $lookApp = Start-OverlayApp 'look' $null $first -LooksJson $looksJson
             $lookSession = Start-ObsSession 'look' $first $lookApp
             foreach ($n in $lookSet) {
                 $t0 = [DateTime]::UtcNow
