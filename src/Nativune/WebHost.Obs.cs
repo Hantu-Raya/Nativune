@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -27,6 +28,139 @@ public sealed partial class WebHostWindow
     private ObsLook? _draftLook;
     private string _draftBackdrop = "checker";
     private string? _previewNonce;
+    private OverlayDesignerWindow? _overlayDesignerWindow;
+
+    internal ObsLookState DesignerLooks
+    {
+        get { EnsureObsLooksLoaded(); return _looks; }
+    }
+    internal bool DesignerOverlayRunning => _obsOverlay is { IsRunning: true } && !_closing && !_disposed;
+    internal ObsOverlayStreamCounts? DesignerCounts => _obsOverlay?.Counts();
+    internal bool DesignerCommitInFlight => _looksSaveLock.CurrentCount == 0;
+    internal CoreWebView2Environment? DesignerEnvironment => _environment;
+    internal string DesignerPreviewState(string? nonce) =>
+        _obsOverlay?.PreviewState(nonce).ToString() ?? "Stopped";
+    internal void DesignerSetDraft(ObsLook? look, string backdrop, string? nonce) =>
+        ApplyObsDraft(look, backdrop, nonce);
+    internal void DesignerPreviewStopped(string? nonce) => _obsOverlay?.MarkPreviewStopped(nonce);
+    internal Task DesignerReloadAsync() => ReloadObsLooksAsync();
+    internal record DesignerCommitResult(bool Committed, string Message, string? Id, string? Detail = null);
+
+    internal async Task<DesignerCommitResult> DesignerSaveAsync(string? id, string name, ObsLookOptions options)
+    {
+        var outcome = await CommitLooksAsync(state =>
+        {
+            if (!ObsLookValidation.TryNormalizeName(name, out var validName))
+                return (null, [], "The look name is invalid");
+            if (id is null && state.Looks.Count >= ObsLookState.MaxLooks)
+                return (null, [], "You already have 16 looks; delete one first");
+            if (id is not null && (!ObsLookValidation.IsValidId(id) || state.Find(id) is null))
+                return (null, [], "The look was not found");
+            var savedId = id ?? ObsLookIds.New(state);
+            if (savedId is null) return (null, [], "Could not allocate a unique look id");
+            return (state.WithLook(new ObsLook(savedId, validName, options)), [savedId], null);
+        });
+        return DesignerResult(outcome);
+    }
+
+    internal async Task<DesignerCommitResult> DesignerDeleteAsync(string id)
+    {
+        var outcome = await CommitLooksAsync(state =>
+            !ObsLookValidation.IsValidId(id) || state.Find(id) is null
+                ? (null, [], "The look was not found")
+                : (state.Without(id), [id], null));
+        return DesignerResult(outcome);
+    }
+
+    private static DesignerCommitResult DesignerResult(ObsLookCommitOutcome outcome) =>
+        !outcome.Ok
+            ? new(false, "Could not save; OBS sources are unchanged.", outcome.Ids.FirstOrDefault(), outcome.Reason)
+            : new(true, outcome.Reason ?? "Look saved. Connected sources were notified.", outcome.Ids.FirstOrDefault());
+
+    // A timed-out ordinary close cancels only the active commit and waits for its settlement.
+    internal async Task<bool> DesignerWaitForCommitAsync()
+    {
+        var revision = _looksRevision;
+        if (await _looksSaveLock.WaitAsync(TimeSpan.FromSeconds(10)))
+        {
+            _looksSaveLock.Release();
+            return true;
+        }
+        try { _activeLooksCommit?.Cancel(); } catch (ObjectDisposedException) { }
+        await _looksSaveLock.WaitAsync();
+        _looksSaveLock.Release();
+        return _looksRevision != revision;
+    }
+
+    internal Task OpenOverlayDesignerAsync(FrameworkElement? invoker = null)
+    {
+        if (!DesignerOverlayRunning || _environment is null) return Task.CompletedTask;
+        if (_overlayDesignerWindow is { } existing)
+        {
+            existing.Activate();
+            return Task.CompletedTask;
+        }
+        try
+        {
+            var window = new OverlayDesignerWindow(this, invoker);
+            SetWindowLongPtr(WinRT.Interop.WindowNative.GetWindowHandle(window), -8, NativeHandle);
+            _overlayDesignerWindow = window;
+            window.Closed += (_, _) =>
+            {
+                if (ReferenceEquals(_overlayDesignerWindow, window))
+                    _overlayDesignerWindow = null;
+            };
+            window.Activate();
+            return InitializeDesignerPreviewAsync(window);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("obs", "designer-open-failed " + ex.GetType().Name);
+            CloseOverlayDesignerWindow();
+            _settingsDialog?.SetObsDesignerResult("Overlay designer could not be opened.");
+            return Task.CompletedTask;
+        }
+    }
+
+    private async Task InitializeDesignerPreviewAsync(OverlayDesignerWindow window)
+    {
+        try
+        {
+            await window.InitializePreviewAsync();
+            if (_closing || _disposed || !ReferenceEquals(_overlayDesignerWindow, window))
+                window.Shutdown();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("obs", "designer-preview-open-failed " + ex.GetType().Name);
+            if (ReferenceEquals(_overlayDesignerWindow, window)) window.Shutdown();
+        }
+    }
+
+    internal void DesignerReturnFocus(FrameworkElement? invoker)
+    {
+        if (_closing || _disposed) return;
+        if (_settingsDialog is { } settings && invoker is { XamlRoot: not null }
+            && ReferenceEquals(invoker, settings.ObsDesignerInvoker))
+        {
+            try { settings.Activate(); if (invoker.Focus(FocusState.Programmatic)) return; }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException) { }
+        }
+        if (invoker?.XamlRoot is not null && invoker.Focus(Microsoft.UI.Xaml.FocusState.Programmatic)) return;
+        Activate();
+        if (ObsButton.Focus(Microsoft.UI.Xaml.FocusState.Programmatic)) return;
+        RootGrid.Focus(Microsoft.UI.Xaml.FocusState.Programmatic);
+    }
+
+    private void CloseOverlayDesignerWindow() => _overlayDesignerWindow?.Shutdown();
+
+    private void RefreshDesignerAvailability()
+    {
+        var running = DesignerOverlayRunning;
+        _settingsDialog?.SetObsDesignerAvailable(running);
+        ObsDesignerContextItem.IsEnabled = running;
+        _overlayDesignerWindow?.OverlayAvailabilityChanged();
+    }
 
     private bool OverlayReadActive => _obsOverlay is { IsRunning: true, RealStreams: > 0 }
         && !_closing && !_disposed && !_playerSuspended;
@@ -53,6 +187,7 @@ public sealed partial class WebHostWindow
             _looksLoaded = true;
             _looksRevision++;
             _obsOverlay?.SetLooks(_looks);
+            _overlayDesignerWindow?.RefreshSavedLooks();
         }
         finally
         {
@@ -132,7 +267,11 @@ public sealed partial class WebHostWindow
             server.StreamsChanged += OnOverlayStreamsChanged;
             _obsStartResult = server.Start();
             if (_obsStartResult == ObsOverlayStartResult.Started)
+            {
                 _obsOverlay = server;
+                if (_previewNonce is not null)
+                    server.SetDraftLook(_draftLook, _draftBackdrop, _previewNonce);
+            }
             else
             {
                 // The setting stays on; turning it off and on retries with a fresh listener.
@@ -172,6 +311,9 @@ public sealed partial class WebHostWindow
         await _looksSaveLock.WaitAsync();
         try
         {
+            if (!_closing && !_disposed) _overlayDesignerWindow?.RefreshCommitState();
+            if (_closing || _disposed || _looksShutdownCts.IsCancellationRequested)
+                return new(false, "Could not save; OBS sources are unchanged.", [], _looksRevision);
             EnsureObsLooksLoaded();
             if (_looks.IsReadOnly)
                 return new(false, _looks.ReadOnlyReason ?? "The looks file is read-only", [], _looksRevision);
@@ -184,18 +326,39 @@ public sealed partial class WebHostWindow
 
             using var commit = CancellationTokenSource.CreateLinkedTokenSource(_looksShutdownCts.Token);
             _activeLooksCommit = commit;
-            var saved = await ObsLookStore.SaveAsync(_root, mutation.State, commit.Token);
-            if (!saved.Committed)
-                return new(false, saved.Reason, mutation.Ids, _looksRevision);
+            try
+            {
+                var saved = await ObsLookStore.SaveAsync(_root, mutation.State, commit.Token);
+                if (!saved.Committed)
+                    return new(false, saved.Reason, mutation.Ids, _looksRevision);
 
-            _looks = mutation.State;
-            _looksRevision++;
-            _obsOverlay?.SetLooks(_looks);
-            return new(true, null, mutation.Ids, _looksRevision);
+                // File.Move is the commit point. Notification failures cannot turn this into a failed Save.
+                _looks = mutation.State;
+                _looksRevision++;
+                if (!_closing && !_disposed)
+                {
+                    try
+                    {
+                        _obsOverlay?.SetLooks(_looks);
+                        _overlayDesignerWindow?.RefreshSavedLooks();
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Write("obs", "looks-notify-failed " + ex.GetType().Name);
+                        return new(true, "Look saved. Some OBS sources could not be notified; refresh them in OBS.",
+                            mutation.Ids, _looksRevision);
+                    }
+                }
+                return new(true, null, mutation.Ids, _looksRevision);
+            }
+            finally
+            {
+                _activeLooksCommit = null;
+            }
         }
         catch (OperationCanceledException)
         {
-            return new(false, "The looks save was cancelled", [], _looksRevision);
+            return new(false, "Could not save; OBS sources are unchanged.", [], _looksRevision);
         }
         catch (Exception ex)
         {
@@ -203,27 +366,18 @@ public sealed partial class WebHostWindow
         }
         finally
         {
-            _activeLooksCommit = null;
             _looksSaveLock.Release();
+            if (!_closing && !_disposed) _overlayDesignerWindow?.RefreshCommitState();
         }
     }
     private async Task StopObsLookCommitsAsync()
     {
-        var acquired = false;
-        try
-        {
-            await _looksSaveLock.WaitAsync().WaitAsync(TimeSpan.FromSeconds(2));
-            acquired = true;
-        }
-        catch (TimeoutException)
-        {
+        // Shutdown waits briefly for the disk commit; a slow writer is cancelled before replacing the file.
+        if (await _looksSaveLock.WaitAsync(TimeSpan.FromSeconds(2)))
+            _looksSaveLock.Release();
+        else
             try { _activeLooksCommit?.Cancel(); } catch (ObjectDisposedException) { }
-        }
-        finally
-        {
-            if (acquired) _looksSaveLock.Release();
-            _looksShutdownCts.Cancel();
-        }
+        _looksShutdownCts.Cancel();
     }
 
     // Hard invalidation (navigation, browser failure, power suspend): 'none' now, latest stale.
@@ -272,6 +426,7 @@ public sealed partial class WebHostWindow
             if (_closing || _disposed) return;
             RefreshSharedReader();
             RefreshObsStatus();
+            _overlayDesignerWindow?.RefreshSavedLooks();
         });
     }
 
@@ -296,6 +451,7 @@ public sealed partial class WebHostWindow
     {
         if (_closing || _disposed) return;
         _settingsDialog?.SetObsStatus(CurrentObsStatus, _obsOverlay?.StatusSourceCount ?? 0);
+        RefreshDesignerAvailability();
         RefreshObsSurfaces();
     }
 

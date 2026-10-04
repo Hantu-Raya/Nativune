@@ -56,6 +56,9 @@
     <Page Include="SettingsDialog.xaml">
       <Generator>MSBuild:Compile</Generator>
     </Page>
+    <Page Include="OverlayDesignerWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
   </ItemGroup>
 
   <!-- OBS overlay page served by ObsOverlay.cs. -->
