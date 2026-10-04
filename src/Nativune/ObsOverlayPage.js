@@ -399,13 +399,24 @@ function sampledAccent(img) {
   const hi = Math.max(r, g, b), lo = Math.min(r, g, b), delta = hi - lo;
   const hue = delta === 0 ? 0 : ((hi === r ? (g - b) / delta + (g < b ? 6 : 0)
     : hi === g ? (b - r) / delta + 2 : (r - g) / delta + 4) / 6);
-  const light = Math.min(opts.theme === 'matte-light' ? .5 : .7, Math.max(opts.theme === 'matte-light' ? .35 : .55, (hi + lo) / 2));
+  let light = Math.min(opts.theme === 'matte-light' ? .5 : .7, Math.max(opts.theme === 'matte-light' ? .35 : .55, (hi + lo) / 2));
   const saturation = Math.max(.35, delta === 0 ? 0 : delta / (1 - Math.abs(hi + lo - 1)));
-  const chroma = (1 - Math.abs(2 * light - 1)) * saturation, h = hue * 6;
-  const x = chroma * (1 - Math.abs(h % 2 - 1)), m = light - chroma / 2;
-  const rgb = h < 1 ? [chroma,x,0] : h < 2 ? [x,chroma,0] : h < 3 ? [0,chroma,x]
-    : h < 4 ? [0,x,chroma] : h < 5 ? [x,0,chroma] : [chroma,0,x];
-  return '#' + rgb.map(v => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('');
+  const toRgb = l => {
+    const chroma = (1 - Math.abs(2 * l - 1)) * saturation, h = hue * 6;
+    const x = chroma * (1 - Math.abs(h % 2 - 1)), m = l - chroma / 2;
+    const rgb = h < 1 ? [chroma,x,0] : h < 2 ? [x,chroma,0] : h < 3 ? [0,chroma,x]
+      : h < 4 ? [0,x,chroma] : h < 5 ? [x,0,chroma] : [chroma,0,x];
+    return rgb.map(v => Math.round((v + m) * 255));
+  };
+  let rgb = toRgb(light);
+  // Owner, 4 October (G2): on matte the art-derived fill must stand out from the dark track by brightness, not hue
+  // alone. HSL lightness 0.55 still leaves blues and purples dim, so raise it until the (sRGB-weighted) luminance
+  // reaches 0.5; the hue is kept and the track is dimmed in CSS.
+  if (opts.theme === 'matte') {
+    const luminance = c => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+    while (luminance(rgb) < .5 && light < .9) { light = Math.min(.9, light + .01); rgb = toRgb(light); }
+  }
+  return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
 }
 
 function drawArt(img) {
