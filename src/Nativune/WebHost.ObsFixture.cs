@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Web.WebView2.Core;
 
 namespace Nativune;
 
@@ -20,6 +21,7 @@ namespace Nativune;
 public sealed partial class WebHostWindow
 {
     private TaskCompletionSource? _obsReadHold;
+    private CoreWebView2? _obsMaximumArtCore;
 
     private async Task ProcessObsBenchCommandsAsync()
     {
@@ -81,6 +83,21 @@ public sealed partial class WebHostWindow
         var fixtureRate = TakeObsCommandPayload("command-obs-fixture-rate");
         if (fixtureRate is not null)
             await SetObsFixtureRateAsync(fixtureRate);
+        var fixtureArt = TakeObsCommandPayload("command-obs-fixture-art");
+        if (fixtureArt is not null)
+            await SetObsFixtureArtAsync(fixtureArt.Trim());
+        if (TakeDiscordBenchCommand("command-obs-fixture-text-long") && _browserHost is { } textHost && !_closing && !_disposed)
+        {
+            await textHost.Core.ExecuteScriptAsync("""
+                (() => {
+                  const title = ('Fixture Long Title '.repeat(14)).slice(0,249) + '!';
+                  const artist = '\u97f3\u697d\u30c6\u30b9\u30c8 \u0627\u0644\u0641\u0646\u0627\u0646';
+                  document.querySelector('.title').textContent = title;
+                  document.querySelector('ytmusic-player a.ytp-title-link').textContent = title;
+                  document.querySelector('.byline a[href^="channel/"]').textContent = artist;
+                })()
+                """);
+        }
         if (TakeDiscordBenchCommand("command-obs-hold-read"))
             _obsReadHold ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (TakeDiscordBenchCommand("command-obs-release-read"))
@@ -178,6 +195,35 @@ public sealed partial class WebHostWindow
         };
         if (rate is not null)
             await browser.Core.ExecuteScriptAsync($"window.__nativuneFixture.setPlaybackRate({rate})");
+    }
+
+    private async Task SetObsFixtureArtAsync(string value)
+    {
+        if (_browserHost is not { } browser || _closing || _disposed
+            || value is not ("fixture-max" or "fixture-a" or "fixture-b" or "fixture-c")) return;
+        if (!ReferenceEquals(_obsMaximumArtCore, browser.Core))
+        {
+            _obsMaximumArtCore = browser.Core;
+            browser.Core.WebResourceRequested += OnObsMaximumArtRequested;
+        }
+        // Only fixed synthetic URLs enter the owned fixture DOM. Its existing interceptor prevents network access.
+        await browser.Core.ExecuteScriptAsync($$"""
+            (() => {
+              const url = 'https://lh3.googleusercontent.com/{{value}}=w544-h544';
+              document.getElementById('bar-art').src = url;
+              document.getElementById('large-art').src = url;
+            })()
+            """);
+    }
+
+    private static void OnObsMaximumArtRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+    {
+        if (Uri.TryCreate(args.Request.Uri, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && uri.UserInfo.Length == 0
+            && uri.Host.Equals(DiscordFixtureArtworkHost, StringComparison.OrdinalIgnoreCase)
+            && uri.AbsolutePath == "/fixture-max=w544-h544" && uri.Query.Length == 0
+            && args.ResourceContext == CoreWebView2WebResourceContext.Image)
+            args.Response = DiscordFixtureResponse(sender, ObsOverlayServer.HookFixtureMaximumPng, 200, "OK", "image/png");
     }
 
     private async Task RunObsLookCommitAsync(string requestedFile)

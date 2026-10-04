@@ -1,6 +1,6 @@
 'use strict';
 // Nativune OBS overlay (plan §4.5, design §2.9). Only opacity and transform animate; no rAF loop.
-// Looks (OBS designer plan v5 §2.3, §2.4; the pill is the only theme drawn in this phase): a `look` event carries the
+// Looks (OBS designer plan v5 §2.3, §2.4): a `look` event carries the
 // options, default `data` events carry the song. Every look received is applied in arrival order; epoch and seq are
 // diagnostics and never a filter (SSE delivers in order, and a restarted server starts a new epoch at seq 1).
 
@@ -19,6 +19,17 @@ const SLIDES = {
   'slide-left': ['translateX', RISE_PX], 'slide-right': ['translateX', -RISE_PX]
 };
 const FONT_STACK = '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif';
+const TITLE_STACK = '"Segoe UI Variable Display", "Segoe UI", Arial, sans-serif';
+const themeDefaults = theme => ({
+  min: theme === 'pill' ? 320 : theme === 'album-art' ? 160 : theme === 'card' ? 200 : 360,
+  max: theme === 'pill' ? 800 : theme === 'album-art' || theme === 'card' ? 600 : 1200,
+  width: theme === 'pill' ? 400 : theme === 'album-art' ? 200 : theme === 'card' ? 280 : 440,
+  text: theme === 'matte-light' ? '#141414' : '#ffffff',
+  bg: theme === 'matte' ? '#1c1c1e' : theme === 'matte-light' ? '#f5f5f7'
+    : theme === 'album-art' ? '#000000' : ['standard', 'classic', 'card'].includes(theme) ? '#1a1a1a' : '#202020',
+  opacity: theme === 'album-art' ? 80 : ['pill', 'simple'].includes(theme) ? 100 : 94,
+  shadow: !['matte', 'matte-light'].includes(theme)
+});
 
 // Artwork comes only from this server's own /art/<key> route or its generated /art/sample cover; anything else shows no art.
 const acceptArtwork = url => typeof url === 'string' && /^\/art\/(?:[0-9a-f]{16}|sample)$/.test(url) ? url : null;
@@ -56,15 +67,23 @@ const colour = document.getElementById('colour');
 const grey = document.getElementById('grey');
 const titleEl = document.getElementById('title');
 const artistEl = document.getElementById('artist');
-const elapsedEl = document.getElementById('elapsed');   // null until a theme with a times slot exists
+const elapsedEl = document.getElementById('elapsed');
 const durationEl = document.getElementById('duration');
+let thumb = document.getElementById('thumb');
+const bar = document.getElementById('bar');
+const barfill = document.getElementById('barfill');
+const barhead = document.getElementById('barhead');
 
 let msg = null;          // last applied metadata-bearing message
 let opts = null;         // options of the applied look (the defaults until the first look, assigned below)
 let geo = null;          // box and source size of the applied look
 let artUrl = null;       // accepted artwork URL currently loaded or loading
 let artImg = null;       // bitmap currently drawn on the band canvases, kept so a size change can redraw it
-let rasterKey = 'pill|400|56';   // layout part of the raster-cache key the band canvases were last sized/drawn for
+let rasterKey = '';      // art URL, theme, box, colour mode, background and cover visibility
+let artImgUrl = null;
+let blurRasterScale = 1;
+const accentCanvas = document.createElement('canvas');
+accentCanvas.width = accentCanvas.height = 32;
 let source = null;       // the one EventSource
 let connGen = 0;         // connection generation; timers check it
 let lossTimer = 0, retryTimer = 0;
@@ -82,7 +101,7 @@ let viewOpacity = 0;     // target opacity of the pill
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const oneOf = (v, list, dflt) => typeof v === 'string' && list.includes(v) ? v : dflt;
 const flag = (v, dflt) => typeof v === 'boolean' ? v : dflt;
-const hexColour = (v, dflt) => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : dflt;
+const hexColour = (v, dflt) => typeof v === 'string' && v.length === 7 && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : dflt;
 const fontName = v => typeof v === 'string' && v.trim().length > 0 && v.length <= 64 && !/[\u0000-\u001f\u007f-\u009f]/.test(v) ? v : null;
 // A finite number inside [min, max] snapped to the nearest step from min; anything else is the default.
 const snapped = (v, min, max, step, dflt) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
@@ -90,16 +109,16 @@ const snapped = (v, min, max, step, dflt) => typeof v === 'number' && Number.isF
 
 function normalizeOptions(raw) {
   const r = isObject(raw) ? raw : {};
-  // Order matters (plan §3.2): scale, then the width range that depends on it, then the width.
+  const theme = oneOf(r.theme, THEMES, 'pill'), d = themeDefaults(theme);
   const scale = snapped(r.scale, 50, 200, 5, 100);
-  const minWidth = Math.ceil(PILL.minWidth * Math.max(scale, 100) / 1000) * 10;
-  const width = snapped(r.width, minWidth, PILL.maxWidth, 10, Math.min(PILL.maxWidth, Math.max(minWidth, PILL.width)));
+  const minWidth = Math.ceil(d.min * Math.max(scale, 100) / 1000) * 10;
+  const width = snapped(r.width, minWidth, d.max, 10, Math.min(d.max, Math.max(minWidth, d.width)));
   return {
-    theme: oneOf(r.theme, THEMES, 'pill'), font: fontName(r.font), scale, width,
-    align: oneOf(r.align, ALIGNS, 'center'), colours: oneOf(r.colours, ['auto', 'custom'], 'auto'),
-    text: hexColour(r.text, PILL.text), background: hexColour(r.background, '#202020'),
-    backgroundOpacity: snapped(r.backgroundOpacity, 0, 100, 1, 100), accent: hexColour(r.accent, PILL.accent),
-    textShadow: flag(r.textShadow, true), showArt: flag(r.showArt, true), showArtist: flag(r.showArtist, true),
+    theme, font: fontName(r.font), scale, width,
+    align: oneOf(r.align, ALIGNS, theme === 'pill' ? 'center' : 'left'), colours: oneOf(r.colours, ['auto', 'custom'], 'auto'),
+    text: hexColour(r.text, d.text), background: hexColour(r.background, d.bg),
+    backgroundOpacity: snapped(r.backgroundOpacity, 0, 100, 1, d.opacity), accent: hexColour(r.accent, PILL.accent),
+    textShadow: flag(r.textShadow, d.shadow), showArt: flag(r.showArt, true), showArtist: flag(r.showArtist, true),
     showProgress: flag(r.showProgress, true), showTimes: flag(r.showTimes, true),
     paused: oneOf(r.paused, ['hide', 'dim'], 'hide'),
     showAnimation: oneOf(r.showAnimation, ANIMATIONS, 'slide-up'), hideAnimation: oneOf(r.hideAnimation, ANIMATIONS, 'fade')
@@ -143,9 +162,19 @@ function normalizeLook(m) {
 
 function geometry(o) {
   const k = o.scale / 100;
-  const box = { w: o.width, h: PILL.height * k };
-  // Only the pill is drawn in this phase, so every theme id resolves to it.
-  return { theme: 'pill', k, box, source: { w: 2 * Math.ceil((box.w + 40) / 2), h: 2 * Math.ceil((box.h + 40) / 2) } };
+  const textH = (26 + (o.showArtist ? 20 : 0)) * k;
+  // Keep the native canonical operation order: factoring this changes even-source rounding at some 5% scales.
+  let tailH = !o.showProgress ? 56 * k : o.showTimes ? 96 * k : 72 * k;
+  if (!o.showArtist) tailH -= 20 * k;
+  const h = o.theme === 'pill' ? 56 * k : o.theme === 'album-art' ? o.width
+    : o.theme === 'card' ? (o.showArt ? o.width - 32 * k : 0) + 16 * k + tailH : 80 * k;
+  const box = { w: o.width, h };
+  const left = o.theme === 'classic' ? (o.showArt ? 102 : 12) * k
+    : o.theme === 'simple' ? (o.showArt ? 88 : 12) * k : o.theme === 'card' ? 16 * k
+    : o.theme === 'album-art' ? 12 * k : (o.showArt ? 84 : 12) * k;
+  const right = o.width - (o.theme === 'simple' ? 0 : o.theme === 'card' ? 16 : 12) * k;
+  return { theme: o.theme, k, box, left, right, textH, tailH,
+    source: { w: 2 * Math.ceil((box.w + 40) / 2), h: 2 * Math.ceil((box.h + 40) / 2) } };
 }
 
 opts = normalizeOptions(null);
@@ -153,9 +182,10 @@ geo = geometry(opts);
 
 // ---- style writes: fixed names only, values built from the validated primitives above ----
 
-const VARS = ['--k', '--w', '--sw', '--sh', '--font', '--align', '--fg', '--bg', '--bg-a', '--accent', '--shadow', '--backdrop'];
-const ATTRS = ['data-theme', 'data-colours', 'data-show-art', 'data-show-artist', 'data-show-progress', 'data-show-times',
-  'data-paused', 'data-anim-show', 'data-anim-hide', 'data-preview', 'data-backdrop'];
+const VARS = ['--k', '--w', '--h', '--th', '--text-h', '--sw', '--sh', '--font', '--title-font', '--align', '--fg',
+  '--bg', '--bg-a', '--accent', '--shadow', '--backdrop', '--status-x', '--status-y'];
+const ATTRS = ['data-theme', 'data-layout', 'data-colours', 'data-show-art', 'data-show-artist', 'data-show-progress', 'data-show-times',
+  'data-paused', 'data-anim-show', 'data-anim-hide', 'data-preview', 'data-backdrop', 'data-art', 'data-state', 'data-has-time'];
 const written = new Map();
 
 function setVar(name, value) {
@@ -172,8 +202,8 @@ function setAttr(name, value) {
 
 // Quoted family (escaping backslash and quote, so it stays one string token) ahead of the fixed stack, only when the
 // server confirmed the family is installed.
-const fontValue = (family, available) => available && family !== null
-  ? '"' + family.replace(/[\\"]/g, '\\$&') + '", ' + FONT_STACK : FONT_STACK;
+const fontValue = (family, available, stack = FONT_STACK) => available && family !== null
+  ? '"' + family.replace(/[\\"]/g, '\\$&') + '", ' + stack : stack;
 
 // Text shadow (plan §3.3): a dark halo under light text, a light one under dark text (higher contrast against the text colour).
 function luminance(hex) {
@@ -256,15 +286,27 @@ function stopFill() {
   clearTimeout(fillTimer); fillTimer = 0;
 }
 
+let filledWidth = -1, filledTheme = '';
+function fillWidth() {
+  if (geo.theme === 'pill') return geo.box.w;
+  const times = timesShown() && !['album-art', 'card'].includes(geo.theme);
+  return Math.max(1, geo.right - geo.left - (times ? 100 * geo.k : 0));
+}
 function writeFill(px) {
-  if (px === fillPx) return;
-  fillPx = px;
+  const width = fillWidth();
+  if (px === fillPx && width === filledWidth && geo.theme === filledTheme) return;
+  fillPx = px; filledWidth = width; filledTheme = geo.theme;
   counters.fillWrites++;
-  clip.style.transform = `translateX(${px}px)`;
-  grey.style.transform = `translateX(${-px}px)`;
+  if (geo.theme === 'pill') {
+    clip.style.transform = `translateX(${px}px)`;
+    grey.style.transform = `translateX(${-px}px)`;
+  } else {
+    barfill.style.transform = `translateX(${px - width}px)`;
+    barhead.style.transform = `translateX(${px}px)`;
+  }
 }
 
-function toPx(p) { return Math.min(geo.box.w, Math.max(0, Math.round(p / 100 * geo.box.w))); }
+function toPx(p) { const width = fillWidth(); return Math.min(width, Math.max(0, Math.round(p / 100 * width))); }
 
 function setFill(p) {
   stopFill();
@@ -277,7 +319,7 @@ const clockText = s => {
 };
 
 function timesShown() {
-  return elapsedEl !== null && durationEl !== null && opts.showTimes && opts.showProgress
+  return !['pill', 'album-art'].includes(opts.theme) && opts.showTimes && opts.showProgress
     && msg !== null && msg.clock && msg.duration != null;
 }
 
@@ -292,7 +334,7 @@ function writeTimes(s) {
 function stepFill() {
   fillTimer = 0;
   const s = projected();
-  if (s == null || !msg || msg.duration == null || !opts.showProgress) { writeFill(geo.box.w); return; }
+  if (s == null || !msg || msg.duration == null || !opts.showProgress) { writeFill(fillWidth()); return; }
   state.projectedPosition = s;
   const px = toPx(s / msg.duration * 100);
   if (timesShown()) {
@@ -300,16 +342,16 @@ function stepFill() {
     writeTimes(s);
     writeFill(px);
     if (s >= msg.duration) return;
-    fillTimer = setTimeout(stepFill, Math.max(1, 1000 - ((performance.now() - tickEpoch) % 1000)));
+    fillTimer = setTimeout(stepFill, Math.max(1, Math.ceil(1000 - ((performance.now() - tickEpoch) % 1000))));
     return;
   }
-  if (px !== fillPx) {
+  if (px !== fillPx || filledWidth !== fillWidth() || filledTheme !== geo.theme) {
     counters.ticks++;
     writeFill(px);
   }
-  if (px >= geo.box.w) return;
+  if (px >= fillWidth()) return;
   // Next rounded-pixel boundary, or 1 s, whichever is later.
-  const nextS = (px + 0.5) / geo.box.w * msg.duration;
+  const nextS = (px + 0.5) / fillWidth() * msg.duration;
   const delay = Math.max(1000, (nextS - s) / msg.rate * 1000);
   fillTimer = setTimeout(stepFill, Math.ceil(delay));
 }
@@ -331,43 +373,95 @@ function projected(now = performance.now()) {
 
 // ---- artwork: blur once per raster key into two canvases ----
 
+// Original 12-bit histogram quantiser: weighted population, then the winning bin's mean RGB.
+function sampledAccent(img) {
+  counters.quantizerRuns++;
+  const c = accentCanvas.getContext('2d', { willReadFrequently: true });
+  c.clearRect(0, 0, 32, 32); c.drawImage(img, 0, 0, 32, 32);
+  const pixels = c.getImageData(0, 0, 32, 32).data;
+  const bins = new Map();
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] < 128) continue;
+    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+    const key = (r >> 4) * 256 + (g >> 4) * 16 + (b >> 4);
+    const bin = bins.get(key) || [0, 0, 0, 0];
+    bin[0]++; bin[1] += r; bin[2] += g; bin[3] += b; bins.set(key, bin);
+  }
+  let best = null, score = -1;
+  for (const bin of bins.values()) {
+    const hi = Math.max(bin[1], bin[2], bin[3]) / (255 * bin[0]);
+    const lo = Math.min(bin[1], bin[2], bin[3]) / (255 * bin[0]);
+    const saturation = hi === lo ? 0 : (hi - lo) / (1 - Math.abs(hi + lo - 1));
+    if (bin[0] * saturation > score) { best = bin; score = bin[0] * saturation; }
+  }
+  if (best === null) return PILL.accent;
+  const r = best[1] / best[0] / 255, g = best[2] / best[0] / 255, b = best[3] / best[0] / 255;
+  const hi = Math.max(r, g, b), lo = Math.min(r, g, b), delta = hi - lo;
+  const hue = delta === 0 ? 0 : ((hi === r ? (g - b) / delta + (g < b ? 6 : 0)
+    : hi === g ? (b - r) / delta + 2 : (r - g) / delta + 4) / 6);
+  const light = Math.min(opts.theme === 'matte-light' ? .5 : .7, Math.max(opts.theme === 'matte-light' ? .35 : .55, (hi + lo) / 2));
+  const saturation = Math.max(.35, delta === 0 ? 0 : delta / (1 - Math.abs(hi + lo - 1)));
+  const chroma = (1 - Math.abs(2 * light - 1)) * saturation, h = hue * 6;
+  const x = chroma * (1 - Math.abs(h % 2 - 1)), m = light - chroma / 2;
+  const rgb = h < 1 ? [chroma,x,0] : h < 2 ? [x,chroma,0] : h < 3 ? [0,chroma,x]
+    : h < 4 ? [0,x,chroma] : h < 5 ? [x,0,chroma] : [chroma,0,x];
+  return '#' + rgb.map(v => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('');
+}
+
 function drawArt(img) {
   const w = colour.width, h = colour.height;
-  const blur = Math.round(BLUR * geo.k * 10) / 10;
-  const scale = Math.max((w + 4 * blur) / img.naturalWidth, (h + 4 * blur) / img.naturalHeight);
+  const pillTheme = geo.theme === 'pill';
+  const blurCss = Math.round((geo.theme === 'card' ? 16 : BLUR) * geo.k * 10) / 10;
+  const cssW = pillTheme ? w : geo.theme === 'classic' && opts.showArt ? geo.box.w - 90 * geo.k : geo.box.w;
+  const cssH = pillTheme ? h : geo.box.h;
+  const scale = Math.max((cssW + 4 * blurCss) / img.naturalWidth, (cssH + 4 * blurCss) / img.naturalHeight);
   const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
-  const dx = (w - dw) / 2, dy = (h - dh) / 2;
   const c = colour.getContext('2d');
   c.clearRect(0, 0, w, h);
-  c.filter = `blur(${blur}px) saturate(1.3)`;
-  c.drawImage(img, dx, dy, dw, dh);
-  const g = grey.getContext('2d');
-  g.clearRect(0, 0, w, h);
-  g.filter = `blur(${blur}px) grayscale(.75)`;
-  g.globalAlpha = 0.5;
-  g.drawImage(img, dx, dy, dw, dh);
+  if (pillTheme) {
+    // Preserve the compatibility pill's exact draw/filter arithmetic, including fractional CSS heights.
+    c.filter = `blur(${blurCss}px) saturate(1.3)`;
+    c.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    const g = grey.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    g.filter = `blur(${blurCss}px) grayscale(.75)`;
+    g.globalAlpha = 0.5;
+    g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  } else {
+    c.filter = `blur(${blurCss * blurRasterScale}px) brightness(${geo.theme === 'card' ? .35 : .4}) saturate(1.2)`;
+    c.drawImage(img, (cssW - dw) / 2 * w / cssW, (cssH - dh) / 2 * h / cssH, dw * w / cssW, dh * h / cssH);
+  }
 }
 
 function clearArt() {
-  artImg = null;
+  artImg = null; artImgUrl = null; rasterKey = '';
   colour.getContext('2d').clearRect(0, 0, colour.width, colour.height);
   grey.getContext('2d').clearRect(0, 0, grey.width, grey.height);
+  thumb.removeAttribute('src');
+  setAttr('data-art', 'false');
+  state.accent = opts.colours === 'custom' ? opts.accent : PILL.accent;
+  setVar('--accent', state.accent);
 }
 
 // A look that keeps the raster key unchanged causes no raster work; a new size resizes the canvases and redraws the
 // bitmap that is on them. blurDraws counts a pass when it is scheduled (an art load or a redraw), one per key change.
 function syncRaster(g) {
-  const w = Math.ceil(g.box.w), h = Math.ceil(g.box.h);
-  const key = g.theme + '|' + w + '|' + h;
+  const background = opts.colours === 'custom' ? opts.background : themeDefaults(g.theme).bg;
+  const key = JSON.stringify([artUrl, g.theme, g.box.w, g.box.h, opts.colours, background, opts.showArt]);
   if (key === rasterKey) return;
   rasterKey = key;
-  if (colour.width !== w || colour.height !== h) {
-    colour.width = grey.width = w;   // resizing clears the canvases
-    colour.height = grey.height = h;
-  }
-  if (artImg !== null) {
-    counters.blurDraws++;
-    drawArt(artImg);
+  const blurred = g.theme === 'pill' || ['standard', 'classic', 'card'].includes(g.theme) && opts.colours === 'auto';
+  const cssW = g.theme === 'classic' && opts.showArt ? g.box.w - 90 * g.k : g.box.w;
+  blurRasterScale = g.theme === 'pill' || !blurred ? 1 : Math.min(1, Math.sqrt(100000 / (cssW * g.box.h)));
+  const w = !blurred ? 1 : g.theme === 'pill' ? Math.ceil(g.box.w) : Math.max(1, Math.floor(cssW * blurRasterScale));
+  const h = !blurred ? 1 : g.theme === 'pill' ? Math.ceil(g.box.h) : Math.max(1, Math.floor(g.box.h * blurRasterScale));
+  if (colour.width !== w || colour.height !== h) { colour.width = w; colour.height = h; }
+  const gw = g.theme === 'pill' ? w : 1, gh = g.theme === 'pill' ? h : 1;
+  if (grey.width !== gw || grey.height !== gh) { grey.width = gw; grey.height = gh; }
+  if (artImg !== null && artImgUrl === artUrl) {
+    if (blurred) { counters.blurDraws++; drawArt(artImg); }
+    state.accent = opts.colours === 'custom' ? opts.accent : g.theme === 'pill' ? PILL.accent : sampledAccent(artImg);
+    setVar('--accent', state.accent);
   }
 }
 
@@ -383,14 +477,17 @@ function loadArt(raw) {
     return;
   }
   counters.coverLoads++;
-  counters.blurDraws++;
   const img = new Image();
   img.referrerPolicy = 'no-referrer';
   img.decoding = 'async';
+  img.id = 'thumb'; img.alt = '';
   img.onload = () => {
     if (seq !== state.artSeq) return;
-    artImg = img;
-    drawArt(img);
+    artImg = img; artImgUrl = url;
+    rasterKey = ''; syncRaster(geo);
+    // Move the already-loaded image into the cover; assigning its URL to a second img would refetch no-store art.
+    thumb.replaceWith(img); thumb = img;
+    setAttr('data-art', 'true');
     state.artFailed = false;
     state.artLoadedSeq = seq;
   };
@@ -427,10 +524,11 @@ function applyLook(look, at) {
   state.reduceMotion = look.reduceMotion;
   if (look.hidePaused !== null) state.hidePaused = look.hidePaused;
   const custom = o.colours === 'custom';
-  const fg = custom ? o.text : PILL.text;
-  state.accent = custom ? o.accent : PILL.accent;
+  const fg = custom ? o.text : themeDefaults(o.theme).text;
+  state.accent = custom ? o.accent : artImg !== null && artImgUrl === artUrl ? state.accent || PILL.accent : PILL.accent;
 
   setAttr('data-theme', g.theme);
+  setAttr('data-layout', ['pill', 'album-art', 'card'].includes(g.theme) ? g.theme : 'horizontal');
   setAttr('data-colours', o.colours);
   setAttr('data-show-art', String(o.showArt));
   setAttr('data-show-artist', String(o.showArtist));
@@ -441,15 +539,22 @@ function applyLook(look, at) {
   setAttr('data-anim-hide', o.hideAnimation);
   setVar('--k', String(g.k));
   setVar('--w', g.box.w + 'px');
+  setVar('--h', g.box.h + 'px');
+  setVar('--th', g.tailH + 'px');
+  setVar('--text-h', g.textH + 'px');
+  setVar('--status-x', (g.theme === 'album-art' ? g.box.w - 24 * g.k : g.left + 32 * g.k) + 'px');
+  setVar('--status-y', (g.theme === 'album-art' ? 12 * g.k : g.theme === 'card' ? g.box.h - 18 * g.k : 57 * g.k) + 'px');
   setVar('--sw', g.source.w + 'px');
   setVar('--sh', g.source.h + 'px');
   setVar('--font', fontValue(o.font, look.fontAvailable));
+  setVar('--title-font', fontValue(o.font, look.fontAvailable, TITLE_STACK));
   setVar('--align', o.align);
   setVar('--fg', fg);
-  setVar('--bg', o.background);
-  setVar('--bg-a', String(o.backgroundOpacity / 100));
+  setVar('--bg', custom ? o.background : themeDefaults(o.theme).bg);
+  setVar('--bg-a', String((custom ? o.backgroundOpacity : themeDefaults(o.theme).opacity) / 100));
   setVar('--accent', state.accent);
-  setVar('--shadow', shadowFor(o.textShadow, fg));
+  setVar('--shadow', o.theme === 'simple' && o.textShadow
+    ? '0 1px 2px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.7)' : shadowFor(o.textShadow, fg));
   syncRaster(g);
   writePreview(look);
 
@@ -463,10 +568,13 @@ function applyLook(look, at) {
 
 // Paused, ended, hidden and playing views of the current message under the current look.
 function present() {
+  setAttr('data-state', oneOf(state.state, ['playing', 'paused', 'ended', 'ad', 'none'], 'none'));
+  setAttr('data-has-time', String(timesShown()));
+  if (timesShown()) writeTimes(projected() ?? 0);
   if (state.state === 'ended') { hide(); return; }
   if (state.state === 'paused') {
-    // A paused song hides only when its look says hide and the global hide-when-paused switch is on; otherwise it dims.
-    if (opts.paused === 'hide' && state.hidePaused) { hide(); return; }
+    // The native compatibility preset encodes the global preference; saved looks use their own pause choice.
+    if (opts.paused === 'hide') { hide(); return; }
     setFill(!opts.showProgress || msg.duration == null ? 100 : msg.position / msg.duration * 100);
     setView(DIM);
     return;
@@ -481,19 +589,20 @@ function apply(m) {
   stopFill();
   awaitingData = false;
   state.receivedAt = performance.now();
-  state.state = m.state;
-  if (m.state === 'none' || m.state === 'ad') {
+  state.state = oneOf(m.state, ['playing', 'paused', 'ended', 'ad', 'none'], 'none');
+  if (state.state === 'none' || state.state === 'ad') {
     state.projectedPosition = null;
+    setAttr('data-state', state.state);
     hide();
     return;
   }
   state.hidePaused = m.hidePaused !== false;
-  const duration = typeof m.duration === 'number' && m.duration > 0 ? m.duration : null;
-  const position = Math.max(0, Number(m.position) || 0);
+  const duration = typeof m.duration === 'number' && Number.isFinite(m.duration) && m.duration > 0 ? m.duration : null;
+  const position = typeof m.position === 'number' && Number.isFinite(m.position) ? Math.max(0, m.position) : 0;
   msg = {
-    state: m.state, duration, position: duration == null ? position : Math.min(position, duration),
-    rate: typeof m.rate === 'number' && m.rate > 0 ? m.rate : 1,
-    clock: m.clock === true, ageMs: Math.max(0, Number(m.ageMs) || 0)
+    state: state.state, duration, position: duration == null ? position : Math.min(position, duration),
+    rate: typeof m.rate === 'number' && Number.isFinite(m.rate) && m.rate >= .25 && m.rate <= 4 ? m.rate : 1,
+    clock: m.clock === true, ageMs: typeof m.ageMs === 'number' && Number.isFinite(m.ageMs) ? Math.max(0, m.ageMs) : 0
   };
   if (m.id !== state.id || m.title !== state.title || m.artist !== state.artist) {
     state.id = m.id ?? null;
@@ -503,7 +612,8 @@ function apply(m) {
     artistEl.textContent = state.artist ?? '';
   }
   loadArt(m.artwork);
-  if (durationEl !== null) durationEl.textContent = duration == null ? '' : clockText(duration);
+  const durationText = duration == null ? '' : clockText(duration);
+  if (durationEl.textContent !== durationText) { durationEl.textContent = durationText; counters.timeWrites++; }
   state.projectedPosition = projected(state.receivedAt);
   present();
 }

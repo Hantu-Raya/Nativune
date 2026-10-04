@@ -98,14 +98,42 @@ param(
     [string] $OutputDirectory = 'artifacts/obs-overlay',
     [switch] $SkipPublish,
     [switch] $KeepRoot,
-    [switch] $CapturePlainBaseline
+    [switch] $CapturePlainBaseline,
+    # Diagnostic wildcard(s) against <theme>.<case>; '*' preserves the full generated matrix.
+    [string[]] $LookCase = @('*'),
+    # Diagnostic section selector(s) (see scripts/obs-overlay-inventory.ps1); '*' = every section (gate run).
+    [string[]] $Section = @('*'),
+    # Diagnostic wildcard(s) against A-FRAMES row ids; '*' = the full required matrix.
+    [string[]] $FrameRow = @('*'),
+    # Resume a previous run directory's journal (scripts/obs-overlay-journal.ps1); strict manifest match required.
+    [string] $Resume = '',
+    # Static A-LOOK case group size (1 = serial reference behaviour; 2/4 only after validation).
+    [ValidateRange(1, 4)] [int] $LookGroup = 1,
+    # Coverage profile (notes/plan.md, 3 October fast-gate decision): Fast-v2 = P1 gate; Exhaustive-v1 = release qualification.
+    [ValidateSet('Fast-v2', 'Exhaustive-v1')] [string] $GateProfile = 'Exhaustive-v1',
+    # Exhaustive-only development rotation slice in covering-array order: '' (all), pairwise, threeway, rest.
+    [ValidateSet('', 'pairwise', 'threeway', 'rest')] [string] $Rotation = '',
+    # Diagnostic-only grouping red cases, '<theme>.<case>=size|style|route' (requires an explicit -LookCase): size widens
+    # the box 7 px, style swaps data-theme, route navigates the page to a sibling look. Each must fail its own case.
+    [string[]] $LookRedCase = @()
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $allScenarios = @('A-PLAIN', 'A-LOOK', 'A-OFF', 'A-TIME', 'A-AD', 'A-SAME', 'A-CLOCK', 'A-GAP', 'A-INV', 'A-IDLE', 'A-DEMAND', 'A-LIVE', 'A-LIFE',
-    'A-SEC', 'A-RECON', 'A-STORE-1', 'A-SAMPLE', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR')
+    'A-SEC', 'A-RECON', 'A-STORE-1', 'A-SAMPLE', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR', 'A-FRAMES')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+# `-File` passes comma lists as one string; normalise every wildcard array parameter like -Scenario.
+$LookCase = @($LookCase | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$Section = @($Section | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$FrameRow = @($FrameRow | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$LookRedCase = @($LookRedCase | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$lookRed = @{}
+foreach ($entry in $LookRedCase) {
+    if ($entry -notmatch '^([a-z-]+\.[A-Za-z0-9-]+)=(size|style|route)$') { throw "Invalid -LookRedCase '$entry' (expected <theme>.<case>=size|style|route)." }
+    $lookRed[$Matches[1]] = $Matches[2]
+}
+if ($lookRed.Count -and $LookCase.Count -eq 1 -and $LookCase[0] -ceq '*') { throw '-LookRedCase is diagnostic only and requires an explicit -LookCase filter.' }
 foreach ($name in $Scenario) {
     if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
 }
@@ -159,6 +187,11 @@ $benchEnvKeys = @('NATIVUNE_TEST_DISCORD_BENCH_PROFILE', 'NATIVUNE_TEST_DISCORD_
 $isElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 
+# Speed-plan helpers (notes/plan.md, 3 October): row inventory/selectors, run journal/resume, phase telemetry.
+. (Join-Path $PSScriptRoot 'obs-overlay-inventory.ps1')
+. (Join-Path $PSScriptRoot 'obs-overlay-journal.ps1')
+. (Join-Path $PSScriptRoot 'obs-overlay-telemetry.ps1')
+
 $checks = [Collections.Generic.List[object]]::new()
 $scenarioResults = [ordered]@{}
 $eventsByReader = [ordered]@{}
@@ -169,6 +202,7 @@ $chromes = [Collections.Generic.List[object]]::new()
 $heldListeners = [Collections.Generic.List[object]]::new()
 $aclDenied = [Collections.Generic.List[string]]::new()
 $script:launchCount = 0
+$script:benchModeByRoot = @{}
 $script:labelSeq = 0
 
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes
@@ -274,14 +308,20 @@ $Scope = [System.Windows.Automation.TreeScope]
 # Report helpers
 
 function Add-Check([string] $Name, $Expected, $Observed, [bool] $Passed) {
-    $checks.Add([ordered]@{ name = $Name; expected = "$Expected"; observed = $Observed; status = if ($Passed) { 'pass' } else { 'fail' } })
+    $check = [ordered]@{ name = $Name; expected = "$Expected"; observed = $Observed; status = if ($Passed) { 'pass' } else { 'fail' } }
+    Add-JournalCheck $check
+    $checks.Add($check)
 }
 function Add-Blocked([string] $Name, $Expected, [string] $Reason) {
-    $checks.Add([ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = 'blocked' })
+    $check = [ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = 'blocked' }
+    Add-JournalCheck $check
+    $checks.Add($check)
 }
 function Add-Deferred([string] $Phase, [string] $Name, $Expected, [string] $Reason) {
     if ($Phase -notin @('P1', 'P2')) { throw "Invalid deferred phase '$Phase'." }
-    $checks.Add([ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = "deferred:$Phase" })
+    $check = [ordered]@{ name = $Name; expected = "$Expected"; observed = $Reason; status = "deferred:$Phase" }
+    Add-JournalCheck $check
+    $checks.Add($check)
 }
 function Get-Prop($Object, [string] $Name) {
     if ($null -eq $Object) { return $null }
@@ -319,7 +359,11 @@ function New-Root([string] $Name) {
     [IO.Directory]::CreateDirectory($root) | Out-Null
     $ubolDestination = Join-Path $root '.tools/ubol'
     [IO.Directory]::CreateDirectory($ubolDestination) | Out-Null
-    Copy-Item -LiteralPath $ubolSource -Destination $ubolDestination -Recurse
+    $copyQpc = Get-Qpc; $copyOutcome = 'failure'
+    try {
+        Copy-Item -LiteralPath $ubolSource -Destination $ubolDestination -Recurse
+        $copyOutcome = 'success'
+    } finally { Complete-PhaseTiming -Phase 'root.copy' -StartQpc $copyQpc -Extra @{ outcome = $copyOutcome } }
     [IO.Directory]::CreateDirectory((Join-Path $root 'data/discord-bench')) | Out-Null
     $root
 }
@@ -349,7 +393,8 @@ $launchHelper = Join-Path $rootBase 'launch-helper.ps1'
 param([string] $SpecPath)
 $ErrorActionPreference = 'Stop'
 $spec = Get-Content -Raw -LiteralPath $SpecPath | ConvertFrom-Json
-foreach ($name in @($spec.unset)) { if ($name) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') } }
+# NullString passes an actual CLR null; PowerShell $null binds as an empty string and leaves an environment entry.
+foreach ($name in @($spec.unset)) { if ($name) { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') } }
 foreach ($p in $spec.env.PSObject.Properties) { [Environment]::SetEnvironmentVariable($p.Name, [string] $p.Value, 'Process') }
 $proc = Start-Process -FilePath $spec.exe -ArgumentList @($spec.arguments) -WorkingDirectory $spec.workingDirectory -PassThru
 $level = if (((whoami /groups) -join "`n") -match 'Mandatory Label\\(\w+(?: \w+)?) Mandatory Level') { $Matches[1] } else { 'unknown' }
@@ -389,6 +434,8 @@ function Invoke-RunasLaunch([string] $Exe, [string[]] $Arguments, [string] $Work
 }
 # $Override: name -> value; $null removes the variable for this launch.
 function Start-App([string] $Root, [hashtable] $Override = @{}, [string] $Exe = $appExe) {
+    $launchQpc = Get-Qpc; $launchOutcome = 'failure'
+    try {
     $environment = [ordered]@{}
     foreach ($entry in $testEnv.GetEnumerator()) { $environment[$entry.Key] = $entry.Value }
     foreach ($key in $benchEnvKeys) { $environment[$key] = $null }
@@ -402,9 +449,17 @@ function Start-App([string] $Root, [hashtable] $Override = @{}, [string] $Exe = 
         $process = $launched.Process
         $helperIntegrity = $launched.HelperIntegrity
     } else {
-        foreach ($entry in $environment.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
+        foreach ($entry in $environment.GetEnumerator()) {
+            if ($null -eq $entry.Value) { [Environment]::SetEnvironmentVariable($entry.Key, [NullString]::Value, 'Process') }
+            else { [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process') }
+        }
         $process = Start-Process -FilePath $Exe -ArgumentList $arguments -WorkingDirectory $workingDirectory -PassThru
     }
+    # Resolve the actual launch environment, including explicit unsets; relaunches replace the root's mode.
+    $profileKey = 'NATIVUNE_TEST_DISCORD_BENCH_PROFILE'
+    $effectiveProfile = if ($environment.Contains($profileKey)) { $environment[$profileKey] } else {
+        [Environment]::GetEnvironmentVariable($profileKey, 'Process') }
+    $script:benchModeByRoot[$Root] = [string] $effectiveProfile
     $started.Add($process)
     $integrity = Get-IntegrityName $process.Id
     $adminEnabled = Get-AdminEnabled $process.Id
@@ -413,7 +468,12 @@ function Start-App([string] $Root, [hashtable] $Override = @{}, [string] $Exe = 
         release = ($Exe -eq $releaseExe) })
     $process | Add-Member -NotePropertyName Integrity -NotePropertyValue $integrity -Force
     $process | Add-Member -NotePropertyName AdminEnabled -NotePropertyValue $adminEnabled -Force
+    $launchOutcome = 'success'
     $process
+    } catch {
+        if ($_.Exception.Message -like 'runas /trustlevel launch helper wrote no PID file*') { $launchOutcome = 'timeout' }
+        throw
+    } finally { Complete-PhaseTiming -Phase 'app.launch' -StartQpc $launchQpc -Extra @{ outcome = $launchOutcome; viaRunas = $isElevated } }
 }
 
 function Get-ProcessTree([int] $RootId, [string] $Root) {
@@ -455,11 +515,45 @@ function Send-ObsHookCommand([string] $Root, [string] $Name, [string] $Payload =
     Start-Sleep -Milliseconds 50
     $qpc
 }
-function Wait-BenchReady([string] $Root, [double] $Seconds = 90) {
+function Wait-BenchReady([string] $Root, [double] $Seconds = 90, [string] $BenchProfile = $null) {
+    if (-not $PSBoundParameters.ContainsKey('BenchProfile')) {
+        if (-not $script:benchModeByRoot.ContainsKey($Root)) { throw "Bench readiness has no recorded launch mode for root $Root." }
+        $BenchProfile = $script:benchModeByRoot[$Root]
+    }
     $directory = Get-BenchDirectory $Root
-    [void] (Wait-For { (Test-Path -LiteralPath (Join-Path $directory 'ready.json')) -or (Test-Path -LiteralPath (Join-Path $directory 'failed.json')) } $Seconds)
-    $path = Join-Path $directory 'ready.json'
-    if (Test-Path -LiteralPath $path) { Get-Content -Raw -LiteralPath $path | ConvertFrom-Json } else { $null }
+    $failedPath = Join-Path $directory 'failed.json'
+    $begin = Get-Qpc; $outcome = 'failure'
+    try {
+        if ($BenchProfile) {
+            $readyPath = Join-Path $directory 'ready.json'
+            $ready = Wait-For {
+                if (Test-Path -LiteralPath $failedPath) { throw "Bench setup failed for $Root; see $failedPath" }
+                if (Test-Path -LiteralPath $readyPath) { Get-Content -Raw -LiteralPath $readyPath | ConvertFrom-Json }
+            } $Seconds
+        } else {
+            # Command-only mode never writes ready.json: require a fresh snapshot acknowledgement and listener.
+            $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+            $ready = Wait-For {
+                if (Test-Path -LiteralPath $failedPath) { throw "Bench setup failed for $Root; see $failedPath" }
+                $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds
+                if ($remaining -le 0) { return $null }
+                $snapshot = Get-State $Root 'bench-ready' ([Math]::Min(1, $remaining))
+                if (Test-Path -LiteralPath $failedPath) { throw "Bench setup failed for $Root; see $failedPath" }
+                if ($snapshot -and (Get-Overlay $snapshot 'running') -eq $true) { $snapshot }
+            } $Seconds 100
+        }
+        if (-not $ready) {
+            $outcome = 'timeout'
+            $expected = if ($BenchProfile) { 'ready.json' } else { 'acknowledged app state with overlay listening' }
+            throw "Bench readiness timed out after $Seconds s for $Root; expected $expected."
+        }
+        if (Test-Path -LiteralPath $failedPath) { throw "Bench setup failed for $Root; see $failedPath" }
+        $outcome = 'success'
+        return $ready
+    } finally {
+        Add-PhaseTiming -Phase 'readiness' -Seconds (Get-Seconds $begin (Get-Qpc)) -Extra @{
+            mode = if ($BenchProfile) { 'profiled' } else { 'command-only' }; outcome = $outcome }
+    }
 }
 # Requests diagnostics-<label>.json and state-<label>.json; returns { diag, state, overlay } or $null on timeout.
 function Get-State([string] $Root, [string] $Tag = 's', [double] $Seconds = 10) {
@@ -479,15 +573,25 @@ function Get-Overlay($Snapshot, [string] $Field) { Get-Prop (Get-Prop $Snapshot 
 
 function Stop-App($Process, [string] $Root, [switch] $Kill) {
     if (-not $Process) { return }
+    $forceStop = $false
     if (-not $Process.HasExited) {
-        if (-not $Kill) { try { [void] (Send-HookCommand $Root 'command-quit') } catch { } }
-        if ($Kill -or -not $Process.WaitForExit(8000)) {
+        $quitQpc = Get-Qpc; $quitOutcome = 'failure'
+        try {
+            if (-not $Kill) { try { [void] (Send-HookCommand $Root 'command-quit') } catch { } }
+            $forceStop = $Kill -or -not $Process.WaitForExit(8000)
+            $quitOutcome = if ($Kill) { 'forced' } elseif ($forceStop) { 'timeout' } else { 'success' }
+        } finally { Complete-PhaseTiming -Phase 'app.quitWait' -StartQpc $quitQpc -Extra @{ outcome = $quitOutcome } }
+    }
+    $cleanupQpc = Get-Qpc; $cleanupOutcome = 'failure'
+    try {
+        if ($forceStop) {
             foreach ($id in (Get-ProcessTree $Process.Id $Root)) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
         }
-    }
-    foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -Property ProcessId, CommandLine)) {
-        if ($p.CommandLine -and $p.CommandLine.Contains($Root, [StringComparison]::OrdinalIgnoreCase)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
-    }
+        foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -Property ProcessId, CommandLine)) {
+            if ($p.CommandLine -and $p.CommandLine.Contains($Root, [StringComparison]::OrdinalIgnoreCase)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+        $cleanupOutcome = 'success'
+    } finally { Complete-PhaseTiming -Phase 'app.cleanup' -StartQpc $cleanupQpc -Extra @{ outcome = $cleanupOutcome; forced = $forceStop } }
 }
 function Copy-AppLog([string] $Root, [string] $Name) {
     $log = Join-Path $Root 'data/nativune.log'
@@ -765,11 +869,21 @@ $chromeProbeJs = @'
 (() => {
   const s = window.__state ? Object.assign({}, window.__state) : null;
   const root = document.documentElement, pill = document.getElementById('pill'), clip = document.getElementById('clip');
+  const bar = document.getElementById('bar'), barfill = document.getElementById('barfill'), column = document.getElementById('column');
   const t = document.getElementById('title'), a = document.getElementById('artist');
   const artistStyle = a ? getComputedStyle(a) : null;
   const cs = pill ? getComputedStyle(pill) : null, titleStyle = t ? getComputedStyle(t) : null;
   let frac = null, clipPx = null;
-  if (clip) { const m = new DOMMatrixReadOnly(getComputedStyle(clip).transform); clipPx = m.m41; frac = m.m41 / (clip.offsetWidth || 400); }
+  if (bar && barfill && getComputedStyle(bar).display !== 'none' && bar.getBoundingClientRect().width > 0 &&
+      root.getAttribute('data-theme') !== 'pill') {
+    const m = new DOMMatrixReadOnly(getComputedStyle(barfill).transform);
+    const barWidth = bar.getBoundingClientRect().width;
+    clipPx = barfill.getBoundingClientRect().width + m.m41;
+    frac = clipPx / barWidth;
+  } else if (root.getAttribute('data-theme') === 'pill' && clip) {
+    const m = new DOMMatrixReadOnly(getComputedStyle(clip).transform);
+    clipPx = m.m41; frac = m.m41 / (clip.offsetWidth || 400);
+  }
   const anims = document.getAnimations().map(x => ({
     playState: x.playState, currentTime: x.currentTime, duration: x.effect ? x.effect.getTiming().duration : null,
     keyframes: x.effect ? x.effect.getKeyframes().map(k => ({ opacity: k.opacity ?? null, transform: k.transform ?? null })) : []
@@ -778,14 +892,24 @@ $chromeProbeJs = @'
     href: location.href, s, opacity: pill ? Number(cs.opacity) : null, frac, clipPx, pageNow: performance.now(),
     boxRect: pill ? (() => { const r = pill.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() : null,
     pageSize: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+    // Pill's track is the full grey reveal plane: its countertranslation cancels #clip's moving boundary.
+    // Measure that DOM rect independently of frac; #bar is inside the pill's hidden #bottom slot.
+    geometry: Object.fromEntries([['column', column], ['bar', root.getAttribute('data-theme') === 'pill' ? (root.getAttribute('data-show-progress') === 'true' ? document.getElementById('grey') : null) : bar]].map(([name, element]) => {
+      if (!element) return [name, null];
+      const r = element.getBoundingClientRect();
+      return [name, { x: r.x, y: r.y, width: r.width, height: r.height, display: getComputedStyle(element).display }];
+    })),
     css: cs ? { width: cs.width, height: cs.height, radius: cs.borderRadius, shadow: cs.boxShadow, color: cs.color,
       font: cs.fontFamily, align: cs.textAlign, textShadow: cs.textShadow, k: cs.getPropertyValue('--k').trim(),
-      w: cs.getPropertyValue('--w').trim(), fg: cs.getPropertyValue('--fg').trim(), fontVar: cs.getPropertyValue('--font').trim() } : null,
+      w: cs.getPropertyValue('--w').trim(), fg: cs.getPropertyValue('--fg').trim(), bg: cs.getPropertyValue('--bg').trim(),
+      bgAlpha: cs.getPropertyValue('--bg-a').trim(), fontVar: cs.getPropertyValue('--font').trim() } : null,
     attrs: root ? { theme: root.getAttribute('data-theme'), colours: root.getAttribute('data-colours'),
       showArt: root.getAttribute('data-show-art'), showArtist: root.getAttribute('data-show-artist'),
       showProgress: root.getAttribute('data-show-progress'), showTimes: root.getAttribute('data-show-times'),
       paused: root.getAttribute('data-paused'), animShow: root.getAttribute('data-anim-show'), animHide: root.getAttribute('data-anim-hide') } : null,
     title: t ? t.textContent : null, artist: a ? a.textContent : null, titleChildren: t ? t.children.length : null,
+    elapsed: document.getElementById('elapsed')?.textContent ?? null,
+    duration: document.getElementById('duration')?.textContent ?? null,
     titleEllipsis: t ? (titleStyle.textOverflow === 'ellipsis' && t.scrollWidth > t.clientWidth) : null,
     titleRect: t ? (() => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, scrollWidth: t.scrollWidth, clientWidth: t.clientWidth, textOverflow: titleStyle.textOverflow }; })() : null,
     artistRect: a ? (() => { const r = a.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, display: artistStyle.display }; })() : null,
@@ -799,6 +923,9 @@ $chromeProbeJs = @'
 '@
 
 function Start-Chrome([string] $Name, [switch] $Plain) {
+    $startQpc = Get-Qpc; $startOutcome = 'failure'
+    $phase = ''; $phaseQpc = $startQpc; $phaseOutcome = 'failure'
+    try {
     $dir = Join-Path $rootBase "chrome-$(ConvertTo-SafeName $Name)"
     [IO.Directory]::CreateDirectory($dir) | Out-Null
     $arguments = @('--headless=new', '--remote-debugging-port=0', "--user-data-dir=$dir", '--no-first-run',
@@ -807,16 +934,35 @@ function Start-Chrome([string] $Name, [switch] $Plain) {
     $arguments += 'about:blank'
     $process = Start-Process -FilePath $chromeExe -PassThru -ArgumentList $arguments
     $portFile = Join-Path $dir 'DevToolsActivePort'
-    if (-not (Wait-For { Test-Path -LiteralPath $portFile } 30)) { throw 'Chrome wrote no DevToolsActivePort.' }
+    $phase = 'chrome.devtoolsWait'; $phaseQpc = Get-Qpc
+    if (-not (Wait-For { Test-Path -LiteralPath $portFile } 30)) {
+        $phaseOutcome = 'timeout'; $startOutcome = 'timeout'
+        throw 'Chrome wrote no DevToolsActivePort.'
+    }
+    $phaseOutcome = 'success'
+    Complete-PhaseTiming -Phase $phase -StartQpc $phaseQpc -Extra @{ outcome = $phaseOutcome }
+    $phase = ''
     $cdpPort = [int] ((Get-Content -LiteralPath $portFile | Select-Object -First 1).Trim())
+    $phase = 'chrome.pageDiscovery'; $phaseQpc = Get-Qpc; $phaseOutcome = 'failure'
     $page = Wait-For { Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$cdpPort/json/list" | ForEach-Object { $_ } | Where-Object { $null -ne $_ -and $_.type -eq 'page' } | Select-Object -First 1 } 15
+    $phaseOutcome = if ($page) { 'success' } else { 'timeout' }
+    if (-not $page) { $startOutcome = 'timeout' }
+    Complete-PhaseTiming -Phase $phase -StartQpc $phaseQpc -Extra @{ outcome = $phaseOutcome }
+    $phase = 'chrome.cdpSetup'; $phaseQpc = Get-Qpc; $phaseOutcome = 'failure'
     $ws = [Net.WebSockets.ClientWebSocket]::new()
     # GetResult() on a non-generic Task surfaces a VoidTaskResult in PowerShell; it must not leak into the output.
     [void] $ws.ConnectAsync([Uri] $page.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
-    $chrome = [pscustomobject]@{ Name = $Name; Process = $process; Ws = $ws; Next = 0; Dir = $dir; CdpPort = $cdpPort; Plain = [bool] $Plain; TargetId = [string] $page.id }
+    $chrome = [pscustomobject]@{ Name = $Name; Process = $process; Ws = $ws; Next = 0; Dir = $dir; CdpPort = $cdpPort; Plain = [bool] $Plain; TargetId = [string] $page.id; Events = [Collections.Generic.List[object]]::new() }
     [void] $chromes.Add($chrome)
     [void] (Invoke-Cdp $chrome 'Page.enable')
+    # --window-size includes browser chrome; tiny outer windows can have a 1 px content viewport.
+    Set-PlainViewport $chrome
+    $phaseOutcome = 'success'; $startOutcome = 'success'
     return $chrome
+    } finally {
+        if ($phase) { Complete-PhaseTiming -Phase $phase -StartQpc $phaseQpc -Extra @{ outcome = $phaseOutcome } }
+        Complete-PhaseTiming -Phase 'chrome.start' -StartQpc $startQpc -Extra @{ outcome = $startOutcome; plain = [bool] $Plain }
+    }
 }
 # Accepts the Start-Chrome object even if a caller received it wrapped in an array with stray pipeline values.
 function Resolve-Chrome($Chrome) {
@@ -839,6 +985,7 @@ function Invoke-Cdp($Chrome, [string] $Method, [hashtable] $Params = @{}, [doubl
             $ms.Write($buf, 0, $r.Count)
         } while (-not $r.EndOfMessage)
         $message = [Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json -Depth 32
+        if ((Get-Prop $message 'method') -eq 'Tracing.tracingComplete') { $Chrome.Events.Add($message) }
         if ((Get-Prop $message 'id') -eq $id) {
             $err = Get-Prop $message 'error'
             if ($err) { throw "CDP $Method failed: $(Get-Prop $err 'message')" }
@@ -894,9 +1041,70 @@ function Get-ChromeVersion($Chrome) {
     [pscustomobject]@{ product = $product; version = if ($match.Success) { $match.Groups[1].Value } else { $null }
         major = if ($match.Success) { [int] ($match.Groups[1].Value -split '\.')[0] } else { $null } }
 }
-function Set-PlainViewport($Chrome) {
-    [void] (Invoke-Cdp $Chrome 'Emulation.setDeviceMetricsOverride' @{ width = 440; height = 96; deviceScaleFactor = 1; mobile = $false })
+$script:defaultThemeSizes = $null
+function Get-DefaultThemeSize([string] $Theme) {
+    if (-not $script:defaultThemeSizes) {
+        $rows = (Get-Content -Raw (Join-Path $fixtureDirectory 'expected-sizes.json') |
+            ConvertFrom-Json -AsHashtable -Depth 16).rows
+        $script:defaultThemeSizes = @{}
+        foreach ($row in $rows) {
+            if ($row.default -and $row.scale -eq 100 -and -not $script:defaultThemeSizes.ContainsKey($row.theme)) {
+                $script:defaultThemeSizes[$row.theme] = $row
+            }
+        }
+    }
+    $result = $script:defaultThemeSizes[$Theme]
+    if (-not $result) { throw "Missing expected default size for $Theme" }
+    $result
 }
+function Set-OverlayViewport($Chrome, $Source) {
+    $w = [int] (Get-Prop $Source 'w'); $h = [int] (Get-Prop $Source 'h')
+    if ($w -le 0 -or $h -le 0) { throw "Invalid independent source dimensions $w x $h" }
+    [void] (Invoke-Cdp $Chrome 'Emulation.setDeviceMetricsOverride' @{ width = $w; height = $h; deviceScaleFactor = 1; mobile = $false })
+}
+function Test-OverlayViewport($Page, $Source) {
+    if (-not $Page -or -not $Page.pageSize -or -not $Page.boxRect) { return $false }
+    $w = [double] (Get-Prop $Source 'w'); $h = [double] (Get-Prop $Source 'h'); $r = $Page.boxRect
+    [double] $Page.pageSize.width -eq $w -and [double] $Page.pageSize.height -eq $h -and
+        [double] $r.x -ge -1 -and [double] $r.y -ge -1 -and
+        [double] $r.x + [double] $r.width -le $w + 1 -and
+        [double] $r.y + [double] $r.height -le $h + 1
+}
+function Set-PlainViewport($Chrome) {
+    Set-OverlayViewport $Chrome @{ w = 440; h = 96 }
+}
+function Test-ThemeRaster($Raster, [string] $Theme, $Options, $Size) {
+    $boxW = [double] $Size.box.w; $boxH = [double] $Size.box.h
+    $panelW = [double] $Size.raster.css.w
+    $blurred = $Theme -eq 'pill' -or ($Theme -in @('standard', 'classic', 'card') -and $Options.colours -eq 'auto')
+    $scale = if ($Theme -eq 'pill' -or -not $blurred) { 1.0 } else {
+        [Math]::Min(1.0, [Math]::Sqrt(100000.0 / ($panelW * $boxH)))
+    }
+    $expected = $Size.raster
+    $actual = [ordered]@{ colour = Get-Prop $Raster 'colour'; grey = Get-Prop $Raster 'grey' }
+    $areas = [ordered]@{}; $dimensions = $true
+    foreach ($name in @('colour', 'grey')) {
+        $r = $actual[$name]; $e = $expected[$name]
+        $w = [int] (Get-Prop $r 'w'); $h = [int] (Get-Prop $r 'h')
+        $areas[$name] = $w * $h
+        $dimensions = $dimensions -and [Math]::Abs($w - $e.w) -le 1 -and
+            [Math]::Abs($h - $e.h) -le 1 -and $areas[$name] -gt 0 -and $areas[$name] -le 100000
+    }
+    $sharedScale = if ($blurred -and $Theme -in @('standard', 'classic', 'card')) {
+        $w = [double] (Get-Prop $actual.colour 'w'); $h = [double] (Get-Prop $actual.colour 'h')
+        [Math]::Abs($w - $panelW * $scale) -le 1 -and
+            [Math]::Abs($h - $boxH * $scale) -le 1 -and
+            [Math]::Abs($w / $panelW - $h / $boxH) -le [Math]::Max(1 / $panelW, 1 / $boxH)
+    } else { $true }
+    $cover = Get-Prop $Raster 'cover'
+    $coverOk = $null -eq $cover -or ([int] (Get-Prop $cover 'w') -gt 0 -and [int] (Get-Prop $cover 'h') -gt 0 -and
+        [int] (Get-Prop $cover 'w') -le 1024 -and [int] (Get-Prop $cover 'h') -le 1024)
+    [ordered]@{ pass = $dimensions -and $sharedScale -and $coverOk -and
+        [Math]::Abs([double] $expected.scale - $scale) -le 0.000001
+        expected = $expected; actual = $actual; cover = $cover; coverOk = $coverOk; areas = $areas
+        panelW = $panelW; boxH = $boxH; scale = $scale; sharedScale = $sharedScale }
+}
+
 function Get-ChromeShotBytes($Chrome) {
     $shot = Invoke-Cdp $Chrome 'Page.captureScreenshot' @{ format = 'png'; fromSurface = $true }
     [Convert]::FromBase64String([string] $shot.data)
@@ -908,19 +1116,266 @@ function Save-ChromeShot($Chrome, [string] $Name) {
         [IO.Path]::GetRelativePath($runDirectory, $file)
     } catch { $null }
 }
+function Compress-FrameTrace([string] $Path) {
+    $compressed = "$Path.gz"
+    $partial = "$compressed.part"
+    try {
+        $inputStream = [IO.File]::OpenRead($Path)
+        try {
+            $outputStream = [IO.File]::Create($partial)
+            try {
+                $gzip = [IO.Compression.GZipStream]::new($outputStream, [IO.Compression.CompressionLevel]::Optimal, $true)
+                try { $inputStream.CopyTo($gzip) } finally { $gzip.Dispose() }
+            } finally { $outputStream.Dispose() }
+        } finally { $inputStream.Dispose() }
+        [IO.File]::Move($partial, $compressed, $true)
+        [IO.File]::Delete($Path)
+        [IO.Path]::GetRelativePath($runDirectory, $compressed)
+    } catch {
+        if (Test-Path -LiteralPath $partial) { [IO.File]::Delete($partial) }
+        throw
+    }
+}
+function Keep-FrameTrace($Trace) {
+    if ($Trace -and $Trace.traceRetention -eq 'raw') {
+        $Trace.trace = Compress-FrameTrace (Join-Path $runDirectory $Trace.trace)
+        $Trace.traceRetention = 'gzip'
+    }
+}
+function Save-FrameTraceRecord([string] $Label, $Record, [bool] $Passed) {
+    $trace = $Record.trace
+    if (-not $Passed) {
+        Keep-FrameTrace $trace
+        return Save-FrameRecord $Label $Record
+    }
+    # Persist all measured/audit fields (including original byte count and hash) before discarding raw data.
+    $rawPath = Join-Path $runDirectory $trace.trace
+    $trace.trace = $null
+    $trace.traceRetention = 'discarded'
+    try {
+        $artifact = Save-FrameRecord $Label $Record
+        [IO.File]::Delete($rawPath)
+        return $artifact
+    } catch {
+        $trace.trace = [IO.Path]::GetRelativePath($runDirectory, $rawPath)
+        $trace.traceRetention = 'raw'
+        Keep-FrameTrace $trace
+        [void] (Save-FrameRecord $Label $Record)
+        throw
+    }
+}
+
+function Initialize-FrameTraceReader {
+    if ('ObsFrameTraceReader' -as [type]) { return }
+    Add-Type @'
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text.Json;
+
+public sealed class ObsFrameTraceName {
+    public string Name { get; set; }
+    public int Count { get; set; }
+}
+public sealed class ObsFrameTraceSummary {
+    public int Frames { get; set; }
+    public List<ObsFrameTraceName> Names { get; } = new List<ObsFrameTraceName>();
+}
+public static class ObsFrameTraceReader {
+    // Utf8JsonReader needs an entire token, but never holds the trace or an event tree in memory.
+    // Reject a single >4 MiB token instead of growing indefinitely; the raw trace is retained on error.
+    public static ObsFrameTraceSummary Parse(string path) {
+        var names = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var timestamps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool root = false, sawEvents = false, endedEvents = false, expectEvents = false, inEvents = false, inEvent = false;
+        string field = null, cat = null, name = null, phase = null, timestamp = null;
+        var buffer = new byte[65536];
+        int valid = 0;
+        bool final = false;
+        JsonReaderState state = default;
+        using (var stream = File.OpenRead(path)) {
+            while (true) {
+                if (!final) {
+                    if (valid == buffer.Length) {
+                        if (buffer.Length >= 4 * 1024 * 1024)
+                            throw new InvalidDataException("CDP frame trace has a JSON token over 4 MiB");
+                        Array.Resize(ref buffer, buffer.Length * 2);
+                    }
+                    int count = stream.Read(buffer, valid, buffer.Length - valid);
+                    valid += count;
+                    final = count == 0;
+                }
+                var reader = new Utf8JsonReader(new ReadOnlySpan<byte>(buffer, 0, valid), final, state);
+                while (reader.Read()) {
+                    int depth = reader.CurrentDepth;
+                    JsonTokenType token = reader.TokenType;
+                    if (token == JsonTokenType.StartObject && depth == 0) root = true;
+                    if (token == JsonTokenType.PropertyName && depth == 1) {
+                        expectEvents = reader.ValueTextEquals("traceEvents");
+                        continue;
+                    }
+                    if (expectEvents) {
+                        if (token != JsonTokenType.StartArray || depth != 1)
+                            throw new InvalidDataException("CDP frame trace traceEvents is not an array");
+                        sawEvents = true; inEvents = true; expectEvents = false;
+                        continue;
+                    }
+                    if (inEvents && token == JsonTokenType.EndArray && depth == 1) {
+                        inEvents = false; endedEvents = true;
+                        continue;
+                    }
+                    if (!inEvents) continue;
+                    if (token == JsonTokenType.StartObject && depth == 2) {
+                        inEvent = true; field = cat = name = phase = timestamp = null;
+                        continue;
+                    }
+                    if (token == JsonTokenType.EndObject && depth == 2 && inEvent) {
+                        if (cat != null && cat.Contains("devtools.timeline.frame", StringComparison.OrdinalIgnoreCase)) {
+                            string eventName = name ?? "";
+                            names.TryGetValue(eventName, out int existingCount);
+                            names[eventName] = existingCount + 1;
+                            if (string.Equals(name, "EndActivateToSubmitCompositorFrame", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(phase, "e", StringComparison.OrdinalIgnoreCase))
+                                timestamps.Add(timestamp ?? "");
+                        }
+                        inEvent = false;
+                        continue;
+                    }
+                    if (!inEvent) continue;
+                    if (token == JsonTokenType.PropertyName && depth == 3) {
+                        field = reader.GetString();
+                        continue;
+                    }
+                    if (depth != 3 || field == null) continue;
+                    string value = token == JsonTokenType.String ? reader.GetString() :
+                        token == JsonTokenType.Number ? (reader.TryGetInt64(out long integer) ?
+                            integer.ToString(CultureInfo.CurrentCulture) : reader.GetDouble().ToString(CultureInfo.CurrentCulture)) : null;
+                    switch (field) {
+                        case "cat": cat = value; break;
+                        case "name": name = value; break;
+                        case "ph": phase = value; break;
+                        case "ts": timestamp = value; break;
+                    }
+                    field = null;
+                }
+                int consumed = checked((int)reader.BytesConsumed);
+                state = reader.CurrentState;
+                valid -= consumed;
+                if (valid != 0) Buffer.BlockCopy(buffer, consumed, buffer, 0, valid);
+                if (final) {
+                    if (valid != 0) throw new InvalidDataException("CDP frame trace has an incomplete JSON token");
+                    break;
+                }
+            }
+        }
+        if (!root || !sawEvents || !endedEvents) throw new InvalidDataException("CDP frame trace has no complete traceEvents array");
+        var result = new ObsFrameTraceSummary { Frames = timestamps.Count };
+        foreach (var pair in names) result.Names.Add(new ObsFrameTraceName { Name = pair.Key, Count = pair.Value });
+        return result;
+    }
+}
+'@
+}
+
+function Invoke-FrameTrace($Chrome, [string] $Name, [int] $Seconds, [scriptblock] $During = $null) {
+    $path = Join-Path $runDirectory "trace-$(ConvertTo-SafeName $Name).json"
+    $Chrome.Events.Clear()
+    [void] (Invoke-Cdp $Chrome 'Tracing.start' @{
+        categories = '-*,disabled-by-default-devtools.timeline.frame'; transferMode = 'ReturnAsStream'
+        options = 'record-continuously'
+    })
+    $begin = Get-Qpc
+    if ($During) { & $During }
+    Wait-UntilQpc ($begin + $Seconds * $freq)
+    $end = Get-Qpc
+    $endPage = Get-PageProbe $Chrome
+    $traceEndBegin = Get-Qpc; $traceEndOutcome = 'failure'
+    try {
+        [void] (Invoke-Cdp $Chrome 'Tracing.end' @{} 30)
+        $complete = Wait-For {
+            [void] (Invoke-Cdp $Chrome 'Runtime.evaluate' @{ expression = 'true' } 30)
+            $Chrome.Events | Where-Object { $_.method -eq 'Tracing.tracingComplete' } | Select-Object -Last 1
+        } 30 100
+        if (-not $complete) { $traceEndOutcome = 'timeout'; throw "CDP Tracing.tracingComplete missing for $Name" }
+        $handle = [string] (Get-Prop (Get-Prop $complete 'params') 'stream')
+        if (-not $handle) { throw "CDP Tracing stream missing for $Name" }
+        $traceEndOutcome = 'success'
+    } finally {
+        Add-PhaseTiming -Phase 'trace-end' -Seconds (Get-Seconds $traceEndBegin (Get-Qpc)) -Extra @{ trace = $Name; outcome = $traceEndOutcome }
+    }
+    try {
+        $drainBegin = Get-Qpc; $hashSeconds = 0.0; $drainOutcome = 'failure'
+        $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA256)
+        try {
+            $file = [IO.File]::Create($path)
+            try {
+                do {
+                    $chunk = Invoke-Cdp $Chrome 'IO.read' @{ handle = $handle; size = 1048576 } 30
+                    [byte[]] $bytes = if ($chunk.base64Encoded) { ,([Convert]::FromBase64String([string] $chunk.data)) } else { ,([Text.Encoding]::UTF8.GetBytes([string] $chunk.data)) }
+                    $file.Write($bytes, 0, $bytes.Length)
+                    $hashBegin = Get-Qpc
+                    $hash.AppendData($bytes, 0, $bytes.Length)
+                    $hashSeconds += Get-Seconds $hashBegin (Get-Qpc)
+                } until ($chunk.eof)
+                $hashBegin = Get-Qpc
+                $rawSha256 = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+                $hashSeconds += Get-Seconds $hashBegin (Get-Qpc)
+                $drainOutcome = 'success'
+            } finally { $file.Dispose() }
+        } finally {
+            $hash.Dispose()
+            try { [void] (Invoke-Cdp $Chrome 'IO.close' @{ handle = $handle }) } finally {
+                Add-PhaseTiming -Phase 'drain' -Seconds ([Math]::Max(0, (Get-Seconds $drainBegin (Get-Qpc)) - $hashSeconds)) -Extra @{ trace = $Name; outcome = $drainOutcome }
+                Add-PhaseTiming -Phase 'hash' -Seconds $hashSeconds -Extra @{ trace = $Name; outcome = $drainOutcome; incremental = $true }
+            }
+        }
+        $rawBytes = ([IO.FileInfo] $path).Length
+        $parseBegin = Get-Qpc; $parseOutcome = 'failure'
+        try {
+            Initialize-FrameTraceReader
+            $summary = [ObsFrameTraceReader]::Parse($path)
+            $parseOutcome = 'success'
+        } finally {
+            Add-PhaseTiming -Phase 'parse' -Seconds (Get-Seconds $parseBegin (Get-Qpc)) -Extra @{ trace = $Name; outcome = $parseOutcome }
+        }
+        $names = @($summary.Names | Sort-Object Name | Sort-Object Count -Descending | Select-Object -First 30 |
+            ForEach-Object { [ordered]@{ name = $_.Name; count = $_.Count } })
+        # Count completed compositor submission spans, not begin-frame requests or timer ticks.
+        $frames = $summary.Frames
+        [ordered]@{ trace = [IO.Path]::GetRelativePath($runDirectory, $path); rawBytes = $rawBytes
+            rawSha256 = $rawSha256; traceRetention = 'raw'; frames = $frames
+            seconds = [Math]::Round((Get-Seconds $begin $end), 3); fps = [Math]::Round($frames / (Get-Seconds $begin $end), 3)
+            frameEvent = 'EndActivateToSubmitCompositorFrame:e'; categories = '-*,disabled-by-default-devtools.timeline.frame'; names = $names
+            visible = [bool] (Get-PageField $endPage 'shown'); endPage = $endPage }
+    } catch {
+        $errorText = $_.Exception.Message
+        if (Test-Path -LiteralPath $path) {
+            $retained = try { Compress-FrameTrace $path } catch { [IO.Path]::GetRelativePath($runDirectory, $path) }
+            throw "Frame trace $Name failed; raw evidence retained at $retained; $errorText"
+        }
+        throw "Frame trace $Name failed before raw evidence was written; $errorText"
+    }
+}
 # Kills every chrome.exe whose command line carries this instance's --user-data-dir, plus the launched
 # process tree. Never throws.
 function Stop-Chrome($Chrome) {
+    $stopQpc = $null; $stopExtra = @{}
     try {
         if ($null -eq $Chrome) { return }
+        $stopQpc = Get-Qpc
         try { $ws = Get-Prop $Chrome 'Ws'; if ($ws) { $ws.Dispose() } } catch { }
         $dir = [string] (Get-Prop $Chrome 'Dir')
         $proc = Get-Prop $Chrome 'Process'
         $rootId = try { if ($proc) { [int] $proc.Id } else { 0 } } catch { 0 }
         for ($pass = 0; $pass -lt 3; $pass++) {
-            $all = @(try { Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine -ErrorAction Stop } catch { })
+            $passQpc = Get-Qpc; $passExtra = @{ pass = $pass + 1 }
+            try {
+            $enumerated = $false
+            $all = @(try { Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine -ErrorAction Stop; $enumerated = $true } catch { })
             $ids = [Collections.Generic.HashSet[int]]::new()
-            if ($rootId) { [void] $ids.Add($rootId) }
+            $rootStillLive = try { $proc -and -not $proc.HasExited } catch { $false }
+            if ($rootId -and $rootStillLive) { [void] $ids.Add($rootId) }
             foreach ($p in $all) {
                 if ($p.Name -eq 'chrome.exe' -and $dir -and $p.CommandLine -and $p.CommandLine.Contains($dir, [StringComparison]::OrdinalIgnoreCase)) { [void] $ids.Add([int] $p.ProcessId) }
             }
@@ -929,11 +1384,18 @@ function Stop-Chrome($Chrome) {
                 foreach ($p in $all) { if ($p.Name -eq 'chrome.exe' -and $ids.Contains([int] $p.ParentProcessId) -and $ids.Add([int] $p.ProcessId)) { $added = $true } }
             } while ($added)
             $live = @($ids | Where-Object { $id = $_; $all | Where-Object { [int] $_.ProcessId -eq $id } })
-            if ($live.Count -eq 0) { break }
+            $passExtra['liveCount'] = $live.Count; $passExtra['enumerated'] = $enumerated
+            if ($live.Count -eq 0) {
+                if ($enumerated) { $passExtra['outcome'] = 'success'; $stopExtra['outcome'] = 'success' }
+                break
+            }
             foreach ($id in $live) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
             Start-Sleep -Milliseconds 300
+            } finally { Complete-PhaseTiming -Phase 'chrome.killPass' -StartQpc $passQpc -Extra $passExtra }
         }
-    } catch { }
+    } catch { $stopExtra['outcome'] = 'failure' } finally {
+        if ($null -ne $stopQpc) { Complete-PhaseTiming -Phase 'chrome.stop' -StartQpc $stopQpc -Extra $stopExtra }
+    }
 }
 function Test-ChromeAvailable([string] $ScenarioId) {
     if (Test-Path -LiteralPath $chromeExe -PathType Leaf) { return $true }
@@ -1147,6 +1609,8 @@ function Read-ObsLooksFile([string] $Root) {
 # Starts the app with the overlay on (plus options) and an SSE reader; returns the context.
 function Start-OverlayRun([string] $Name, [hashtable] $Settings = @{}, [string] $BenchProfile = $null, [string] $BenchState = 'Full',
     [switch] $NoReader, [hashtable] $Override = @{}, [string] $LooksJson = $null) {
+    $startQpc = Get-Qpc; $startOutcome = 'failure'
+    try {
     $root = New-Root $Name
     $s = @{ ObsOverlay = $true }; foreach ($k in $Settings.Keys) { $s[$k] = $Settings[$k] }
     Write-Settings $root $s
@@ -1155,13 +1619,19 @@ function Start-OverlayRun([string] $Name, [hashtable] $Settings = @{}, [string] 
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = $BenchState }
     $app = Start-App $root $launchEnv
     $reader = if ($NoReader) { $null } else { Start-SseReader $Name }
+    $startOutcome = 'success'
     [pscustomobject]@{ Name = $Name; Root = $root; App = $app; Reader = $reader }
+    } finally { Complete-PhaseTiming -Phase 'overlay.start' -StartQpc $startQpc -Extra @{ outcome = $startOutcome } }
 }
 function Stop-OverlayRun($Run) {
     if (-not $Run) { return }
+    $stopQpc = Get-Qpc; $stopOutcome = 'failure'
+    try {
     Stop-SseReader $Run.Reader
     Stop-App $Run.App $Run.Root
     Copy-AppLog $Run.Root $Run.Name
+    $stopOutcome = 'success'
+    } finally { Complete-PhaseTiming -Phase 'overlay.stop' -StartQpc $stopQpc -Extra @{ outcome = $stopOutcome } }
 }
 function Wait-Initial($Run, [string] $Id = 'fixtureSngA', [string] $State = 'playing', [double] $Seconds = 120) {
     $ev = Wait-SseData $Run.Reader { param($d) Test-Data $d $State $Id } $Seconds
@@ -1493,6 +1963,15 @@ function Test-APlain {
     }
 }
 
+# Look id a case's page navigates to: its own, or a sibling's under a diagnostic '-LookRedCase <case>=route'.
+function Get-LookNavigationId($Case, [object[]] $BatchCases) {
+    if ($lookRed["$($Case.theme).$($Case.case)"] -ne 'route') { return $Case.lookId }
+    $sibling = @($BatchCases | Where-Object { $_.lookId -ne $Case.lookId }) | Select-Object -First 1
+    if (-not $sibling) { throw "-LookRedCase route needs a second selected case in the batch of $($Case.theme).$($Case.case)." }
+    Write-Host "LookRedCase: $($Case.theme).$($Case.case) routed to $($sibling.lookId)."
+    return $sibling.lookId
+}
+
 function Test-ALook {
     if (-not (Test-ChromeAvailable 'A-LOOK')) { return }
     $allCases = @(New-LookCases)
@@ -1517,22 +1996,82 @@ function Test-ALook {
             maxBatch = ($fixtureBatches | Measure-Object -Maximum).Maximum }) (
         (Test-Path -LiteralPath $caseFixturePath -PathType Leaf) -and @($allCases | ForEach-Object { $_.theme } | Select-Object -Unique).Count -eq 8 -and
         $caseFixture.Count -eq $allCases.Count -and ($fixtureBatches | Measure-Object -Maximum).Maximum -le 16)
-    Add-Deferred 'P1' 'A-LOOK.otherThemeMatrix' 'run the remaining generated theme cases in P1' "$($otherCases.Count) non-pill configurations are generated in looks-cases.json."
-    Add-Deferred 'P1' 'A-LOOK.timesShownAndMatteCadence' 'times-shown labels and matte cadence rows' 'P0 is pill-only; the pill has no times slot. These generated rows become active with P1 themes.'
-    Add-Deferred 'P1' 'A-LOOK.expectedSizes' 'independent expected-sizes.json generator and non-pill geometry oracle' 'The size-table generator is P1; P0 Pill sizes use the independent hand formula asserted in the E2E.'
+    & (Join-Path $PSScriptRoot 'obs-overlay-sizes.ps1') | Out-Null
+    $sizes = Get-Content -Raw (Join-Path $fixtureDirectory 'expected-sizes.json') | ConvertFrom-Json -AsHashtable -Depth 16
+    Add-Check 'A-LOOK.expectedSizes' 'independent geometry oracle covers every generated case' $sizes.cases.Count ($sizes.cases.Count -eq $allCases.Count)
     $obs = [ordered]@{ pillCases = $pillCases.Count; otherCases = $otherCases.Count; cases = [ordered]@{} }
-    $batches = @($pillCases | Group-Object { $_.batch } | Sort-Object { [int] $_.Name })
+    $selectedCases = @($allCases | Where-Object {
+        $name = "$($_.theme).$($_.case)"
+        @($LookCase | Where-Object { $name -like $_ }).Count -gt 0
+    })
+    if ($selectedCases.Count -eq 0 -and (Test-SectionSelected 'geometry')) { throw "No generated A-LOOK cases match: $($LookCase -join ', ')" }
+    $batches = @($selectedCases | Group-Object { $_.batch } | Sort-Object { [int] $_.Name })
     foreach ($batch in $batches) {
+        if (-not (Test-SectionSelected 'geometry')) { continue }
         $lookDocsList = [Collections.Generic.List[object]]::new()
         foreach ($case in $batch.Group) {
-            if ($case.case -eq 'default') {
+            if ($case.theme -eq 'pill' -and $case.case -eq 'default') {
                 $lookDocsList.Add((New-ObsLook $case.lookId $defaultFixture.name $defaultFixture.options))
-            } else { $lookDocsList.Add((New-ObsLook $case.lookId "Pill $($case.case)" $case.options)) }
+            } else { $lookDocsList.Add((New-ObsLook $case.lookId "$($case.theme) $($case.case)" $case.options)) }
         }
         $lookDocs = $lookDocsList.ToArray()
         $looksJson = ConvertTo-ObsLooksJson (New-ObsLooksDocument $lookDocs)
         $run = Start-OverlayRun "A-LOOK-batch-$($batch.Name)" @{} 'PlayingLong' -NoReader -LooksJson $looksJson
         $chrome = $null; $raws = [Collections.Generic.List[object]]::new()
+        $groupRows = [ordered]@{}; $caseIndex = 0
+        if ($LookGroup -gt 1) {
+            $waitGroupStreams = {
+                param([int] $PerLook, [object[]] $Cases, [string] $Label)
+                # Total and by-look snapshots must agree within the existing stream-release ceiling.
+                $deadline = [DateTime]::UtcNow.AddSeconds($ordinaryStreamReleaseSeconds)
+                $expectedTotal = $PerLook * $Cases.Count
+                $snapshot = Wait-OverlayStreams $run $expectedTotal $Label
+                while ($true) {
+                    # A state read that times out near the deadline yields no snapshot: treat it as not reached yet.
+                    $byLook = if ($snapshot) { Get-Overlay $snapshot 'streamsByLook' } else { $null }
+                    if ($snapshot -and $null -eq $byLook) { throw "A-LOOK $Label has no by-look stream counts." }
+                    $wrongLooks = @($Cases | Where-Object { -not $byLook -or [int] (Get-Prop $byLook $_.lookId) -ne $PerLook })
+                    if ($snapshot -and (Get-Overlay $snapshot 'streams') -eq $expectedTotal -and $wrongLooks.Count -eq 0) { return $snapshot }
+                    $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds - 0.1
+                    if ($remaining -le 0) { throw "A-LOOK ${Label}: total/by-look streams did not reach $expectedTotal/$PerLook." }
+                    Start-Sleep -Milliseconds 100
+                    $snapshot = Get-State $run.Root $Label $remaining
+                }
+            }
+            $releaseGroup = {
+                $releaseError = $null
+                $releasedCases = @($groupRows.Values | ForEach-Object { $_.Case })
+                foreach ($row in $groupRows.Values) {
+                    try {
+                        if ($row.TargetId) {
+                            # Destroy the exact owned document; navigation can retain EventSource in BFCache.
+                            $closed = Invoke-Cdp $chrome 'Target.closeTarget' @{ targetId = $row.TargetId }
+                            if ((Get-Prop $closed 'success') -ne $true) { throw "Chrome refused to close target $($row.TargetId)." }
+                            $gone = Wait-For {
+                                $targets = @(Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($chrome.CdpPort)/json/list" | ForEach-Object { $_ })
+                                @($targets | Where-Object { $_.id -eq $row.TargetId }).Count -eq 0
+                            } 5 50
+                            if (-not $gone) { throw "Chrome target $($row.TargetId) survived closeTarget." }
+                            $caseKey = "$($row.Case.theme).$($row.Case.case)"
+                            if ($obs.cases.Contains($caseKey)) {
+                                $obs.cases[$caseKey]['release'] = [ordered]@{ oldTarget = $row.TargetId
+                                    newTarget = $chrome.TargetId; closeSucceeded = $true; oldTargetGone = $true }
+                            }
+                        }
+                    } catch { if (-not $releaseError) { $releaseError = $_ } }
+                    finally {
+                        try { if ($row.Chrome) { $row.Chrome.Ws.Dispose() } }
+                        catch { if (-not $releaseError) { $releaseError = $_ } }
+                        try { Stop-SseReader $row.Reader }
+                        catch { if (-not $releaseError) { $releaseError = $_ } }
+                        [void] $raws.Remove($row.Reader)
+                    }
+                }
+                $groupRows.Clear()
+                [void] (& $waitGroupStreams 0 $releasedCases "group-$caseIndex-released")
+                if ($releaseError) { throw $releaseError }
+            }
+        }
         try {
             [void] (Wait-BenchReady $run.Root)
             $reloadQpc = Send-ObsHookCommand $run.Root 'command-obs-looks-reload'
@@ -1542,36 +2081,133 @@ function Test-ALook {
             [void] (Invoke-ChromeNavigate $chrome 'about:blank')
             [void] (Wait-OverlayStreams $run 0 'batchInitialStreams')
             foreach ($case in $batch.Group) {
-                $path = "/events?look=$($case.lookId)"
-                $reader = Start-SseReader "A-LOOK-$($case.case)" 30 $path
-                $raws.Add($reader)
-                $lookEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq $case.lookId } 15
-                $dataEvent = Wait-SseData $reader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
-                Stop-SseReader $reader
-                [void] $raws.Remove($reader)
-                [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-reader-closed")
-                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($case.lookId)")
-                $page = Wait-For { $p = Get-PageProbe $chrome; if ($p -and (Get-PageField $p 'connection') -eq 'open' -and
+                if ($LookGroup -gt 1 -and ($caseIndex % $LookGroup) -eq 0) {
+                    $groupCases = @($batch.Group[$caseIndex..([Math]::Min($caseIndex + $LookGroup, $batch.Group.Count) - 1)])
+                    # A blank control target has no EventSource: each case adds exactly one reader and one page.
+                    # Stage the readers before pages; N=4 owns eight observers and never admits a ninth.
+                    foreach ($groupCase in $groupCases) {
+                        $reader = Start-SseReader "A-LOOK-$($groupCase.theme)-$($groupCase.case)" 30 "/events?look=$($groupCase.lookId)"
+                        $raws.Add($reader)
+                        $groupRows[$groupCase.lookId] = [pscustomobject]@{
+                            Case = $groupCase; Reader = $reader; LookEvent = $null; DataEvent = $null; Chrome = $null; TargetId = $null
+                        }
+                    }
+                    foreach ($groupCase in $groupCases) {
+                        $row = $groupRows[$groupCase.lookId]
+                        $row.LookEvent = Wait-SseLook $row.Reader { param($m) (Get-Prop $m 'id') -eq $groupCase.lookId } 15
+                        $row.DataEvent = Wait-SseData $row.Reader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+                    }
+                    foreach ($groupCase in $groupCases) {
+                        $row = $groupRows[$groupCase.lookId]
+                        $created = Invoke-Cdp $chrome 'Target.createTarget' @{ url = 'about:blank' }
+                        $row.TargetId = [string] (Get-Prop $created 'targetId')
+                        if (-not $row.TargetId) { throw "Chrome did not create A-LOOK target for $($groupCase.lookId)." }
+                        $target = Wait-For {
+                            Invoke-RestMethod -NoProxy -Uri "http://127.0.0.1:$($chrome.CdpPort)/json/list" |
+                                ForEach-Object { $_ } | Where-Object { $_.id -eq $row.TargetId } | Select-Object -First 1
+                        } 5 50
+                        if (-not $target) { throw "Chrome target $($row.TargetId) was not exposed." }
+                        $ws = [Net.WebSockets.ClientWebSocket]::new()
+                        $row.Chrome = [pscustomobject]@{ Name = "A-LOOK-$($groupCase.theme)-$($groupCase.case)"; Process = $chrome.Process
+                            Ws = $ws; Next = 0; Dir = $chrome.Dir; CdpPort = $chrome.CdpPort; Plain = $true
+                            TargetId = $row.TargetId; Events = [Collections.Generic.List[object]]::new() }
+                        [void] $ws.ConnectAsync([Uri] $target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                        [void] (Invoke-Cdp $row.Chrome 'Page.enable')
+                        Set-OverlayViewport $row.Chrome $sizes.cases[$groupCase.lookId].source
+                        [void] (Invoke-ChromeNavigate $row.Chrome "$($overlayUrl)?look=$(Get-LookNavigationId $groupCase $batch.Group)")
+                    }
+                    [void] (& $waitGroupStreams 2 $groupCases "group-$caseIndex-admitted")
+                }
+                if ($LookGroup -eq 1) {
+                    # Serial reference: keep the same reader, waits, navigation and check order for N=1.
+                    $path = "/events?look=$($case.lookId)"
+                    # Case names repeat across themes; separate files prevent stale initial data from another stream.
+                    $reader = Start-SseReader "A-LOOK-$($case.theme)-$($case.case)" 30 $path
+                    $raws.Add($reader)
+                    $lookEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq $case.lookId } 15
+                    $dataEvent = Wait-SseData $reader { param($d) (Get-Prop $d 'state') -eq 'playing' } 15
+                    Stop-SseReader $reader
+                    [void] $raws.Remove($reader)
+                    [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-reader-closed")
+                    $size = $sizes.cases[$case.lookId]
+                    Set-OverlayViewport $chrome $size.source
+                    [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$(Get-LookNavigationId $case $batch.Group)")
+                    $caseChrome = $chrome
+                } else {
+                    $row = $groupRows[$case.lookId]
+                    $reader = $row.Reader; $lookEvent = $row.LookEvent; $dataEvent = $row.DataEvent
+                    $size = $sizes.cases[$case.lookId]; $caseChrome = $row.Chrome
+                }
+                $page = Wait-For { $p = Get-PageProbe $caseChrome; if ($p -and (Get-PageField $p 'connection') -eq 'open' -and
                     (Get-Prop (Get-PageField $p 'look') 'id') -eq $case.lookId) { $p } } 20 100
                 if (-not $page) { throw "A-LOOK case '$($case.case)' never reached its connected page state." }
-                $options = $case.options; $expected = Get-PillExpectedBox $options; $state = Get-Prop $page 's'
+                # Geometry is a static check: probe after the show animation settles (a mid-slide box moves its text and
+                # hidden bar relative to the rest position; 4 October, V6 serial-vs-grouped comparison). Grouped pages are
+                # background targets whose animations do not advance, so each case's own target is activated first.
+                if ($LookGroup -gt 1) { [void] (Invoke-Cdp $caseChrome 'Page.bringToFront') }
+                $page = Wait-For { $p = Get-PageProbe $caseChrome; if ($p -and [int] (Get-Prop $p 'running') -eq 0) { $p } } 10 100
+                if (-not $page) { throw "A-LOOK case '$($case.case)' still had running animations 10 s after connecting." }
+                $redKind = $lookRed["$($case.theme).$($case.case)"]
+                if ($redKind -in @('size', 'style')) {
+                    $redExpression = if ($redKind -eq 'size') {
+                        "(() => { const p = document.getElementById('pill'); p.style.width = (parseFloat(getComputedStyle(p).width) + 7) + 'px'; })()"
+                    } else {
+                        "document.documentElement.setAttribute('data-theme', document.documentElement.getAttribute('data-theme') === 'matte' ? 'card' : 'matte')"
+                    }
+                    [void] (Invoke-Cdp $caseChrome 'Runtime.evaluate' @{ expression = $redExpression })
+                    $page = Get-PageProbe $caseChrome
+                    Write-Host "LookRedCase: $($case.theme).$($case.case) mutated ($redKind)."
+                }
+                $options = $case.options; $expected = @{ width = $size.box.w; height = $size.box.h; sourceWidth = $size.source.w; sourceHeight = $size.source.h }; $state = Get-Prop $page 's'
                 $box = Get-Prop $state 'box'; $source = Get-Prop $state 'source'; $actualWidth = Get-Prop (Get-Prop $page 'css') 'width'
-                $geometry = [ordered]@{ expected = $expected; box = $box; source = $source; cssWidth = $actualWidth }
-                Add-Check "A-LOOK.$($case.case).lookBeforeData" 'each new stream writes look before initial data, with matching id' ([ordered]@{
+                $geometry = [ordered]@{ expected = $expected; box = $box; source = $source; cssWidth = $actualWidth
+                    viewport = $page.pageSize; boxRect = $page.boxRect }
+                Add-Check "A-LOOK.$($case.theme).$($case.case).lookBeforeData" 'each new stream writes look before initial data, with matching id' ([ordered]@{
                     lookQpc = Get-Prop $lookEvent 'qpc'; dataQpc = Get-Prop $dataEvent 'qpc'; id = Get-Prop (Get-Prop $lookEvent 'data') 'id' }) (
                     $lookEvent -and $dataEvent -and $lookEvent.qpc -lt $dataEvent.qpc -and (Get-Prop $lookEvent.data 'id') -eq $case.lookId)
-                Add-Check "A-LOOK.$($case.case).stylesAndSizes" 'pill theme, custom properties, box/source formula and zero page box mismatch' $geometry (
-                    $page -and (Get-Prop (Get-Prop $page 'attrs') 'theme') -eq 'pill' -and
+                Add-Check "A-LOOK.$($case.theme).$($case.case).stylesAndSizes" 'theme, custom properties, independent box/source formula and zero page box mismatch' $geometry (
+                    $page -and (Get-Prop (Get-Prop $page 'attrs') 'theme') -eq $case.theme -and
                     [double] (Get-Prop $box 'w') -eq [double] $expected.width -and
                     [double] (Get-Prop $box 'h') -eq [double] $expected.height -and
                     [int] (Get-Prop $source 'w') -eq [int] $expected.sourceWidth -and
                     [int] (Get-Prop $source 'h') -eq [int] $expected.sourceHeight -and
                     [string] (Get-Prop $state 'boxMismatch') -in @('', 'false') -and
-                    [string] $actualWidth -eq "$($expected.width)px")
+                    [string] $actualWidth -eq "$($expected.width)px" -and (Test-OverlayViewport $page $size.source))
+                $rasterResult = Test-ThemeRaster (Get-PageField $page 'raster') $case.theme $case.options $size
+                Add-Check "A-LOOK.$($case.theme).$($case.case).raster" 'theme canvas dimensions match independent 100k area/one-scale projection' $rasterResult $rasterResult.pass
+                $actualBar = Get-Prop $page.geometry 'bar'; $actualColumn = Get-Prop $page.geometry 'column'
+                $expectedBar = Get-Prop $size 'bar'; $expectedColumn = Get-Prop $size 'column'
+                $barShown = [bool] (Get-Prop $expectedBar 'shown')
+                $barCorrect = if ($barShown) {
+                    $actualBar -and $actualBar.display -ne 'none' -and
+                    [Math]::Abs(([double] $actualBar.x - [double] $page.boxRect.x) - [double] $expectedBar.start) -le 1 -and
+                    [Math]::Abs([double] $actualBar.width - [double] $expectedBar.width) -le 1 -and
+                    [Math]::Abs(([double] $actualBar.y - [double] $page.boxRect.y) - [double] $expectedBar.y) -le 1 -and
+                    [Math]::Abs([double] $actualBar.height - [double] $expectedBar.h) -le 1
+                } else { -not $actualBar -or $actualBar.display -eq 'none' -or [double] $actualBar.width -eq 0 }
+                $columnCorrect = if ($case.theme -in @('matte', 'matte-light', 'standard', 'classic', 'simple')) {
+                    $actualColumn -and [Math]::Abs(([double] $actualColumn.x - [double] $page.boxRect.x) - [double] $expectedColumn.start) -le 1 -and
+                    [Math]::Abs(([double] $actualColumn.x + [double] $actualColumn.width - [double] $page.boxRect.x) - [double] $expectedColumn.end) -le 1
+                } else { $true }
+                Add-Check "A-LOOK.$($case.theme).$($case.case).domGeometry" 'bar and horizontal text column independently match expected-sizes (relative to box)' (
+                    [ordered]@{ expectedBar = $expectedBar; actualBar = $actualBar; expectedColumn = $expectedColumn; actualColumn = $actualColumn }) ($barCorrect -and $columnCorrect)
+                $wireDuration = [double] (Get-Prop (Get-Prop $dataEvent 'data') 'duration')
+                $wirePosition = [double] (Get-Prop (Get-Prop $dataEvent 'data') 'position')
+                $wireRate = [double] (Get-Prop (Get-Prop $dataEvent 'data') 'rate')
+                $expectedFraction = if (-not $case.options.showProgress) { $null } elseif ($wireDuration -gt 0 -and $dataEvent) {
+                    # Integer bounds select PowerShell's integral Clamp overload and round away fractional progress.
+                    [Math]::Clamp(($wirePosition + (([double] (Get-Prop $dataEvent.data 'ageMs') / 1000) + (Get-Seconds $dataEvent.qpc $page.qpc)) * $wireRate) / $wireDuration, [double] 0, [double] 1)
+                } else { $null }
+                Add-Check "A-LOOK.$($case.theme).$($case.case).fill" 'bar/reveal position within 1% of independently observed wire snapshot' (
+                    [ordered]@{ observed = $page.frac; expected = $expectedFraction; bar = $expectedBar }) (
+                    $(if (-not $case.options.showProgress) { $null -eq $page.frac -or $page.frac -eq 1 } else {
+                        $null -ne $expectedFraction -and $null -ne $page.frac -and
+                        [Math]::Abs([double] $page.frac - $expectedFraction) -le 0.01
+                    }))
                 $rects = @((Get-Prop $page 'titleRect'), (Get-Prop $page 'artistRect')) | Where-Object { $_ -and $_.width -gt 0 }
                 $contained = $page -and @($rects | Where-Object { $_.x -lt $page.boxRect.x -or $_.x + $_.width -gt $page.boxRect.x + $page.boxRect.width -or
                     $_.y -lt $page.boxRect.y -or $_.y + $_.height -gt $page.boxRect.y + $page.boxRect.height }).Count -eq 0
-                Add-Check "A-LOOK.$($case.case).textContainment" 'every visible text row is contained by the pill box; title uses ellipsis when overflowing' (
+                Add-Check "A-LOOK.$($case.theme).$($case.case).textContainment" 'every visible text row is contained by the box; title uses ellipsis when overflowing' (
                     [ordered]@{ contained = $contained; titleEllipsis = Get-Prop $page 'titleEllipsis'; title = Get-Prop $page 'title'; artist = Get-Prop $page 'artist' }) (
                     $contained -and ((Get-Prop (Get-Prop $page 'titleRect') 'scrollWidth') -le (Get-Prop (Get-Prop $page 'titleRect') 'clientWidth') -or (Get-Prop $page 'titleEllipsis')))
                 if ($case.case -eq 'artist-off') {
@@ -1585,13 +2221,20 @@ function Test-ALook {
                         font = $page.css.font; fontAvailable = Get-Prop $state 'fontAvailable' }) (
                         $page.css.font -match '^Arial' -and (Get-Prop $state 'fontAvailable') -eq $true)
                 }
-                $obs.cases[$case.case] = [ordered]@{ look = [bool] $lookEvent; data = [bool] $dataEvent; geometry = $geometry; titleEllipsis = $page.titleEllipsis }
-                # Close the owned target, not just navigate away: no retained EventSource can survive the case.
-                $obs.cases[$case.case]['release'] = Reset-ChromeCasePage $chrome
-                [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-released")
+                $caseKey = "$($case.theme).$($case.case)"
+                $obs.cases[$caseKey] = [ordered]@{ look = [bool] $lookEvent; data = [bool] $dataEvent; geometry = $geometry; titleEllipsis = $page.titleEllipsis }
+                if ($LookGroup -eq 1) {
+                    # Close the owned target, not just navigate away: no retained EventSource can survive the case.
+                    $obs.cases[$caseKey]['release'] = Reset-ChromeCasePage $chrome
+                    [void] (Wait-OverlayStreams $run 0 "case-$($case.case)-released")
+                }
+                $caseIndex++
+                if ($LookGroup -gt 1 -and (($caseIndex % $LookGroup) -eq 0 -or $caseIndex -eq $batch.Group.Count)) {
+                    & $releaseGroup
+                }
             }
             # Pill-only progress-hidden contract.
-            $progressCase = $batch.Group | Where-Object { $_.case -eq 'showProgress-off' } | Select-Object -First 1
+            $progressCase = $batch.Group | Where-Object { $_.theme -eq 'pill' -and $_.case -eq 'showProgress-off' } | Select-Object -First 1
             if ($progressCase) {
                 [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($progressCase.lookId)")
                 $hiddenProgress = Wait-For { $p = Get-PageProbe $chrome; if ((Get-Prop (Get-Prop $p 'attrs') 'showProgress') -eq 'false') { $p } } 15 100
@@ -1599,8 +2242,18 @@ function Test-ALook {
                     fillPx = Get-Prop $hiddenProgress 'clipPx'; fillTimer = Get-Prop (Get-Prop $hiddenProgress 's') 'fillTimer' }) (
                     $hiddenProgress -and $hiddenProgress.clipPx -eq 400 -and (Get-Prop $hiddenProgress.s 'fillTimer') -eq 0)
             }
-        } finally { foreach ($reader in $raws) { Stop-SseReader $reader }; Stop-Chrome $chrome; Stop-OverlayRun $run }
+        } finally {
+            try { if ($LookGroup -gt 1 -and $groupRows.Count -gt 0) { & $releaseGroup } }
+            finally { foreach ($reader in $raws) { Stop-SseReader $reader }; Stop-Chrome $chrome; Stop-OverlayRun $run }
+        }
     }
+    if ($LookCase.Count -ne 1 -or $LookCase[0] -cne '*') {
+        Write-Host 'LookCase filter: cadence/motion and other non-case sections skipped (diagnostic run).'
+        $obs['lookCase'] = @($LookCase); $obs['selectedCases'] = $selectedCases.Count
+        $scenarioResults['A-LOOK'] = $obs
+        return
+    }
+    if (Test-SectionSelected 'text') {
     # Existing Text fixture supplies a long title; every P0 pill size must clip it inside the pill with ellipsis.
     $longRun = Start-OverlayRun 'A-LOOK-pill-long-text' @{} 'Text' -NoReader
     $longChrome = $null
@@ -1619,13 +2272,41 @@ function Test-ALook {
             $longPage.titleRect.x -ge $longPage.boxRect.x -and
             $longPage.titleRect.x + $longPage.titleRect.width -le $longPage.boxRect.x + $longPage.boxRect.width)
     } finally { Stop-Chrome $longChrome; Stop-OverlayRun $longRun }
-    $obs['cadence'] = Test-ALookCadence
-    $obs['motion'] = Test-ALookMotion
-    $obs['backpressure'] = Test-ALookBackpressure
-    $obs['query'] = Test-ALookQueryGrammar
-    $obs['reloadDelete'] = Test-ALookReloadDelete
-    Add-Deferred 'P1' 'A-LOOK.themeRasterCache' 'theme change invalidates raster cache exactly once' 'P0 has only the pill theme; theme-to-theme cache behavior is exercised when P1 themes exist.'
+    }
+    if (Test-SectionSelected 'cadence') { $obs['cadence'] = Test-ALookCadence }
+    if (Test-SectionSelected 'motion') { $obs['motion'] = Test-ALookMotion }
+    if (Test-SectionSelected 'regression') {
+        $before = $checks.Count
+        $obs['backpressure'] = Test-ALookBackpressure
+        $script:completedInventorySections['backpressure'] = $checks.Count -gt $before -and
+            @($checks | Select-Object -Skip $before | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    }
+    if (Test-SectionSelected 'regression') {
+        $before = $checks.Count
+        $obs['query'] = Test-ALookQueryGrammar
+        $script:completedInventorySections['query'] = $checks.Count -gt $before -and
+            @($checks | Select-Object -Skip $before | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    }
+    if (Test-SectionSelected 'regression') {
+        $before = $checks.Count
+        $obs['reloadDelete'] = Test-ALookReloadDelete
+        $script:completedInventorySections['reloadDelete'] = $checks.Count -gt $before -and
+            @($checks | Select-Object -Skip $before | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    }
+    if (Test-SectionSelected 'regression') {
+        $before = $checks.Count
+        $obs['themeCache'] = Test-ALookThemeCache
+        $script:completedInventorySections['themeCache'] = $checks.Count -gt $before -and
+            @($checks | Select-Object -Skip $before | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    }
+    if (Test-SectionSelected 'regression') {
+        $before = $checks.Count
+        $obs['themeRegressions'] = Test-ALookThemeRegressions
+        $script:completedInventorySections['themeRegressions'] = $checks.Count -gt $before -and
+            @($checks | Select-Object -Skip $before | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    }
     $scenarioResults['A-LOOK'] = $obs
+
 }
 
 function Test-ALookReloadDelete {
@@ -1674,9 +2355,252 @@ function Test-ALookReloadDelete {
     [ordered]@{ blurDrawsBefore = $blurBefore; blurDrawsAfter = $blurAfter; deleted = [bool] (Get-Prop $delete 'ok') }
 }
 
+function Test-ALookThemeCache {
+    $results = [ordered]@{}
+    foreach ($theme in @('matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')) {
+        $id = 'cac' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+        $look = New-ObsLook $id 'Original name' (Get-ThemeDefaults $theme)
+        $run = Start-OverlayRun "A-LOOK-cache-$theme" @{} $null -NoReader -LooksJson (
+            ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+        $chrome = $null
+        try {
+            $chrome = Start-Chrome "A-LOOK-cache-$theme"
+            $expectedSize = Get-DefaultThemeSize $theme
+            Set-OverlayViewport $chrome $expectedSize.source
+            [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=playing")
+            [void] (Wait-PageConnected $chrome 15)
+            [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'artLoadedSeq') -eq (Get-PageField $p 'artSeq') -and
+                (Get-PageField $p 'artSeq') -ge 1) { $p } } 10 50)
+            $a = Get-PageProbe $chrome
+            $look.name = 'Renamed only'
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $b = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'lookSeq') -gt (Get-PageField $a 'lookSeq')) { $p } } 10 50
+            $aCounters = Get-PageField $a 'counters'; $bCounters = Get-PageField $b 'counters'
+            $unchanged = $b -and (Get-Prop $aCounters 'blurDraws') -eq (Get-Prop $bCounters 'blurDraws') -and
+                (Get-Prop $aCounters 'quantizerRuns') -eq (Get-Prop $bCounters 'quantizerRuns') -and
+                (Get-Prop $aCounters 'coverLoads') -eq (Get-Prop $bCounters 'coverLoads')
+            Add-Check "A-LOOK.cache.$theme.nameOnly" 'renaming saved look does not redraw blur, quantize, or reload cover' (
+                [ordered]@{ before = $aCounters; after = $bCounters }) $unchanged
+            $nextTheme = if ($theme -eq 'matte') { 'standard' } else { 'matte' }
+            $nextSize = Get-DefaultThemeSize $nextTheme
+            Set-OverlayViewport $chrome $nextSize.source
+            $look.options = Get-ThemeDefaults $nextTheme
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $c = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.theme -eq $nextTheme) { $p } } 10 50
+            $delta = [int] (Get-Prop (Get-PageField $c 'counters') 'blurDraws') - [int] (Get-Prop $bCounters 'blurDraws')
+            Add-Check "A-LOOK.cache.$theme.themeSwitch" 'theme switch changes cache key and draws at most once (blur theme exactly once)' (
+                [ordered]@{ nextTheme = $nextTheme; draws = $delta; coverLoads = Get-Prop (Get-PageField $c 'counters') 'coverLoads' }) (
+                $c -and $c.attrs.theme -eq $nextTheme -and $delta -eq $(if ($nextTheme -eq 'standard') { 1 } else { 0 }))
+            $results[$theme] = [ordered]@{ nameOnly = $unchanged; switch = $nextTheme; blurDraws = $delta }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+    $results
+}
+
+function Test-ALookThemeRegressions {
+    $themes = @('pill', 'matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')
+    $looks = @($themes | ForEach-Object {
+        $o = Get-ThemeDefaults $_
+        $o['colours'] = 'custom'; $o['background'] = '#123456'; $o['backgroundOpacity'] = 37
+        New-ObsLook ("reg" + ([Array]::IndexOf($themes, $_)).ToString('D5')) "Regress $_" $o
+    })
+    $run = Start-OverlayRun 'A-LOOK-regressions' @{} 'PlayingLong' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks))
+    $chrome = $null; $results = [ordered]@{}
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $chrome = Start-Chrome 'A-LOOK-regressions'
+        foreach ($theme in $themes) {
+            $look = @($looks | Where-Object { $_.options.theme -eq $theme })[0]
+            $size = Get-DefaultThemeSize $theme
+            Set-OverlayViewport $chrome $size.source
+            [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($look.id)")
+            $custom = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.theme -eq $theme -and
+                $p.attrs.colours -eq 'custom' -and (Get-PageField $p 'connection') -eq 'open') { $p } } 15 100
+            $look.options['colours'] = 'auto'
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks)))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+            $auto = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.colours -eq 'auto' -and
+                (Get-PageField $p 'lookSeq') -gt (Get-PageField $custom 'lookSeq')) { $p } } 10 100
+            $defaults = Get-ThemeDefaults $theme
+            $result = [ordered]@{ custom = $custom.css; auto = $auto.css
+                stored = Get-PageField $auto 'options'; viewport = $auto.pageSize; expectedSource = $size.source }
+            $results["auto-$theme"] = $result
+            Add-Check "A-LOOK.regression.$theme.autoPalette" 'auto restores theme background/opacity without erasing stored custom palette' $result (
+                $custom -and $auto -and $custom.css.bg -eq '#123456' -and [Math]::Abs([double] $custom.css.bgAlpha - .37) -le .001 -and
+                $auto.css.bg -eq $defaults.background -and
+                [Math]::Abs([double] $auto.css.bgAlpha - [double] $defaults.backgroundOpacity / 100) -le .001 -and
+                $result.stored.background -eq '#123456' -and $result.stored.backgroundOpacity -eq 37 -and
+                (Test-OverlayViewport $auto $size.source))
+        }
+        $matte = @($looks | Where-Object { $_.options.theme -eq 'matte' })[0]
+        $matteSize = Get-DefaultThemeSize 'matte'
+        Set-OverlayViewport $chrome $matteSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($matte.id)")
+        [void] (Wait-PageConnected $chrome 15)
+        $matte.options['showTimes'] = $false
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks)))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        [void] (Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.showTimes -eq 'false') { $p } } 10 100)
+        $reanchor = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression =
+            "apply({...msg,id:state.id,title:state.title,artist:state.artist,artwork:artUrl,position:100})" }
+        if (Get-Prop $reanchor 'exceptionDetails') { throw 'A-LOOK same-pixel width setup failed' }
+        Start-Sleep -Seconds 2
+        $before = Get-PageProbe $chrome
+        $expandedSource = @{ w = [int] $matteSize.source.w + 10; h = [int] $matteSize.source.h }
+        Set-OverlayViewport $chrome $expandedSource
+        $matte.options['width'] = [int] $matte.options.width + 10
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks)))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $after = Wait-For { $p = Get-PageProbe $chrome; if ([double] (Get-Prop (Get-PageField $p 'box') 'w') -eq
+            [double] $matte.options.width -and $p.attrs.showTimes -eq 'false') { $p } } 10 100
+        $beforePixel = [Math]::Floor([double] $before.geometry.bar.width * [double] (Get-PageField $before 'projectedPosition') / 14400)
+        $afterPixel = [Math]::Floor([double] $after.geometry.bar.width * [double] (Get-PageField $after 'projectedPosition') / 14400)
+        $expected = [double] (Get-PageField $after 'projectedPosition') / 14400
+        $results['samePixelWidth'] = [ordered]@{ beforePixel = $beforePixel; afterPixel = $afterPixel
+            renderedFraction = $after.frac; projectedFraction = $expected; viewport = $after.pageSize }
+        Add-Check 'A-LOOK.regression.samePixelWidth' 'PlayingLong times-hidden width push preserves same fill pixel and DOM transform stays within 1% projection' $results.samePixelWidth (
+            $before -and $after -and $beforePixel -eq $afterPixel -and
+            [Math]::Abs([double] $after.frac - $expected) -le .01 -and
+            (Test-OverlayViewport $after $expandedSource))
+        $album = @($looks | Where-Object { $_.options.theme -eq 'album-art' })[0]
+        $albumSize = Get-DefaultThemeSize 'album-art'
+        Set-OverlayViewport $chrome $albumSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($album.id)")
+        $loaded = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.theme -eq 'album-art' -and
+            (Get-PageField $p 'artLoadedSeq') -eq (Get-PageField $p 'artSeq') -and
+            (Get-PageField $p 'artFailed') -eq $false -and (Get-PageField $p 'raster').cover.w -gt 0) { $p } } 15 100
+        $on = [byte[]] (Get-ChromeShotBytes $chrome)
+        $onPath = Join-Path $shotDirectory 'A-LOOK-album-scrim-on.png'
+        [IO.File]::WriteAllBytes($onPath, $on)
+        [void] (Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = "document.getElementById('scrim').style.display='none'" })
+        $off = [byte[]] (Get-ChromeShotBytes $chrome)
+        $offPath = Join-Path $shotDirectory 'A-LOOK-album-scrim-off.png'
+        [IO.File]::WriteAllBytes($offPath, $off)
+        $onStream = [IO.MemoryStream]::new($on); $offStream = [IO.MemoryStream]::new($off)
+        try {
+            $onBitmap = [Drawing.Bitmap]::new($onStream); $offBitmap = [Drawing.Bitmap]::new($offStream)
+            try {
+                $x = [int] [Math]::Floor($loaded.boxRect.x + $loaded.boxRect.width - 7)
+                $delta = 0; $y = 0
+                $fromY = [int] [Math]::Floor($loaded.boxRect.y + $loaded.boxRect.height * .64)
+                $toY = [int] [Math]::Floor($loaded.boxRect.y + $loaded.boxRect.height * .86)
+                for ($probeY = $fromY; $probeY -le $toY; $probeY += [Math]::Max(1, [int] ($loaded.boxRect.height * .02))) {
+                    $aPixel = $onBitmap.GetPixel($x, $probeY); $bPixel = $offBitmap.GetPixel($x, $probeY)
+                    $change = [Math]::Abs($aPixel.R - $bPixel.R) + [Math]::Abs($aPixel.G - $bPixel.G) +
+                        [Math]::Abs($aPixel.B - $bPixel.B)
+                    if ($change -gt $delta) { $delta = $change; $y = $probeY }
+                }
+            } finally { $onBitmap.Dispose(); $offBitmap.Dispose() }
+        } finally { $onStream.Dispose(); $offStream.Dispose() }
+        $results['albumScrim'] = [ordered]@{ on = [IO.Path]::GetRelativePath($runDirectory, $onPath)
+            off = [IO.Path]::GetRelativePath($runDirectory, $offPath); x = $x; y = $y; rgbDelta = $delta }
+        Add-Check 'A-LOOK.regression.albumScrim' 'loaded album cover is visibly darkened by scrim above the bitmap' $results.albumScrim (
+            $loaded -and (Test-OverlayViewport $loaded $albumSize.source) -and $delta -ge 10)
+        # Runtime push, not a new fixture ID: a fractional card scale and artist-off
+        # must agree with the server's published box/source, including the tail formula.
+        $card = @($looks | Where-Object { $_.options.theme -eq 'card' })[0]
+        $cardDefault = Get-DefaultThemeSize 'card'
+        Set-OverlayViewport $chrome $cardDefault.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($card.id)")
+        $beforeCard = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.theme -eq 'card' -and
+            (Get-PageField $p 'connection') -eq 'open') { $p } } 15 100
+        $card.options['scale'] = 60; $card.options['width'] = 280
+        $card.options['showArtist'] = $false
+        $card.options['showArt'] = $true; $card.options['showProgress'] = $true; $card.options['showTimes'] = $true
+        $cornerSource = @{ w = 320; h = 356 }
+        Set-OverlayViewport $chrome $cornerSource
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks)))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $corner = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'lookSeq') -gt
+            (Get-PageField $beforeCard 'lookSeq') -and
+            (Get-Prop (Get-PageField $p 'options') 'scale') -eq 60) { $p } } 10 100
+        $published = Get-PageField $corner 'look'
+        $nativeBox = Get-Prop $published 'box'; $nativeSource = Get-Prop $published 'source'
+        $domBox = Get-PageField $corner 'box'; $domSource = Get-PageField $corner 'source'
+        $cornerResult = [ordered]@{ nativeBox = $nativeBox; nativeSource = $nativeSource
+            domBox = $domBox; domSource = $domSource; boxRect = $corner.boxRect
+            pageSize = $corner.pageSize; mismatch = Get-PageField $corner 'boxMismatch'
+            artist = Get-Prop (Get-PageField $corner 'options') 'showArtist' }
+        $results['cardFractionalScale'] = $cornerResult
+        Add-Check 'A-LOOK.regression.cardFractionalScale' 'runtime-published card scale60 artist-off box280×316/source320×356 equals DOM and full viewport' $cornerResult (
+            $beforeCard -and $corner -and
+            [int] (Get-Prop $nativeBox 'w') -eq 280 -and [int] (Get-Prop $nativeBox 'h') -eq 316 -and
+            [int] (Get-Prop $nativeSource 'w') -eq 320 -and [int] (Get-Prop $nativeSource 'h') -eq 356 -and
+            [int] (Get-Prop $domBox 'w') -eq 280 -and [int] (Get-Prop $domBox 'h') -eq 316 -and
+            [int] (Get-Prop $domSource 'w') -eq 320 -and [int] (Get-Prop $domSource 'h') -eq 356 -and
+            [Math]::Abs([double] $corner.boxRect.width - 280) -le 1 -and
+            [Math]::Abs([double] $corner.boxRect.height - 316) -le 1 -and
+            [string] $cornerResult.mismatch -in @('', 'false') -and $cornerResult.artist -eq $false -and
+            (Test-OverlayViewport $corner $cornerSource))
+        $results
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
+function Get-CadenceAssertion($Start, $End, [string] $Theme, [bool] $ShowTimes, [double] $Rate,
+    [double] $BarPx, [double] $Duration, [double] $Seconds = 60) {
+    $a = Get-PageField $Start 'counters'; $b = Get-PageField $End 'counters'
+    $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
+    $fill = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
+    $timeWrites = [int] (Get-Prop $b 'timeWrites') - [int] (Get-Prop $a 'timeWrites')
+    $maxFill = [Math]::Ceiling($BarPx * $Rate * $Seconds / $Duration) + 2
+    $maxTicks = [Math]::Ceiling($Seconds) + 1
+    $labelApplicable = $ShowTimes -and $Theme -notin @('pill', 'album-art')
+    $elapsed = { param($value) if ("$value" -match '^(\d+):(\d\d)$') { return [int] $Matches[1] * 60 + [int] $Matches[2] }; $null }
+    $advance = if ($labelApplicable) { (& $elapsed $End.elapsed) - (& $elapsed $Start.elapsed) } else { $null }
+    $passed = if ($labelApplicable) {
+        $ticks -le $maxTicks -and $timeWrites -le $maxTicks -and [Math]::Abs([double] $advance - $Seconds * $Rate) -le 2
+    } else { $fill -le $maxFill -and $ticks -eq $fill }
+    [ordered]@{ passed = $passed; seconds = $Seconds; rate = $Rate; showTimes = $ShowTimes
+        labelApplicable = $labelApplicable; duration = $Duration; barPx = $BarPx; maxFill = $maxFill; maxTicks = $maxTicks
+        ticks = $ticks; fillWrites = $fill; timeWrites = $timeWrites; elapsedStart = $Start.elapsed
+        elapsedEnd = $End.elapsed; advance = $advance }
+}
+
+function Test-ThemeCadence([string] $Theme, [int] $Width, [bool] $ShowTimes, [double] $Rate,
+    [switch] $Sample) {
+    $label = "$Theme-w$Width-times$ShowTimes-rate$Rate" + $(if ($Sample) { '-sample' } else { '' })
+    $id = 'cad' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $options = Get-ThemeDefaults $Theme; $options['width'] = $Width; $options['showTimes'] = $ShowTimes
+    $sizes = Get-Content -Raw (Join-Path $fixtureDirectory 'expected-sizes.json') | ConvertFrom-Json -AsHashtable -Depth 16
+    $size = @($sizes.rows | Where-Object { $_.theme -eq $Theme -and $_.width -eq $Width -and $_.scale -eq 100 -and
+        $_.showArt -and $_.showArtist -and $_.showProgress -and $_.showTimes -eq $ShowTimes } | Select-Object -First 1)
+    if ($size.Count -ne 1) { throw "A-LOOK cadence missing expected size for $label" }
+    $run = Start-OverlayRun "A-LOOK-cadence-$label" @{} $(if ($Sample) { $null } else { 'PlayingLong' }) -NoReader `
+        -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id $label $options))))
+    $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($Sample) { $null } else { 'PlayingLong' }))
+        if (-not $Sample -and $Rate -ne 1) { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$Rate") }
+        $chrome = Start-Chrome "A-LOOK-cadence-$label"
+        Set-OverlayViewport $chrome $size[0].source
+        [void] (Invoke-ChromeNavigate $chrome ("$($overlayUrl)?look=$id" + $(if ($Sample) { '&sample=playing' } else { '' })))
+        $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+            (Get-PageField $p 'state') -eq 'playing' -and (Get-PageField $p 'shown') -eq $true -and
+            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
+        if (-not $connected) { throw "Cadence page $label never reached its connected playing look state" }
+        Start-Sleep -Seconds 5
+        $start = Get-PageProbe $chrome
+        Start-Sleep -Seconds 60
+        $end = Get-PageProbe $chrome
+        $predicate = Get-CadenceAssertion $start $end $Theme $ShowTimes $Rate ([double] $size[0].bar.width) $(if ($Sample) { 240 } else { 14400 })
+        $ok = $predicate.passed -and (Test-OverlayViewport $end $size[0].source)
+        $record = [ordered]@{ label = $label; rate = $Rate; showTimes = $ShowTimes; sample = [bool] $Sample
+            duration = if ($Sample) { 240 } else { 14400 }; barPx = $predicate.barPx; maxFill = $predicate.maxFill
+            ticks = $predicate.ticks; fillWrites = $predicate.fillWrites; timeWrites = $predicate.timeWrites; elapsedStart = $start.elapsed
+            elapsedEnd = $end.elapsed; advance = $predicate.advance }
+        Add-Check "A-LOOK.cadence.$label" '60s after settle: times <=61 ticks/advances rate*60 ±2; hidden times pixel-only bound' $record $ok
+        return $record
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
 function Test-ALookCadence {
     $results = [ordered]@{}
     foreach ($rate in @(0.25, 1, 2, 4)) {
+        if ($GateProfile -eq 'Fast-v2' -and $rate -notin @(0.25, 2)) { continue }
+        $results["rate$rate"] = Invoke-JournalCadenceRow -Id "cadence.timesHidden.rate$rate" -Measure {
         $run = Start-OverlayRun "A-LOOK-cadence-rate$rate" @{} 'PlayingLong' -NoReader
         $chrome = $null
         try {
@@ -1699,11 +2623,14 @@ function Test-ALookCadence {
                 $fillWrites -le $maximum -and $ticks -eq $fillWrites)
             $results["rate$rate"] = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
         } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+        $results["rate$rate"]
+        }
     }
+    $results.sample240s = Invoke-JournalCadenceRow -Id 'cadence.sample240s' -Measure {
     $run = Start-OverlayRun 'A-LOOK-cadence-sample' @{} $null -NoReader
     $chrome = $null
     try {
-        [void] (Wait-BenchReady $run.Root)
+        [void] (Wait-BenchReady $run.Root -BenchProfile $null)
         $chrome = Start-Chrome 'A-LOOK-cadence-sample'
         [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?sample=playing")
         [void] (Wait-PageConnected $chrome 15)
@@ -1719,7 +2646,10 @@ function Test-ALookCadence {
             fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }) ($fillWrites -le $maximum -and $ticks -eq $fillWrites)
         $results.sample240s = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    $results.sample240s
+    }
 
+    [void] (Invoke-JournalCadenceRow -Id 'cadence.progressOffNoTimer' -Measure {
     $progressOptions = Copy-LookOptions (New-DefaultPillOptions); $progressOptions['showProgress'] = $false
     $progressLook = New-ObsLook 'prog0001' 'No progress' $progressOptions
     $progressJson = ConvertTo-ObsLooksJson (New-ObsLooksDocument @($progressLook))
@@ -1738,6 +2668,39 @@ function Test-ALookCadence {
             $p -and $after.clipPx -eq 400 -and (Get-Prop $after.s 'fillTimer') -eq 0 -and
             (Get-Prop $after.s 'counters' | ForEach-Object { Get-Prop $_ 'ticks' }) -eq 0)
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    })
+    if ($GateProfile -eq 'Fast-v2') {
+        $base = Get-ThemeDefaults 'matte'
+        foreach ($rate in @(0.25, 2)) {
+            $results["matte-times-rate$rate"] = Invoke-JournalCadenceRow -Id "cadence.matte-w$($base.width)-timesTrue-rate$rate" -Measure {
+                Test-ThemeCadence 'matte' ([int] $base.width) $true $rate
+            }
+        }
+        return $results
+    }
+    foreach ($theme in @('matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')) {
+        $base = Get-ThemeDefaults $theme
+        foreach ($rate in @(0.25, 1, 2, 4)) {
+            if ($theme -notin @('album-art')) {
+                $results["$theme-times-rate$rate"] = Invoke-JournalCadenceRow -Id "cadence.$theme-w$($base.width)-timesTrue-rate$rate" -Measure {
+                    Test-ThemeCadence $theme ([int] $base.width) $true $rate
+                }
+            }
+        }
+        foreach ($rate in @(1, 4)) {
+            $results["$theme-pixel-rate$rate"] = Invoke-JournalCadenceRow -Id "cadence.$theme-w$($base.width)-timesFalse-rate$rate" -Measure {
+                Test-ThemeCadence $theme ([int] $base.width) $false $rate
+            }
+        }
+    }
+    foreach ($width in @(360, 1200)) {
+        $results["matte-width$width"] = Invoke-JournalCadenceRow -Id "cadence.matte-w$width-timesTrue-rate1" -Measure {
+            Test-ThemeCadence 'matte' $width $true 1
+        }
+    }
+    $results['matte-sample240'] = Invoke-JournalCadenceRow -Id 'cadence.matte-w440-timesTrue-rate1-sample' -Measure {
+        Test-ThemeCadence 'matte' 440 $true 1 -Sample
+    }
     $results
 }
 
@@ -1754,25 +2717,30 @@ function Test-ALookMotion {
             [void] (Wait-BenchReady $run.Root)
             $chrome = Start-Chrome "A-LOOK-motion-show-$animation"
             [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=motion01")
-            [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'state') -eq 'paused') { $p } } 20 100)
-            [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
+            $initial = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'state') -eq 'paused' -and (Get-PageField $p 'shown') -eq $false) { $p } } 20 100
+            # Saved looks own paused behaviour; the global preference only changes the compatibility preset.
+            $options['paused'] = 'dim'
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
             $shown = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $true) { $p } } 5 50
-            $transition = @($shown.animationDetails | Where-Object { $_.duration -eq 500 } | Select-Object -First 1)
+            $lastProbe = if ($shown) { $shown } else { Get-PageProbe $chrome }
+            $transition = @(Get-Prop $shown 'animationDetails' | Where-Object { $null -ne $_ -and $_.duration -eq 500 } | Select-Object -First 1)
             $keyframes = if ($transition.Count) { @($transition[0].keyframes) } else { @() }
             $translationOk = if ($animation -in @('fade', 'none')) { $true } else {
                 @($keyframes | Where-Object { $_.transform -like "*$($expectedTranslation[$animation])*" }).Count -gt 0
             }
             $fadeOpacity = @($keyframes | Where-Object { $null -ne $_.opacity }).Count -ge 2
             $motionPass = if ($animation -eq 'none') {
-                $shown.running -eq 0 -and @($shown.animationDetails | Where-Object { $_.duration -eq 500 }).Count -eq 0
+                (Get-Prop $shown 'running') -eq 0 -and $transition.Count -eq 0
             } else { $transition.Count -gt 0 -and $translationOk -and $fadeOpacity }
             Add-Check "A-LOOK.motion.show.$animation" "show $animation uses finite 500 ms opacity and approved 12 px direction; none is instant" ([ordered]@{
-                shown = Get-PageField $shown 'shown'; running = $shown.running; animation = $transition
-                reducedMotion = $shown.reducedMotionMedia }) ($shown -and (Get-PageField $shown 'shown') -eq $true -and $motionPass)
-            $results["show-$animation"] = [bool] $shown
+                initialHidden = [bool] $initial; timedOut = -not [bool] $shown; lastProbe = $lastProbe
+                shown = Get-PageField $shown 'shown'; running = Get-Prop $shown 'running'; animation = $transition
+                reducedMotion = Get-Prop $shown 'reducedMotionMedia' }) ($initial -and $shown -and (Get-PageField $shown 'shown') -eq $true -and $motionPass)
+            $results["show-$animation"] = [bool] ($initial -and $shown -and $motionPass)
         } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
 
-        $options = Copy-LookOptions (New-DefaultPillOptions); $options['hideAnimation'] = $animation
+        $options = Copy-LookOptions (New-DefaultPillOptions); $options['hideAnimation'] = $animation; $options['paused'] = 'dim'
         $look = New-ObsLook 'motion01' "hide-$animation" $options
         $run = Start-OverlayRun "A-LOOK-motion-hide-$animation" @{ ObsHidePaused = $false } 'Paused' -NoReader -LooksJson (
             ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
@@ -1782,22 +2750,26 @@ function Test-ALookMotion {
             $chrome = Start-Chrome "A-LOOK-motion-hide-$animation"
             [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=motion01")
             $visible = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $true) { $p } } 20 100
-            [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-on')
+            $options['paused'] = 'hide'
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
             $hidden = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'shown') -eq $false) { $p } } 5 50
-            $hideTransition = @($hidden.animationDetails | Where-Object { $_.duration -eq 500 } | Select-Object -First 1)
+            $lastProbe = if ($hidden) { $hidden } else { Get-PageProbe $chrome }
+            $hideTransition = @(Get-Prop $hidden 'animationDetails' | Where-Object { $null -ne $_ -and $_.duration -eq 500 } | Select-Object -First 1)
             $hideFrames = if ($hideTransition.Count) { @($hideTransition[0].keyframes) } else { @() }
             $hideTranslation = if ($animation -in @('fade', 'none')) { $true } else {
                 @($hideFrames | Where-Object { $_.transform -like "*$($expectedTranslation[$animation])*" }).Count -gt 0
             }
             $hideOpacity = @($hideFrames | Where-Object { $null -ne $_.opacity }).Count -ge 2
             $hidePass = if ($animation -eq 'none') {
-                $hidden.running -eq 0 -and @($hidden.animationDetails | Where-Object { $_.duration -eq 500 }).Count -eq 0
+                (Get-Prop $hidden 'running') -eq 0 -and $hideTransition.Count -eq 0
             } else { $hideTransition.Count -gt 0 -and $hideTranslation -and $hideOpacity }
             Add-Check "A-LOOK.motion.hide.$animation" "hide $animation uses finite 500 ms opacity and approved direction; none is instant" ([ordered]@{
+                timedOut = -not [bool] $hidden; lastProbe = $lastProbe
                 visible = Get-PageField $visible 'shown'; hidden = Get-PageField $hidden 'shown'; animation = $hideTransition
                 configured = Get-Prop (Get-Prop $hidden 'attrs') 'animHide' }) (
-                $visible -and $hidden -and (Get-Prop $hidden.attrs 'animHide') -eq $animation -and $hidePass)
-            $results["hide-$animation"] = [bool] ($hidden -and $hidePass)
+                $visible -and $hidden -and (Get-Prop (Get-Prop $hidden 'attrs') 'animHide') -eq $animation -and $hidePass)
+            $results["hide-$animation"] = [bool] ($visible -and $hidden -and $hidePass)
         } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
     }
     # The browser's OS preference is deliberately emulated; only the app ReduceMotion hook may suppress transitions.
@@ -1811,9 +2783,11 @@ function Test-ALookMotion {
         [void] (Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'state') -eq 'paused') { $p } } 20 100)
         [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
         $p = Wait-For { $x = Get-PageProbe $chrome; if ((Get-PageField $x 'shown') -eq $true) { $x } } 5 50
+        $lastProbe = if ($p) { $p } else { Get-PageProbe $chrome }
         Add-Check 'A-LOOK.motion.ignoresReducedMedia' 'prefers-reduced-motion does not suppress the finite application transition' ([ordered]@{
+            timedOut = -not [bool] $p; lastProbe = $lastProbe
             media = Get-Prop $p 'reducedMotionMedia'; animations = Get-Prop $p 'animations'; details = Get-Prop $p 'animationDetails' }) (
-            $p -and $p.reducedMotionMedia -eq $true -and @($p.animationDetails | Where-Object { $_.duration -eq 500 }).Count -gt 0)
+            $p -and (Get-Prop $p 'reducedMotionMedia') -eq $true -and @(Get-Prop $p 'animationDetails' | Where-Object { $null -ne $_ -and $_.duration -eq 500 }).Count -gt 0)
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
     # App ReduceMotion, unlike the emulated OS preference, cancels a running transition immediately.
     $run = Start-OverlayRun 'A-LOOK-motion-reduce-on' @{ ObsHidePaused = $true } 'Paused' -NoReader
@@ -1826,13 +2800,15 @@ function Test-ALookMotion {
         [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
         [void] (Wait-For { $x = Get-PageProbe $chrome; if ((Get-PageField $x 'state') -eq 'paused') { $x } } 20 100)
         [void] (Send-HookCommand $run.Root 'command-obs-hide-paused-off')
-        $transition = Wait-For { $x = Get-PageProbe $chrome; if ($x.running -gt 0) { $x } } 3 20
+        $transition = Wait-For { $x = Get-PageProbe $chrome; if ((Get-Prop $x 'running') -gt 0) { $x } } 3 20
         [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-on')
         $reducedEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'reduceMotion') -eq $true } 10
-        $settled = Wait-For { $x = Get-PageProbe $chrome; if ($x.running -eq 0) { $x } } 2 20
+        $settled = Wait-For { $x = Get-PageProbe $chrome; if ((Get-Prop $x 'running') -eq 0) { $x } } 2 20
+        $lastProbe = if ($settled) { $settled } else { Get-PageProbe $chrome }
         Add-Check 'A-LOOK.motion.reduceMotionCancels' 'ReduceMotion look push cancels a currently running show transition and applies its final state immediately' ([ordered]@{
+            transitionTimedOut = -not [bool] $transition; settleTimedOut = -not [bool] $settled; lastProbe = $lastProbe
             wasRunning = [bool] $transition; lookObserved = [bool] $reducedEvent; finalShown = Get-PageField $settled 'shown'
-            running = Get-Prop $settled 'running' }) ($transition -and $reducedEvent -and $settled -and $settled.running -eq 0 -and
+            running = Get-Prop $settled 'running' }) ($transition -and $reducedEvent -and $settled -and (Get-Prop $settled 'running') -eq 0 -and
             (Get-PageField $settled 'shown') -eq $true)
     } finally { Stop-SseReader $reader; Stop-Chrome $chrome; Stop-OverlayRun $run }
     $results
@@ -3788,9 +4764,66 @@ $optionsA = New-DefaultPillOptions; $optionsA['width'] = 320
 # ---------------------------------------------------------------------------------------------------------------
 # A-TEXT
 
+function Test-AThemeTextAndPause([string] $ScenarioName) {
+    $themes = @('pill', 'matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')
+    $looks = foreach ($i in 0..7) {
+        $options = Get-ThemeDefaults $themes[$i]
+        $options['paused'] = 'dim'
+        New-ObsLook ('th{0:D6}' -f $i) "Theme $($themes[$i])" $options
+    }
+    $obs = [ordered]@{}
+    foreach ($look in $looks) {
+        $theme = $look.options.theme
+        $profile = if ($ScenarioName -eq 'A-TEXT') { 'Text' } else { 'Paused' }
+        $run = Start-OverlayRun "$ScenarioName-$theme" @{ ObsHidePaused = $false } $profile -NoReader `
+            -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+        $chrome = $null
+        try {
+            $ready = Wait-BenchReady $run.Root
+            $chrome = Start-Chrome "$ScenarioName-$theme"
+            $expectedSize = Get-DefaultThemeSize $theme
+            Set-OverlayViewport $chrome $expectedSize.source
+            [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$($look.id)")
+            $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+                (Get-Prop (Get-PageField $p 'look') 'id') -eq $look.id) { $p } } 15 100
+            if ($ScenarioName -eq 'A-TEXT') {
+                $longTitle = ('Fixture Long Title ' * 14).Substring(0, 249) + '!'
+                $artist = [string]::new([char[]] @(0x97F3, 0x697D, 0x30C6, 0x30B9, 0x30C8, 0x20, 0x0627, 0x0644, 0x0641, 0x0646, 0x0627, 0x0646))
+                $p = Wait-For { $q = Get-PageProbe $chrome; if ($q.title -ceq $longTitle) { $q } } 12 100
+                $inside = $p -and @($p.titleRect, $p.artistRect | Where-Object { $_ -and $_.width -gt 0 } |
+                    Where-Object { $_.x -lt $p.boxRect.x -or $_.x + $_.width -gt $p.boxRect.x + $p.boxRect.width -or
+                        $_.y -lt $p.boxRect.y -or $_.y + $_.height -gt $p.boxRect.y + $p.boxRect.height }).Count -eq 0
+                Add-Check "A-TEXT.$theme.literalAndEllipsis" 'CJK/RTL artist literal, long title ellipsis and both text rows contained' (
+                    [ordered]@{ title = Get-Prop $p 'title'; artist = Get-Prop $p 'artist'; titleRect = Get-Prop $p 'titleRect'
+                        artistRect = Get-Prop $p 'artistRect'; box = Get-Prop $p 'boxRect' }) (
+                    $connected -and $p -and $p.artist -ceq $artist -and $p.titleEllipsis -eq $true -and $inside)
+            } else {
+                Start-Sleep -Milliseconds 1100
+                $p = Get-PageProbe $chrome
+                $before = Get-Prop (Get-PageField $p 'counters') 'fillWrites'
+                Start-Sleep -Seconds 2
+                $after = Get-PageProbe $chrome
+                Add-Check "A-PAUSEVIEW.$theme.dimFrozen" 'saved paused:dim gives opacity .7, frozen progress, no timer or running animation' (
+                    [ordered]@{ before = $p; after = $after }) (
+                    $connected -and (Get-PageField $after 'shown') -eq $true -and
+                    [Math]::Abs([double] $after.opacity - 0.7) -le 0.02 -and $after.running -eq 0 -and
+                    (Get-PageField $after 'fillTimer') -eq 0 -and
+                    [Math]::Abs([double] $p.frac - [double] $after.frac) -le 0.001 -and
+                    $before -eq (Get-Prop (Get-PageField $after 'counters') 'fillWrites'))
+            }
+            Add-Check "$ScenarioName.$theme.viewport" 'native source viewport shows the entire box without clipping' (
+                [ordered]@{ expected = $expectedSize.source; actual = $p.pageSize; box = $p.boxRect }) (
+                (Test-OverlayViewport $p $expectedSize.source))
+            $obs[$theme] = [ordered]@{ connected = [bool] $connected; page = $p }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+    $scenarioResults["$ScenarioName.themes"] = $obs
+}
+
 function Test-AText {
     if (-not (Test-ChromeAvailable 'A-TEXT')) { return }
     $obs = [ordered]@{}
+    Test-AThemeTextAndPause 'A-TEXT'
     $longTitle = ('Fixture Long Title ' * 14).Substring(0, 249) + '!'
     $artist = [string]::new([char[]] @(0x97F3, 0x697D, 0x30C6, 0x30B9, 0x30C8, 0x20, 0x0627, 0x0644, 0x0641, 0x0646, 0x0627, 0x0646))
     $run = Start-OverlayRun 'A-TEXT-text' @{} 'Text'
@@ -4104,7 +5137,7 @@ function Test-OverlayCssSyntax([string] $Html) {
         'color','background','background-color','background-image','border-radius','box-shadow','opacity','transform',
         'overflow','overflow-x','overflow-y','font-family','font-size','font-weight','font-variant-numeric',
         'text-align','text-shadow','white-space','text-overflow','line-height','object-fit','object-position',
-        'animation','animation-name','animation-duration','animation-timing-function','animation-fill-mode'
+        'unicode-bidi','animation','animation-name','animation-duration','animation-timing-function','animation-fill-mode'
     )
     $allowedFunctions = @('calc','var','rgba','linear-gradient','translateX','translateY')
     foreach ($match in [regex]::Matches($css, '@([A-Za-z-]+)')) {
@@ -4236,6 +5269,7 @@ function Get-PauseSamples($Chrome, [double] $Start, [double] $Until) {
 function Test-APauseView {
     if (-not (Test-ChromeAvailable 'A-PAUSEVIEW')) { return }
     $obs = [ordered]@{}
+    Test-AThemeTextAndPause 'A-PAUSEVIEW'
     # (1) Paused, hidePaused false then true.
     $run = Start-OverlayRun 'A-PAUSEVIEW-1' @{ ObsHidePaused = $false } 'Paused' -NoReader
     $chrome = $null
@@ -4412,6 +5446,801 @@ function Test-AToolbar {
     }
 }
 
+function Save-FrameRecord([string] $Label, $Record) {
+    $path = Join-Path $runDirectory "frames-$(ConvertTo-SafeName $Label).json"
+    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $Record -Depth 12), [Text.UTF8Encoding]::new($false))
+    [IO.Path]::GetRelativePath($runDirectory, $path)
+}
+# Page-initiated requests must be /, /overlay.js, /events or /art on the overlay origin. Chrome's own same-origin
+# /favicon.ico probe (the page links no icon; the server answers 404; OBS's CEF source does not fetch favicons) is
+# browser-initiated, so it is reported separately and never counted as page traffic.
+function Get-UnexpectedOverlayRequests($Resources) {
+    @($Resources | Where-Object { $_.origin -ne 'http://localhost:47813' -or
+        ($_.path -notmatch '^/(?:$|overlay\.js$|events$|art/(?:[0-9a-f]{16}|sample)$)' -and $_.path -cne '/favicon.ico') })
+}
+function Test-FrameNetwork([string] $Theme) {
+    $id = 'net' + ('{0:D5}' -f [Array]::IndexOf(@('pill', 'matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card'), $Theme))
+    $look = New-ObsLook $id "Network $Theme" (Get-ThemeDefaults $Theme)
+    $run = Start-OverlayRun "A-FRAMES-network-$Theme" @{} $null -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+    $chrome = $null
+    try {
+        $chrome = Start-Chrome "A-FRAMES-network-$Theme"
+        $expectedSize = Get-DefaultThemeSize $Theme
+        Set-OverlayViewport $chrome $expectedSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=playing")
+        [void] (Wait-PageConnected $chrome 15)
+        Start-Sleep -Milliseconds 1500
+        $page = Get-PageProbe $chrome
+        $requests = @($page.resources)
+        $unexpected = @(Get-UnexpectedOverlayRequests $requests)
+        $ok = $page.art.Count -gt 0 -and $unexpected.Count -eq 0 -and (Test-OverlayViewport $page $expectedSize.source)
+        Add-Check "A-FRAMES.network.$Theme" 'all resource requests are only /, /overlay.js, /events or /art on localhost' (
+            [ordered]@{ resources = $requests; unexpected = $unexpected; art = $page.art }) $ok
+        return [ordered]@{ resources = $requests; unexpected = $unexpected }
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $Condition, $Size, [int] $Seconds) {
+    $id = 'frm' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $isSample = $Condition -in @('sample-art', 'no-art')
+    $run = Start-OverlayRun "A-FRAMES-$Label" @{} $(if ($isSample) { $null } else { 'PlayingLong' }) -NoReader `
+        -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id "Frames $($Options.theme)" $Options))))
+    $chrome = $null; $trace = $null; $record = $null
+    try {
+        [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($isSample) { $null } else { 'PlayingLong' }))
+        if ($Condition -eq 'fixture-max') { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-art' 'fixture-max') }
+        if ($Condition -eq 'long-text') { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-text-long') }
+        if (-not $isSample -and $Rate -ne 1) { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$Rate") }
+        $chrome = Start-Chrome "A-FRAMES-$Label"
+        Set-OverlayViewport $chrome $Size.source
+        $query = "?look=$id" + $(if ($Condition -eq 'no-art') { '&sample=noart' } elseif ($isSample) { '&sample=playing' } else { '' })
+        [void] (Invoke-ChromeNavigate $chrome ($overlayUrl + $query))
+        $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+            (Get-PageField $p 'state') -eq 'playing' -and (Get-PageField $p 'shown') -eq $true -and
+            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
+        if (-not $connected) { throw "Frame page $Label never reached its connected playing look state" }
+        $fastPixel = $GateProfile -eq 'Fast-v2' -and $Condition -eq 'pixel-only'
+        $syntheticMetadata = $Condition -in @('long-sample-art', 'long-no-art') -or $fastPixel
+        if ($syntheticMetadata) {
+            # Keep PlayingLong's 14,400 s duration, clock, position and native rate.
+            # Substitute metadata/art once, before the 5 s settle.
+            $artLiteral = if ($Condition -eq 'long-sample-art') { "'/art/sample'" } else { 'null' }
+            $expression = "apply({...msg,id:state.id,title:'Sample song',artist:'Sample artist',artwork:$artLiteral})"
+            $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = $expression }
+            if (Get-Prop $result 'exceptionDetails') { throw "Long-track sample substitution failed for $Label" }
+        }
+        if ($isSample -and $Rate -ne 1) {
+            # Samples are fixed at rate=1 on the wire. Re-anchor the *real page scheduler* at rate 4,
+            # preserving all server-fed metadata/art, rather than claiming the sample server sent rate 4.
+            $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = "apply({...msg,id:state.id,title:state.title,artist:state.artist,artwork:artUrl,rate:$Rate})" }
+            if (Get-Prop $result 'exceptionDetails') { throw "Sample rate re-anchor failed for $Label" }
+        }
+        Start-Sleep -Seconds 5
+        if ($GateProfile -eq 'Fast-v2') {
+            # Capture inside the trace window, not before Tracing.start's variable CDP latency.
+            $probeWindow = [ordered]@{ start = $null }
+            $trace = Invoke-FrameTrace $chrome $Label $Seconds { $probeWindow.start = Get-PageProbe $chrome }
+            $start = $probeWindow.start
+        } else {
+            $start = Get-PageProbe $chrome
+            $trace = Invoke-FrameTrace $chrome $Label $Seconds
+        }
+        $end = $trace.endPage
+        $a = Get-PageField $start 'counters'; $b = Get-PageField $end 'counters'
+        $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
+        $fill = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
+        $times = [int] (Get-Prop $b 'timeWrites') - [int] (Get-Prop $a 'timeWrites')
+        $bar = Get-Prop $end.geometry 'bar'
+        $geometryOk = (Test-OverlayViewport $end $Size.source) -and (Get-PageField $end 'theme') -eq $Options.theme -and
+            [Math]::Abs([double] $end.boxRect.width - [double] $Size.box.w) -le 1 -and
+            [Math]::Abs([double] $end.boxRect.height - [double] $Size.box.h) -le 1 -and
+            [double] (Get-Prop (Get-PageField $end 'box') 'w') -eq [double] $Size.box.w -and
+            [double] (Get-Prop (Get-PageField $end 'source') 'w') -eq [double] $Size.source.w -and
+            [double] (Get-Prop (Get-PageField $end 'source') 'h') -eq [double] $Size.source.h -and
+            [string] (Get-PageField $end 'boxMismatch') -in @('', 'false') -and
+            $(if ($Options.theme -eq 'pill') { $true } else {
+                $bar -and [Math]::Abs([double] $bar.width - [double] $Size.bar.width) -le 1
+            })
+        $textRects = @($end.titleRect, $end.artistRect | Where-Object { $_ -and $_.width -gt 0 })
+        $contained = @($textRects | Where-Object { $_.x -lt $end.boxRect.x -or $_.x + $_.width -gt $end.boxRect.x + $end.boxRect.width -or
+            $_.y -lt $end.boxRect.y -or $_.y + $_.height -gt $end.boxRect.y + $end.boxRect.height }).Count -eq 0
+        $longOk = if ($Condition -eq 'long-text') {
+            $end.titleRect.scrollWidth -gt $end.titleRect.clientWidth -and $end.titleEllipsis -eq $true -and
+            $end.artist -match '[\p{IsCJKUnifiedIdeographs}\u0600-\u06ff]'
+        } else { $true }
+        $artOk = switch ($Condition) {
+            'no-art' { $end.art.Count -eq 0 }
+            'long-no-art' {
+                $null -eq (Get-Prop (Get-PageField $end 'raster') 'cover') -and
+                    (Get-PageField $end 'artFailed') -eq $true
+            }
+            'long-sample-art' {
+                $cover = Get-Prop (Get-PageField $end 'raster') 'cover'
+                @($end.art | Where-Object { $_.name -eq '/art/sample' }).Count -gt 0 -and
+                    [int] (Get-Prop $cover 'w') -gt 0 -and (Get-PageField $end 'artFailed') -eq $false
+            }
+            'fixture-max' {
+                $cover = Get-Prop (Get-PageField $end 'raster') 'cover'
+                $end.art.Count -gt 0 -and (Get-Overlay (Get-State $run.Root 'maxArt') 'fixtureArtServed') -gt 0 -and
+                    [int] (Get-Prop $cover 'w') -eq 1024 -and [int] (Get-Prop $cover 'h') -eq 1024
+            }
+            default { $end.art.Count -gt 0 }
+        }
+        if ($fastPixel) {
+            $artOk = $null -eq (Get-Prop (Get-PageField $end 'raster') 'cover') -and
+                (Get-PageField $end 'artFailed') -eq $true
+        }
+        $raster = Get-PageField $end 'raster'
+        $rasterResult = Test-ThemeRaster $raster $Options.theme $Options $Size
+        $canvasAreas = $rasterResult.areas
+        $rasterOk = $rasterResult.pass
+        $duration = if ($isSample) { 240 } else { 14400 }
+        $measuredT = [double] $trace.seconds
+        $limit = [int] [Math]::Ceiling([double] $Size.bar.width * $Rate * $measuredT / $duration) + 2
+        $tickLimit = [int] [Math]::Ceiling($measuredT) + 1
+        $cadence = if ($Options.showTimes -and $Options.theme -notin @('pill', 'album-art') -and $Condition -ne 'pixel-only') {
+            $ticks -le $tickLimit -and $times -le $tickLimit -and $times -ge 1
+        } else { $fill -le $limit -and $ticks -eq $fill }
+        $network = @(Get-UnexpectedOverlayRequests $end.resources)
+        $cadenceAssertion = $null; $networkAssertion = $null
+        if ($GateProfile -eq 'Fast-v2') {
+            $frameRows = @($script:requiredRowInventory | Where-Object {
+                $_.class -in @('playing', 'pixel') -and $_.label -eq $Label })
+            if ($frameRows.Count -ne 1) { throw "Shared cadence requires one inventory frame row for $Label" }
+            $cadenceT = ([double] $end.pageNow - [double] $start.pageNow) / 1000
+            $cadenceAssertion = Get-CadenceAssertion $start $end $Options.theme ([bool] $Options.showTimes) $Rate ([double] $Size.bar.width) $duration $cadenceT
+            $cadenceAssertion['id'] = "cadence.shared.$($frameRows[0].id)"
+            $cadenceAssertion['traceSeconds'] = $measuredT
+            $cadenceAssertion['pageStartMs'] = $start.pageNow; $cadenceAssertion['pageEndMs'] = $end.pageNow
+            $cadenceAssertion.passed = $cadenceAssertion.passed -and $cadenceT -gt 0
+            $cadence = $cadence -and $cadenceAssertion.passed
+            Add-Check $cadenceAssertion.id 'shared scored-window cadence: label advance rate*T ±2; ceil(T)+1 ticks/timeWrites; hidden times pixel-only bound' $cadenceAssertion $cadenceAssertion.passed
+            if ($Condition -eq 'sample-art' -and $frameRows[0].config -eq 'default') {
+                $networkAssertion = [ordered]@{ id = "network.shared.$($Options.theme)"
+                    passed = $network.Count -eq 0 -and $artOk -and (Test-OverlayViewport $end $Size.source)
+                    resources = @($end.resources); unexpected = $network; art = $end.art; artworkRequired = $true }
+                Add-Check $networkAssertion.id 'shared Playing resource requests only /, /overlay.js, /events or /art on localhost; artwork required' $networkAssertion $networkAssertion.passed
+            }
+        }
+        $frameMeasurement = [ordered]@{
+            measured = $trace.visible -and $measuredT -ge ($Seconds - 0.5) -and
+                $trace.frameEvent -eq 'EndActivateToSubmitCompositorFrame:e'
+            seconds = $measuredT; frames = $trace.frames; fps = $trace.fps; ceiling = 1.3
+        }
+        $frameMeasurement['exceeded'] = $frameMeasurement.measured -and ($trace.frames / $measuredT) -gt 1.3
+        $shortSampleWindowOk = if ($isSample -and $Rate -eq 4) {
+            $Seconds -eq 53 -and [double] (Get-PageField $end 'projectedPosition') -lt 240
+        } else { $true }
+        $record = [ordered]@{
+            theme = $Options.theme; config = $Label; condition = $Condition; options = $Options; rate = $Rate
+            expected = $Size; start = $start; end = $end; trace = $trace; ticks = $ticks; fillWrites = $fill
+            timeWrites = $times; maxFillWrites = $limit; maxTicks = $tickLimit; duration = $duration
+            geometryOk = $geometryOk; rasterOk = $rasterOk; canvasAreas = $canvasAreas
+            contained = $contained; longTextOk = $longOk; artOk = $artOk; badRequests = $network
+            frameMeasurement = $frameMeasurement; shortSampleWindowOk = $shortSampleWindowOk
+            cadenceAssertion = $cadenceAssertion; networkAssertion = $networkAssertion
+            syntheticMetadata = [ordered]@{ applied = $syntheticMetadata; title = $(if ($syntheticMetadata) { 'Sample song' } else { $null })
+                artist = $(if ($syntheticMetadata) { 'Sample artist' } else { $null }); artwork = $(if ($Condition -eq 'long-sample-art') { '/art/sample' } else { $null })
+                retainedDuration = $(if ($syntheticMetadata) { 14400 } else { $null }); retainedRate = $(if ($syntheticMetadata) { $Rate } else { $null }) }
+            o3Trigger = [bool] $frameMeasurement.exceeded
+        }
+        $ok = $frameMeasurement.measured -and -not $frameMeasurement.exceeded -and $geometryOk -and $contained -and $longOk -and
+            $artOk -and $rasterOk -and $cadence -and $shortSampleWindowOk -and
+            $(if ($syntheticMetadata) { $end.title -eq 'Sample song' -and $end.artist -eq 'Sample artist' } else { $true }) -and
+            $network.Count -eq 0
+        if ($Condition -eq 'pixel-only') { $ok = $ok -and $trace.frames -le $fill + 1 }
+        $record.artifact = Save-FrameTraceRecord $Label $record $ok
+        Add-Check "A-FRAMES.playing.$Label" 'measured frame ceiling, scheduler cadence, expected size, raster, containment, art and network' (
+            [ordered]@{ artifact = $record.artifact; measurement = $frameMeasurement; trace = $trace; cadence = $cadence
+                geometry = $geometryOk; raster = $canvasAreas; rasterOk = $rasterOk; contained = $contained
+                longText = $longOk; art = $artOk; shortSampleWindow = $shortSampleWindowOk; badRequests = $network.Count }) $ok
+        return $record
+    } finally {
+        try {
+            if ($trace -and $trace.traceRetention -eq 'raw') {
+                Keep-FrameTrace $trace
+                if ($record) { [void] (Save-FrameRecord $Label $record) }
+            }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+}
+
+function Test-FrameIdle([string] $Theme, [string] $Condition) {
+    $options = Get-ThemeDefaults $Theme
+    $options['paused'] = if ($Condition -eq 'dim-Paused') { 'dim' } else { 'hide' }
+    if ($Condition -eq 'progress-hidden') { $options['showProgress'] = $false }
+    $id = 'idl' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $sample = $Condition -in @('dim-Paused', 'hidden-Paused', 'ended')
+    $run = Start-OverlayRun "A-FRAMES-idle-$Theme-$Condition" @{} $(if ($sample) { $null } else { 'PlayingLong' }) -NoReader `
+        -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id "Idle $Theme" $options))))
+    $chrome = $null; $trace = $null; $result = $null
+    try {
+        [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($sample) { $null } else { 'PlayingLong' }))
+        $chrome = Start-Chrome "A-FRAMES-idle-$Theme-$Condition"
+        $expectedSize = Get-DefaultThemeSize $Theme
+        Set-OverlayViewport $chrome $expectedSize.source
+        [void] (Invoke-ChromeNavigate $chrome ("$($overlayUrl)?look=$id" + $(if ($Condition -in @('dim-Paused', 'hidden-Paused')) { '&sample=paused' } elseif ($sample) { '&sample=playing' } else { '' })))
+        $expectedState = if ($Condition -in @('dim-Paused', 'hidden-Paused')) { 'paused' } else { 'playing' }
+        $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+            (Get-PageField $p 'state') -eq $expectedState -and (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
+        if (-not $connected) { throw "Idle page $Theme/$Condition never reached its connected $expectedState look state" }
+        if ($Condition -eq 'ended') {
+            [void] (Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = "apply({state:'ended'})" })
+        } elseif ($Condition -eq 'clock-mismatch') {
+            [void] (Send-HookCommand $run.Root 'command-clock-mismatch-on')
+            if (-not (Wait-For { -not (Test-Path -LiteralPath (Join-Path (Get-BenchDirectory $run.Root) 'command-clock-mismatch-on')) } 10 25)) {
+                throw "Hook command was not consumed: command-clock-mismatch-on."
+            }
+            if (-not (Wait-For { (Get-PageField (Get-PageProbe $chrome) 'fillTimer') -eq 0 } 5 50)) { throw "Idle page $Theme/$Condition never stopped its fill timer" }
+        }
+        Start-Sleep -Seconds 5
+        $before = Get-PageProbe $chrome
+        $trace = Invoke-FrameTrace $chrome "idle-$Theme-$Condition" 60
+        $after = Get-PageProbe $chrome
+        $ticks = [int] (Get-Prop (Get-PageField $after 'counters') 'ticks') - [int] (Get-Prop (Get-PageField $before 'counters') 'ticks')
+        $result = [ordered]@{ condition = $Condition; theme = $Theme; before = $before; after = $after; trace = $trace; ticks = $ticks }
+        $ok = $trace.frames -eq 0 -and $ticks -eq 0 -and (Test-OverlayViewport $after $expectedSize.source) -and
+            (Get-PageField $before 'fillTimer') -eq 0 -and (Get-PageField $after 'fillTimer') -eq 0 -and $after.running -eq 0
+        $result.artifact = Save-FrameTraceRecord "idle-$Theme-$Condition" $result $ok
+        Add-Check "A-FRAMES.idle.$Theme.$Condition" 'zero composited frames, no timer, ticks or animations after 5s settle' (
+            [ordered]@{ trace = $trace; ticks = $ticks; timer = Get-PageField $after 'fillTimer'; animation = $after.running; artifact = $result.artifact }) $ok
+        return $result
+    } finally {
+        try {
+            if ($trace -and $trace.traceRetention -eq 'raw') {
+                Keep-FrameTrace $trace
+                if ($result) { [void] (Save-FrameRecord "idle-$Theme-$Condition" $result) }
+            }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+}
+
+function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
+    $records = [ordered]@{}
+    foreach ($condition in $Conditions) {
+        if ($condition -notin @('dim-Paused', 'hidden-Paused', 'ended', 'clock-mismatch', 'progress-hidden') -or $records.Contains($condition)) {
+            throw "Invalid or duplicate structural idle condition '$condition'."
+        }
+        $records[$condition] = $null
+    }
+    if ($Conditions.Count -eq 0) { return $records }
+    $id = 'isc' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $look = New-ObsLook $id "Structural idle $Theme" (Get-ThemeDefaults $Theme)
+    $run = Start-OverlayRun "A-FRAMES-idlecheck-$Theme" @{} 'PlayingLong' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+    $chrome = $null
+    try {
+        [void] (Wait-BenchReady $run.Root -BenchProfile 'PlayingLong')
+        $chrome = Start-Chrome "A-FRAMES-idlecheck-$Theme"
+        $expectedSize = Get-DefaultThemeSize $Theme
+        Set-OverlayViewport $chrome $expectedSize.source
+        # Navigate the same owned target; never carry a sample/message/timer into the next phase.
+        $captureIdle = {
+            $p = Get-PageProbe $chrome
+            $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{
+                expression = "window.__state ? ({domState:document.documentElement.getAttribute('data-state'),clock:msg === null ? null : msg.clock}) : ({domState:null,clock:null})"
+                returnByValue = $true
+            }
+            if (Get-Prop $result 'exceptionDetails') { throw 'Structural idle state probe failed.' }
+            $p | Add-Member -NotePropertyName idleState -NotePropertyValue (Get-Prop (Get-Prop $result 'result') 'value') -Force
+            $p
+        }
+        $matchesIdleState = {
+            param($p, [string] $state, [bool] $shown, [double] $opacity, [string] $paused, [bool] $progress)
+            $o = Get-PageField $p 'options'
+            $null -ne $p -and $null -ne (Get-Prop $p 'opacity') -and
+                (Get-PageField $p 'connection') -eq 'open' -and (Get-PageField $p 'visible') -eq $true -and
+                (Get-PageField $p 'theme') -eq $Theme -and (Get-Prop (Get-PageField $p 'look') 'id') -eq $id -and
+                (Get-PageField $p 'state') -eq $state -and (Get-Prop (Get-Prop $p 'idleState') 'domState') -eq $state -and
+                (Get-PageField $p 'shown') -eq $shown -and [Math]::Abs([double] $p.opacity - $opacity) -le 0.02 -and
+                (Get-Prop $p.attrs 'theme') -eq $Theme -and (Get-Prop $p.attrs 'paused') -eq $paused -and
+                (Get-Prop $o 'paused') -eq $paused -and (Get-Prop $o 'showProgress') -eq $progress -and
+                (Get-Prop $p.attrs 'showProgress') -eq $progress.ToString().ToLowerInvariant() -and
+                (Test-OverlayViewport $p $expectedSize.source)
+        }
+        foreach ($condition in $Conditions) {
+            $rowId = "frames.$Theme.idlecheck.$condition"
+            Start-JournalRow -Id $rowId -Meta @{ independent = $false; structural = $true; theme = $Theme; condition = $condition }
+            $phaseQpc = Get-Qpc
+            $record = [ordered]@{ theme = $Theme; condition = $condition; passed = $false
+                probes = [ordered]@{ baseline = $null; acknowledged = $null; before = $null; after = $null }
+                timings = [ordered]@{ resetSeconds = $null; acknowledgeSeconds = $null; settleSeconds = $null; probeIntervalSeconds = $null; totalSeconds = $null } }
+            try {
+                # Reset every setting/fixture dimension that these phases mutate, then acknowledge real PlayingLong.
+                $clockPath = Join-Path (Get-BenchDirectory $run.Root) 'command-clock-mismatch-off'
+                if (-not (Wait-For { -not (Test-Path -LiteralPath $clockPath) } 10 25)) { throw 'Previous clock reset is pending.' }
+                [void] (Send-HookCommand $run.Root 'command-clock-mismatch-off')
+                if (-not (Wait-For { -not (Test-Path -LiteralPath $clockPath) } 10 25)) { throw 'Clock reset was not consumed.' }
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' '1')
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-hide-paused-on')
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-off')
+                $options = Get-ThemeDefaults $Theme
+                $options['paused'] = 'hide'; $options['showProgress'] = $true
+                $look.options = $options
+                [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+                [void] (Invoke-ChromeNavigate $chrome 'about:blank')
+                if (-not (Wait-For { (Get-Prop (Get-PageProbe $chrome) 'href') -eq 'about:blank' } 5 50)) {
+                    throw 'Structural idle page reset was not acknowledged.'
+                }
+                [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
+                $baseline = Wait-For {
+                    $p = & $captureIdle
+                    if ((& $matchesIdleState $p 'playing' $true 1 'hide' $true) -and
+                        (Get-Prop $p.idleState 'clock') -eq $true -and (Get-PageField $p 'fillTimer') -gt 0 -and $p.running -eq 0) { $p }
+                } 15 100
+                if (-not $baseline) { throw "Structural idle $Theme/$condition baseline was not acknowledged." }
+                $record.probes.baseline = $baseline
+                $appliedQpc = Get-Qpc
+                $record.timings.resetSeconds = Round3 (Get-Seconds $phaseQpc $appliedQpc)
+                $options['paused'] = if ($condition -eq 'dim-Paused') { 'dim' } else { 'hide' }
+                $options['showProgress'] = $condition -ne 'progress-hidden'
+                [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+                if ($condition -in @('dim-Paused', 'hidden-Paused', 'ended')) {
+                    $sample = if ($condition -eq 'ended') { 'playing' } else { 'paused' }
+                    [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=$sample")
+                    $sampleReady = Wait-For { $p = & $captureIdle; if ((Get-Prop $p 'href') -eq "$($overlayUrl)?look=$id&sample=$sample" -and
+                        (Get-PageField $p 'connection') -eq 'open' -and
+                        (Get-PageField $p 'state') -eq $(if ($sample -eq 'paused') { 'paused' } else { 'playing' }) -and
+                        (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 100
+                    if (-not $sampleReady) { throw "Structural idle $Theme/$condition sample was not acknowledged." }
+                    if ($condition -eq 'ended') {
+                        $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = "apply({state:'ended'})" }
+                        if (Get-Prop $result 'exceptionDetails') { throw 'Structural ended state could not be applied.' }
+                    }
+                } elseif ($condition -eq 'clock-mismatch') {
+                    [void] (Send-HookCommand $run.Root 'command-clock-mismatch-on')
+                    if (-not (Wait-For { -not (Test-Path -LiteralPath (Join-Path (Get-BenchDirectory $run.Root) 'command-clock-mismatch-on')) } 10 25)) {
+                        throw 'Clock mismatch command was not consumed.'
+                    }
+                }
+                $expectedState = if ($condition -in @('dim-Paused', 'hidden-Paused')) { 'paused' } elseif ($condition -eq 'ended') { 'ended' } else { 'playing' }
+                $expectedShown = $condition -notin @('hidden-Paused', 'ended')
+                $expectedOpacity = if ($condition -eq 'dim-Paused') { 0.7 } elseif ($expectedShown) { 1 } else { 0 }
+                $finalState = {
+                    param($p)
+                    (& $matchesIdleState $p $expectedState $expectedShown $expectedOpacity $options.paused $options.showProgress) -and
+                        (Get-PageField $p 'fillTimer') -eq 0 -and $p.running -eq 0 -and
+                        $(if ($condition -eq 'clock-mismatch') { (Get-Prop $p.idleState 'clock') -eq $false }
+                          elseif ($condition -eq 'progress-hidden') { (Get-Prop $p.idleState 'clock') -eq $true } else { $true })
+                }
+                $ack = Wait-For { $p = & $captureIdle; if (& $finalState $p) { $p } } 15 100
+                if (-not $ack) { throw "Structural idle $Theme/$condition resulting state was not acknowledged." }
+                $record.probes.acknowledged = $ack
+                $settleQpc = Get-Qpc
+                $record.timings.acknowledgeSeconds = Round3 (Get-Seconds $appliedQpc $settleQpc)
+                Start-Sleep -Seconds 5
+                $before = & $captureIdle
+                $record.probes.before = $before
+                $record.timings.settleSeconds = Round3 (Get-Seconds $settleQpc $before.qpc)
+                Start-Sleep -Seconds 1
+                $after = & $captureIdle
+                $record.probes.after = $after
+                $record.timings.probeIntervalSeconds = Round3 (Get-Seconds $before.qpc $after.qpc)
+                $a = Get-PageField $before 'counters'; $b = Get-PageField $after 'counters'
+                $record.passed = [bool] ((& $finalState $before) -and (& $finalState $after) -and
+                    $null -ne (Get-Prop $a 'ticks') -and $null -ne (Get-Prop $b 'ticks') -and
+                    $null -ne (Get-Prop $a 'fillWrites') -and $null -ne (Get-Prop $b 'fillWrites') -and
+                    (Get-Prop $a 'ticks') -eq (Get-Prop $b 'ticks') -and (Get-Prop $a 'fillWrites') -eq (Get-Prop $b 'fillWrites'))
+            } catch { $record.error = $_.Exception.Message }
+            $record.timings.totalSeconds = Round3 (Get-Seconds $phaseQpc (Get-Qpc))
+            Add-Check "A-FRAMES.idlecheck.$Theme.$condition" 'acknowledged final state, own 5s settle, then no fill timer, ticks, fill writes or running animations over 1s' $record $record.passed
+            $record.artifact = Save-FrameRecord "idlecheck-$Theme-$condition" $record
+            $records[$condition] = $record
+            Complete-JournalRow -Id $rowId -Result $record -Artifacts @($record.artifact)
+        }
+        return $records
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
+function Test-FrameTransitions([string] $Theme) {
+    $options = Get-ThemeDefaults $Theme
+    $id = 'trn' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $look = New-ObsLook $id "Transition $Theme" $options
+    $run = Start-OverlayRun "A-FRAMES-transitions-$Theme" @{} $null -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+    $chrome = $null; $records = [ordered]@{}
+    try {
+        $chrome = Start-Chrome "A-FRAMES-transitions-$Theme"
+        $expectedSize = Get-DefaultThemeSize $Theme
+        Set-OverlayViewport $chrome $expectedSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=playing")
+        [void] (Wait-PageConnected $chrome 15)
+        $initial = Get-PageProbe $chrome
+        Add-Check "A-FRAMES.transitions.$Theme.viewport" 'native default source viewport fully contains theme' (
+            [ordered]@{ source = $expectedSize.source; actual = $initial.pageSize; box = $initial.boxRect }) (
+            (Test-OverlayViewport $initial $expectedSize.source))
+        foreach ($kind in @('show', 'hide')) {
+            foreach ($animation in @('fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'none')) {
+                $options[$kind + 'Animation'] = $animation
+                $look.options = $options
+                [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+                [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+                $received = Wait-For { $p = Get-PageProbe $chrome; if ((Get-Prop $p.attrs "anim$(if ($kind -eq 'show') { 'Show' } else { 'Hide' })") -eq $animation) { $p } } 5 25
+                # The sample's real data seeded msg; switching state uses the page's own apply()/setView(),
+                # with the same artwork and metadata so no extra network load is created by the test.
+                $target = if ($kind -eq 'show') { 'playing' } else { 'ended' }
+                $prepare = if ($kind -eq 'show') { 'ended' } else { 'playing' }
+                $expression = @"
+(async () => {
+  const data = { ...msg, id:state.id, title:state.title, artist:state.artist, artwork:artUrl };
+  apply({ ...data, state:'$prepare' });
+  await new Promise(r => setTimeout(r, 650));
+  const start = performance.now();
+  apply({ ...data, state:'$target' });
+  const target = '$target' === 'playing' ? 1 : 0;
+  return await new Promise(resolve => {
+    const tick = () => {
+      if ((Math.abs(Number(getComputedStyle(document.getElementById('pill')).opacity) - target) < .03 &&
+           document.getAnimations().every(a => a.playState !== 'running')) || performance.now() - start > 1000)
+        resolve({ ms:performance.now() - start, running:document.getAnimations().filter(a => a.playState === 'running').length });
+      else setTimeout(tick, 10);
+    }; tick();
+  });
+})()
+"@
+                $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = $expression; awaitPromise = $true; returnByValue = $true } 10
+                $value = Get-Prop (Get-Prop $result 'result') 'value'
+                $records["$kind-$animation"] = [ordered]@{ look = [bool] $received; timing = $value }
+                Add-Check "A-FRAMES.transitions.$Theme.$kind.$animation" 'look received, show/hide reaches final state <=600 ms with no running animation' $records["$kind-$animation"] (
+                    $received -and $value -and [double] $value.ms -le 600 -and [int] $value.running -eq 0)
+            }
+        }
+        $nameBase = [int] (Get-Prop (Get-PageField (Get-PageProbe $chrome) 'counters') 'blurDraws')
+        for ($n = 0; $n -lt 50; $n++) {
+            $look.name = "Name $n"
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        }
+        $afterNames = Get-PageProbe $chrome
+        $nameDraws = [int] (Get-Prop (Get-PageField $afterNames 'counters') 'blurDraws') - $nameBase
+        Add-Check "A-FRAMES.transitions.$Theme.names" '50 name-only pushes redraw no raster' $nameDraws ($nameDraws -eq 0)
+        $records.names = [ordered]@{ redraws = $nameDraws; pushes = 50 }
+        $startDraw = [int] (Get-Prop (Get-PageField $afterNames 'counters') 'blurDraws')
+        $baseWidth = [int] $options.width
+        $expandedSource = @{ w = [int] $expectedSize.source.w + 10
+            h = [int] $expectedSize.source.h + $(if ($Theme -in @('album-art', 'card')) { 10 } else { 0 }) }
+        Set-OverlayViewport $chrome $expandedSource
+        for ($n = 0; $n -lt 50; $n++) {
+            $options['width'] = $baseWidth + $(if ($n % 2) { 10 } else { 0 })
+            $look.options = $options
+            [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+            [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        }
+        $afterWidths = Wait-For { $p = Get-PageProbe $chrome; if ([double] (Get-Prop (Get-PageField $p 'box') 'w') -eq $baseWidth + 10) { $p } } 10 100
+        $drawDelta = [int] (Get-Prop (Get-PageField $afterWidths 'counters') 'blurDraws') - $startDraw
+        $blurred = $Theme -in @('pill', 'standard', 'classic', 'card')
+        $records.widths = [ordered]@{ pushes = 50; draws = $drawDelta; width = $options.width
+            fillTimer = Get-PageField $afterWidths 'fillTimer'; viewport = $afterWidths.pageSize; source = $expandedSource }
+        Add-Check "A-FRAMES.transitions.$Theme.widths" '50 width pushes: at most one raster per cache key, one timer and full native source viewport' $records.widths (
+            $afterWidths -and $drawDelta -le 50 -and $(if ($blurred) { $drawDelta -ge 1 } else { $drawDelta -eq 0 }) -and
+            (Get-PageField $afterWidths 'fillTimer') -ne 0 -and
+            (Test-OverlayViewport $afterWidths $expandedSource) -and
+            [int] (Get-Prop (Get-PageField $afterWidths 'source') 'w') -eq $expandedSource.w -and
+            [int] (Get-Prop (Get-PageField $afterWidths 'source') 'h') -eq $expandedSource.h)
+        # Theme push with the same id must change the page without creating another timer.
+        $nextTheme = if ($Theme -eq 'matte') { 'standard' } else { 'matte' }
+        $newOptions = Get-ThemeDefaults $nextTheme
+        $nextSize = Get-DefaultThemeSize $nextTheme
+        Set-OverlayViewport $chrome $nextSize.source
+        $look.options = $newOptions
+        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+        [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
+        $switched = Wait-For { $p = Get-PageProbe $chrome; if ($p.attrs.theme -eq $nextTheme) { $p } } 10 50
+        Add-Check "A-FRAMES.transitions.$Theme.themeSwitch" 'live theme change applies once, one timer and fresh cache key' (
+            [ordered]@{ theme = Get-Prop (Get-Prop $switched 'attrs') 'theme'; timer = Get-PageField $switched 'fillTimer' }) (
+            $switched -and $switched.attrs.theme -eq $nextTheme -and
+            (Test-OverlayViewport $switched $nextSize.source) -and (Get-PageField $switched 'fillTimer') -ne 0)
+        $records.switch = [ordered]@{ theme = $nextTheme; page = $switched }
+        $records.artifact = Save-FrameRecord "transitions-$Theme" $records
+        return $records
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
+function Test-FrameLateArt([string] $Theme) {
+    $id = 'lat' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $run = Start-OverlayRun "A-FRAMES-late-art-$Theme" @{} 'ArtSwap' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id "Late art $Theme" (Get-ThemeDefaults $Theme)))))
+    $chrome = $null
+    try {
+        $ready = Wait-BenchReady $run.Root
+        $start = Get-ReadyQpc $ready
+        $chrome = Start-Chrome "A-FRAMES-late-art-$Theme"
+        $expectedSize = Get-DefaultThemeSize $Theme
+        Set-OverlayViewport $chrome $expectedSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
+        Wait-UntilQpc ($start + 18 * $freq)
+        $page = Get-PageProbe $chrome
+        $counters = Get-PageField $page 'counters'
+        $art = @($page.art | Sort-Object start)
+        $result = [ordered]@{ page = $page; art = $art; counters = $counters }
+        $result.artifact = Save-FrameRecord "late-art-$Theme" $result
+        Add-Check "A-FRAMES.transitions.$Theme.lateArt" 'delayed A after B cannot replace B; at most one raster draw per loaded cover' (
+            [ordered]@{ artifact = $result.artifact; artSeq = Get-PageField $page 'artSeq'; loadedSeq = Get-PageField $page 'artLoadedSeq'
+                coverLoads = Get-Prop $counters 'coverLoads'; blurDraws = Get-Prop $counters 'blurDraws'; art = $art }) (
+            $art.Count -ge 2 -and [double] $art[-2].end -gt [double] $art[-1].end -and
+            (Get-PageField $page 'artLoadedSeq') -eq (Get-PageField $page 'artSeq') -and
+            (Get-PageField $page 'artFailed') -eq $false -and
+            [int] (Get-Prop $counters 'blurDraws') -le [int] (Get-Prop $counters 'coverLoads') -and
+            (Test-OverlayViewport $page $expectedSize.source))
+        return $result
+    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
+function Test-FrameRenewal([double] $SteadyFps) {
+    $options = Get-ThemeDefaults 'matte'; $options['showTimes'] = $true
+    $id = 'renew001'
+    $run = Start-OverlayRun 'A-FRAMES-renewal' @{} 'PlayingLong' -NoReader -LooksJson (
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id 'Renewal' $options))))
+    $chrome = $null; $trace = $null; $result = $null
+    try {
+        [void] (Wait-BenchReady $run.Root)
+        $chrome = Start-Chrome 'A-FRAMES-renewal'
+        $expectedSize = Get-DefaultThemeSize 'matte'
+        Set-OverlayViewport $chrome $expectedSize.source
+        [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
+        $connected = Wait-PageConnected $chrome 15
+        if (-not $connected) { throw 'A-FRAMES renewal page failed to open' }
+        $startQpc = Get-Qpc
+        Wait-UntilQpc ($startQpc + 290 * $freq)
+        $before = Get-PageProbe $chrome
+        $trace = Invoke-FrameTrace $chrome 'renewal' 20
+        $after = Get-PageProbe $chrome
+        $overlay = Get-Overlay (Get-State $run.Root 'framesRenewal') 'lastStreamEndReason'
+        $ticks = [int] (Get-Prop (Get-PageField $after 'counters') 'ticks') - [int] (Get-Prop (Get-PageField $before 'counters') 'ticks')
+        $limit = [Math]::Ceiling(20 * $SteadyFps) + 3
+        $result = [ordered]@{ trace = $trace; before = $before; after = $after; ticks = $ticks; limit = $limit
+            steadyFps = $SteadyFps; lifetimeReason = $overlay; elapsedSeconds = Get-Seconds $startQpc (Get-Qpc) }
+        $ok = $overlay -eq 'Lifetime' -and $trace.frames -le $limit -and $ticks -le 23 -and
+            $ticks -ge 1 -and (Test-OverlayViewport $after $expectedSize.source) -and
+            (Get-PageField $after 'fillTimer') -ne 0 -and (Get-PageField $after 'shown') -eq $true
+        [void] (Save-FrameTraceRecord 'renewal' $result $ok)
+        Add-Check 'A-FRAMES.renewal' '5-minute SSE lifetime renewed, <=3 additional compositor frames in ±10 s, one timer' (
+            [ordered]@{ frames = $trace.frames; limit = $limit; ticks = $ticks; reason = $overlay
+                before = Get-PageField $before 'fillTimer'; after = Get-PageField $after 'fillTimer' }) $ok
+        return $result
+    } finally {
+        try {
+            if ($trace -and $trace.traceRetention -eq 'raw') {
+                Keep-FrameTrace $trace
+                if ($result) { [void] (Save-FrameRecord 'renewal' $result) }
+            }
+        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
+}
+
+function Stop-FramesForO3($Obs, $Record, $Worst, $PausedExtensions) {
+    $theme = $Record.theme
+    $Obs.o3[$theme] = [ordered]@{ trigger = 'measured-frame-ceiling'; potentialStop = $true
+        requiresInvestigation = $true; config = $Record.config; measurement = $Record.frameMeasurement
+        artifact = $Record.artifact }
+    $reason = "Stopped after $($Record.config) measured $($Record.frameMeasurement.fps) fps > 1.3; trace $($Record.trace.trace), record $($Record.artifact); no further rows executed"
+    Add-Blocked "A-FRAMES.O3.$theme" 'measured compositor ceiling exceeded; investigate nonvisual fixes before any owner fallback decision' $reason
+    foreach ($class in @('playing.remaining', 'pixelOnly.remaining', 'idle.remaining',
+        'transitions.remaining', 'network.remaining', 'renewal')) {
+        Add-Blocked "A-FRAMES.$class" 'required rows remaining after measured-ceiling stop' $reason
+    }
+    if ($GateProfile -eq 'Fast-v2') {
+        foreach ($class in @('idlecheck.remaining', 'sharedAssertions.remaining')) {
+            Add-Blocked "A-FRAMES.$class" 'required profile rows remaining after measured-ceiling stop' $reason
+        }
+    }
+    $worstFile = Join-Path $runDirectory 'frames-worst.json'
+    [IO.File]::WriteAllText($worstFile, (ConvertTo-Json -Depth 16 -InputObject ([ordered]@{
+        version = 2; protocol = $GateProfile; scope = "$GateProfile observed"; worstDescription = 'worst observed in this profile'
+        worst = $Worst; pausedExtensions = @($PausedExtensions | Select-Object -Unique); framesGreen = $false
+        profileComplete = $false; exhaustiveComplete = $false; complete = $false
+        stopped = $Obs.o3[$theme]
+    })), [Text.UTF8Encoding]::new($false))
+    # Filtered diagnostics never certify the full matrix (speed plan S2); the O3 stop stays blocked either way.
+    $aggregate = if (-not (Test-DefaultRowSelectors)) { 'A-FRAMES.selectedRows' } elseif ($GateProfile -eq 'Fast-v2') { 'A-FRAMES.fastProfileRows' } else { 'A-FRAMES.allRequiredRows' }
+    Add-Blocked $aggregate 'all required frame rows green' (
+        "$reason; completed=$($Obs.configurations.Count); worst-so-far=$worstFile; framesGreen=false")
+    $scenarioResults['A-FRAMES'] = $Obs
+}
+
+function Invoke-FrameCalibration {
+    if ($script:frameCalibration) { return $script:frameCalibration }
+    $script:frameCalibration = [ordered]@{ mutants = [ordered]@{}; passed = $false }
+    if (-not (Test-ChromeAvailable 'A-FRAMES')) { return $script:frameCalibration }
+    # Always measure all four mutants afresh, including on resume; no ordinary row can bypass sensitivity.
+    foreach ($mutant in @('bar-transition', 'pill-raf', 'ceiling-low', 'ceiling-high')) {
+        $rowId = "frames.mutant.$mutant"
+        Start-JournalRow -Id $rowId -Meta @{ independent = $false; calibration = $true }
+        $run = $null; $chrome = $null; $sample = $null; $artifact = $null
+        $nearCeiling = $mutant -in @('ceiling-low', 'ceiling-high')
+        $mutationRate = if ($mutant -eq 'ceiling-low') { 1.2 } elseif ($mutant -eq 'ceiling-high') { 1.4 } else { $null }
+        $expected = if ($nearCeiling) {
+            "60 s visible compositor submissions at ~$mutationRate/s, mutation count within 2 of rate x seconds, no progress work; <= 1.3/s oracle $(if ($mutant -eq 'ceiling-low') { 'accepts nonzero frames' } else { 'rejects' })"
+        } else { 'actual CDP compositor-submission frames >= 10/s, while ordinary <= 1.3/s oracle rejects it' }
+        try {
+            $theme = if ($mutant -eq 'bar-transition') { 'matte' } else { 'pill' }
+            $id = if ($mutant -eq 'bar-transition') { 'mutmatte' } else { 'mutpill0' }
+            $profile = if ($mutant -ne 'bar-transition') { 'PlayingLong' } else { $null }
+            $look = New-ObsLook $id "Mutant $mutant" (Get-ThemeDefaults $theme)
+            try {
+                $run = Start-OverlayRun "A-FRAMES-mutant-$mutant" @{} $profile -NoReader `
+                    -Override @{ NATIVUNE_TEST_OBS_MUTANT = $mutant } -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+                [void] (Wait-BenchReady $run.Root -BenchProfile $profile)
+                $chrome = Start-Chrome "A-FRAMES-mutant-$mutant"
+                Set-OverlayViewport $chrome (Get-DefaultThemeSize $theme).source
+                $url = "$($overlayUrl)?look=$id" + $(if ($mutant -eq 'bar-transition') { '&sample=playing' } else { '' })
+                [void] (Invoke-ChromeNavigate $chrome $url)
+                $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+                    (Get-PageField $p 'state') -eq 'playing' -and (Get-PageField $p 'shown') -eq $true -and
+                    (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
+                if (-not $connected) { throw "Mutant $mutant did not reach its connected playing look state" }
+                Start-Sleep -Seconds 5
+                $start = Get-PageProbe $chrome
+                $sample = Invoke-FrameTrace $chrome "mutant-$mutant" 60
+                $a = Get-PageField $start 'counters'; $b = Get-PageField $sample.endPage 'counters'
+                $mutationCounter = if ($mutant -eq 'bar-transition') { 'fillWrites' } else { 'mutantMutations' }
+                $sample['startPage'] = $start
+                $sample['mutationCounter'] = $mutationCounter
+                $sample['mutationCount'] = [int] (Get-Prop $b $mutationCounter) - [int] (Get-Prop $a $mutationCounter)
+                $sample['ticks'] = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
+                $sample['fillWrites'] = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
+                $sample['timeWrites'] = [int] (Get-Prop $b 'timeWrites') - [int] (Get-Prop $a 'timeWrites')
+                $visible = $sample.visible -and (Test-OverlayViewport $sample.endPage (Get-DefaultThemeSize $theme).source)
+                if ($nearCeiling) {
+                    $sample['targetMutationFps'] = $mutationRate
+                    $sample['expectedMutationCount'] = $mutationRate * $sample.seconds
+                    $sample['mutationCountTolerance'] = 2
+                    $sample['oracleAccepted'] = $sample.frames -gt 0 -and $sample.fps -le 1.3
+                    $cadenceOk = [Math]::Abs($sample.mutationCount - $sample.expectedMutationCount) -le $sample.mutationCountTolerance
+                    $isolated = (Get-PageField $start 'fillTimer') -eq 0 -and (Get-PageField $sample.endPage 'fillTimer') -eq 0 -and
+                        $sample.ticks -eq 0 -and $sample.fillWrites -eq 0 -and $sample.timeWrites -eq 0 -and $sample.endPage.running -eq 0
+                    $oracleOk = if ($mutant -eq 'ceiling-low') { $sample.oracleAccepted } else { $sample.fps -gt 1.3 }
+                    $passed = $visible -and $cadenceOk -and $isolated -and $oracleOk
+                } else {
+                    $passed = $visible -and $sample.fps -ge 10 -and $sample.fps -gt 1.3
+                }
+                Keep-FrameTrace $sample
+                $artifact = Save-FrameRecord "mutant-$mutant" $sample
+                $script:frameCalibration.mutants[$mutant] = $sample
+                Add-Check "A-FRAMES.mutant.$mutant" $expected $sample $passed
+            } finally {
+                try {
+                    if ($sample -and $sample.traceRetention -eq 'raw') { Keep-FrameTrace $sample }
+                } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+            }
+        } catch {
+            Add-Check "A-FRAMES.mutant.$mutant" $expected $_.Exception.Message $false
+        } finally {
+            $artifacts = @(); if ($sample) { $artifacts += $sample.trace }; if ($artifact) { $artifacts += $artifact }
+            Complete-JournalRow -Id $rowId -Artifacts $artifacts
+        }
+    }
+    $mutantChecks = @($checks | Where-Object { $_.name -like 'A-FRAMES.mutant.*' })
+    $script:frameCalibration.passed = $mutantChecks.Count -eq 4 -and @($mutantChecks | Where-Object { $_.status -ne 'pass' }).Count -eq 0
+    return $script:frameCalibration
+}
+function Test-AFrames {
+    $calibration = Invoke-FrameCalibration
+    $obs = [ordered]@{ protocol = $GateProfile; mutants = $calibration.mutants; configurations = [ordered]@{}; assertions = [ordered]@{}; o3 = [ordered]@{} }
+    if (-not $calibration.passed) {
+        Add-Blocked 'A-FRAMES.calibration' 'all four sensitivity guards: legacy mutants rejected, ceiling-low accepted, ceiling-high rejected' 'calibration not established; all dependent frame rows blocked'
+        $aggregate = if (-not (Test-DefaultRowSelectors)) { 'A-FRAMES.selectedRows' } elseif ($GateProfile -eq 'Fast-v2') { 'A-FRAMES.fastProfileRows' } else { 'A-FRAMES.allRequiredRows' }
+        Add-Blocked $aggregate 'all required frame rows green' 'calibration not established; no frame rows executed; framesGreen=false'
+        $scenarioResults['A-FRAMES'] = $obs
+        return
+    }
+    Add-Check 'A-FRAMES.calibration' 'all four calibration guards satisfy their required acceptance/rejection behavior' $obs.mutants $true
+    $sizes = Get-Content -Raw (Join-Path $fixtureDirectory 'expected-sizes.json') | ConvertFrom-Json -AsHashtable -Depth 16
+    # The inventory is the single scheduling source: identical serial rows/windows, plus the required late-art row.
+    $frameRows = @($script:requiredRowInventory | Where-Object { $_.scenario -eq 'A-FRAMES' })
+    if ($Rotation) {
+        $orderedPlaying = @($frameRows | Where-Object { $_.class -eq 'playing' } | Sort-Object rotationOrder)
+        $playingIndex = 0
+        $frameRows = @($frameRows | ForEach-Object { if ($_.class -eq 'playing') { $orderedPlaying[$playingIndex]; $playingIndex++ } else { $_ } })
+    }
+    $rowRecords = @{}; $structuralThemes = [Collections.Generic.HashSet[string]]::new()
+    $worst = $null; $pausedExtensions = [Collections.Generic.List[string]]::new()
+    foreach ($entry in $frameRows | Where-Object { $_.selected -and $_.class -ne 'mutant' }) {
+        $rowId = $entry.id; $record = $null; $theme = Get-Prop $entry 'theme'
+        if ($entry.class -eq 'idlecheck') {
+            if (-not $structuralThemes.Contains($theme)) {
+                $conditions = @($frameRows | Where-Object { $_.selected -and $_.class -eq 'idlecheck' -and $_.theme -eq $theme } | ForEach-Object { $_.condition })
+                $phases = Test-FrameIdleStructural $theme $conditions
+                foreach ($condition in $phases.Keys) { $obs.configurations["$theme-idlecheck-$condition"] = $phases[$condition] }
+                [void] $structuralThemes.Add($theme)
+            }
+            continue
+        }
+        if ($entry.class -in @('shared-cadence', 'shared-network')) {
+            $field = if ($entry.class -eq 'shared-cadence') { 'cadenceAssertion' } else { 'networkAssertion' }
+            $source = if ($rowRecords.ContainsKey($entry.sourceRow)) { $rowRecords[$entry.sourceRow] } else { $null }
+            $record = Get-Prop $source $field
+            Start-JournalRow -Id $rowId -Meta @{ independent = $false; class = $entry.class; sourceRow = $entry.sourceRow }
+            Add-Check "A-FRAMES.$rowId" 'shared observation assertion passes on the selected source row' $record ($record -and (Get-Prop $record 'passed') -eq $true)
+            Complete-JournalRow -Id $rowId -Result $record
+            $obs.assertions[$rowId] = $record
+            continue
+        }
+        $independent = $entry.class -in @('playing', 'pixel', 'idle')
+        if (Test-JournalRowReusable -Id $rowId) {
+            $record = Get-JournalRowResult -Id $rowId
+        } else {
+            Start-JournalRow -Id $rowId -Meta @{ independent = $independent; class = $entry.class }
+            switch ($entry.class) {
+                { $_ -in @('playing', 'pixel') } {
+                    $o = Copy-LookOptions (Get-ThemeDefaults $theme)
+                    if ($entry.class -eq 'playing') {
+                        $o['width'] = $entry.width; $o['scale'] = $entry.scale; $o['showTimes'] = $entry.showTimes
+                        $condition = $entry.condition
+                    } else {
+                        $o['showTimes'] = $false; $condition = 'pixel-only'
+                        if ($GateProfile -eq 'Fast-v2') { $o['width'] = $entry.width; $o['scale'] = $entry.scale }
+                    }
+                    $row = @($sizes.rows | Where-Object { $_.theme -eq $theme -and $_.width -eq $o.width -and $_.scale -eq $o.scale -and
+                        $_.showArt -and $_.showArtist -and $_.showProgress -and $_.showTimes -eq $o.showTimes } | Select-Object -First 1)
+                    if ($row.Count -ne 1) { throw "A-FRAMES: missing independent size row $($entry.label)" }
+                    $record = Test-FramePlaying $entry.label $o $entry.rate $condition $row[0] $entry.windowSeconds
+                }
+                'idle' { $record = Test-FrameIdle $theme $entry.condition }
+                'transitions' { $record = Test-FrameTransitions $theme }
+                'lateart' { $record = Test-FrameLateArt $theme }
+                'network' {
+                    if ($GateProfile -ne 'Exhaustive-v1') { throw 'Standalone network rows are exhaustive-only.' }
+                    $record = Test-FrameNetwork $theme
+                }
+                'renewal' {
+                    $steadyCase = $obs.configurations['matte-default-timesTrue-rate1-sample-art']
+                    if ($steadyCase) { $record = Test-FrameRenewal ([double] $steadyCase.trace.fps) }
+                    else { Add-Blocked 'A-FRAMES.renewal' 'steady matte baseline required before renewal' 'selected rows did not supply the matte steady baseline' }
+                }
+                default { throw "A-FRAMES: unknown inventory class $($entry.class)" }
+            }
+            # Row functions have returned through their teardown; exceptions leave an incomplete journal row.
+            Complete-JournalRow -Id $rowId -Result $record
+        }
+        if ($entry.class -eq 'renewal') { $obs.renewal = $record; continue }
+        $obs.configurations[$entry.label] = $record
+        $rowRecords[$rowId] = $record
+        if ($entry.class -eq 'playing' -and ($entry.condition -eq 'fixture-max' -or $GateProfile -eq 'Fast-v2')) {
+            $o = Copy-LookOptions (Get-ThemeDefaults $theme)
+            $o['width'] = $entry.width; $o['scale'] = $entry.scale; $o['showTimes'] = $entry.showTimes
+            $row = @($sizes.rows | Where-Object { $_.theme -eq $theme -and $_.width -eq $o.width -and $_.scale -eq $o.scale -and
+                $_.showArt -and $_.showArtist -and $_.showProgress -and $_.showTimes -eq $o.showTimes } | Select-Object -First 1)
+            if ($row.Count -ne 1) { throw "A-FRAMES: missing independent size row $($entry.label)" }
+            $area = [double] $row[0].box.w * [double] $row[0].box.h
+            $score = $area * [Math]::Max(0, [double] $record.trace.fps) * $(if ($theme -in @('pill', 'standard', 'classic', 'card')) { 2 } else { 1 })
+            if (-not $worst -or $score -gt $worst.score) {
+                $worst = [ordered]@{ score = $score; theme = $theme; width = $o.width; scale = $o.scale; options = $o
+                    rowId = $rowId; configuration = [ordered]@{ theme = $theme; config = $entry.config; showTimes = $entry.showTimes; rate = $entry.rate; condition = $entry.condition }
+                    source = $row[0].source; trace = $record.trace.trace }
+            }
+        }
+        if ($entry.class -in @('playing', 'pixel') -and $record.o3Trigger) {
+            Stop-FramesForO3 $obs $record $worst $pausedExtensions
+            return
+        }
+        if ($entry.class -eq 'idle' -and $theme -ne 'pill' -and ($record.trace.frames -ne 0 -or $record.ticks -ne 0)) { $pausedExtensions.Add($theme) }
+    }
+    $missing = @($frameRows | Where-Object { -not (Test-JournalRowPassed -Id $_.id) } | ForEach-Object { $_.id })
+    $selectedMissing = @($frameRows | Where-Object { $_.selected -and -not (Test-JournalRowPassed -Id $_.id) } | ForEach-Object { $_.id })
+    $allGreen = @($checks | Where-Object { $_.name -like 'A-FRAMES.*' -and $_.status -ne 'pass' }).Count -eq 0
+    $fullGate = Test-DefaultRowSelectors
+    $framesComplete = $fullGate -and $missing.Count -eq 0 -and $allGreen -and [bool] $worst
+    $worstFile = Join-Path $runDirectory 'frames-worst.json'
+    [IO.File]::WriteAllText($worstFile, (ConvertTo-Json -Depth 16 -InputObject ([ordered]@{
+        version = 2; protocol = $GateProfile; scope = "$GateProfile observed"; worstDescription = 'worst observed in this profile'
+        worst = $worst; pausedExtensions = @($pausedExtensions | Select-Object -Unique)
+        profileComplete = [bool] $framesComplete; exhaustiveComplete = [bool] ($GateProfile -eq 'Exhaustive-v1' -and $framesComplete)
+        framesGreen = [bool] ($GateProfile -eq 'Exhaustive-v1' -and $framesComplete); complete = [bool] $framesComplete; missingIds = $missing
+    })), [Text.UTF8Encoding]::new($false))
+    if ($fullGate) {
+        $aggregate = if ($GateProfile -eq 'Fast-v2') { 'A-FRAMES.fastProfileRows' } else { 'A-FRAMES.allRequiredRows' }
+        Add-Check $aggregate 'every required profile frame row and assertion green; worst observed in this profile retained' (
+            [ordered]@{ rows = $frameRows.Count; missingIds = $missing; worst = $worst; file = $worstFile }) $framesComplete
+    } else {
+        Add-Check 'A-FRAMES.selectedRows' 'every selected inventory frame row green (diagnostic, not a full gate)' (
+            [ordered]@{ rows = @($frameRows | Where-Object { $_.selected }).Count; missingIds = $selectedMissing
+                omittedIds = @($frameRows | Where-Object { -not $_.selected } | ForEach-Object { $_.id }); file = $worstFile }) ($selectedMissing.Count -eq 0 -and $allGreen)
+    }
+    $scenarioResults['A-FRAMES'] = $obs
+}
+
 # ---------------------------------------------------------------------------------------------------------------
 # Runner (serial: every scenario binds the fixed port 47813)
 
@@ -4424,6 +6253,7 @@ $functions = [ordered]@{
     'A-LIFE' = { Test-ALife }; 'A-SEC' = { Test-ASec }; 'A-RECON' = { Test-ARecon }; 'A-STORE-1' = { Test-AStore1 }
     'A-SAMPLE' = { Test-ASample }; 'A-TEXT' = { Test-AText }; 'A-ART' = { Test-AArt }; 'A-SET' = { Test-ASet }
     'A-PROD' = { Test-AProd }; 'A-PAUSEVIEW' = { Test-APauseView }; 'A-TOOLBAR' = { Test-AToolbar }
+    'A-FRAMES' = { Test-AFrames }
 }
 try {
     if (-not $SkipPublish) {
@@ -4438,6 +6268,7 @@ try {
     }
     if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) { throw "Hook build not found at $appExe; run without -SkipPublish." }
     $appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion
+    Initialize-RunJournal -BoundParameters $PSBoundParameters
     $foreignStreams = $null; $foreignDiagnostic = $null; $preflight = $null
     if (-not (Test-PrefixRegistrable)) {
         $foreignDiagnostic = 'the overlay prefix is already owned before the harness preflight'
@@ -4455,7 +6286,23 @@ try {
     }
     Add-Check 'harness.foreignViewersAbsent' 'the overlay starts with zero non-harness streams on localhost:47813' ([ordered]@{
         streams = $foreignStreams; diagnostic = $foreignDiagnostic }) ($null -ne $foreignStreams -and $foreignStreams -eq 0)
+    Initialize-RequiredRowInventory
+    $script:frameCalibration = $null
+    if ('A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES') -and $null -ne $foreignStreams -and $foreignStreams -eq 0) {
+        if (Test-PrefixRegistrable) {
+            try { [void] (Invoke-FrameCalibration) } catch {
+                Add-Check 'A-FRAMES.calibration.completed' 'calibration ran to completion before other selected scenarios' $_.Exception.Message $false
+                if (-not $script:frameCalibration) { $script:frameCalibration = [ordered]@{ mutants = [ordered]@{}; passed = $false } }
+                $script:frameCalibration.passed = $false
+            }
+        } else {
+            Add-Blocked 'A-FRAMES.calibration.portFree' "http://localhost:$port/ free before calibration" 'another process holds the overlay prefix'
+            $script:frameCalibration = [ordered]@{ mutants = [ordered]@{}; passed = $false }
+        }
+    }
     foreach ($name in $selected) {
+        # Section selectors (scripts/obs-overlay-inventory.ps1) can deselect a whole scenario; '*' selects all.
+        if (-not (Test-ScenarioSelected -Name $name)) { continue }
         if ($null -eq $foreignStreams -or $foreignStreams -ne 0) {
             $why = if ($foreignDiagnostic) { $foreignDiagnostic } else { 'preflight could not verify zero foreign viewers' }
             Add-Blocked "$name.foreignViewer" 'zero non-harness viewers on localhost:47813 before scenarios' $why
@@ -4526,18 +6373,50 @@ try {
     }
 }
 
-# Every §6.1 row must have produced at least one check; a scenario with none (skipped by an early return) fails.
+# Every selected scenario/row must produce passing evidence; omitted diagnostic sections are not failures.
 foreach ($name in $selected) {
+    if (-not (Test-ScenarioSelected -Name $name)) { continue }
     if (-not ($checks | Where-Object { $_.name -like "$name.*" })) { Add-Check "$name.producedChecks" 'at least one check' 0 $false }
+}
+$coverage = Get-RequiredRowCoverage
+if ($script:requiredRowInventory.Count -gt 0) {
+    Add-Check 'harness.selectedRowCoverage' 'every selected required row completed and passed (including valid journal reuse)' (
+        [ordered]@{ selected = $coverage.selected; missingIds = $coverage.missingIds }) ($coverage.missing -eq 0)
+}
+# A failed/blocked early frame exit can never leave a certifying worst-case artifact.
+if ('A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES')) {
+    $frameMissing = @($script:requiredRowInventory | Where-Object { $_.scenario -eq 'A-FRAMES' -and -not (Test-JournalRowPassed -Id $_.id) } | ForEach-Object { $_.id })
+    $worstFile = Join-Path $runDirectory 'frames-worst.json'
+    $worstReport = if (Test-Path -LiteralPath $worstFile -PathType Leaf) {
+        Get-Content -Raw -LiteralPath $worstFile | ConvertFrom-Json -AsHashtable -Depth 16
+    } else { [ordered]@{ version = 2; worst = $null; pausedExtensions = @(); framesGreen = $false; profileComplete = $false } }
+    $worstReport['protocol'] = $GateProfile
+    $worstReport['scope'] = "$GateProfile observed"
+    $worstReport['worstDescription'] = 'worst observed in this profile'
+    $worstReport['missingIds'] = $frameMissing
+    if (-not (Test-DefaultRowSelectors) -or $frameMissing.Count -gt 0) {
+        $worstReport['framesGreen'] = $false; $worstReport['profileComplete'] = $false
+    }
+    if ($GateProfile -eq 'Fast-v2') { $worstReport['framesGreen'] = $false }
+    $worstReport['exhaustiveComplete'] = [bool] ($GateProfile -eq 'Exhaustive-v1' -and $worstReport['framesGreen'])
+    $worstReport['complete'] = [bool] $worstReport['profileComplete']
+    [IO.File]::WriteAllText($worstFile, (ConvertTo-Json -Depth 16 -InputObject $worstReport), [Text.UTF8Encoding]::new($false))
 }
 $failed = @($checks | Where-Object { $_.status -eq 'fail' })
 $blocked = @($checks | Where-Object { $_.status -eq 'blocked' })
 $deferredP1 = @($checks | Where-Object { $_.status -eq 'deferred:P1' })
 $deferredP2 = @($checks | Where-Object { $_.status -eq 'deferred:P2' })
 $passed = $checks.Count -gt 0 -and $failed.Count -eq 0 -and $blocked.Count -eq 0
+$diagnosticPassed = [bool] $passed
+$gateComplete = (Test-DefaultRowSelectors) -and $script:requiredRowInventory.Count -gt 0 -and $coverage.missing -eq 0 -and $diagnosticPassed
+$profileComplete = [bool] $gateComplete
+$exhaustiveComplete = [bool] ($GateProfile -eq 'Exhaustive-v1' -and $profileComplete)
 $report = [ordered]@{
     command = $commandLine; runId = $runId; appVersion = $appVersion; pipePrefix = $prefix; harnessElevated = $isElevated
     launches = @($launches); scenarios = $scenarioResults
+    coverage = $coverage; diagnosticPassed = $diagnosticPassed; gateComplete = [bool] $gateComplete
+    protocol = $GateProfile; profileComplete = $profileComplete; exhaustiveComplete = $exhaustiveComplete
+    rotation = $script:frameRotation; priorWorst = $script:priorWorst
     summary = [ordered]@{
         pass = @($checks | Where-Object { $_.status -eq 'pass' }).Count; fail = $failed.Count; blocked = $blocked.Count
         deferred = [ordered]@{ P1 = $deferredP1.Count; P2 = $deferredP2.Count; total = $deferredP1.Count + $deferredP2.Count }
@@ -4545,6 +6424,18 @@ $report = [ordered]@{
     checks = @($checks); passed = [bool] $passed
 }
 [IO.File]::WriteAllText((Join-Path $runDirectory 'report.json'), ($report | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+if ($exhaustiveComplete -and 'A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES') -and $worstReport.framesGreen) {
+    $pointer = [ordered]@{ version = 1; rowId = $worstReport.worst.rowId; configuration = $worstReport.worst.configuration
+        sourceReport = [IO.Path]::GetRelativePath($repo, $worstFile).Replace('\', '/')
+        sourceSha256 = (Get-FileHash -LiteralPath $worstFile -Algorithm SHA256).Hash.ToLowerInvariant() }
+    # Publish the last complete exhaustive observation only; partial/fast runs never replace it.
+    $pointerPath = Join-Path $fixtureDirectory 'exhaustive-worst.json'
+    $pointerTemp = "$pointerPath.$runId.tmp"
+    try {
+        [IO.File]::WriteAllText($pointerTemp, (ConvertTo-Json -Depth 16 -InputObject $pointer), [Text.UTF8Encoding]::new($false))
+        [IO.File]::Move($pointerTemp, $pointerPath, $true)
+    } finally { if (Test-Path -LiteralPath $pointerTemp) { Remove-Item -LiteralPath $pointerTemp -Force } }
+}
 [IO.File]::WriteAllText((Join-Path $runDirectory 'events.json'), ($eventsByReader | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
 $report.summary | ConvertTo-Json
 Write-Host "Report: $(Join-Path $runDirectory 'report.json')"

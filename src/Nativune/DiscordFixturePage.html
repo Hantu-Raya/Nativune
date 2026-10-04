@@ -160,10 +160,10 @@
     }
   };
 
-  // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
+  // Silent 8 kHz 8-bit mono PCM (five seconds by default); the element loops it and the fixture clock
   // accumulates its progress, so the page clock only moves while the media element really plays.
-  const silentWav = () => {
-    const rate = 8000, samples = rate * 5, bytes = new Uint8Array(44 + samples);
+  const silentWav = (seconds = 5) => {
+    const rate = 8000, samples = rate * seconds, bytes = new Uint8Array(44 + samples);
     const view = new DataView(bytes.buffer);
     const ascii = (offset, text) => [...text].forEach((c, i) => bytes[offset + i] = c.charCodeAt(0));
     ascii(0, 'RIFF'); view.setUint32(4, 36 + samples, true); ascii(8, 'WAVE');
@@ -251,7 +251,8 @@
     // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
     // audible YouTube Music playback never hits. The PCM is silence, so nothing is audible.
     media.muted = false;
-    media.src = silentWav();
+    // Avoid PCM loop-reset stalls throughout the longest 120 s cadence row at rate 4 (480 s plus settle).
+    media.src = silentWav(profile === 'PlayingLong' ? 600 : 5);
     if (profile === 'Paused') { position = 60; media.pause(); }
     else play();
     setInterval(tick, 250);

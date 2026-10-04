@@ -15,7 +15,7 @@ internal readonly record struct ObsOverlayHookState(string LatestState, bool Lat
 internal sealed partial class ObsOverlayServer
 {
     private const int FixtureArtMaxDelayMs = 5000;
-    private static readonly Regex s_fixtureArtwork = new("^/fixture-([abc])=w544-h544(?:-d([0-9]{1,4}))?$",
+    private static readonly Regex s_fixtureArtwork = new("^/fixture-([abc]|max)=w544-h544(?:-d([0-9]{1,4}))?$",
         RegexOptions.CultureInvariant);
     private static readonly Lazy<byte[]> s_hooksScript = new(() =>
     {
@@ -27,8 +27,9 @@ internal sealed partial class ObsOverlayServer
     });
     private static readonly Lazy<byte[]>[] s_fixtureArt =
     [
-        new(() => FixtureArtPng(0)), new(() => FixtureArtPng(1)), new(() => FixtureArtPng(2))
+        new(() => FixtureArtPng(0)), new(() => FixtureArtPng(1)), new(() => FixtureArtPng(2)), new(() => FixtureArtPng(3))
     ];
+    internal static byte[] HookFixtureMaximumPng => s_fixtureArt[3].Value;
 
     private int _hookFixtureArtServed;
     private int _hookPendingWrites;
@@ -36,11 +37,20 @@ internal sealed partial class ObsOverlayServer
 
     partial void HookAppendScript(ref byte[] overlayJs)
     {
+        var mutant = Environment.GetEnvironmentVariable("NATIVUNE_TEST_OBS_MUTANT") switch
+        {
+            "bar-transition" => "bar-transition",
+            "pill-raf" => "pill-raf",
+            "ceiling-low" => "ceiling-low",
+            "ceiling-high" => "ceiling-high",
+            _ => "",
+        };
+        var prefix = System.Text.Encoding.UTF8.GetBytes($"\nconst obsMutant = '{mutant}';\n");
         var hooks = s_hooksScript.Value;
-        var combined = new byte[overlayJs.Length + 1 + hooks.Length];
+        var combined = new byte[overlayJs.Length + prefix.Length + hooks.Length];
         overlayJs.CopyTo(combined, 0);
-        combined[overlayJs.Length] = (byte)'\n';
-        hooks.CopyTo(combined, overlayJs.Length + 1);
+        prefix.CopyTo(combined, overlayJs.Length);
+        hooks.CopyTo(combined, overlayJs.Length + prefix.Length);
         overlayJs = combined;
     }
 
@@ -64,7 +74,8 @@ internal sealed partial class ObsOverlayServer
     private static async Task<ArtworkPayload?> FixtureFetchAsync(int letter, int delay, CancellationToken cancellation)
     {
         if (delay > 0) await Task.Delay(delay, cancellation).ConfigureAwait(false);
-        return new ArtworkPayload(s_fixtureArt[letter].Value, "image/png", 128, 128);
+        var size = letter == 3 ? 1024 : 128;
+        return new ArtworkPayload(s_fixtureArt[letter].Value, "image/png", size, size);
     }
 
     private static bool TryFixtureArtwork(string url, out int letter, out int delay)
@@ -76,7 +87,7 @@ internal sealed partial class ObsOverlayServer
             return false;
         var match = s_fixtureArtwork.Match(uri.AbsolutePath);
         if (!match.Success) return false;
-        letter = match.Groups[1].Value[0] - 'a';
+        letter = match.Groups[1].Value == "max" ? 3 : match.Groups[1].Value[0] - 'a';
         if (match.Groups[2].Success)
             delay = Math.Min(int.Parse(match.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture), FixtureArtMaxDelayMs);
         return true;
@@ -122,7 +133,8 @@ internal sealed partial class ObsOverlayServer
     // so a mirrored or cropped rendering is detectable.
     private static byte[] FixtureArtPng(int letter)
     {
-        const int size = 128, bright = 48;
+        var size = letter == 3 ? 1024 : 128;
+        var bright = letter == 3 ? 0 : 48;
         var raw = new byte[size * (1 + size * 3)];
         for (var y = 0; y < size; y++)
         {

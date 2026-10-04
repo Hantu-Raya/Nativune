@@ -122,6 +122,38 @@ $overlayUrl = "http://localhost:$port/"
 $sourceName = 'Nativune Overlay'
 $sceneName = 'Overlay'
 $freq = [double] [Diagnostics.Stopwatch]::Frequency
+# B-LOOK consumes the independent layout table, rather than copying default dimensions into this harness.
+$expectedSizes = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/obs-overlay/expected-sizes.json') |
+    ConvertFrom-Json -AsHashtable -Depth 16
+$themeSpecs = [ordered]@{}
+foreach ($theme in @('pill', 'matte', 'matte-light', 'standard', 'classic', 'simple', 'album-art', 'card')) {
+    $matches = @($expectedSizes.rows | Where-Object { $_.theme -eq $theme -and $_.default -and $_.scale -eq 100 })
+    if ($matches.Count -ne 1) { throw "B-LOOK: expected-sizes has $($matches.Count) default rows for $theme" }
+    $row = $matches[0]
+    $themeSpecs[$theme] = [ordered]@{
+        theme = $theme; box = $row.box; source = $row.source; column = $row.column; bar = $row.bar
+        textBand = @([double] $row.textBand.start, [double] $row.textBand.end)
+        progressKind = if ($theme -eq 'pill') { 'saturation-reveal' } else { 'luminance-bar' }
+        darkGlyphs = $theme -eq 'matte-light'
+        outsideAlphaCap = 170
+        separateClassicRects = $theme -eq 'classic'
+        cover = $row.cover; panel = $row.panel; sourceBar = $row.sourceBar
+        progressTolerance = if ($theme -eq 'pill') { 6 } else { 3 }
+        minimumLuminanceStep = if ($theme -eq 'pill') { $null } else { 0.25 }
+        maskKind = if ($theme -eq 'classic') { 'rounded-cover-and-panel' } elseif ($theme -eq 'simple') { 'cover-text-and-bar' } else { 'rounded-box' }
+        dimOpacity = 0.7; thumbFixed = $theme -ne 'pill'; artFixed = $theme -eq 'pill'
+    }
+}
+# Inputs for the per-theme B-LOOK pass; no OBS action occurs while constructing these records.
+$bLookInputs = @(
+    foreach ($case in (Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/obs-overlay/looks-cases.json') | ConvertFrom-Json -Depth 16)) {
+        if ($case.case -ne 'default') { continue }
+        $spec = $themeSpecs[$case.theme]
+        [ordered]@{ theme = $case.theme; id = $case.lookId; url = "$($overlayUrl)?look=$($case.lookId)&sample=playing"
+            width = [int] $spec.source.w; height = [int] $spec.source.h
+            look = [ordered]@{ id = $case.lookId; name = "OBS $($case.theme)"; options = $case.options }; spec = $spec }
+    }
+)
 $prefix = 'nativune-test-' + [guid]::NewGuid().ToString('N') + '-discord-ipc-'
 $testEnv = [ordered]@{
     NATIVUNE_TEST_DISCORD_PIPE_PREFIX = $prefix
