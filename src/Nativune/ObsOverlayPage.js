@@ -419,13 +419,14 @@ function drawArt(img) {
   const c = colour.getContext('2d');
   c.clearRect(0, 0, w, h);
   if (pillTheme) {
-    // Preserve the compatibility pill's exact draw/filter arithmetic, including fractional CSS heights.
-    c.filter = `blur(${blurCss}px) saturate(1.3)`;
+    // Owner, 4 October (G2): the played part is a bit brighter and the remaining part a bit darker, so progress reads
+    // clearly. This intentionally changes the plain link too (A-PLAIN re-baselined from this build).
+    c.filter = `blur(${blurCss}px) saturate(1.3) brightness(1.15)`;
     c.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
     const g = grey.getContext('2d');
     g.clearRect(0, 0, w, h);
-    g.filter = `blur(${blurCss}px) grayscale(.75)`;
-    g.globalAlpha = 0.5;
+    g.filter = `blur(${blurCss}px) grayscale(.75) brightness(.45)`;
+    g.globalAlpha = 0.6;
     g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
   } else {
     c.filter = `blur(${blurCss * blurRasterScale}px) brightness(${geo.theme === 'card' ? .35 : .4}) saturate(1.2)`;

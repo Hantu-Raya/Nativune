@@ -722,8 +722,9 @@ def columns(img, fn):
 def sat(r, g, b): return colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)[1]
 def lum(r, g, b): return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
 
-def reveal(img):
-    s = columns(img, sat); n = len(s); best = None; bx = None; k = 8
+def reveal(img, metric=None):
+    # metric: per-pixel value whose column mean steps down at the reveal (default: saturation).
+    s = columns(img, metric or sat); n = len(s); best = None; bx = None; k = 8
     for i in range(k, n - k):
         left = [v for v in s[i - k:i] if v is not None]; right = [v for v in s[i:i + k] if v is not None]
         if len(left) < k // 2 or len(right) < k // 2: continue
@@ -856,7 +857,9 @@ def theme_mask(img, g):
 
 def theme_progress(img, g, p):
     if g['progressKind'] == 'saturation-reveal':
-        x, strength = reveal(img); exp = g['box']['x'] + g['box']['w'] * p
+        # Owner, 4 October: the remaining part is darker as well as greyer, so the edge is a step in saturation plus
+        # luminance (a white art highlight raises luminance but lowers saturation, and does not read as the edge).
+        x, strength = reveal(img, lambda r, g, b: sat(r, g, b) + lum(r, g, b)); exp = g['box']['x'] + g['box']['w'] * p
         return {'x': x, 'expected': exp, 'strength': strength,
                 'pass': x is not None and abs(x - exp) <= g['progressTolerance']}
     if g['progressKind'] != 'luminance-bar':

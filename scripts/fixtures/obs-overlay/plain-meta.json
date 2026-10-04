@@ -16,12 +16,12 @@
   },
   "captures": {
     "8s": {
-      "projectedPosition": 7.8084999999999996,
+      "projectedPosition": 8.012600000001491,
       "fillPx": 2,
       "expectedFillPx": 2
     },
     "18s": {
-      "projectedPosition": 17.8095,
+      "projectedPosition": 18.010800000000742,
       "fillPx": 4,
       "expectedFillPx": 4
     }
