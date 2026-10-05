@@ -6,13 +6,13 @@ function Send-ObsBenchPayload($Ctx,[string]$Command,[string]$Payload) {
 function Test-ObsBenchA($Ctx,$Snapshot) {
     if (-not $Snapshot -or (Get-Overlay $Snapshot 'streams') -ne 1) {return $false}
     if ($Designer) {
-        $d=Get-Prop $Snapshot.state 'designer'; $p=Get-Overlay $Snapshot 'previewNonces'
+        $d=Get-Overlay $Snapshot 'designer'; $p=Get-Overlay $Snapshot 'previewNonces'
         $real=if ($script:designerCondition.kind -eq 'current') {1} else {0}
         if ($real -eq 1 -and ((Get-Overlay $Snapshot 'latestState') -ne 'playing' -or [int](Get-Overlay $Snapshot 'fixtureArtServed') -lt 1)) {return $false}
         return (Get-Prop $d 'open') -eq $true -and (Get-Prop $d 'visible') -eq $true -and (Get-Prop $d 'navigated') -eq $true -and
             (Get-Prop $p 'state') -eq 'Open' -and (Get-Prop $p 'open') -eq 1 -and (Get-Prop $p 'current') -eq (Get-Prop $d 'nonce') -and
             (Get-Overlay $Snapshot 'realStreams') -eq $real -and (Get-Overlay $Snapshot 'sampleStreams') -eq (1-$real) -and
-            (Get-Prop (Get-Prop $Snapshot.state 'lyrics') 'open') -eq $script:designerCondition.lyrics
+            (Get-Prop (Get-Overlay $Snapshot 'lyrics') 'open') -eq $script:designerCondition.lyrics
     }
     if ((Get-Overlay $Snapshot 'realStreams') -ne 1 -or (Get-Overlay $Snapshot 'latestState') -ne $Ctx.Workload.ToLowerInvariant()) {return $false}
     if ($AppOnly) {return $true}
@@ -22,8 +22,8 @@ function Test-ObsBenchA($Ctx,$Snapshot) {
 function Test-ObsBenchB($Snapshot) {
     if (-not $Snapshot -or (Get-Overlay $Snapshot 'streams') -ne 0 -or (Get-Overlay $Snapshot 'realStreams') -ne 0) {return $false}
     if ($Designer) {
-        return (Get-Prop (Get-Prop $Snapshot.state 'designer') 'open') -eq $false -and
-            (Get-Prop (Get-Prop $Snapshot.state 'lyrics') 'open') -eq $script:designerCondition.lyrics
+        return (Get-Prop (Get-Overlay $Snapshot 'designer') 'open') -eq $false -and
+            (Get-Prop (Get-Overlay $Snapshot 'lyrics') 'open') -eq $script:designerCondition.lyrics
     }
     $true
 }
@@ -81,12 +81,12 @@ function Start-DesignerPreview($Ctx) {
     Assert-DesignerDeadline 60
     Send-HookCommand $Ctx.Root 'command-obs-designer-open'
     $open=Wait-For {
-        $s=Get-State $Ctx.Root 'designeropen'; $d=Get-Prop (Get-Prop $s 'state') 'designer'
+        $s=Get-State $Ctx.Root 'designeropen'; $d=Get-Overlay $s 'designer'
         if ((Get-Prop $d 'open') -eq $true -and (Get-Prop $d 'visible') -eq $true -and (Get-Prop $d 'navigated') -eq $true -and (Get-Prop (Get-Overlay $s 'previewNonces') 'state') -eq 'Open') {$s}
     } 40
     if (-not $open) {throw 'Designer did not open.'}
     $options=if ($script:designerCondition.worst) {$worstData.worst.options} else {New-ObsBenchOptions 'pill'}
-    $nonce=Get-Prop (Get-Prop $open.state 'designer') 'nonce'
+    $nonce=Get-Prop (Get-Overlay $open 'designer') 'nonce'
     Send-ObsBenchPayload $Ctx 'command-obs-draft-look' (@{look=@{id='draft';name='Bench draft';options=$options};backdrop='checker'} | ConvertTo-Json -Depth 8 -Compress)
     if (-not (Wait-For {-not (Test-Path -LiteralPath (Join-Path (Get-BenchDirectory $Ctx.Root) 'command-obs-draft-look'))} 10)) {throw 'Worst draft command was not consumed.'}
     $url="http://localhost:47813/?look=draft&preview=1&pv=$nonce"

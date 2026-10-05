@@ -665,72 +665,80 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     }
     $profile=if ($Designer) {'Playing'} elseif ($WorkloadName -eq 'Playing') {'PlayingLong'} else {'Paused'}
     $app = Start-App $root $profile
-    $record['fixtureProfile']=$profile
     $ctx = [pscustomobject]@{ Name = $name; Workload = $WorkloadName; Block = $Block; Launch = $script:launchIndex; Root = $root
-        App = $app; AppStart = $app.StartTime; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
+        App = $app; AppStart = $null; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
         ReadyQpc = $null; ItemEnabled = $false; PageArtBaseline = 0; Record = $record; Reader = $null
         Items = $null; ActiveTheme = $selectedOptions.theme; LookId = $configurations[$selectedOptions.theme].id; Shape0 = $null; ArmTrace = $null }
     $script:currentCtx = $ctx
-    $ready = Wait-BenchReady $root
-    if (-not $ready) { throw "$name`: no fixture ready.json (failed.json or timeout)." }
-    $ctx.ReadyQpc = [double] (Get-Prop $ready 'qpc')
-    $hidden = Wait-For { $s = Get-State $root 'hidden'; if ((Get-Prop $s.state 'appWindowVisible') -eq $false) { $s } } 20 500
-    $record['appTrayHidden'] = [bool] $hidden
-    if (-not $hidden) { throw "$name`: app did not reach tray-hidden." }
-    $record['appCompact'] = Get-Prop $hidden.state 'compact'
-    $record['appOverlayRunning'] = Get-Overlay $hidden 'running'
-    # The listener must answer before OBS starts (OBS's browser does not retry a failed first load, D13).
-    $ok = Wait-For { try { (Invoke-WebRequest -Uri $overlayUrl -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch { $false } } 20 500
-    $record['listener200'] = [bool] $ok
-    if (-not $ok) { throw "$name`: $overlayUrl did not answer 200 before OBS launch." }
-    # Every arm before the first A has its baseline from before OBS existed.
-    $ctx.PageArtBaseline = [int] (Get-Overlay $hidden 'fixtureArtServed')
-    $record['fixtureReadyEpochQpc'] = $ctx.ReadyQpc
-    $maxArt = if ($Designer -and $Profile -eq 'Fast-v1') {$script:designerCondition.worst} else {$WorstFrom -or ($Designer -and $script:designerCondition.worst)}
-    if ($maxArt) { Send-ObsBenchPayload $ctx 'command-obs-fixture-art' 'fixture-max' }
-    if ($Designer) {
-        Send-HookCommand $root $(if ($script:designerCondition.lyrics) {'command-lyrics-open'} else {'command-lyrics-close'})
-        $lyricsReady = Wait-For {$s=Get-State $root 'lyrics';if ((Get-Prop (Get-Prop $s.state 'lyrics') 'open') -eq $script:designerCondition.lyrics) {$s}} 30
-        if (-not $lyricsReady) { throw 'P2 blocked: lyrics window did not reach the requested state.' }
-    }
-    $record['mode'] = if ($AppOnly) { 'apponly' } else { 'obs' }
-    if ($AppOnly) { return $ctx }
+    try {
+        $record['fixtureProfile']=$profile
+        $ctx.AppStart = $app.StartTime
+        $ready = Wait-BenchReady $root
+        if (-not $ready) { throw "$name`: no fixture ready.json (failed.json or timeout)." }
+        $ctx.ReadyQpc = [double] (Get-Prop $ready 'qpc')
+        $hidden = Wait-For { $s = Get-State $root 'hidden'; if ((Get-Prop $s.state 'appWindowVisible') -eq $false) { $s } } 20 500
+        $record['appTrayHidden'] = [bool] $hidden
+        if (-not $hidden) { throw "$name`: app did not reach tray-hidden." }
+        $record['appCompact'] = Get-Prop $hidden.state 'compact'
+        $record['appOverlayRunning'] = Get-Overlay $hidden 'running'
+        # The listener must answer before OBS starts (OBS's browser does not retry a failed first load, D13).
+        $ok = Wait-For { try { (Invoke-WebRequest -Uri $overlayUrl -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch { $false } } 20 500
+        $record['listener200'] = [bool] $ok
+        if (-not $ok) { throw "$name`: $overlayUrl did not answer 200 before OBS launch." }
+        # Every arm before the first A has its baseline from before OBS existed.
+        $ctx.PageArtBaseline = [int] (Get-Overlay $hidden 'fixtureArtServed')
+        $record['fixtureReadyEpochQpc'] = $ctx.ReadyQpc
+        $maxArt = if ($Designer -and $Profile -eq 'Fast-v1') {$script:designerCondition.worst} else {$WorstFrom -or ($Designer -and $script:designerCondition.worst)}
+        if ($maxArt) { Send-ObsBenchPayload $ctx 'command-obs-fixture-art' 'fixture-max' }
+        if ($Designer) {
+            Send-HookCommand $root $(if ($script:designerCondition.lyrics) {'command-lyrics-open'} else {'command-lyrics-close'})
+            $lyricsReady = Wait-For {$s=Get-State $root 'lyrics';if ((Get-Prop (Get-Overlay $s 'lyrics') 'open') -eq $script:designerCondition.lyrics) {$s}} 30
+            if (-not $lyricsReady) { throw 'P2 blocked: lyrics window did not reach the requested state.' }
+        }
+        $record['mode'] = if ($AppOnly) { 'apponly' } else { 'obs' }
+        if ($AppOnly) { return $ctx }
 
-    $ctx.Obs = New-ObsPortable -RunDir (Join-Path $rootBase "$name-obs")
-    $script:obsLaunchQpc = Get-Qpc
-    $ctx.ObsProcess = Start-ObsPortable $ctx.Obs
-    $ctx.ObsStart = $ctx.ObsProcess.StartTime
-    $ctx.Session = Connect-ObsWebSocket $ctx.Obs
-    $ctx.Items = Initialize-ObsOverlayEightSourceScene $ctx.Session $specs
-    $record['sceneSpecs'] = $specs
-    $record['sceneItems'] = $ctx.Items
-    $version = Invoke-ObsRequest $ctx.Session 'GetVersion' @{}
-    $record['obsVersion'] = Get-Prop $version 'obsVersion'
-    # Environment: Studio Mode off, no outputs, preview + browser HW acceleration at defaults (recorded).
-    $studio = Get-Prop (Invoke-ObsRequest $ctx.Session 'GetStudioModeEnabled' @{}) 'studioModeEnabled'
-    if ($studio) { [void] (Invoke-ObsRequest $ctx.Session 'SetStudioModeEnabled' @{ studioModeEnabled = $false }) }
-    $record['studioModeInitially'] = $studio
-    $record['studioModeEnabled'] = Get-Prop (Invoke-ObsRequest $ctx.Session 'GetStudioModeEnabled' @{}) 'studioModeEnabled'
-    $outputs = [ordered]@{}
-    foreach ($req in @('GetStreamStatus', 'GetRecordStatus', 'GetVirtualCamStatus', 'GetReplayBufferStatus')) {
-        try { $outputs[$req] = [bool] (Get-Prop (Invoke-ObsRequest $ctx.Session $req @{}) 'outputActive') } catch { $outputs[$req] = "unavailable: $($_.Exception.Message)" }
+        $ctx.Obs = New-ObsPortable -RunDir (Join-Path $rootBase "$name-obs")
+        $script:obsLaunchQpc = Get-Qpc
+        $ctx.ObsProcess = Start-ObsPortable $ctx.Obs
+        $ctx.ObsStart = $ctx.ObsProcess.StartTime
+        $ctx.Session = Connect-ObsWebSocket $ctx.Obs
+        $ctx.Items = Initialize-ObsOverlayEightSourceScene $ctx.Session $specs
+        $record['sceneSpecs'] = $specs
+        $record['sceneItems'] = $ctx.Items
+        $version = Invoke-ObsRequest $ctx.Session 'GetVersion' @{}
+        $record['obsVersion'] = Get-Prop $version 'obsVersion'
+        # Environment: Studio Mode off, no outputs, preview + browser HW acceleration at defaults (recorded).
+        $studio = Get-Prop (Invoke-ObsRequest $ctx.Session 'GetStudioModeEnabled' @{}) 'studioModeEnabled'
+        if ($studio) { [void] (Invoke-ObsRequest $ctx.Session 'SetStudioModeEnabled' @{ studioModeEnabled = $false }) }
+        $record['studioModeInitially'] = $studio
+        $record['studioModeEnabled'] = Get-Prop (Invoke-ObsRequest $ctx.Session 'GetStudioModeEnabled' @{}) 'studioModeEnabled'
+        $outputs = [ordered]@{}
+        foreach ($req in @('GetStreamStatus', 'GetRecordStatus', 'GetVirtualCamStatus', 'GetReplayBufferStatus')) {
+            # Code 604 means the output isn't configured (for example, replay buffer off), so it can't be active.
+            try { $outputs[$req] = [bool] (Get-Prop (Invoke-ObsRequest $ctx.Session $req @{}) 'outputActive') } catch { $outputs[$req] = if ($_.Exception.Message -match 'code 604\b') { $false } else { "unavailable: $($_.Exception.Message)" } }
+        }
+        $record['outputsActive'] = $outputs
+        $configDir = Join-Path $ctx.Obs.RunDir 'config/obs-studio'
+        $record['previewEnabled'] = Read-IniValue $configDir 'BasicWindow' 'PreviewEnabled'
+        $record['browserHWAccel'] = Read-IniValue $configDir 'General' 'BrowserHWAccel'
+        $record['previewEnabledNote'] = 'absent key = OBS default (preview shown)'
+        $record['browserHWAccelNote'] = 'absent key = OBS default (enabled)'
+        $settings = $ctx.Items[$ctx.ActiveTheme].settings
+        $record['source'] = [ordered]@{ url = Get-Prop $settings 'url'; width = Get-Prop $settings 'width'; height = Get-Prop $settings 'height'
+            shutdown = Get-Prop $settings 'shutdown'; fps = Get-Prop $settings 'fps'; fps_custom = Get-Prop $settings 'fps_custom' }
+        $ctx.ItemId = $ctx.Items[$ctx.ActiveTheme].itemId
+        $ctx.ItemEnabled = $false
+        $envOk = ($record['studioModeEnabled'] -eq $false) -and @($outputs.Values | Where-Object {$_ -ne $false}).Count -eq 0 -and
+            (Get-Prop $settings 'shutdown') -eq $true -and "$($record['obsVersion'])" -like "$script:ObsPortableVersion*"
+        $record['environmentOk'] = $envOk
+        if (-not $envOk) { throw "$name`: OBS environment differs from the G3 seeds (see launches[$($script:launchIndex - 1)])." }
+        $ctx
+    } catch {
+        $launchError = $_
+        try { Stop-Launch $ctx } catch { Add-RunError 'stopLaunch' $WorkloadName $Block $ctx.Launch $_ }
+        throw $launchError
     }
-    $record['outputsActive'] = $outputs
-    $configDir = Join-Path $ctx.Obs.RunDir 'config/obs-studio'
-    $record['previewEnabled'] = Read-IniValue $configDir 'BasicWindow' 'PreviewEnabled'
-    $record['browserHWAccel'] = Read-IniValue $configDir 'General' 'BrowserHWAccel'
-    $record['previewEnabledNote'] = 'absent key = OBS default (preview shown)'
-    $record['browserHWAccelNote'] = 'absent key = OBS default (enabled)'
-    $settings = $ctx.Items[$ctx.ActiveTheme].settings
-    $record['source'] = [ordered]@{ url = Get-Prop $settings 'url'; width = Get-Prop $settings 'width'; height = Get-Prop $settings 'height'
-        shutdown = Get-Prop $settings 'shutdown'; fps = Get-Prop $settings 'fps'; fps_custom = Get-Prop $settings 'fps_custom' }
-    $ctx.ItemId = $ctx.Items[$ctx.ActiveTheme].itemId
-    $ctx.ItemEnabled = $false
-    $envOk = ($record['studioModeEnabled'] -eq $false) -and @($outputs.Values | Where-Object {$_ -ne $false}).Count -eq 0 -and
-        (Get-Prop $settings 'shutdown') -eq $true -and "$($record['obsVersion'])" -like "$script:ObsPortableVersion*"
-    $record['environmentOk'] = $envOk
-    if (-not $envOk) { throw "$name`: OBS environment differs from the G3 seeds (see launches[$($script:launchIndex - 1)])." }
-    $ctx
 }
 function Stop-Launch($Ctx) {
     if (-not $Ctx) { return }
@@ -923,7 +931,8 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $q = Get-Qpc
         $a = Measure-Tree $appTree $appSeen; $o = Measure-Tree $obsTree $obsSeen
         foreach ($processEntry in @($appTree)+@($obsTree)) {[void]$Ctx.ArmTrace.ids.Add($processEntry.pid)}
-        $liveAppKeys = @($appTree.key); $liveObsKeys = @($obsTree.key)
+        # StrictMode: member enumeration on an empty array (AppOnly has no OBS tree) throws, so project explicitly.
+        $liveAppKeys = @($appTree | ForEach-Object { $_.key }); $liveObsKeys = @($obsTree | ForEach-Object { $_.key })
         if (@($appNames.Keys | Where-Object {$_ -notin $liveAppKeys}).Count -or @($obsNames.Keys | Where-Object {$_ -notin $liveObsKeys}).Count) { & $invalid 'descendant process exited inside measurement window' }
         $rc = Get-RoleCpu $appSeen $roleByKey
         $gpu = if ($gpuOk) { Read-GpuSum $obsPids } else { $null }

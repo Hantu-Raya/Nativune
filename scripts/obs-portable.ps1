@@ -379,7 +379,8 @@ function Initialize-ObsOverlayEightSourceScene {
         if ($spec.theme -notin @('pill','matte','matte-light','standard','classic','simple','album-art','card') -or $spec.id -notmatch '^[a-z0-9]{8}$' -or $spec.url -notmatch '^http://localhost:47813/\?look=[a-z0-9]{8}(?:&sample=(?:playing|paused|noart))?$' -or $spec.width -lt 40 -or $spec.height -lt 40) { throw 'Invalid browser scene specification.' }
         $name = "Nativune $($spec.theme)"
         $settings = @{url=$spec.url;width=[int]$spec.width;height=[int]$spec.height;fps_custom=$true;fps=30;shutdown=$true;restart_when_active=$false;webpage_control_level=0}
-        $inputNames = @((Invoke-ObsRequest $Session 'GetInputList' @{}).inputs.inputName)
+        # StrictMode: a fresh portable profile has no inputs, and member enumeration on an empty array throws.
+        $inputNames = @(@((Invoke-ObsRequest $Session 'GetInputList' @{}).inputs) | ForEach-Object { $_.inputName })
         if ($inputNames -contains $name) {
             [void](Invoke-ObsRequest $Session 'SetInputSettings' @{inputName=$name;inputSettings=$settings;overlay=$true})
         } else {
