@@ -2,7 +2,7 @@
 
 Nativune can show what you're playing as a small "now playing" bar in OBS Studio: the song's title, artist, artwork and a progress fill. You add it to OBS as a Browser source. It is optional and off by default.
 
-> **Early preview.** The overlay and the Overlay designer are still being worked on: themes and options may change in later versions, and the designer's live preview uses noticeable extra CPU while it is open. When the overlay is off, none of it runs.
+> **Early preview: things will change.** The overlay and the Overlay designer are still being worked on. Themes, options, link formats and saved looks may change in later versions, and the designer's live preview uses noticeable extra CPU while it is open. When the overlay is off, none of it runs.
 
 ![The overlay in OBS: a rounded bar with the song's artwork, title and artist, and a fill that follows the song's progress, then changing to the next song](images/obs-overlay/04-overlay.gif)
 
@@ -101,6 +101,10 @@ Once it's set up, you don't need Settings to turn the overlay on or off. The **O
 While the overlay is running, open **Settings › OBS** and click **Open Overlay designer…**. The native **Overlay designer** window lets you create and edit saved looks.
 
 Choose one of eight themes in **Theme**: **Pill**, **Matte**, **Matte light**, **Standard**, **Classic**, **Simple**, **Album art** or **Card**. Each saved look has its own theme and options. You can keep up to 16 saved looks.
+
+![The eight themes with a sample song: Pill, Matte, Matte light, Standard, Classic, Simple, Album art and Card](images/obs-overlay/themes.png)
+
+![The Overlay designer: the early-preview notice, three saved looks (Stream card, Chat pill, Lower third), the look's options and a live Card preview on a checkerboard](images/obs-overlay/designer.png)
 
 ### Create, edit and use a look
 
