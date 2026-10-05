@@ -50,6 +50,30 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+#if INSTALLER_TEST_HOOKS
+        if (args.Length > 0 && args[0] is "--test-shortcut-roundtrip" or "--test-detector-dump")
+        {
+            try
+            {
+                if (args.Length != 2 || !OperatingSystem.IsWindows())
+                {
+                    return (int)ExitCode.Usage;
+                }
+                if (args[0] == "--test-detector-dump")
+                {
+                    PrerequisiteInstaller.WriteDetectorDump(args[1]);
+                    return (int)ExitCode.Success;
+                }
+                // Production shortcut work runs on a Task.Run worker (RunInstallFlow, SetupWindow); match that apartment.
+                return Task.Run(() => TestShortcutRoundtrip(args[1])).GetAwaiter().GetResult();
+            }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine(error);
+                return (int)ExitCode.ShellFailure;
+            }
+        }
+#endif
         var silentRequested = args.Contains("--silent", StringComparer.Ordinal);
         var updateRequested = args.Contains("--update", StringComparer.Ordinal);
         SetupOptions? options = null;
@@ -138,6 +162,58 @@ internal static class Program
             return (int)ExitCode.IoFailure;
         }
     }
+
+#if INSTALLER_TEST_HOOKS
+    private static int TestShortcutRoundtrip(string directory)
+    {
+        directory = Path.GetFullPath(directory);
+        if (!Directory.Exists(directory))
+        {
+            return (int)ExitCode.Usage;
+        }
+        InstallRoot.EnsureNoReparseChain(directory);
+        var root = Path.Combine(directory, "root");
+        var other = Path.Combine(directory, "other");
+        var owned = Path.Combine(directory, "owned.lnk");
+        var foreign = Path.Combine(directory, "foreign.lnk");
+        var report = Path.Combine(directory, "shortcut-report.json");
+        foreach (var path in new[] { owned, foreign, report })
+        {
+            InstallRoot.EnsureNoReparseChain(path);
+            if (InstallRoot.PathExists(path))
+            {
+                throw new IOException($"Shortcut fixture output already exists: {path}");
+            }
+        }
+        ShellManager.CreateShortcut(owned, root);
+        var ownedMatchesRoot = ShellManager.IsShortcutForRoot(owned, root);
+        var ownedMatchesOther = ShellManager.IsShortcutForRoot(owned, other);
+        ShellManager.CreateShortcut(foreign, other);
+        var foreignMatchesRoot = ShellManager.IsShortcutForRoot(foreign, root);
+        // Optional: a shortcut written beforehand by the old WScript.Shell code for the same root.
+        var legacy = Path.Combine(directory, "legacy.lnk");
+        bool? legacyMatchesRoot = File.Exists(legacy) ? ShellManager.IsShortcutForRoot(legacy, root) : null;
+        var properties = ShellManager.ReadShortcut(owned);
+        using var stream = new FileStream(report, FileMode.CreateNew, FileAccess.Write);
+        using var writer = new Utf8JsonWriter(stream);
+        writer.WriteStartObject();
+        writer.WriteString("TargetPath", properties.TargetPath);
+        writer.WriteString("Arguments", properties.Arguments);
+        writer.WriteString("WorkingDirectory", properties.WorkingDirectory);
+        writer.WriteString("Description", properties.Description);
+        writer.WriteString("IconLocation", properties.IconLocation);
+        writer.WriteNumber("IconIndex", properties.IconIndex);
+        writer.WriteBoolean("ownedMatchesRoot", ownedMatchesRoot);
+        writer.WriteBoolean("ownedMatchesOther", ownedMatchesOther);
+        writer.WriteBoolean("foreignMatchesRoot", foreignMatchesRoot);
+        if (legacyMatchesRoot is { } legacyResult)
+            writer.WriteBoolean("legacyMatchesRoot", legacyResult);
+        writer.WriteEndObject();
+        return ownedMatchesRoot && !ownedMatchesOther && !foreignMatchesRoot && legacyMatchesRoot is null or true
+            ? (int)ExitCode.Success
+            : (int)ExitCode.ShellFailure;
+    }
+#endif
 
     private static int RunInstallFlow(InstallerEngine engine, string root, SetupOptions options)
     {
@@ -1296,7 +1372,7 @@ internal static class ArgumentQuoter
 
 internal static class UpdateOutcomeWriter
 {
-    private sealed record OutcomeDocument(
+    internal sealed record OutcomeDocument(
         [property: JsonPropertyName("schemaVersion")] int SchemaVersion,
         [property: JsonPropertyName("fromVersion")] string? FromVersion,
         [property: JsonPropertyName("toVersion")] string ToVersion,
@@ -1366,7 +1442,7 @@ internal static class UpdateOutcomeWriter
                 (int)outcome.ExitCode,
                 outcome.ResultMessage,
                 DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(document);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(document, OutcomeJsonContext.Default.OutcomeDocument);
             if (bytes.Length > 16 * 1024)
             {
                 return;
@@ -1407,4 +1483,9 @@ internal static class UpdateOutcomeWriter
             }
         }
     }
+}
+
+[JsonSerializable(typeof(UpdateOutcomeWriter.OutcomeDocument))]
+internal partial class OutcomeJsonContext : JsonSerializerContext
+{
 }

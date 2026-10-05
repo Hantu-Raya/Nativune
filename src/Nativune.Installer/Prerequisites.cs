@@ -527,7 +527,20 @@ internal static class PrerequisiteInstaller
     private static bool HasWindowsAppSdkRuntime()
     {
         var manager = new PackageManager();
-        var packageRequirements = new (string FamilyName, Version MinimumVersion, ProcessorArchitecture Architecture, PackageTypes Type)[]
+        var packageRequirements = GetWindowsAppSdkRequirements();
+
+        foreach (var requirement in packageRequirements)
+        {
+            if (!HasWindowsAppSdkPackage(manager, requirement.FamilyName, requirement.MinimumVersion, requirement.Architecture, requirement.Type))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static (string FamilyName, Version MinimumVersion, ProcessorArchitecture Architecture, PackageTypes Type)[] GetWindowsAppSdkRequirements()
+        => new (string FamilyName, Version MinimumVersion, ProcessorArchitecture Architecture, PackageTypes Type)[]
         {
             ("Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe", WindowsAppSdkMinimumVersion, ProcessorArchitecture.X64, PackageTypes.Framework),
             ("MicrosoftCorporationII.WinAppRuntime.Main.2_8wekyb3d8bbwe", WindowsAppSdkMinimumVersion, ProcessorArchitecture.X64, PackageTypes.Main),
@@ -535,28 +548,65 @@ internal static class PrerequisiteInstaller
             ("Microsoft.WinAppRuntime.DDLM.2.5.1.0-x6_8wekyb3d8bbwe", WindowsAppSdkMinimumVersion, ProcessorArchitecture.X64, PackageTypes.Main),
         };
 
-        foreach (var requirement in packageRequirements)
+    private static bool HasWindowsAppSdkPackage(
+        PackageManager manager, string familyName, Version minimumVersion,
+        ProcessorArchitecture architecture, PackageTypes type)
+    {
+        foreach (var package in manager.FindPackagesForUserWithPackageTypes(
+            string.Empty,
+            familyName,
+            type))
         {
-            var found = false;
-            foreach (var package in manager.FindPackagesForUserWithPackageTypes(
-                string.Empty,
-                requirement.FamilyName,
-                requirement.Type))
+            if (package.Id.Architecture == architecture
+                && ToVersion(package.Id.Version) >= minimumVersion)
             {
-                if (package.Id.Architecture == requirement.Architecture
-                    && ToVersion(package.Id.Version) >= requirement.MinimumVersion)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-            {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
+
+#if INSTALLER_TEST_HOOKS
+    internal static void WriteDetectorDump(string path)
+    {
+        path = Path.GetFullPath(path);
+        InstallRoot.EnsureNoReparseChain(path);
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+        var manager = new PackageManager();
+        var requirements = GetWindowsAppSdkRequirements();
+        foreach (var requirement in requirements)
+        {
+            WriteRow(requirement.FamilyName, requirement.Type.ToString(), requirement.MinimumVersion,
+                HasWindowsAppSdkPackage(manager, requirement.FamilyName, requirement.MinimumVersion, requirement.Architecture, requirement.Type));
+        }
+        var first = requirements[0];
+        var highFloor = new Version(99, 0, 0, 0);
+        WriteRow(first.FamilyName, first.Type.ToString(), highFloor,
+            HasWindowsAppSdkPackage(manager, first.FamilyName, highFloor, first.Architecture, first.Type));
+        const string missingFamily = "Nativune.Nonexistent.Runtime_8wekyb3d8bbwe";
+        WriteRow(missingFamily, first.Type.ToString(), first.MinimumVersion,
+            HasWindowsAppSdkPackage(manager, missingFamily, first.MinimumVersion, first.Architecture, first.Type));
+        WriteRow("WindowsAppSDK", "overall", WindowsAppSdkMinimumVersion, HasWindowsAppSdkRuntime());
+        WriteRow("VC++", "overall", MinimumVcRuntimeVersion, HasVcRuntime());
+        WriteRow(".NET", "overall", RequiredDotNetMajorVersion, HasDotNetRuntime());
+        WriteRow("WebView2", "overall", MinimumWebView2Version, FindMissingWebView2(ReadWebView2Versions()) is null);
+
+        void WriteRow(string family, string type, Version floor, bool result)
+        {
+            using (var writer = new System.Text.Json.Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("family", family);
+                writer.WriteString("type", type);
+                writer.WriteString("floor", floor.ToString());
+                writer.WriteBoolean("result", result);
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+            stream.WriteByte((byte)'\n');
+        }
+    }
+#endif
 
     private static Version ToVersion(PackageVersion version)
         => new(version.Major, version.Minor, version.Build, version.Revision);
