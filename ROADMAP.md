@@ -11,8 +11,8 @@ This roadmap names areas for future work; it is not a release schedule or a prom
 
 ## Planned features
 
-- **OBS overlay.** Early preview, pending release (themes, options and the designer's preview CPU use are still being improved): an optional "now playing" overlay that OBS Studio adds as a Browser source, showing the current song, artist, artwork and progress. It is served only on this PC, off by default (Settings › OBS), and shares only the song details the Discord status already reads. See the [setup guide](docs/obs-overlay.md).
-- **Time-synced lyrics.** Implemented as Barebones Better Lyrics, a GPL-3.0 fork of [Better Lyrics](https://github.com/better-lyrics/better-lyrics) 2.4.1 stripped to synced lyrics and translation, shipped separately from the MIT app with its source beside each release. On by default (Settings › Lyrics turns it off); pending release.
+- **OBS overlay.** Released in 0.1.34 as an early preview, so it will change: themes, options and the designer's preview CPU use are still being improved. It is an optional "now playing" overlay that OBS Studio adds as a Browser source, showing the current song, artist, artwork and progress. It is served only on this PC, off by default (Settings › OBS), and shares only the song details the Discord status already reads. See the [setup guide](docs/obs-overlay.md).
+- **Time-synced lyrics.** Implemented as Barebones Better Lyrics, a GPL-3.0 fork of [Better Lyrics](https://github.com/better-lyrics/better-lyrics) 2.4.1 stripped to synced lyrics and translation, shipped separately from the MIT app with its source beside each release. On by default (Settings › Lyrics turns it off); released in 0.1.32.
 
 ## Known limitations
 
