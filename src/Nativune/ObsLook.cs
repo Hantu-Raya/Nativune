@@ -524,15 +524,15 @@ internal static class ObsLookValidation
     /// <summary>
     /// Trims <paramref name="name"/> and checks it (§4.1): at most 40 UTF-16 units, no control (U+0000-001F,
     /// U+007F-009F), line/paragraph separator (U+2028/2029) or bidi-format (U+200E/F, U+202A-E, U+2066-9) character,
-    /// no unpaired surrogate (the store could not serialise one). An empty name is valid here; the designer decides
-    /// whether to require one.
+    /// no unpaired surrogate (the store could not serialise one), and at least one character after trimming. Drafts
+    /// fall back to an empty name when this fails.
     /// </summary>
     internal static bool TryNormalizeName(string? name, out string trimmed)
     {
         trimmed = "";
         if (name is null) return false;
         var value = name.Trim();
-        if (value.Length > MaxNameUnits || !IsWellFormed(value)) return false;
+        if (value.Length == 0 || value.Length > MaxNameUnits || !IsWellFormed(value)) return false;
         foreach (var c in value)
         {
             if (IsControl(c)

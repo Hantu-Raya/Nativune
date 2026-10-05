@@ -4531,6 +4531,7 @@ function Test-AStore1 {
             (New-ObsLook 'good0001' $invalidName (New-DefaultPillOptions)),
             (New-ObsLook 'good0002' $separatorName (New-DefaultPillOptions)),
             (New-ObsLook 'good0003' $maliciousName (New-DefaultPillOptions)),
+            (New-ObsLook 'good0004' '   ' (New-DefaultPillOptions)),
             (New-ObsLook 'tomb0001' 'Active tombstone' (New-DefaultPillOptions)),
             [ordered]@{ id = 'bad'; name = 'Bad id'; options = (New-DefaultPillOptions) }
         )
@@ -4544,13 +4545,19 @@ function Test-AStore1 {
             $eventsWire = Read-SseRaw $literal
             $state = Get-Overlay (Get-State $run.Root 'normalizedRecords') 'looks'
             $nameRecord = (Read-ObsLooksFile $run.Root).looks | Where-Object { $_.id -eq 'good0003' } | Select-Object -First 1
-            Add-Check 'A-STORE-1.duplicatesAndNames' 'first duplicate id wins; control/separator names and invalid ids are skipped; malicious name stays literal; retired ids dedupe/filter' ([ordered]@{
+            Add-Check 'A-STORE-1.duplicatesAndNames' 'first duplicate id wins; control/separator/blank names and invalid ids are skipped; malicious name stays literal; retired ids dedupe/filter' ([ordered]@{
                 firstWidth = Get-Prop (Get-Prop (Get-Prop $first 'data') 'options') 'width'; count = Get-Prop $state 'count'
                 literalNameInSse = $eventsWire.Contains($maliciousName); storedName = $nameRecord.name }) (
                 $first -and (Get-Prop (Get-Prop $first.data 'options') 'width') -eq 320 -and
                 $literalLook -and -not $eventsWire.Contains($maliciousName) -and
                 $nameRecord.name -ceq $maliciousName -and (Get-Prop $state 'count') -eq 3)
         } finally { Stop-SseReader $dedupe; Stop-SseReader $literal }
+        $looksBeforeBlank = @((Read-ObsLooksFile $run.Root).looks).Count
+        $blankWrite = Invoke-ObsLookCommit $run.Root 79 @{ action = 'create'; name = '   '; options = (New-DefaultPillOptions) }
+        $looksAfterBlank = @((Read-ObsLooksFile $run.Root).looks).Count
+        Add-Check 'A-STORE-1.blankNameRejected' 'a blank or whitespace-only look name is rejected and nothing is saved' ([ordered]@{
+            ok = Get-Prop $blankWrite 'ok'; reason = Get-Prop $blankWrite 'reason'; before = $looksBeforeBlank; after = $looksAfterBlank }) (
+            (Get-Prop $blankWrite 'ok') -ne $true -and $looksAfterBlank -eq $looksBeforeBlank)
 
         $retiredWrite = Invoke-ObsLookCommit $run.Root 80 @{ action = 'create'; name = 'Normalize retired'; options = (New-DefaultPillOptions) }
         $retiredDocument = Read-ObsLooksFile $run.Root
