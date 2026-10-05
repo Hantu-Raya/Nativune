@@ -1,5 +1,5 @@
 # Dot-sourced by obs-overlay-e2e.ps1. Estimates never alter measurement windows or predicates.
-$script:rowInventoryVersion = 2
+$script:rowInventoryVersion = 3
 $script:requiredRowInventory = @()
 $script:completedInventorySections = @{}
 $script:frameRotation = $null
@@ -18,7 +18,7 @@ function Test-FrameRowSelected { param([string] $Id)
 }
 function Test-ScenarioSelected { param([string] $Name)
     switch ($Name) {
-        'A-LOOK' { return @( 'geometry', 'cadence', 'motion', 'regression', 'text' | Where-Object { Test-SectionSelected $_ }).Count -gt 0 }
+        'A-LOOK' { return @( 'geometry', 'fx', 'cadence', 'motion', 'regression', 'text' | Where-Object { Test-SectionSelected $_ }).Count -gt 0 }
         'A-FRAMES' { return Test-SectionSelected 'frames' }
         'A-TEXT' { return Test-SectionSelected 'text' }
         'A-PAUSEVIEW' { return Test-SectionSelected 'pauseview' }
@@ -123,8 +123,10 @@ function Get-RequiredRowInventory {
     $script:priorWorst = $null
     if ('A-LOOK' -in $selected) {
         foreach ($case in @(New-LookCases)) {
-            Add-InventoryRow "look.$($case.theme).$($case.case)" 'geometry' 'A-LOOK' 0 0 @{
-                class = 'look'; theme = $case.theme; case = $case.case; checkPattern = "A-LOOK.$($case.theme).$($case.case).*" }
+            $sectionName = if ($case.case -like 'fx-*') { 'fx' } else { 'geometry' }
+            Add-InventoryRow "look.$($case.theme).$($case.case)" $sectionName 'A-LOOK' 0 0 @{
+                class = 'look'; theme = $case.theme; case = $case.case; supplemental = $(if ($sectionName -eq 'fx') { 'LookFx-v1' } else { $null })
+                checkPattern = "A-LOOK.$($case.theme).$($case.case).*" }
         }
         if ($script:GateProfile -eq 'Fast-v2') {
             foreach ($rate in @(0.25, 2)) {
@@ -244,12 +246,23 @@ function Get-RequiredRowInventory {
                     class = 'idle'; theme = $theme; condition = $idle; label = "$theme-idle-$idle" }
             }
             }
-            Add-InventoryRow "frames.$theme.transitions" 'frames' 'A-FRAMES' 6 0 @{ class = 'transitions'; theme = $theme; label = "$theme-transitions" }
-            Add-InventoryRow "frames.$theme.lateart" 'frames' 'A-FRAMES' 18 0 @{ class = 'lateart'; theme = $theme; label = "$theme-late-art" }
+            $fx = $theme -in @('pill', 'standard', 'classic', 'album-art', 'card')
+            Add-InventoryRow "frames.$theme.transitions" 'frames' 'A-FRAMES' 6 0 @{
+                class = 'transitions'; theme = $theme; label = "$theme-transitions"; lookFxSupplemental = $fx; supplementalSeconds = $(if ($fx) { 3 } else { 0 })
+                waitSeconds = $(if ($fx) { 3 } else { 0 }) }
+            Add-InventoryRow "frames.$theme.lateart" 'frames' 'A-FRAMES' 18 0 @{
+                class = 'lateart'; theme = $theme; label = "$theme-late-art"; lookFxSupplemental = $fx; supplementalSeconds = $(if ($fx) { 3 } else { 0 })
+                waitSeconds = $(if ($fx) { 3 } else { 0 }) }
             if ($script:GateProfile -eq 'Exhaustive-v1') {
                 Add-InventoryRow "frames.network.$theme" 'frames' 'A-FRAMES' 1.5 0 @{ class = 'network'; theme = $theme; label = "$theme-network" }
             }
         }
+        Add-InventoryRow 'frames.fx.card.max-blur.playing' 'frames' 'A-FRAMES' 60 5 @{
+            class = 'playing'; theme = 'card'; config = 'max-k200'; width = 600; scale = 200; showTimes = $true
+            rate = 4; condition = 'fixture-max'; backgroundBlur = 32; supplemental = 'LookFx-v1'; label = 'fx.card.max-blur.playing' }
+        Add-InventoryRow 'frames.fx.card.max-blur.idlecheck' 'frames' 'A-FRAMES' 1 5 @{
+            class = 'fx-idlecheck'; theme = 'card'; condition = 'dim-Paused'; backgroundBlur = 32
+            supplemental = 'LookFx-v1'; label = 'fx.card.max-blur.idlecheck' }
         if ($script:GateProfile -eq 'Fast-v2') {
             $pointerPath = Join-Path $fixtureDirectory 'exhaustive-worst.json'
             if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
@@ -281,7 +294,8 @@ function Get-RequiredRowInventory {
         }
         Add-InventoryRow 'frames.renewal' 'frames' 'A-FRAMES' 20 0 @{ class = 'renewal'; label = 'renewal'; waitSeconds = 290 }
         if ($script:GateProfile -eq 'Exhaustive-v1') {
-            $script:frameRotation = Get-FrameRotation @($rows | Where-Object { $_.scenario -eq 'A-FRAMES' -and $_.class -eq 'playing' })
+            # Supplemental FX rows do not change the established covering-array anchor universe.
+            $script:frameRotation = Get-FrameRotation @($rows | Where-Object { $_.scenario -eq 'A-FRAMES' -and $_.class -eq 'playing' -and -not $_.Contains('supplemental') })
         }
     }
     foreach ($name in $selected | Where-Object { $_ -notin @('A-LOOK', 'A-FRAMES') }) {
@@ -297,7 +311,7 @@ function Get-RequiredRowInventory {
             } elseif ($script:LookCase.Count -ne 1 -or $script:LookCase[0] -cne '*') { $chosen = $false }
         }
         if ($row.scenario -eq 'A-FRAMES' -and $row.class -ne 'mutant') { $chosen = $chosen -and (Test-FrameRowSelected $row.id) }
-        if ($row.scenario -eq 'A-FRAMES' -and $row.class -eq 'playing' -and $script:Rotation) {
+        if ($row.scenario -eq 'A-FRAMES' -and $row.class -eq 'playing' -and $script:Rotation -and -not $row.Contains('supplemental')) {
             $chosen = $chosen -and $row.rotationSlice -eq $script:Rotation
         }
         if ($row.class -in @('shared-cadence', 'shared-network')) {
@@ -328,7 +342,7 @@ function Initialize-RequiredRowInventory {
     if ($script:LookCase.Count -ne 1 -or $script:LookCase[0] -cne '*') {
         foreach ($pattern in $script:LookCase) {
             if (-not @($script:requiredRowInventory | Where-Object { $_.class -eq 'look' -and $_.selected -and "$($_.theme).$($_.case)" -like $pattern }).Count) {
-                throw "LookCase selector '$pattern' matches no selected geometry rows."
+                throw "LookCase selector '$pattern' matches no selected look rows."
             }
         }
     }
@@ -337,6 +351,9 @@ function Initialize-RequiredRowInventory {
     [IO.File]::WriteAllText((Join-Path $runDirectory 'inventory.json'), (ConvertTo-Json -Depth 12 -InputObject ([ordered]@{
         version = $script:rowInventoryVersion; protocol = $script:GateProfile; rotation = $script:frameRotation
         priorWorst = $script:priorWorst
+        supplemental = [ordered]@{ protocol = 'LookFx-v1'
+            rowIds = @($script:requiredRowInventory | Where-Object { (Get-Prop $_ 'supplemental') -eq 'LookFx-v1' } | ForEach-Object { $_.id })
+            extendedFrameRowIds = @($script:requiredRowInventory | Where-Object { (Get-Prop $_ 'lookFxSupplemental') -eq $true } | ForEach-Object { $_.id }) }
         predictedTotalSeconds = [double] $predicted; estimatesOnly = $true; rows = $script:requiredRowInventory })), [Text.UTF8Encoding]::new($false))
     Write-Host "Required-row inventory: $(@($script:requiredRowInventory | Where-Object { $_.selected }).Count) selected; predicted $predicted seconds (estimated overhead)."
 }
@@ -352,6 +369,18 @@ function Test-InventoryRowPassed($Row) {
         foreach ($suffix in @('lookBeforeData', 'stylesAndSizes', 'raster', 'domGeometry', 'fill', 'textContainment')) {
             if (-not @($rowChecks | Where-Object { $_.name -eq "A-LOOK.$key.$suffix" }).Count) { return $false }
         }
+        if ($Row.case -like 'fx-*') {
+            foreach ($suffix in @('colours', 'cache', 'equal', 'nameOnly', 'defaultIdentity', 'protectedStyles')) {
+                if (-not @($rowChecks | Where-Object { $_.name -eq "A-LOOK.$key.$suffix" }).Count) { return $false }
+            }
+            $extra = @()
+            if ($Row.theme -ne 'pill') { $extra += 'customAccent' }
+            if ($Row.theme -in @('standard', 'classic', 'card', 'album-art')) { $extra += 'inactive' }
+            if ($Row.case -eq 'fx-default' -and $Row.theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) { $extra += 'noArt' }
+            foreach ($suffix in $extra) {
+                if (-not @($rowChecks | Where-Object { $_.name -eq "A-LOOK.$key.$suffix" }).Count) { return $false }
+            }
+        }
     }
     $rowChecks.Count -gt 0 -and @($rowChecks | Where-Object { $_.status -ne 'pass' }).Count -eq 0
 }
@@ -362,5 +391,9 @@ function Get-RequiredRowCoverage {
     $fullMissing = @($script:requiredRowInventory | Where-Object { -not (Test-InventoryRowPassed $_) } | ForEach-Object { $_.id })
     [ordered]@{ selected = $selectedIds.Count; omitted = $omittedIds.Count; missing = $missingIds.Count
         selectedIds = $selectedIds; omittedIds = $omittedIds; missingIds = $missingIds
+        supplemental = [ordered]@{ protocol = 'LookFx-v1'
+            rowIds = @($script:requiredRowInventory | Where-Object { (Get-Prop $_ 'supplemental') -eq 'LookFx-v1' } | ForEach-Object { $_.id })
+            missingIds = @($script:requiredRowInventory | Where-Object { (Get-Prop $_ 'supplemental') -eq 'LookFx-v1' -and -not (Test-InventoryRowPassed $_) } | ForEach-Object { $_.id })
+            extendedFrameRowIds = @($script:requiredRowInventory | Where-Object { (Get-Prop $_ 'lookFxSupplemental') -eq $true } | ForEach-Object { $_.id }) }
         selectedMissing = $missingIds; fullMissing = $fullMissing; fullMissingCount = $fullMissing.Count }
 }

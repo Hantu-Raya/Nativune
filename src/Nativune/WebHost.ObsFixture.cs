@@ -114,6 +114,7 @@ public sealed partial class WebHostWindow
             await off.Core.ExecuteScriptAsync("window.__nativuneFixture.setClockMismatch(false)");
         if (TakeDiscordBenchCommand("command-navigate") && _browserHost is { } nav && !_closing && !_disposed)
             nav.Core.Reload();
+        await ProcessObsDesignerBenchCommandsAsync();
     }
 
     private static readonly JsonSerializerOptions ObsLookHookJsonOptions = new()
@@ -446,7 +447,8 @@ public sealed partial class WebHostWindow
             ("latestPosition", hook?.LatestPosition), ("latestDuration", hook?.LatestDuration),
             ("fixtureArtServed", hook?.FixtureArtServed ?? 0), ("pendingWrite", hook?.PendingWrite ?? false),
             ("hidePaused", hook?.HidePaused ?? _settings.ObsHidePaused),
-            ("reduceMotion", _settings.ReduceMotion)));
+            ("reduceMotion", _settings.ReduceMotion),
+            ("designer", ObsDesignerBenchStateJson()), ("lyrics", ObsLyricsBenchStateJson())));
     }
 
     private static string ObsLookCountsJson(IReadOnlyDictionary<string, int>? counts)

@@ -44,6 +44,7 @@ public sealed partial class OverlayDesignerWindow : Window
     private bool _overlayRunning;
     private bool _overlayOffPending;
     private string? _fontShown = "__initial__";
+    private readonly Dictionary<TextBox, string> _programmaticText = [];
 #if NATIVUNE_DISCORD_TEST_HOOKS
     private readonly List<object> _navigationDecisions = [];
 #endif
@@ -126,10 +127,12 @@ public sealed partial class OverlayDesignerWindow : Window
         NewLookButton.Click += async (_, _) => await AbandonAsync(() => LoadDraft(null));
         DuplicateLookButton.Click += async (_, _) =>
         {
-            var selected = SelectedSaved();
-            if (selected is null) return;
+            var selectedId = SelectedSaved()?.Id;
+            if (selectedId is null) return;
             await AbandonAsync(() =>
             {
+                var selected = _owner.DesignerLooks.Find(selectedId);
+                if (selected is null) { Report("The look was not found"); return; }
                 var units = Math.Min(33, selected.Name.Length);
                 if (units < selected.Name.Length && char.IsHighSurrogate(selected.Name[units - 1])) units--;
                 var name = selected.Name[..units] + " (copy)";
@@ -154,7 +157,7 @@ public sealed partial class OverlayDesignerWindow : Window
             if (selected?.Id == _sourceId) return;
             if (!await AbandonAsync(() => LoadDraft(selected))) RestoreSelection();
         };
-        LookNameBox.TextChanged += (_, _) => { if (!_loading) Edited(); };
+        LookNameBox.TextChanged += (_, _) => { if (!_loading && !IsProgrammaticTextChange(LookNameBox)) Edited(); };
         LookNameBox.LostFocus += (_, _) => ValidateName(false);
         ThemePicker.SelectionChanged += (_, _) =>
         {
@@ -215,6 +218,14 @@ public sealed partial class OverlayDesignerWindow : Window
         });
         WireNumber(WidthSlider, WidthBox, 10, x => { _sizeSuffix = ""; _options = _options with { Width = x }; SyncEditor(); Edited(); });
         WireNumber(OpacitySlider, OpacityBox, 1, x => { _options = _options with { BackgroundOpacity = x }; SyncEditor(); Edited(); });
+        WireFxNumber(BackgroundBlurSlider, BackgroundBlurBox, BackgroundBlurResetButton, BackgroundBlurStatusText, BackgroundBlurHelpText,
+            1, x => _options with { BackgroundBlur = x });
+        WireFxNumber(PlayedBrightnessSlider, PlayedBrightnessBox, PlayedBrightnessResetButton, PlayedBrightnessStatusText, PlayedBrightnessHelpText,
+            5, x => _options with { PlayedBrightness = x });
+        WireFxNumber(UnplayedBrightnessSlider, UnplayedBrightnessBox, UnplayedBrightnessResetButton, UnplayedBrightnessStatusText, UnplayedBrightnessHelpText,
+            5, x => _options with { UnplayedBrightness = x });
+        WireFxNumber(BackgroundBrightnessSlider, BackgroundBrightnessBox, BackgroundBrightnessResetButton, BackgroundBrightnessStatusText, BackgroundBrightnessHelpText,
+            5, x => _options with { BackgroundBrightness = x });
         WireToggle(TextShadowToggle, x => { _shadowTouched = true; return _options with { TextShadow = x }; });
         WireToggle(ShowArtToggle, x => _options with { ShowArt = x });
         WireToggle(ShowArtistToggle, x => _options with { ShowArtist = x });
@@ -264,6 +275,8 @@ public sealed partial class OverlayDesignerWindow : Window
             AlignPicker, ColoursPicker, TextHexBox, ChooseTextColourButton, BackgroundHexBox, ChooseBackgroundColourButton,
             OpacitySlider, OpacityBox, AccentHexBox, ChooseAccentColourButton, TextShadowToggle, ShowArtToggle,
             ShowArtistToggle, ShowProgressToggle, ShowTimesToggle, PausedPicker, ShowAnimationPicker, HideAnimationPicker,
+            BackgroundBlurSlider, BackgroundBlurBox, BackgroundBlurResetButton, PlayedBrightnessSlider, PlayedBrightnessBox, PlayedBrightnessResetButton,
+            UnplayedBrightnessSlider, UnplayedBrightnessBox, UnplayedBrightnessResetButton, BackgroundBrightnessSlider, BackgroundBrightnessBox, BackgroundBrightnessResetButton,
             CopyLinkButton, SaveLookButton, RevertChangesButton, PreviewSongSourcePicker, PreviewStatePicker,
             PreviewBackgroundPicker, OverlayPreviewEntry, RetryPreviewButton, ReloadLooksButton })
         {
@@ -282,7 +295,17 @@ public sealed partial class OverlayDesignerWindow : Window
         slider.LargeChange = step * 5;
         int Snap(double value) => (int)Math.Clamp(Math.Round(value / step, MidpointRounding.AwayFromZero) * step, slider.Minimum, slider.Maximum);
         slider.ValueChanged += (_, args) => { if (!_loading) set(Snap(args.NewValue)); };
-        box.ValueChanged += (_, args) => { if (!_loading && double.IsFinite(args.NewValue)) set(Snap(args.NewValue)); };
+        box.ValueChanged += (_, args) =>
+        {
+            if (_loading) return;
+            if (double.IsFinite(args.NewValue)) set(Snap(args.NewValue));
+            else
+            {
+                _loading = true;
+                try { box.Value = slider.Value; }
+                finally { _loading = false; }
+            }
+        };
         slider.KeyDown += (_, args) =>
         {
             if (args.Key is not (VirtualKey.PageUp or VirtualKey.PageDown)) return;
@@ -290,23 +313,54 @@ public sealed partial class OverlayDesignerWindow : Window
             slider.Value = Snap(slider.Value + (args.Key == VirtualKey.PageUp ? 5 : -5) * step);
         };
     }
+    private void WireFxNumber(Slider slider, NumberBox box, Button reset, TextBlock status, TextBlock help,
+        int step, Func<int?, ObsLookOptions> change)
+    {
+        void Apply(int? value)
+        {
+            if (_loading) return;
+            var next = change(value);
+            if (next == _options) { SyncEditor(); return; }
+            _options = next; SyncEditor(); Edited();
+        }
+        WireNumber(slider, box, step, x => Apply(x));
+        reset.Click += (_, _) => Apply(null);
+        foreach (var control in new Control[] { slider, box, reset })
+        {
+            AutomationProperties.GetDescribedBy(control).Add(status);
+            AutomationProperties.GetDescribedBy(control).Add(help);
+        }
+    }
     private void WireToggle(CheckBox box, Func<bool, ObsLookOptions> change)
     {
-        box.Checked += (_, _) => { if (!_loading) { _options = change(true); Edited(); } };
-        box.Unchecked += (_, _) => { if (!_loading) { _options = change(false); Edited(); } };
+        box.Checked += (_, _) => { if (!_loading) { _options = change(true); SyncEditor(); Edited(); } };
+        box.Unchecked += (_, _) => { if (!_loading) { _options = change(false); SyncEditor(); Edited(); } };
+    }
+    private void SetEditorText(TextBox box, string text)
+    {
+        // TextChanged can arrive after _loading is cleared.
+        _programmaticText[box] = text;
+        box.Text = text;
+    }
+    private bool IsProgrammaticTextChange(TextBox box)
+    {
+        if (_programmaticText.TryGetValue(box, out var text) && box.Text == text) return true;
+        // Real typing may later return to the original value; it must still be processed.
+        _programmaticText.Remove(box);
+        return false;
     }
     private void WireColour(TextBox box, TextBlock error, Button choose, Func<string> get, Action<string> set)
     {
         box.TextChanged += (_, _) =>
         {
-            if (_loading) return;
+            if (_loading || IsProgrammaticTextChange(box)) return;
             if (ObsLookValidation.NormalizeColour(box.Text) is { } valid) set(valid);
             Edited();
         };
         box.LostFocus += (_, _) => ValidateColour(box, error, false);
         choose.Click += (_, _) => OpenColourFlyout(choose, get(), colour =>
         {
-            set(colour); _loading = true; box.Text = colour; _loading = false;
+            set(colour); _loading = true; SetEditorText(box, colour); _loading = false;
             ClearError(box, error); SyncEditor(); Edited();
         });
     }
@@ -337,7 +391,7 @@ public sealed partial class OverlayDesignerWindow : Window
         _sourceId = duplicate ? null : saved?.Id;
         _options = saved?.Options ?? ObsLookOptions.Defaults();
         _sizeSuffix = ""; _accentSeeded = false; _shadowTouched = false;
-        _loading = true; LookNameBox.Text = saved?.Name ?? "New look"; _loading = false;
+        _loading = true; SetEditorText(LookNameBox, saved?.Name ?? "New look"); _loading = false;
         ClearError(LookNameBox, NameError);
         foreach (var (box, error) in ColourFields()) ClearError(box, error);
         SyncEditor(resetColours: true); RestoreSelection(); PublishDraft();
@@ -355,9 +409,22 @@ public sealed partial class OverlayDesignerWindow : Window
         WidthSlider.Minimum = WidthBox.Minimum = range.Min; WidthSlider.Maximum = WidthBox.Maximum = range.Max;
         WidthSlider.Value = WidthBox.Value = _options.Width;
         OpacitySlider.Value = OpacityBox.Value = _options.BackgroundOpacity;
-        if (resetColours || ObsLookValidation.NormalizeColour(TextHexBox.Text) is not null) TextHexBox.Text = _options.Text;
-        if (resetColours || ObsLookValidation.NormalizeColour(BackgroundHexBox.Text) is not null) BackgroundHexBox.Text = _options.Background;
-        if (resetColours || ObsLookValidation.NormalizeColour(AccentHexBox.Text) is not null) AccentHexBox.Text = _options.Accent;
+        var fxDefaults = ObsLookFxDefaults.Resolve(_options.Theme);
+        var supportsBackgroundFx = ObsLookFxDefaults.SupportsBackgroundFx(_options.Theme);
+        var backgroundFxActive = ObsLookFxDefaults.BackgroundFxActive(_options);
+        BackgroundBlurRow.Visibility = BackgroundBrightnessRow.Visibility = supportsBackgroundFx ? Visibility.Visible : Visibility.Collapsed;
+        var backgroundFxHelp = _options.Theme == ObsLookTheme.AlbumArt ? "Artwork is hidden." : "Uses the custom colour panel.";
+        SyncFxRow(BackgroundBlurSlider, BackgroundBlurBox, BackgroundBlurResetButton, BackgroundBlurStatusText, BackgroundBlurHelpText,
+            _options.BackgroundBlur, fxDefaults.Blur, "px", backgroundFxActive, backgroundFxHelp);
+        SyncFxRow(PlayedBrightnessSlider, PlayedBrightnessBox, PlayedBrightnessResetButton, PlayedBrightnessStatusText, PlayedBrightnessHelpText,
+            _options.PlayedBrightness, fxDefaults.Played, "%", _options.ShowProgress || _options.Theme == ObsLookTheme.Pill, "Progress is hidden.");
+        SyncFxRow(UnplayedBrightnessSlider, UnplayedBrightnessBox, UnplayedBrightnessResetButton, UnplayedBrightnessStatusText, UnplayedBrightnessHelpText,
+            _options.UnplayedBrightness, fxDefaults.Unplayed, "%", _options.ShowProgress, "Progress is hidden.");
+        SyncFxRow(BackgroundBrightnessSlider, BackgroundBrightnessBox, BackgroundBrightnessResetButton, BackgroundBrightnessStatusText, BackgroundBrightnessHelpText,
+            _options.BackgroundBrightness, fxDefaults.Background, "%", backgroundFxActive, backgroundFxHelp);
+        if (resetColours || ObsLookValidation.NormalizeColour(TextHexBox.Text) is not null) SetEditorText(TextHexBox, _options.Text);
+        if (resetColours || ObsLookValidation.NormalizeColour(BackgroundHexBox.Text) is not null) SetEditorText(BackgroundHexBox, _options.Background);
+        if (resetColours || ObsLookValidation.NormalizeColour(AccentHexBox.Text) is not null) SetEditorText(AccentHexBox, _options.Accent);
         TextShadowToggle.IsChecked = _options.TextShadow; ShowArtToggle.IsChecked = _options.ShowArt;
         ShowArtistToggle.IsChecked = _options.ShowArtist; ShowProgressToggle.IsChecked = _options.ShowProgress; ShowTimesToggle.IsChecked = _options.ShowTimes;
         var custom = _options.Colours == ObsLookColours.Custom;
@@ -376,6 +443,15 @@ public sealed partial class OverlayDesignerWindow : Window
         _loading = false;
         if (resetColours) UpdateSize();
         UpdateContrast(); RefreshButtons();
+    }
+    private static void SyncFxRow(Slider slider, NumberBox box, Button reset, TextBlock status, TextBlock help,
+        int? value, int defaultValue, string unit, bool active, string inactiveReason)
+    {
+        slider.Value = box.Value = value ?? defaultValue;
+        slider.IsEnabled = box.IsEnabled = reset.IsEnabled = active;
+        status.Text = value is null ? $"Theme default ({defaultValue}{(unit == "%" ? "" : " ")}{unit})" : "Custom";
+        help.Text = active ? "" : inactiveReason;
+        help.Visibility = active ? Visibility.Collapsed : Visibility.Visible;
     }
     private void PopulateFonts()
     {
@@ -453,6 +529,11 @@ public sealed partial class OverlayDesignerWindow : Window
             AutomationProperties.SetHelpText(row, "Select this saved look to edit it.");
             SavedLooksList.Items.Add(row);
         }
+        var empty = SavedLooksList.Items.Count == 0;
+        if (empty) SavedLooksList.IsTabStop = true;
+        else SavedLooksList.ClearValue(UIElement.IsTabStopProperty);
+        SavedLooksList.Header = empty ? "No saved looks" : null;
+        AutomationProperties.SetName(SavedLooksList, empty ? "Saved looks, empty" : "Saved looks");
         _loading = false; RestoreSelection(); RefreshButtons();
         StoreStatusText.Text = _owner.DesignerLooks.ReadOnlyReason ?? "";
         ReloadLooksButton.Visibility = _owner.DesignerLooks.IsReadOnly ? Visibility.Visible : Visibility.Collapsed;
@@ -682,9 +763,9 @@ public sealed partial class OverlayDesignerWindow : Window
             });
             created.MoveFocusRequested += (_, args) =>
             {
-                args.Handled = true;
-                if (args.Reason == CoreWebView2MoveFocusReason.Previous) OverlayPreviewEntry.Focus(FocusState.Programmatic);
-                else SavedLooksList.Focus(FocusState.Programmatic);
+                args.Handled = args.Reason == CoreWebView2MoveFocusReason.Previous
+                    ? OverlayPreviewEntry.Focus(FocusState.Programmatic)
+                    : SavedLooksList.Focus(FocusState.Programmatic);
             };
             created.AcceleratorKeyPressed += (_, args) =>
             {
@@ -869,6 +950,8 @@ public sealed partial class OverlayDesignerWindow : Window
         return new { open = !_closed, visible, navigated, dirty = Dirty, draftKey = _draftKey, draftRev = _draftRev,
             dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)),
             lastSavedRev = _lastSavedRev, sourceId = _sourceId, nonce = _nonce,
+            dialogActive = _dialogActive, dialogTitle = _activeDialog?.Title?.ToString(),
+            fonts = new { failed = _fonts.Failed, count = _fonts.Families.Count },
             state = _processFailed ? "Stopped" : _owner.DesignerPreviewState(_nonce),
             navigation = _navigationDecisions.ToArray(), hostVisible = visible,
             settings = new { hostObjects, webMessages }, options = _options, size = SourceSizeText.Text, result = DesignerResult.Text };

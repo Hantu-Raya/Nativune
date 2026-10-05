@@ -67,7 +67,9 @@ function Set-ObsPortableAcl([string] $Path) {
 
 function New-ObsPortable {
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [string] $RunDir)
+    param([Parameter(Mandatory)] [string] $RunDir, [ValidateRange(0,65535)] [int] $RemoteDebuggingPort = 0)
+    if ($RemoteDebuggingPort -and $RemoteDebuggingPort -lt 1024) { throw 'CDP port must be 1024..65535.' }
+    if ($RemoteDebuggingPort -and @(Get-NetTCPConnection -LocalPort $RemoteDebuggingPort -State Listen -ErrorAction SilentlyContinue).Count) { throw 'Requested CDP port already has a listener.' }
     $RunDir = [IO.Path]::GetFullPath($RunDir)
     if (Test-Path -LiteralPath $RunDir) { throw "Run folder already exists: $RunDir" }
     $ownerBefore = Get-OwnerObsProfileSnapshot
@@ -114,6 +116,7 @@ function New-ObsPortable {
         RunDir = $RunDir; Exe = $exe; Cwd = (Split-Path -Parent $exe); Port = $port; PasswordFile = $passwordFile
         ConfigDir = $config; SceneCollectionFile = $sceneFile; Version = $productVersion
         Process = $null; ProcessId = $null; StartTime = $null; OwnedCheck = $null; Paths = $null
+        RemoteDebuggingPort = $RemoteDebuggingPort; DebugListener = $null
         OwnerBefore = $ownerBefore; OwnerChanged = $null; Stopped = $false; SeededUtc = [DateTime]::UtcNow
     }
     } catch {
@@ -207,6 +210,11 @@ function Start-ObsPortable {
     if ($Obs.Process) { throw 'This portable OBS was already started.' }
     $arguments = @('--portable', '--multi', '--only-bundled-plugins', '--disable-updater', '--disable-missing-files-check',
         '--collection', $script:ObsPortableName, '--profile', $script:ObsPortableName)
+    # OBS 32.2.2 submodule 3f0a2cdf378939ebe3c6f9ab36d4ea100c25aac2:
+    # obs-browser-plugin.cpp:282-285,293,379-386 initializes CEF with command args enabled;
+    # browser-app.cpp:67-101 leaves this switch intact. CEF 6533 cef_types.h:442-453 documents it.
+    # https://github.com/obsproject/obs-browser/blob/3f0a2cdf378939ebe3c6f9ab36d4ea100c25aac2/obs-browser-plugin.cpp#L282-L293
+    if ($Obs.RemoteDebuggingPort) { $arguments += "--remote-debugging-port=$($Obs.RemoteDebuggingPort)" }
     $process = Start-Process -FilePath $Obs.Exe -ArgumentList $arguments -WorkingDirectory $Obs.Cwd -PassThru
     $Obs.Process = $process; $Obs.ProcessId = $process.Id; $Obs.StartTime = $process.StartTime
     try {
@@ -234,6 +242,7 @@ function Start-ObsPortable {
     }
     [void] (Update-ObsPortablePaths $Obs)
     if (-not $Obs.OwnedCheck.passed) { throw "Owned-instance check failed: $($Obs.OwnedCheck | ConvertTo-Json -Compress)" }
+    if ($Obs.RemoteDebuggingPort) { Assert-ObsDebugLoopback $Obs }
     return $process
     } catch {
         # Kill the owned tree and remove the run folder (Stop-ObsPortable is idempotent via $Obs.Stopped).
@@ -356,6 +365,59 @@ function Initialize-ObsOverlayScene {
         if (-not $p -or "$($p.Value)" -ne "$($settings[$k])") { throw "Initialize-ObsOverlayScene: setting '$k' reads '$(if ($p) { $p.Value })', expected '$($settings[$k])'." }
     }
     [pscustomobject]@{ sceneItemId = $itemId; settings = $read }
+}
+
+# One shared eight-source scene, used by the bench and the real-OBS E2E.
+# Specs: exactly eight {theme,id,url,width,height}; no probes/screenshots during performance windows.
+function Initialize-ObsOverlayEightSourceScene {
+    param([Parameter(Mandatory)] $Session, [Parameter(Mandatory)] [object[]] $Specs)
+    if ($Specs.Count -ne 8 -or @($Specs.theme | Select-Object -Unique).Count -ne 8) { throw 'Eight distinct theme specs required.' }
+    $scene = $script:ObsPortableSceneName
+    try { [void](Invoke-ObsRequest $Session 'CreateScene' @{sceneName=$scene}) } catch { if ($_.Exception.Message -notmatch 'code 601\b') { throw } }
+    $items = [ordered]@{}
+    foreach ($spec in $Specs) {
+        if ($spec.theme -notin @('pill','matte','matte-light','standard','classic','simple','album-art','card') -or $spec.id -notmatch '^[a-z0-9]{8}$' -or $spec.url -notmatch '^http://localhost:47813/\?look=[a-z0-9]{8}(?:&sample=(?:playing|paused|noart))?$' -or $spec.width -lt 40 -or $spec.height -lt 40) { throw 'Invalid browser scene specification.' }
+        $name = "Nativune $($spec.theme)"
+        $settings = @{url=$spec.url;width=[int]$spec.width;height=[int]$spec.height;fps_custom=$true;fps=30;shutdown=$true;restart_when_active=$false;webpage_control_level=0}
+        $inputNames = @((Invoke-ObsRequest $Session 'GetInputList' @{}).inputs.inputName)
+        if ($inputNames -contains $name) {
+            [void](Invoke-ObsRequest $Session 'SetInputSettings' @{inputName=$name;inputSettings=$settings;overlay=$true})
+        } else {
+            [void](Invoke-ObsRequest $Session 'CreateInput' @{sceneName=$scene;inputName=$name;inputKind='browser_source';inputSettings=$settings;sceneItemEnabled=$false})
+        }
+        $item = (Invoke-ObsRequest $Session 'GetSceneItemId' @{sceneName=$scene;sourceName=$name}).sceneItemId
+        [void](Invoke-ObsRequest $Session 'SetSceneItemEnabled' @{sceneName=$scene;sceneItemId=$item;sceneItemEnabled=$false})
+        [void](Invoke-ObsRequest $Session 'SetSceneItemTransform' @{sceneName=$scene;sceneItemId=$item;sceneItemTransform=@{positionX=0;positionY=0;scaleX=1;scaleY=1}})
+        $read = (Invoke-ObsRequest $Session 'GetInputSettings' @{inputName=$name}).inputSettings
+        foreach ($k in $settings.Keys) { if ("$($read.$k)" -ne "$($settings[$k])") { throw "Scene input $name differs at $k." } }
+        $items[$spec.theme] = [pscustomobject]@{itemId=[int]$item;name=$name;lookId=$spec.id;settings=$read}
+    }
+    [void](Invoke-ObsRequest $Session 'SetCurrentProgramScene' @{sceneName=$scene})
+    $items
+}
+function Set-ObsOverlayEightSource {
+    param($Session, $Items, [string]$Theme)
+    if ($Theme -and -not $Items.Contains($Theme)) { throw "Unknown scene theme $Theme." }
+    foreach ($key in $Items.Keys) {
+        [void](Invoke-ObsRequest $Session 'SetSceneItemEnabled' @{sceneName=$script:ObsPortableSceneName;sceneItemId=$Items[$key].itemId;sceneItemEnabled=$false})
+    }
+    if ($Theme) { [void](Invoke-ObsRequest $Session 'SetSceneItemEnabled' @{sceneName=$script:ObsPortableSceneName;sceneItemId=$Items[$Theme].itemId;sceneItemEnabled=$true}) }
+    $visible = @((Invoke-ObsRequest $Session 'GetSceneItemList' @{sceneName=$script:ObsPortableSceneName}).sceneItems | Where-Object sceneItemEnabled)
+    if ($visible.Count -ne $(if ($Theme) {1} else {0})) { throw 'Scene must show exactly one source, or zero for B.' }
+}
+function Assert-ObsDebugLoopback {
+    param([Parameter(Mandatory)]$Obs)
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $listeners = @(Get-NetTCPConnection -LocalPort $Obs.RemoteDebuggingPort -State Listen -ErrorAction SilentlyContinue)
+        if ($listeners.Count) { break }
+        if ($Obs.Process.HasExited) { throw 'OBS exited before CDP listener appeared.' }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not $listeners.Count -or @($listeners | Where-Object { $_.LocalAddress -notin @('127.0.0.1','::1') -or $_.OwningProcess -ne $Obs.ProcessId }).Count) {
+        throw 'CDP blocked: listener must exist only on loopback and belong to the owned OBS PID.'
+    }
+    $Obs.DebugListener = @($listeners | Select-Object LocalAddress,LocalPort,OwningProcess)
 }
 
 # Graceful close (WM_CLOSE via the main window; OBS saves the scene collection on exit), then relaunch the same run

@@ -4,7 +4,6 @@
 // options, default `data` events carry the song. Every look received is applied in arrival order; epoch and seq are
 // diagnostics and never a filter (SSE delivers in order, and a restarted server starts a new epoch at seq 1).
 
-const BLUR = 14;
 const FADE_MS = 500, RISE_PX = 12, DIM = 0.7;
 const CONNECTING_HIDE_MS = 5000, CLOSED_RETRY_MS = 30000;
 
@@ -31,6 +30,18 @@ const themeDefaults = theme => ({
   shadow: !['matte', 'matte-light'].includes(theme)
 });
 
+// Logical blur px and percentages; null overrides always resolve through the current theme.
+const effectDefaults = {
+  pill: [14, 115, 45, 100], matte: [0, 100, 100, 100], 'matte-light': [0, 100, 0, 100],
+  standard: [14, 100, 100, 40], classic: [14, 100, 100, 40], simple: [0, 100, 0, 100],
+  'album-art': [0, 100, 100, 100], card: [16, 100, 100, 35]
+};
+const effectsOf = o => {
+  const d = effectDefaults[o.theme];
+  return { blur: o.backgroundBlur ?? d[0], played: o.playedBrightness ?? d[1],
+    unplayed: o.unplayedBrightness ?? d[2], background: o.backgroundBrightness ?? d[3] };
+};
+
 // Artwork comes only from this server's own /art/<key> route or its generated /art/sample cover; anything else shows no art.
 const acceptArtwork = url => typeof url === 'string' && /^\/art\/(?:[0-9a-f]{16}|sample)$/.test(url) ? url : null;
 
@@ -54,7 +65,7 @@ const state = {
   receivedAt: null, projectedPosition: null, hidePaused: true,
   // The last applied look and what it resolved to (read by the hook build only).
   look: null, lookEpoch: null, lookSeq: null, lookReceivedAt: null,
-  theme: null, box: null, source: null, boxMismatch: null, options: null,
+  theme: null, box: null, source: null, boxMismatch: null, options: null, fx: null,
   accent: null, fontAvailable: null, reduceMotion: false
 };
 // Raster and scheduler work counters (hook build only reads them); quantizerRuns is reserved for the themes' accent sampler.
@@ -70,6 +81,7 @@ const artistEl = document.getElementById('artist');
 const elapsedEl = document.getElementById('elapsed');
 const durationEl = document.getElementById('duration');
 let thumb = document.getElementById('thumb');
+const coverFx = document.getElementById('cover-fx');
 const bar = document.getElementById('bar');
 const barfill = document.getElementById('barfill');
 const barhead = document.getElementById('barhead');
@@ -79,11 +91,12 @@ let opts = null;         // options of the applied look (the defaults until the 
 let geo = null;          // box and source size of the applied look
 let artUrl = null;       // accepted artwork URL currently loaded or loading
 let artImg = null;       // bitmap currently drawn on the band canvases, kept so a size change can redraw it
-let rasterKey = '';      // art URL, theme, box, colour mode, background and cover visibility
+let rasterKey = '';      // artwork, geometry, paint mode and applicable resolved effects
 let artImgUrl = null;
 let blurRasterScale = 1;
 const accentCanvas = document.createElement('canvas');
 accentCanvas.width = accentCanvas.height = 32;
+const accentCache = new WeakMap(); // loaded bitmap identity -> theme -> sampled accent
 let source = null;       // the one EventSource
 let connGen = 0;         // connection generation; timers check it
 let lossTimer = 0, retryTimer = 0;
@@ -118,6 +131,10 @@ function normalizeOptions(raw) {
     align: oneOf(r.align, ALIGNS, theme === 'pill' ? 'center' : 'left'), colours: oneOf(r.colours, ['auto', 'custom'], 'auto'),
     text: hexColour(r.text, d.text), background: hexColour(r.background, d.bg),
     backgroundOpacity: snapped(r.backgroundOpacity, 0, 100, 1, d.opacity), accent: hexColour(r.accent, PILL.accent),
+    backgroundBlur: snapped(r.backgroundBlur, 0, 32, 1, null),
+    playedBrightness: snapped(r.playedBrightness, 0, 200, 5, null),
+    unplayedBrightness: snapped(r.unplayedBrightness, 0, 100, 5, null),
+    backgroundBrightness: snapped(r.backgroundBrightness, 0, 200, 5, null),
     textShadow: flag(r.textShadow, d.shadow), showArt: flag(r.showArt, true), showArtist: flag(r.showArtist, true),
     showProgress: flag(r.showProgress, true), showTimes: flag(r.showTimes, true),
     paused: oneOf(r.paused, ['hide', 'dim'], 'hide'),
@@ -179,13 +196,14 @@ function geometry(o) {
 
 opts = normalizeOptions(null);
 geo = geometry(opts);
+state.fx = effectsOf(opts);
 
 // ---- style writes: fixed names only, values built from the validated primitives above ----
 
 const VARS = ['--k', '--w', '--h', '--th', '--text-h', '--sw', '--sh', '--font', '--title-font', '--align', '--fg',
-  '--bg', '--bg-a', '--accent', '--shadow', '--backdrop', '--status-x', '--status-y'];
+  '--bg', '--bg-a', '--accent', '--played-fill', '--unplayed-track', '--shadow', '--backdrop', '--status-x', '--status-y'];
 const ATTRS = ['data-theme', 'data-layout', 'data-colours', 'data-show-art', 'data-show-artist', 'data-show-progress', 'data-show-times',
-  'data-paused', 'data-anim-show', 'data-anim-hide', 'data-preview', 'data-backdrop', 'data-art', 'data-state', 'data-has-time'];
+  'data-paused', 'data-anim-show', 'data-anim-hide', 'data-preview', 'data-backdrop', 'data-art', 'data-cover-fx', 'data-state', 'data-has-time'];
 const written = new Map();
 
 function setVar(name, value) {
@@ -212,6 +230,20 @@ function luminance(hex) {
     return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+function syncProgressColours() {
+  const fx = effectsOf(opts);
+  const base = opts.colours === 'custom' || ['matte', 'matte-light'].includes(opts.theme) ? state.accent : '#ffffff';
+  const played = opts.theme === 'pill' || fx.played === 100 ? ''
+    : '#' + [1, 3, 5].map(i => Math.min(255, Math.round(parseInt(base.slice(i, i + 2), 16) * fx.played / 100))
+      .toString(16).padStart(2, '0')).join('');
+  const alpha = opts.theme === 'matte' ? .12 : opts.theme === 'matte-light' ? .18
+    : opts.theme === 'simple' ? .4 : opts.theme === 'album-art' ? .3 : .25;
+  const grey = Math.round(255 * fx.unplayed / 100);
+  setVar('--played-fill', played);
+  setVar('--unplayed-track', opts.theme === 'pill' || fx.unplayed === effectDefaults[opts.theme][2] ? ''
+    : `rgba(${grey},${grey},${grey},${alpha})`);
 }
 const shadowFor = (on, fg) => !on ? 'none'
   : luminance(fg) > 0.179 ? '0 1px 3px rgba(0, 0, 0, .8)' : '0 1px 2px rgba(255, 255, 255, .6)';
@@ -419,10 +451,20 @@ function sampledAccent(img) {
   return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
 }
 
+function artAccent(img) {
+  if (opts.colours === 'custom') return opts.accent;
+  if (opts.theme === 'pill') return PILL.accent;
+  let themes = accentCache.get(img);
+  if (!themes) { themes = new Map(); accentCache.set(img, themes); }
+  if (!themes.has(opts.theme)) themes.set(opts.theme, sampledAccent(img));
+  return themes.get(opts.theme);
+}
+
 function drawArt(img) {
   const w = colour.width, h = colour.height;
   const pillTheme = geo.theme === 'pill';
-  const blurCss = Math.round((geo.theme === 'card' ? 16 : BLUR) * geo.k * 10) / 10;
+  const fx = effectsOf(opts);
+  const blurCss = Math.round(fx.blur * geo.k * 10) / 10;
   const cssW = pillTheme ? w : geo.theme === 'classic' && opts.showArt ? geo.box.w - 90 * geo.k : geo.box.w;
   const cssH = pillTheme ? h : geo.box.h;
   const scale = Math.max((cssW + 4 * blurCss) / img.naturalWidth, (cssH + 4 * blurCss) / img.naturalHeight);
@@ -430,18 +472,40 @@ function drawArt(img) {
   const c = colour.getContext('2d');
   c.clearRect(0, 0, w, h);
   if (pillTheme) {
-    // Owner, 4 October (G2): the played part is a bit brighter and the remaining part a bit darker, so progress reads
-    // clearly. This intentionally changes the plain link too (A-PLAIN re-baselined from this build).
-    c.filter = `blur(${blurCss}px) saturate(1.3) brightness(1.15)`;
+    c.filter = `blur(${blurCss}px) saturate(1.3) brightness(${fx.played / 100 * (fx.background / 100)})`;
     c.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
     const g = grey.getContext('2d');
     g.clearRect(0, 0, w, h);
-    g.filter = `blur(${blurCss}px) grayscale(.75) brightness(.45)`;
+    g.filter = `blur(${blurCss}px) grayscale(.75) brightness(${fx.unplayed / 100 * (fx.background / 100)})`;
     g.globalAlpha = 0.6;
     g.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
   } else {
-    c.filter = `blur(${blurCss * blurRasterScale}px) brightness(${geo.theme === 'card' ? .35 : .4}) saturate(1.2)`;
+    c.filter = `blur(${blurCss * blurRasterScale}px) brightness(${fx.background / 100}) saturate(1.2)`;
     c.drawImage(img, (cssW - dw) / 2 * w / cssW, (cssH - dh) / 2 * h / cssH, dw * w / cssW, dh * h / cssH);
+  }
+}
+
+function clearCoverFx() {
+  coverFx.getContext('2d').clearRect(0, 0, coverFx.width, coverFx.height);
+  coverFx.width = coverFx.height = 1;
+  setAttr('data-cover-fx', 'false');
+}
+
+function drawCoverFx(img) {
+  const fx = effectsOf(opts), cssW = geo.box.w, cssH = geo.box.h;
+  const radius = Math.round(fx.blur * geo.k * 10) / 10;
+  const s = radius > 0 ? Math.min(1, Math.sqrt(100000 / (cssW * cssH))) : 1;
+  const w = Math.max(1, Math.floor(cssW * s)), h = Math.max(1, Math.floor(cssH * s));
+  coverFx.width = w; coverFx.height = h;
+  const scale = Math.max((cssW + 4 * radius) / img.naturalWidth, (cssH + 4 * radius) / img.naturalHeight);
+  const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+  try {
+    const c = coverFx.getContext('2d');
+    c.filter = `blur(${radius * s}px) brightness(${fx.background / 100}) saturate(1)`;
+    c.drawImage(img, (cssW - dw) / 2 * w / cssW, (cssH - dh) / 2 * h / cssH, dw * w / cssW, dh * h / cssH);
+    setAttr('data-cover-fx', 'true');
+  } catch {
+    clearCoverFx(); // Retain the original thumb/fallback if the effect raster cannot be drawn.
   }
 }
 
@@ -449,30 +513,41 @@ function clearArt() {
   artImg = null; artImgUrl = null; rasterKey = '';
   colour.getContext('2d').clearRect(0, 0, colour.width, colour.height);
   grey.getContext('2d').clearRect(0, 0, grey.width, grey.height);
+  clearCoverFx();
   thumb.removeAttribute('src');
   setAttr('data-art', 'false');
   state.accent = opts.colours === 'custom' ? opts.accent : PILL.accent;
   setVar('--accent', state.accent);
+  syncProgressColours();
 }
 
 // A look that keeps the raster key unchanged causes no raster work; a new size resizes the canvases and redraws the
 // bitmap that is on them. blurDraws counts a pass when it is scheduled (an art load or a redraw), one per key change.
 function syncRaster(g) {
+  const fx = effectsOf(opts);
   const background = opts.colours === 'custom' ? opts.background : themeDefaults(g.theme).bg;
-  const key = JSON.stringify([artUrl, g.theme, g.box.w, g.box.h, opts.colours, background, opts.showArt]);
+  const blurred = g.theme === 'pill' || ['standard', 'classic', 'card'].includes(g.theme) && opts.colours === 'auto';
+  const album = g.theme === 'album-art' && opts.showArt;
+  const albumFx = album && (fx.blur !== 0 || fx.background !== 100);
+  const effectKey = g.theme === 'pill' ? [fx.blur, fx.played, fx.unplayed, fx.background]
+    : blurred || album ? [fx.blur, fx.background] : null;
+  const key = JSON.stringify([artUrl, g.theme, g.box.w, g.box.h, g.k, opts.colours, background, opts.showArt, effectKey]);
   if (key === rasterKey) return;
   rasterKey = key;
-  const blurred = g.theme === 'pill' || ['standard', 'classic', 'card'].includes(g.theme) && opts.colours === 'auto';
   const cssW = g.theme === 'classic' && opts.showArt ? g.box.w - 90 * g.k : g.box.w;
   blurRasterScale = g.theme === 'pill' || !blurred ? 1 : Math.min(1, Math.sqrt(100000 / (cssW * g.box.h)));
+  // Preserve the compatibility pill's ceil raster: even its largest 800 x 112 canvas is below 100k.
+  // All capped rasters use the same isotropic scale, floor both dimensions and scale the blur radius.
   const w = !blurred ? 1 : g.theme === 'pill' ? Math.ceil(g.box.w) : Math.max(1, Math.floor(cssW * blurRasterScale));
   const h = !blurred ? 1 : g.theme === 'pill' ? Math.ceil(g.box.h) : Math.max(1, Math.floor(g.box.h * blurRasterScale));
   if (colour.width !== w || colour.height !== h) { colour.width = w; colour.height = h; }
   const gw = g.theme === 'pill' ? w : 1, gh = g.theme === 'pill' ? h : 1;
   if (grey.width !== gw || grey.height !== gh) { grey.width = gw; grey.height = gh; }
+  if (!albumFx) clearCoverFx();
   if (artImg !== null && artImgUrl === artUrl) {
     if (blurred) { counters.blurDraws++; drawArt(artImg); }
-    state.accent = opts.colours === 'custom' ? opts.accent : g.theme === 'pill' ? PILL.accent : sampledAccent(artImg);
+    if (albumFx) { counters.blurDraws++; drawCoverFx(artImg); }
+    state.accent = artAccent(artImg);
     setVar('--accent', state.accent);
   }
 }
@@ -497,6 +572,7 @@ function loadArt(raw) {
     if (seq !== state.artSeq) return;
     artImg = img; artImgUrl = url;
     rasterKey = ''; syncRaster(geo);
+    syncProgressColours();
     // Move the already-loaded image into the cover; assigning its URL to a second img would refetch no-store art.
     thumb.replaceWith(img); thumb = img;
     setAttr('data-art', 'true');
@@ -531,13 +607,14 @@ function applyLook(look, at) {
   geo = g;
   state.look = look; state.lookEpoch = look.epoch; state.lookSeq = look.seq; state.lookReceivedAt = at;
   state.options = o; state.theme = g.theme; state.box = g.box; state.source = g.source;
+  state.fx = effectsOf(o);
   state.boxMismatch = !sameSize(look.box, g.box) || !sameSize(look.source, g.source);
   state.fontAvailable = look.fontAvailable;
   state.reduceMotion = look.reduceMotion;
   if (look.hidePaused !== null) state.hidePaused = look.hidePaused;
   const custom = o.colours === 'custom';
   const fg = custom ? o.text : themeDefaults(o.theme).text;
-  state.accent = custom ? o.accent : artImg !== null && artImgUrl === artUrl ? state.accent || PILL.accent : PILL.accent;
+  state.accent = custom ? o.accent : artImg !== null && artImgUrl === artUrl ? artAccent(artImg) : PILL.accent;
 
   setAttr('data-theme', g.theme);
   setAttr('data-layout', ['pill', 'album-art', 'card'].includes(g.theme) ? g.theme : 'horizontal');
@@ -568,6 +645,7 @@ function applyLook(look, at) {
   setVar('--shadow', o.theme === 'simple' && o.textShadow
     ? '0 1px 2px rgba(0,0,0,.9), 0 0 8px rgba(0,0,0,.7)' : shadowFor(o.textShadow, fg));
   syncRaster(g);
+  syncProgressColours();
   writePreview(look);
 
   // A push that makes the running transition instant (ReduceMotion on, or its own choice now none) ends it at its

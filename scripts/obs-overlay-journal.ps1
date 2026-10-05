@@ -5,6 +5,116 @@ $script:journalRows = @{}
 $script:resumeRows = @{}
 $script:resumeDirectory = ''
 $script:resumeRunId = ''
+$script:evidenceSequence = 0
+$script:evidenceRunKey = [Guid]::NewGuid().ToString('N')
+
+# "Compressed" means minified JSON, not gzip: retain values below 32 KiB of UTF-8.
+# Full evidence uses the same depth as the journal; serialization warnings fail, never truncate.
+function Get-RunEvidenceReferenceData($Value) {
+    if ($Value -is [Collections.IDictionary] -and $Value.Contains('evidenceRef')) { return $Value.evidenceRef }
+    if ($Value -is [pscustomobject] -and $Value.PSObject.Properties['evidenceRef']) { return $Value.evidenceRef }
+}
+function Get-RunEvidenceReferences($Value) {
+    if (($Value -is [Collections.IDictionary] -and $Value.Contains('evidenceRef')) -or
+        ($Value -is [pscustomobject] -and $Value.PSObject.Properties['evidenceRef'])) { return ,$Value }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($item in $Value.Values) { Get-RunEvidenceReferences $item }
+    } elseif ($Value -is [pscustomobject]) {
+        foreach ($property in $Value.PSObject.Properties) { Get-RunEvidenceReferences $property.Value }
+    } elseif ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in $Value) { Get-RunEvidenceReferences $item }
+    }
+}
+function Register-RunEvidenceReference($Value) {
+    if ($script:currentRowId) {
+        $reference = Get-RunEvidenceReferenceData $Value
+        $script:journalRows[$script:currentRowId].evidenceReferences[$reference.path] = $Value
+    }
+}
+function Get-ValidatedRunEvidencePath {
+    param($Value, [string] $Directory = $runDirectory)
+    $reference = Get-RunEvidenceReferenceData $Value
+    if ($null -eq $reference -or ($reference -isnot [Collections.IDictionary] -and $reference -isnot [pscustomobject]) -or
+        -not $reference.path -or [IO.Path]::IsPathRooted([string] $reference.path) -or
+        $reference.sha256 -cnotmatch '^[a-f0-9]{64}$' -or $reference.format -cne 'json' -or $reference.version -ne 1 -or
+        ($reference.bytes -isnot [int] -and $reference.bytes -isnot [long]) -or $reference.bytes -lt 0) {
+        throw 'Invalid run evidence reference.'
+    }
+    $summary = if ($Value -is [Collections.IDictionary]) {
+        if ($Value.Contains('summary')) { $Value.summary } else { $null }
+    } elseif ($Value.PSObject.Properties['summary']) { $Value.summary } else { $null }
+    $summaryJson = ConvertTo-Json -InputObject $summary -Depth 100 -Compress -WarningAction Stop
+    if ([Text.Encoding]::UTF8.GetByteCount($summaryJson) -gt 8192) { throw "Evidence summary exceeds 8 KiB: $($reference.path)" }
+    $path = Get-JournalArtifactPath $Directory ([string] $reference.path)
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing run evidence: $($reference.path)" }
+    $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if ($file.Length -ne $reference.bytes -or
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $reference.sha256) {
+        throw "Tampered run evidence: $($reference.path)"
+    }
+    return $path
+}
+function New-RunEvidenceReference {
+    param([string] $RelativePath, $Summary = $null)
+    if (-not $RelativePath -or [IO.Path]::IsPathRooted($RelativePath)) { throw 'Evidence path must be relative to the run directory.' }
+    $path = Get-JournalArtifactPath $runDirectory $RelativePath
+    $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if ($file.PSIsContainer) { throw "Evidence must be a file: $RelativePath" }
+    # Caller summaries are bounded too, so a new megagraph cannot hide in the wrapper.
+    $summaryJson = ConvertTo-Json -InputObject $Summary -Depth 100 -Compress -WarningAction Stop
+    if ([Text.Encoding]::UTF8.GetByteCount($summaryJson) -gt 8192) { throw "Evidence summary exceeds 8 KiB: $RelativePath" }
+    $value = [ordered]@{ evidenceRef = [ordered]@{
+        path = [IO.Path]::GetRelativePath($runDirectory, $path).Replace('\', '/')
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        bytes = $file.Length; format = 'json'; version = 1 }; summary = $Summary }
+    Register-RunEvidenceReference $value
+    return $value
+}
+function ConvertTo-RunEvidenceReference {
+    param($Value, [string] $Label, $Summary = $null)
+    $references = @(Get-RunEvidenceReferences $Value)
+    foreach ($reference in $references) {
+        [void] (Get-ValidatedRunEvidencePath $reference)
+        Register-RunEvidenceReference $reference
+    }
+    if ($null -ne (Get-RunEvidenceReferenceData $Value)) { return ,$Value }
+    $json = ConvertTo-Json -InputObject $Value -Depth 100 -Compress -WarningAction Stop
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    if ($bytes.Length -lt 32768) { return ,$Value }
+    $labelPart = ($Label -replace '[^a-zA-Z0-9._-]', '-')
+    if (-not $labelPart) { $labelPart = 'payload' }
+    if ($labelPart.Length -gt 80) { $labelPart = $labelPart.Substring(0, 80) }
+    if ($null -eq $Summary) { $Summary = [ordered]@{ label = $labelPart; externalized = $true } }
+    $script:evidenceSequence++
+    $relative = 'evidence/{0}-{1:D6}-{2}.json' -f $script:evidenceRunKey, $script:evidenceSequence, $labelPart
+    $path = Get-JournalArtifactPath $runDirectory $relative
+    $temporary = $path + '.tmp-' + [Guid]::NewGuid().ToString('N')
+    try {
+        [void] [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+        $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        [IO.File]::Move($temporary, $path)
+        return New-RunEvidenceReference -RelativePath $relative -Summary $Summary
+    } catch {
+        throw "Cannot write run evidence '${relative}': $($_.Exception.Message)"
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+}
+function Resolve-RunEvidenceReference {
+    param($Value, [string] $Directory = $runDirectory)
+    if (-not (($Value -is [Collections.IDictionary] -and $Value.Contains('evidenceRef')) -or
+        ($Value -is [pscustomobject] -and $Value.PSObject.Properties['evidenceRef']))) { return ,$Value }
+    $path = Get-ValidatedRunEvidencePath $Value $Directory
+    $utf8 = [Text.UTF8Encoding]::new($false, $true)
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $reference = Get-RunEvidenceReferenceData $Value
+    if ($bytes.Length -ne $reference.bytes -or
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() -cne $reference.sha256) {
+        throw "Run evidence changed during resolution: $($reference.path)"
+    }
+    return ,(ConvertFrom-Json -InputObject $utf8.GetString($bytes) -AsHashtable -NoEnumerate -Depth 100 -ErrorAction Stop)
+}
 
 function ConvertTo-JournalCanonicalValue($Value) {
     if ($Value -is [Collections.IDictionary]) {
@@ -143,6 +253,11 @@ function Read-RunJournal([string] $Directory, [string] $ExpectedRunId = '', [str
                         throw "Invalid artifact in $path"
                     }
                     [void] (Get-JournalArtifactPath $Directory $artifact.path)
+                    if ($artifact.Contains('evidence') -and ($artifact.evidence -isnot [bool] -or
+                        ($artifact.evidence -and (-not $artifact.Contains('bytes') -or
+                        ($artifact.bytes -isnot [int] -and $artifact.bytes -isnot [long]) -or $artifact.bytes -lt 0)))) {
+                        throw "Invalid evidence artifact in $path"
+                    }
                 }
                 if ($record.status -eq 'pass' -and ($rows[$active].checks.Count -eq 0 -or
                     @($rows[$active].checks | Where-Object { $_.status -ne 'pass' }).Count -gt 0)) { throw "Passing row contains non-passing checks in $path" }
@@ -226,12 +341,15 @@ function Start-JournalRow {
     if (-not $script:journalPath) { throw 'Run journal has not been initialized.' }
     # Starting another row leaves the previous attempt interrupted, never reusable.
     $attempt = if ($script:journalRows.ContainsKey($Id)) { $script:journalRows[$Id].attempt + 1 } elseif ($script:resumeRows.ContainsKey($Id)) { $script:resumeRows[$Id].attempt + 1 } else { 1 }
-    $row = @{ attempt = $attempt; meta = $Meta; checks = [Collections.Generic.List[object]]::new(); complete = $null; snapshot = Get-JournalArtifactSnapshot }
+    $row = @{ attempt = $attempt; meta = $Meta; checks = [Collections.Generic.List[object]]::new(); complete = $null
+        snapshot = Get-JournalArtifactSnapshot; evidenceReferences = @{} }
     Write-JournalRecord ([ordered]@{ type = 'row-start'; id = $Id; attempt = $attempt; meta = $Meta })
     $script:journalRows[$Id] = $row
     $script:currentRowId = $Id
 }
 function Add-JournalCheck([Collections.IDictionary] $Check) {
+    # Mutate the same object Add-Check retains; compact before either durable or in-memory retention.
+    $Check['observed'] = ConvertTo-RunEvidenceReference -Value $Check.observed -Label ([string] $Check.name)
     $record = [ordered]@{ type = 'check'; id = $script:currentRowId; attempt = 0 }
     foreach ($key in $Check.Keys) { $record[$key] = $Check[$key] }
     if ($script:currentRowId) { $record.attempt = $script:journalRows[$script:currentRowId].attempt }
@@ -242,11 +360,26 @@ function Complete-JournalRow {
     param([string] $Id, [string[]] $Artifacts = @(), $Result = $null)
     if ($Id -ne $script:currentRowId -or -not $script:journalRows.ContainsKey($Id)) { throw "Cannot complete inactive journal row: $Id" }
     $row = $script:journalRows[$Id]
+    $Result = ConvertTo-RunEvidenceReference -Value $Result -Label "$Id-result"
+    $evidencePaths = @{}
+    foreach ($reference in $row.evidenceReferences.Values) {
+        $path = Get-ValidatedRunEvidencePath $reference
+        $evidencePaths[$path] = $reference
+    }
     $snapshot = Get-JournalArtifactSnapshot
-    $paths = @($Artifacts) + @($snapshot.Keys | Where-Object { -not $row.snapshot.ContainsKey($_) -or $snapshot[$_] -ne $row.snapshot[$_] })
+    $paths = @($Artifacts) + @($evidencePaths.Keys) +
+        @($snapshot.Keys | Where-Object { -not $row.snapshot.ContainsKey($_) -or $snapshot[$_] -ne $row.snapshot[$_] })
     $hashes = @($paths | ForEach-Object { Get-JournalArtifactPath $runDirectory $_ } | Sort-Object -Unique | ForEach-Object {
         if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) { throw "Missing row artifact: $_" }
-        [ordered]@{ path = [IO.Path]::GetRelativePath($runDirectory, $_).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+        $artifact = [ordered]@{ path = [IO.Path]::GetRelativePath($runDirectory, $_).Replace('\', '/')
+            sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
+        if ($evidencePaths.ContainsKey($_)) {
+            $reference = Get-RunEvidenceReferenceData $evidencePaths[$_]
+            if ($artifact.sha256 -cne $reference.sha256) { throw "Run evidence changed during hashing: $_" }
+            $artifact['evidence'] = $true
+            $artifact['bytes'] = $reference.bytes
+        }
+        $artifact
     })
     $status = if ($row.checks.Count -eq 0) { 'blocked' } elseif (@($row.checks | Where-Object { $_.status -eq 'blocked' }).Count) { 'blocked' }
         elseif (@($row.checks | Where-Object { $_.status -ne 'pass' }).Count) { 'fail' } else { 'pass' }
@@ -268,7 +401,9 @@ function Test-JournalRowPassed {
 }
 function Get-JournalRowResult {
     param([string] $Id)
-    if ($script:journalRows.ContainsKey($Id) -and $script:journalRows[$Id].complete) { return $script:journalRows[$Id].complete.result }
+    if ($script:journalRows.ContainsKey($Id) -and $script:journalRows[$Id].complete) {
+        return Resolve-RunEvidenceReference $script:journalRows[$Id].complete.result
+    }
 }
 function Test-JournalRowReusable {
     param([string] $Id)
@@ -282,6 +417,23 @@ function Test-JournalRowReusable {
     if (-not $row.complete -or $row.complete.status -ne 'pass' -or $row.checks.Count -eq 0 -or
         @($row.checks | Where-Object { $_.status -ne 'pass' }).Count -gt 0 -or
         ($row.meta.Contains('independent') -and -not $row.meta.independent)) { return $false }
+    # Validate tagged evidence before reuse; unlike an ordinary stale artifact it is never silently rerun.
+    $references = @(Get-RunEvidenceReferences $row.checks) + @(Get-RunEvidenceReferences $row.complete.result)
+    foreach ($artifact in $row.complete.artifacts) {
+        if ($artifact.Contains('evidence') -and $artifact.evidence) {
+            $references += @{ evidenceRef = @{ path = $artifact.path; sha256 = $artifact.sha256
+                bytes = $artifact.bytes; format = 'json'; version = 1 }; summary = $null }
+        }
+    }
+    foreach ($reference in $references) {
+        [void] (Get-ValidatedRunEvidencePath $reference $script:resumeDirectory)
+        $data = Get-RunEvidenceReferenceData $reference
+        if (@($row.complete.artifacts | Where-Object { $_.path -ceq $data.path -and $_.sha256 -ceq $data.sha256 }).Count -ne 1) {
+            throw "Run evidence missing from row artifact hashes: $($data.path)"
+        }
+        $destination = Get-JournalArtifactPath $runDirectory $data.path
+        if (Test-Path -LiteralPath $destination) { [void] (Get-ValidatedRunEvidencePath $reference) }
+    }
     $paths = @()
     foreach ($artifact in $row.complete.artifacts) {
         $source = Get-JournalArtifactPath $script:resumeDirectory $artifact.path
@@ -302,6 +454,10 @@ function Test-JournalRowReusable {
         if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.sha256) {
             throw "Reused artifact changed during copy: $path"
         }
+    }
+    foreach ($reference in $references) {
+        [void] (Get-ValidatedRunEvidencePath $reference)
+        Register-RunEvidenceReference $reference
     }
     foreach ($prior in $row.checks) {
         $check = [ordered]@{ name = $prior.name; expected = $prior.expected; observed = $prior.observed; status = $prior.status; reused = $script:resumeRunId }

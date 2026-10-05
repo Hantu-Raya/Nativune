@@ -10,6 +10,8 @@ Regenerate:
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-SEC,A-TIME          # a subset
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-SEC -SkipPublish    # reuse the published builds
   pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-PLAIN -CapturePlainBaseline
+  pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 -Scenario A-LOOK -Section fxpaint -SkipPublish
+    # Diagnostic only: isolated paint histories, exact frames/layers/traces and fxpaint-summary.json; never a gate.
 
 Steps: publish the hook build (-p:DiscordPresenceTestHooks=true) to artifacts/obs-overlay/app (never ship it) and,
 for A-PROD, the release build to artifacts/obs-overlay/release-app; per scenario create fresh roots
@@ -97,11 +99,13 @@ param(
     [string[]] $Scenario = @('All'),
     [string] $OutputDirectory = 'artifacts/obs-overlay',
     [switch] $SkipPublish,
+    # Alternate pre-LookFx hook build: fxpaint + SkipPublish only; run FX-free histories, skip FX histories.
+    [string] $AppDirectory = 'artifacts/obs-overlay/app',
     [switch] $KeepRoot,
     [switch] $CapturePlainBaseline,
     # Diagnostic wildcard(s) against <theme>.<case>; '*' preserves the full generated matrix.
     [string[]] $LookCase = @('*'),
-    # Diagnostic section selector(s) (see scripts/obs-overlay-inventory.ps1); '*' = every section (gate run).
+    # Diagnostic section selector(s) (see scripts/obs-overlay-inventory.ps1); '*' = gate sections, not opt-in fxpaint.
     [string[]] $Section = @('*'),
     # Diagnostic wildcard(s) against A-FRAMES row ids; '*' = the full required matrix.
     [string[]] $FrameRow = @('*'),
@@ -121,7 +125,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $allScenarios = @('A-PLAIN', 'A-LOOK', 'A-OFF', 'A-TIME', 'A-AD', 'A-SAME', 'A-CLOCK', 'A-GAP', 'A-INV', 'A-IDLE', 'A-DEMAND', 'A-LIVE', 'A-LIFE',
-    'A-SEC', 'A-RECON', 'A-STORE-1', 'A-SAMPLE', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR', 'A-FRAMES')
+    'A-SEC', 'A-RECON', 'A-STORE-1', 'A-SAMPLE', 'A-TEXT', 'A-ART', 'A-SET', 'A-PROD', 'A-PAUSEVIEW', 'A-TOOLBAR', 'A-FRAMES',
+    'A-FONT', 'A-STORE-2', 'A-DESIGNER')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 # `-File` passes comma lists as one string; normalise every wildcard array parameter like -Scenario.
 $LookCase = @($LookCase | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -141,12 +146,19 @@ if ($CapturePlainBaseline -and @($Scenario | Where-Object { $_ -notin @('All', '
     throw '-CapturePlainBaseline may be combined only with -Scenario All or -Scenario A-PLAIN.'
 }
 $selected = if ($CapturePlainBaseline) { @('A-PLAIN') } elseif ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
+if ('fxpaint' -in $Section -and ($Section.Count -ne 1 -or 'A-LOOK' -notin $selected)) {
+    throw '-Section fxpaint is diagnostic only; select it alone with -Scenario A-LOOK (or All).'
+}
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $commandLine = 'pwsh -NoProfile -File scripts/obs-overlay-e2e.ps1 ' + (($PSBoundParameters.GetEnumerator() | ForEach-Object {
     if ($_.Value -is [switch]) { if ($_.Value) { "-$($_.Key)" } } else { "-$($_.Key) $(@($_.Value) -join ',')" } }) -join ' ')
 $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $repo $OutputDirectory }
-$appDirectory = Join-Path $repo 'artifacts/obs-overlay/app'
+$appDirectory = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($AppDirectory)) { $AppDirectory } else { Join-Path $repo $AppDirectory }))
+$fxPaintLegacyBuild = -not $appDirectory.Equals([IO.Path]::GetFullPath((Join-Path $repo 'artifacts/obs-overlay/app')), [StringComparison]::OrdinalIgnoreCase)
+if ($fxPaintLegacyBuild -and (-not $SkipPublish -or 'fxpaint' -notin $Section)) {
+    throw 'An alternate -AppDirectory requires -SkipPublish -Section fxpaint; it runs only FX-free diagnostic histories.'
+}
 $appExe = Join-Path $appDirectory 'Nativune.exe'
 $releaseDirectory = Join-Path $repo 'artifacts/obs-overlay/release-app'
 $releaseExe = Join-Path $releaseDirectory 'Nativune.exe'
@@ -356,6 +368,9 @@ function Round3($Value) { if ($null -eq $Value) { $null } else { [Math]::Round([
 
 function New-Root([string] $Name) {
     $root = Join-Path $rootBase $Name
+    if (Test-Path -LiteralPath $root) {
+        throw "New-Root: destination already exists: '$root'. Preserve the prior evidence and choose a fresh condition/attempt session name."
+    }
     [IO.Directory]::CreateDirectory($root) | Out-Null
     $ubolDestination = Join-Path $root '.tools/ubol'
     [IO.Directory]::CreateDirectory($ubolDestination) | Out-Null
@@ -890,6 +905,9 @@ $chromeProbeJs = @'
   }));
   return JSON.stringify({
     href: location.href, s, opacity: pill ? Number(cs.opacity) : null, frac, clipPx, pageNow: performance.now(),
+    nativeFixture: typeof msg === 'undefined' || msg === null ? null : { duration: msg.duration, rate: msg.rate, clock: msg.clock,
+      requestedArt: typeof artUrl === 'undefined' ? null : artUrl, loadedArt: typeof artImgUrl === 'undefined' ? null : artImgUrl,
+      projectedPosition: typeof projected === 'function' ? projected() : null },
     boxRect: pill ? (() => { const r = pill.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() : null,
     pageSize: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
     // Pill's track is the full grey reveal plane: its countertranslation cancels #clip's moving boundary.
@@ -985,7 +1003,11 @@ function Invoke-Cdp($Chrome, [string] $Method, [hashtable] $Params = @{}, [doubl
             $ms.Write($buf, 0, $r.Count)
         } while (-not $r.EndOfMessage)
         $message = [Text.Encoding]::UTF8.GetString($ms.ToArray()) | ConvertFrom-Json -Depth 32
-        if ((Get-Prop $message 'method') -eq 'Tracing.tracingComplete') { $Chrome.Events.Add($message) }
+        $method = Get-Prop $message 'method'
+        if ($method -like 'LayerTree.*' -or $method -eq 'Tracing.tracingComplete' -or $method -eq 'Network.loadingFailed' -or
+            ($method -eq 'Network.responseReceived' -and (Get-Prop (Get-Prop $message 'params') 'type') -eq 'EventSource')) {
+            $Chrome.Events.Add($message)
+        }
         if ((Get-Prop $message 'id') -eq $id) {
             $err = Get-Prop $message 'error'
             if ($err) { throw "CDP $Method failed: $(Get-Prop $err 'message')" }
@@ -1278,11 +1300,14 @@ public static class ObsFrameTraceReader {
 '@
 }
 
-function Invoke-FrameTrace($Chrome, [string] $Name, [int] $Seconds, [scriptblock] $During = $null) {
+function Invoke-FrameTrace($Chrome, [string] $Name, [int] $Seconds, [scriptblock] $During = $null,
+    [string] $Categories = '-*,disabled-by-default-devtools.timeline.frame', [switch] $PreserveLayerEvents) {
     $path = Join-Path $runDirectory "trace-$(ConvertTo-SafeName $Name).json"
+    $initialLayers = if ($PreserveLayerEvents) { @($Chrome.Events | Where-Object { $_.method -like 'LayerTree.*' }) } else { @() }
     $Chrome.Events.Clear()
+    foreach ($event in $initialLayers) { $Chrome.Events.Add($event) }
     [void] (Invoke-Cdp $Chrome 'Tracing.start' @{
-        categories = '-*,disabled-by-default-devtools.timeline.frame'; transferMode = 'ReturnAsStream'
+        categories = $Categories; transferMode = 'ReturnAsStream'
         options = 'record-continuously'
     })
     $begin = Get-Qpc
@@ -1346,7 +1371,7 @@ function Invoke-FrameTrace($Chrome, [string] $Name, [int] $Seconds, [scriptblock
         [ordered]@{ trace = [IO.Path]::GetRelativePath($runDirectory, $path); rawBytes = $rawBytes
             rawSha256 = $rawSha256; traceRetention = 'raw'; frames = $frames
             seconds = [Math]::Round((Get-Seconds $begin $end), 3); fps = [Math]::Round($frames / (Get-Seconds $begin $end), 3)
-            frameEvent = 'EndActivateToSubmitCompositorFrame:e'; categories = '-*,disabled-by-default-devtools.timeline.frame'; names = $names
+            frameEvent = 'EndActivateToSubmitCompositorFrame:e'; categories = $Categories; names = $names
             visible = [bool] (Get-PageField $endPage 'shown'); endPage = $endPage }
     } catch {
         $errorText = $_.Exception.Message
@@ -1611,10 +1636,21 @@ function Start-OverlayRun([string] $Name, [hashtable] $Settings = @{}, [string] 
     [switch] $NoReader, [hashtable] $Override = @{}, [string] $LooksJson = $null) {
     $startQpc = Get-Qpc; $startOutcome = 'failure'
     try {
+    if ($Name -like 'A-FRAMES-*') {
+        # Independent attempts own fresh app/Chrome roots and retained logs; journal row IDs stay logical.
+        $sessionBase = $Name; $attempt = 1
+        while ((Test-Path -LiteralPath (Join-Path $rootBase $Name)) -or
+            (Test-Path -LiteralPath (Join-Path $rootBase "chrome-$(ConvertTo-SafeName $Name)")) -or
+            (Test-Path -LiteralPath (Join-Path $runDirectory "nativune-$(ConvertTo-SafeName $Name).log"))) {
+            $attempt++
+            $Name = "$sessionBase-attempt$attempt"
+        }
+    }
     $root = New-Root $Name
     $s = @{ ObsOverlay = $true }; foreach ($k in $Settings.Keys) { $s[$k] = $Settings[$k] }
     Write-Settings $root $s
-    if ($null -ne $LooksJson) { [void] (Write-ObsLooksFile $root $LooksJson) }
+    # A typed [string] default arrives as '' not $null; only an explicitly bound fixture is written (missing file = writable empty store).
+    if ($PSBoundParameters.ContainsKey('LooksJson')) { [void] (Write-ObsLooksFile $root $LooksJson) }
     $launchEnv = @{}; foreach ($k in $Override.Keys) { $launchEnv[$k] = $Override[$k] }
     if ($BenchProfile) { $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile; $launchEnv['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = $BenchState }
     $app = Start-App $root $launchEnv
@@ -1659,6 +1695,15 @@ function Copy-LookOptions($Options) {
 }
 function Add-LookCase($Cases, [string] $Theme, [string] $Label, $Options) {
     $Cases.Add([ordered]@{ case = $Label; theme = $Theme; options = (Copy-LookOptions $Options); lookId = $null })
+}
+function Get-LookFxDefaults([string] $Theme) {
+    $values = switch ($Theme) {
+        'pill' { 14, 115, 45, 100 } 'matte' { 0, 100, 100, 100 } 'matte-light' { 0, 100, 0, 100 }
+        'simple' { 0, 100, 0, 100 } 'album-art' { 0, 100, 100, 100 } 'card' { 16, 100, 100, 35 }
+        default { 14, 100, 100, 40 }
+    }
+    [ordered]@{ backgroundBlur = $values[0]; playedBrightness = $values[1]
+        unplayedBrightness = $values[2]; backgroundBrightness = $values[3] }
 }
 # Generates the entire §8.1 case matrix (all eight themes); A-LOOK executes pill in P0 and reports other rows deferred:P1.
 function New-LookCases {
@@ -1709,6 +1754,25 @@ function New-LookCases {
             $artist = Copy-LookOptions $base; $artist['showArtist'] = $false; Add-LookCase $cases $theme 'artist-off' $artist
         }
     }
+    # Append, rather than interleave: all pre-LookFx ids and committed default fixtures remain unchanged.
+    foreach ($theme in $themes) {
+        $base = Get-ThemeDefaults $theme
+        $base['paused'] = 'dim'
+        $defaults = Get-LookFxDefaults $theme
+        $explicit = Copy-LookOptions $base
+        foreach ($key in $defaults.Keys) { $explicit[$key] = $defaults[$key] }
+        Add-LookCase $cases $theme 'fx-default' $explicit
+        $variants = [ordered]@{ 'played-min' = @('playedBrightness', 0); 'played-max' = @('playedBrightness', 200)
+            'unplayed-min' = @('unplayedBrightness', 0); 'unplayed-max' = @('unplayedBrightness', 100) }
+        if ($theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) {
+            $variants['blur-0'] = @('backgroundBlur', 0); $variants['blur-max'] = @('backgroundBlur', 32)
+            $variants['bg-min'] = @('backgroundBrightness', 0); $variants['bg-max'] = @('backgroundBrightness', 200)
+        }
+        foreach ($variant in $variants.Keys) {
+            $changed = Copy-LookOptions $base; $changed[$variants[$variant][0]] = $variants[$variant][1]
+            Add-LookCase $cases $theme "fx-$variant" $changed
+        }
+    }
     foreach ($case in $cases) {
         $sequence++
         $case.lookId = 'lk{0:D6}' -f $sequence
@@ -1733,7 +1797,7 @@ function Get-Sha256([string] $Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
-function Compare-Png([byte[]] $ExpectedBytes, [byte[]] $ActualBytes, [string] $DiffPath) {
+function Compare-Png([byte[]] $ExpectedBytes, [byte[]] $ActualBytes, [string] $DiffPath, [int] $Tolerance = 8) {
     $expectedStream = [IO.MemoryStream]::new($ExpectedBytes)
     $actualStream = [IO.MemoryStream]::new($ActualBytes)
     $expected = $null; $actual = $null; $diff = $null
@@ -1754,8 +1818,8 @@ function Compare-Png([byte[]] $ExpectedBytes, [byte[]] $ActualBytes, [string] $D
         for ($y = 0; $y -lt $expected.Height; $y++) {
             for ($x = 0; $x -lt $expected.Width; $x++) {
                 $a = $expected.GetPixel($x, $y); $b = $actual.GetPixel($x, $y)
-                $over = ([Math]::Abs($a.R - $b.R) -gt 8 -or [Math]::Abs($a.G - $b.G) -gt 8 -or
-                    [Math]::Abs($a.B - $b.B) -gt 8 -or [Math]::Abs($a.A - $b.A) -gt 8)
+                $over = ([Math]::Abs($a.R - $b.R) -gt $Tolerance -or [Math]::Abs($a.G - $b.G) -gt $Tolerance -or
+                    [Math]::Abs($a.B - $b.B) -gt $Tolerance -or [Math]::Abs($a.A - $b.A) -gt $Tolerance)
                 if ($over) { $differing++; $diff.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, 255, 0, 0)) }
                 else { $diff.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, 24, 24, 24)) }
             }
@@ -1972,8 +2036,992 @@ function Get-LookNavigationId($Case, [object[]] $BatchCases) {
     return $sibling.lookId
 }
 
+function Get-LookFxProbe($Chrome, [switch] $NoFx) {
+    $page = Get-PageProbe $Chrome
+    $expression = @'
+(() => {
+  const noFx = __NO_FX__;
+  const style = id => {
+    const element = document.getElementById(id);
+    if (!element) return null;
+    const c = getComputedStyle(element);
+    return {background:c.background, color:c.color, opacity:c.opacity, filter:c.filter,
+      font:c.font, textShadow:c.textShadow, display:c.display};
+  };
+  const canvas = c => {
+    // Never read back the live raster: that can switch Chromium's production canvas backend.
+    const scratch = document.createElement('canvas'); scratch.width = c.width; scratch.height = c.height;
+    const read = scratch.getContext('2d', {willReadFrequently:true});
+    if (c.width && c.height) read.drawImage(c, 0, 0);
+    const bytes = c.width && c.height ? read.getImageData(0, 0, c.width, c.height).data : [];
+    const ctx = c.getContext('2d');
+    let hash = 2166136261;
+    for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+    const filter = ctx.filter;
+    const value = name => Number(filter.match(new RegExp(name + '\\(([-.0-9]+)'))?.[1] ?? NaN);
+    return {w:c.width, h:c.height, hash, filter, blur:value('blur'), brightness:value('brightness'),
+      saturate:value('saturate'), grayscale:value('grayscale'), alpha:ctx.globalAlpha};
+  };
+  const artPixel = (() => {
+    if (noFx || !artImg || !artImg.complete || !artImg.naturalWidth || !artImg.naturalHeight) return null;
+    const c = document.createElement('canvas'); c.width = c.height = 1;
+    const ctx = c.getContext('2d', {willReadFrequently:true});
+    ctx.drawImage(artImg, 96, 96, 1, 1, 0, 0, 1, 1);
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+  })();
+  const properties = noFx ? ['--bg','--bg-a'] : ['--played-fill','--unplayed-track','--bg','--bg-a'];
+  const elements = [document.documentElement, document.body, ...document.querySelectorAll('[id]')]
+    .filter(el => !noFx || el.id !== 'cover-fx');
+  const captureMetadata = {
+    href:location.href, visibility:document.visibilityState, hasFocus:document.hasFocus(),
+    lookEpoch:window.__state?.lookEpoch, lookSeq:window.__state?.lookSeq, options:opts,
+    lookFxAvailable:typeof effectsOf === 'function',
+    elements:Object.fromEntries(elements.map(el => {
+      const c = getComputedStyle(el);
+      return [el.id || el.tagName.toLowerCase(), {rect:el.getBoundingClientRect().toJSON(),
+        transform:c.transform, transformOrigin:c.transformOrigin, translate:c.translate, rotate:c.rotate, scale:c.scale,
+        opacity:c.opacity, display:c.display, visibility:c.visibility, filter:c.filter, backdropFilter:c.backdropFilter,
+        isolation:c.isolation, mixBlendMode:c.mixBlendMode, willChange:c.willChange, contain:c.contain,
+        overflow:c.overflow, clipPath:c.clipPath, backgroundColor:c.backgroundColor, backgroundImage:c.backgroundImage,
+        customProperties:Object.fromEntries(properties.map(name => [name,c.getPropertyValue(name).trim()]))}];
+    })),
+    images:[...document.images, ...(artImg ? [artImg] : [])].map(img => ({
+      id:img.id || null, src:img.currentSrc || img.src, complete:img.complete,
+      naturalWidth:img.naturalWidth, naturalHeight:img.naturalHeight})),
+    animations:document.getAnimations().map(a => ({target:a.effect?.target?.id ?? null,
+      playState:a.playState, currentTime:a.currentTime, timing:a.effect?.getComputedTiming(),
+      keyframes:a.effect?.getKeyframes()})),
+    scrim:{colour:getComputedStyle(document.getElementById('scrim')).backgroundColor,
+      background:getComputedStyle(document.getElementById('scrim')).background},
+    barfill:{colour:getComputedStyle(document.getElementById('barfill')).backgroundColor,
+      background:getComputedStyle(document.getElementById('barfill')).background}
+  };
+  return {captureMetadata, nativeFixture:{requestedArt:artUrl, loadedArt:artImgUrl, duration:msg?.duration ?? null, rate:msg?.rate ?? null, clock:msg?.clock ?? null},
+    fx:!noFx && typeof effectsOf === 'function' ? {resolved:effectsOf(opts), coverFx:document.documentElement.getAttribute('data-cover-fx'),
+    requestedArt:artUrl, loadedArt:artImgUrl, artPixel, duration:msg.duration, rate:msg.rate, clock:msg.clock,
+    canvases:Object.fromEntries([...document.querySelectorAll('canvas')].map((c,i) => [c.id || `canvas-${i}`,canvas(c)])),
+    styles:Object.fromEntries(['bar','barfill','barhead','stripe','scrim','title','artist','thumb','cover-fx'].map(id => [id,style(id)])),
+    played:getComputedStyle(document.getElementById('barfill')).backgroundColor,
+    track:getComputedStyle(document.getElementById('bar')).backgroundColor,
+    head:getComputedStyle(document.getElementById('barhead')).backgroundColor} : null};
+})()
+'@
+    $expression = $expression.Replace('__NO_FX__', $(if ($NoFx) { 'true' } else { 'false' }))
+    $result = Invoke-Cdp $Chrome 'Runtime.evaluate' @{ expression = $expression; returnByValue = $true }
+    $exception = Get-Prop $result 'exceptionDetails'
+    if ($exception) {
+        throw "LookFx $(if ($NoFx) { 'native-only' } else { 'canvas/style' }) probe failed: $(ConvertTo-Json -InputObject $exception -Compress -Depth 16)"
+    }
+    $value = Get-Prop (Get-Prop $result 'result') 'value'
+    $page | Add-Member -NotePropertyName fx -NotePropertyValue (Get-Prop $value 'fx') -Force
+    $page | Add-Member -NotePropertyName nativeFixture -NotePropertyValue (Get-Prop $value 'nativeFixture') -Force
+    $metadata = Get-Prop $value 'captureMetadata'
+    $metadata | Add-Member -NotePropertyName TargetId -NotePropertyValue (Resolve-Chrome $Chrome).TargetId -Force
+    $page | Add-Member -NotePropertyName captureMetadata -NotePropertyValue $metadata -Force
+    $page
+}
+function Get-LookFxFixtureFailures($Page, $Look, $Fixture) {
+    $noFx = (Get-Prop $Fixture 'noFx') -eq $true
+    $fx = Get-Prop $Page $(if ($noFx) { 'nativeFixture' } else { 'fx' })
+    if (-not $Page -or -not $fx) { return $(if ($noFx) { 'page.nativeFixture' } else { 'page.fx' }) }
+    $options = Get-PageField $Page 'options'
+    if (-not $options) { return 'options' }
+    $expectedOptions = ConvertTo-Json -InputObject $Look.options -Depth 16 | ConvertFrom-Json -Depth 16
+    # Saved variants omit inactive nullable FX fields; normalizeOptions publishes them explicitly as null.
+    $fxKeys = @((Get-LookFxDefaults $Look.options.theme).Keys)
+    if (-not $noFx) {
+        foreach ($key in $fxKeys) {
+            if (-not $expectedOptions.PSObject.Properties[$key]) {
+                $expectedOptions | Add-Member -NotePropertyName $key -NotePropertyValue $null
+            }
+        }
+    }
+    $keys = @($expectedOptions.PSObject.Properties.Name)
+    $terms = [ordered]@{
+        'look.id' = (Get-Prop (Get-PageField $Page 'look') 'id') -ceq $Look.id
+        'options.count' = @($options.PSObject.Properties.Name | Where-Object { -not $noFx -or $_ -notin $fxKeys }).Count -eq $keys.Count
+        'href' = $Page.href -ceq $Fixture.href
+        'viewport' = Test-OverlayViewport $Page $Fixture.source
+        'viewport.dpr' = (Get-Prop $Page.pageSize 'dpr') -eq 1
+        'connection' = (Get-PageField $Page 'connection') -ceq 'open'
+        'shown' = (Get-PageField $Page 'shown') -eq $true
+        'animations.running' = $Page.running -eq 0
+        'song.id' = (Get-PageField $Page 'id') -eq $null
+        'song.title' = (Get-PageField $Page 'title') -ceq 'Sample song'
+        'song.artist' = (Get-PageField $Page 'artist') -ceq 'Sample artist'
+        'duration' = (Get-Prop $fx 'duration') -eq 240
+        'rate' = (Get-Prop $fx 'rate') -eq 1
+        'clock' = (Get-Prop $fx 'clock') -eq $true
+    }
+    if ($noFx) {
+        $terms['noFx.overridesAbsent'] = @($fxKeys | Where-Object { $null -ne (Get-Prop $options $_) }).Count -eq 0
+    }
+    foreach ($key in $keys) {
+        $terms["options.$key"] = $null -ne $options.PSObject.Properties[$key] -and
+            (Get-Prop $options $key) -ceq (Get-Prop $expectedOptions $key)
+    }
+    $sources = [ordered]@{ 'source' = Get-PageField $Page 'source'; 'look.source' = Get-Prop (Get-PageField $Page 'look') 'source' }
+    foreach ($key in $sources.Keys) {
+        $terms["$key.w"] = (Get-Prop $sources[$key] 'w') -eq $Fixture.source.w
+        $terms["$key.h"] = (Get-Prop $sources[$key] 'h') -eq $Fixture.source.h
+    }
+    if ($Fixture.mode -eq 'paused') {
+        $terms['state'] = (Get-PageField $Page 'state') -ceq 'paused'
+        $terms['projectedPosition'] = (Get-PageField $Page 'projectedPosition') -eq 84
+        $terms['art.requested'] = (Get-Prop $fx 'requestedArt') -ceq '/art/sample'
+        $terms['art.loaded'] = (Get-Prop $fx 'loadedArt') -ceq '/art/sample'
+        $terms['art.failed'] = (Get-PageField $Page 'artFailed') -eq $false
+        $terms['art.sequence'] = (Get-PageField $Page 'artLoadedSeq') -eq (Get-PageField $Page 'artSeq')
+        $terms['art.resource'] = @($Page.art | Where-Object { $_.name -ceq '/art/sample' }).Count -gt 0
+        $terms['progress.fraction'] = if ($Look.options.showProgress) { [Math]::Abs([double] $Page.frac - .35) -lt .01 } else { $true }
+    } else {
+        $terms['sample.mode'] = $Fixture.mode -ceq 'noart'
+        $terms['state'] = (Get-PageField $Page 'state') -ceq 'playing'
+        $terms['progress.disabledOption'] = $Look.options.showProgress -eq $false
+        $terms['times.disabledOption'] = $Look.options.showTimes -eq $false
+        $terms['progress.disabledAttribute'] = $Page.attrs.showProgress -ceq 'false'
+        $terms['times.disabledAttribute'] = $Page.attrs.showTimes -ceq 'false'
+        $terms['progress.timer'] = (Get-PageField $Page 'fillTimer') -eq 0
+        $terms['art.requested'] = (Get-Prop $fx 'requestedArt') -eq $null
+        $terms['art.loaded'] = (Get-Prop $fx 'loadedArt') -eq $null
+        $terms['art.failed'] = (Get-PageField $Page 'artFailed') -eq $true
+        $terms['art.resourcesAbsent'] = @($Page.art).Count -eq 0
+    }
+    $terms.Keys | Where-Object { -not $terms[$_] }
+}
+function Test-LookFxFixture($Page, $Look, $Fixture) {
+    @(Get-LookFxFixtureFailures $Page $Look $Fixture).Count -eq 0
+}
+function Wait-LookFxFixture($Chrome, $Look, $Fixture) {
+    $poll = @{ last = $null }
+    $page = Wait-For {
+        # Page.navigate ACK is not a data/art readiness barrier. Do not run raster/native probes on an uninitialized document.
+        $initial = Get-PageProbe $Chrome; $poll.last = $initial
+        if ($initial.href -cne $Fixture.href -or (Get-PageField $initial 'connection') -cne 'open' -or
+            (Get-Prop (Get-PageField $initial 'look') 'id') -cne $Look.id -or (Get-PageField $initial 'shown') -ne $true -or
+            (Get-PageField $initial 'state') -notin @('playing', 'paused')) { return $null }
+        if ($Fixture.mode -eq 'paused' -and ((Get-PageField $initial 'artLoadedSeq') -lt 1 -or
+            (Get-PageField $initial 'artLoadedSeq') -ne (Get-PageField $initial 'artSeq'))) { return $null }
+        $poll.last = Get-LookFxProbe $Chrome -NoFx:((Get-Prop $Fixture 'noFx') -eq $true)
+        if (Test-LookFxFixture $poll.last $Look $Fixture) { $poll.last }
+    } 10 50
+    if (-not $page) {
+        $failed = @(Get-LookFxFixtureFailures $poll.last $Look $Fixture)
+        throw "LookFx native $($Fixture.mode) fixture did not settle for $($Look.id); failed terms: $($failed -join ', '): $(ConvertTo-Json -InputObject $poll.last -Compress -Depth 16)"
+    }
+    $page
+}
+function Set-LookFxSamplePage($Run, $Chrome, $Look, $Fixture, [switch] $ReloadLookBeforeAdmission) {
+    $oldPage = Get-PageProbe $Chrome
+    $before = Get-State $Run.Root "lookfx-$($Look.id)-before-detach"
+    $expected = @{ streams = Get-Overlay $before 'streams'; realStreams = Get-Overlay $before 'realStreams'
+        sampleStreams = Get-Overlay $before 'sampleStreams'; byLook = @{} }
+    $byLook = Get-Overlay $before 'streamsByLook'
+    if ($null -eq $byLook -or $null -eq $expected.streams -or $null -eq $expected.realStreams -or
+        $null -eq $expected.sampleStreams -or $expected.streams -lt 1) { throw 'LookFx stream ownership snapshot is incomplete.' }
+    foreach ($property in $byLook.PSObject.Properties) { $expected.byLook[$property.Name] = [int] $property.Value }
+    $wasSample = $oldPage.href -match '[?&]sample=(paused|playing|noart)(?:&|$)'
+    $kind = if ($wasSample) { 'sampleStreams' } else { 'realStreams' }
+    if ($expected[$kind] -lt 1 -or (-not $wasSample -and $expected.byLook[$Look.id] -lt 1)) {
+        throw "LookFx prior page stream for $($Look.id) was not admitted."
+    }
+    $release = Reset-ChromeCasePage $Chrome
+    $expected.streams--; $expected[$kind]--
+    if (-not $wasSample) { $expected.byLook[$Look.id]-- }
+    $waitStreams = {
+        param([string] $Label)
+        $deadline = [DateTime]::UtcNow.AddSeconds($ordinaryStreamReleaseSeconds)
+        $snapshot = Wait-For {
+            $remaining = ($deadline - [DateTime]::UtcNow).TotalSeconds - .1
+            if ($remaining -le 0) { return $null }
+            $s = Get-State $Run.Root $Label $remaining
+            $actual = Get-Overlay $s 'streamsByLook'
+            if (-not $s -or $null -eq $actual) { return $null }
+            $same = $null -ne $actual
+            foreach ($key in @('streams', 'realStreams', 'sampleStreams')) { $same = $same -and (Get-Overlay $s $key) -eq $expected[$key] }
+            foreach ($key in @(@($expected.byLook.Keys) + @($actual.PSObject.Properties.Name) | Select-Object -Unique)) {
+                $same = $same -and [int] (Get-Prop $actual $key) -eq [int] $expected.byLook[$key]
+            }
+            if ($same) { $s }
+        } $ordinaryStreamReleaseSeconds 100
+        if (-not $snapshot) { throw "LookFx $Label did not preserve sibling/reader streams within $ordinaryStreamReleaseSeconds s." }
+        $snapshot
+    }
+    $detached = & $waitStreams "lookfx-$($Look.id)-detached"
+    $setup = $null
+    if ($ReloadLookBeforeAdmission) {
+        # The first sample look must be null/default, not the case's seeded FX followed by a reset.
+        # Merge only this owned look while its fresh target is blank; siblings/readers remain admitted.
+        $doc = Read-ObsLooksFile $Run.Root
+        if (@($doc.looks | Where-Object { $_.id -ceq $Look.id }).Count -ne 1) {
+            throw "LookFx fresh setup requires exactly one saved record for $($Look.id)."
+        }
+        $looks = @($doc.looks | ForEach-Object { if ($_.id -ceq $Look.id) { $Look } else { $_ } })
+        [void] (Write-ObsLooksFile $Run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks @($doc.retired))))
+        $setup = [ordered]@{ reloadQpc = Send-ObsHookCommand $Run.Root 'command-obs-looks-reload'
+            state = Get-State $Run.Root "lookfx-$($Look.id)-fresh-null-setup" }
+        if (-not $setup.state) { throw "LookFx fresh null setup reload did not complete for $($Look.id)." }
+        $stored = @((Read-ObsLooksFile $Run.Root).looks | Where-Object { $_.id -ceq $Look.id })
+        if ($stored.Count -ne 1 -or
+            (ConvertTo-Json -InputObject $stored[0] -Compress -Depth 16) -cne
+            (ConvertTo-Json -InputObject $Look -Compress -Depth 16)) {
+            throw "LookFx fresh null setup did not retain the expected record for $($Look.id)."
+        }
+    }
+    Set-OverlayViewport $Chrome $Fixture.source
+    [void] (Invoke-Cdp $Chrome 'Page.bringToFront')
+    [void] (Invoke-ChromeNavigate $Chrome $Fixture.href)
+    $connected = Wait-For { $p = Get-PageProbe $Chrome; if ((Get-PageField $p 'connection') -ceq 'open' -and
+        (Get-Prop (Get-PageField $p 'look') 'id') -ceq $Look.id) { $p } } 15 100
+    if (-not $connected) { throw "LookFx native $($Fixture.mode) stream did not connect for $($Look.id)." }
+    $expected.streams++; $expected.sampleStreams++
+    $admitted = & $waitStreams "lookfx-$($Look.id)-sample-admitted"
+    [ordered]@{ release = $release; before = $before; detached = $detached; setup = $setup; admitted = $admitted }
+}
+function Get-LookFxShotBytes($Chrome, $Look, $Fixture) {
+    $before = Wait-LookFxFixture $Chrome $Look $Fixture
+    $bytes = Get-ChromeShotBytes $Chrome
+    $after = Get-LookFxProbe $Chrome -NoFx:((Get-Prop $Fixture 'noFx') -eq $true)
+    $Fixture.captures.Add([ordered]@{ before = $before; after = $after })
+    $failed = @(Get-LookFxFixtureFailures $after $Look $Fixture)
+    if ($failed.Count -gt 0) { throw "LookFx $($Fixture.mode) fixture changed during capture for $($Look.id); failed terms: $($failed -join ', ')." }
+    ,$bytes
+}
+function Get-LookFxIdentityCapture($Chrome, $Look, $Fixture, [string] $Stem, [string] $CheckName, [switch] $PaintDiagnostic) {
+    $Chrome = Resolve-Chrome $Chrome
+    $target = Get-Prop (Invoke-Cdp $Chrome 'Target.getTargetInfo') 'targetInfo'
+    if ((Get-Prop $target 'targetId') -cne $Chrome.TargetId) { throw 'LookFx capture is not attached to its owned target.' }
+    [void] (Invoke-Cdp $Chrome 'Page.bringToFront')
+    [void] (Wait-LookFxFixture $Chrome $Look $Fixture)
+    $paintExpression = @'
+new Promise(resolve => requestAnimationFrame(first => requestAnimationFrame(second => resolve({
+  first, second, href:location.href, visibility:document.visibilityState, hasFocus:document.hasFocus()
+}))))
+'@
+    $frames = [Collections.Generic.List[object]]::new()
+    $shots = [Collections.Generic.List[byte[]]]::new()
+    for ($i = 0; $i -lt 2; $i++) {
+        $eventStart = (Resolve-Chrome $Chrome).Events.Count
+        # The second frame is an unchanged-state recapture, never a replacement for the first.
+        $paintResult = Invoke-Cdp $Chrome 'Runtime.evaluate' @{ expression = $paintExpression; awaitPromise = $true; returnByValue = $true }
+        if (Get-Prop $paintResult 'exceptionDetails') { throw 'LookFx identity paint barrier failed.' }
+        $paint = Get-Prop (Get-Prop $paintResult 'result') 'value'
+        $before = Get-LookFxProbe $Chrome -NoFx:((Get-Prop $Fixture 'noFx') -eq $true)
+        $bytes = Get-ChromeShotBytes $Chrome
+        $path = Join-Path $shotDirectory "$Stem$(if ($i -eq 1) { '-recapture' }).png"
+        [IO.File]::WriteAllBytes($path, $bytes)
+        $after = Get-LookFxProbe $Chrome -NoFx:((Get-Prop $Fixture 'noFx') -eq $true)
+        $failures = @((Get-LookFxFixtureFailures $before $Look $Fixture); (Get-LookFxFixtureFailures $after $Look $Fixture))
+        $active = $paint.visibility -ceq 'visible' -and $paint.hasFocus -eq $true -and $paint.href -ceq $Fixture.href -and
+            $before.captureMetadata.visibility -ceq 'visible' -and $before.captureMetadata.hasFocus -eq $true -and
+            $after.captureMetadata.visibility -ceq 'visible' -and $after.captureMetadata.hasFocus -eq $true
+        $frame = [ordered]@{ TargetId = $Chrome.TargetId; activeOwnedTarget = [bool] $active; paint = $paint
+            image = [IO.Path]::GetRelativePath($runDirectory, $path); before = $before; after = $after; fixtureFailures = $failures }
+        if ($PaintDiagnostic) {
+            $frame['layers'] = Get-FxPaintLayerSnapshot $Chrome
+            $frame['layerEvents'] = @($Chrome.Events | Select-Object -Skip $eventStart | Where-Object { $_.method -like 'LayerTree.*' })
+        }
+        $Fixture.captures.Add($frame); $frames.Add($frame); $shots.Add($bytes)
+    }
+    $diffPath = Join-Path $shotDirectory "$Stem-capture-diff.png"
+    $pixels = Compare-Png $shots[0] $shots[1] $diffPath 0
+    $valid = $pixels.differing -eq 0 -and @($frames | Where-Object {
+        -not $_.activeOwnedTarget -or $_.fixtureFailures.Count -gt 0
+    }).Count -eq 0
+    $record = [ordered]@{ valid = [bool] $valid; frames = $frames; pixels = $pixels
+        diffImage = [IO.Path]::GetRelativePath($runDirectory, $diffPath) }
+    $evidencePath = Join-Path $runDirectory "$Stem-capture.json"
+    [IO.File]::WriteAllText($evidencePath, (ConvertTo-Json -InputObject $record -Depth 24), [Text.UTF8Encoding]::new($false))
+    Add-Check $CheckName 'valid capture evidence: active owned target, two rAF callbacks per frame, unchanged fixture and exact RGBA recapture' $record $valid
+    [pscustomobject]@{ bytes = $shots[0]; valid = [bool] $valid; evidence = $record }
+}
+function Push-LookFx($Run, $Chrome, $Look, $Fixture = $null) {
+    # Preserve sibling looks in a grouped geometry batch.
+    $doc = Read-ObsLooksFile $Run.Root
+    $prior = @($doc.looks | Where-Object { $_.id -ceq $Look.id })
+    if ($prior.Count -ne 1) { throw "LookFx requires exactly one saved record for $($Look.id)." }
+    $expected = ConvertTo-Json -InputObject $Look -Depth 16 | ConvertFrom-Json -Depth 16
+    $changed = $prior[0].name -cne $expected.name
+    $optionKeys = @(@($prior[0].options.PSObject.Properties.Name) + @($expected.options.PSObject.Properties.Name) | Select-Object -Unique)
+    foreach ($key in $optionKeys) {
+        if ((Get-Prop $prior[0].options $key) -cne (Get-Prop $expected.options $key)) { $changed = $true }
+    }
+    $before = if ($Fixture) { Wait-LookFxFixture $Chrome $prior[0] $Fixture } else { Get-PageProbe $Chrome }
+    $epoch = Get-PageField $before 'lookEpoch'; $seq = Get-PageField $before 'lookSeq'
+    $looks = @($doc.looks | ForEach-Object { if ($_.id -ceq $Look.id) { $Look } else { $_ } })
+    $rewritten = ConvertTo-ObsLooksJson (New-ObsLooksDocument $looks @($doc.retired))
+    $path = Write-ObsLooksFile $Run.Root $rewritten
+    $evidence = [ordered]@{ id = $Look.id; changed = $changed; priorRecord = $prior[0]; expectedRecord = $expected
+        beforeEpoch = $epoch; beforeSeq = $seq; lastPage = $before; reloadState = $null
+        rewrittenDocument = $rewritten; diskHash = Get-Sha256 $path; storedName = $null; newEvent = $false }
+    try {
+        $evidence['reloadQpc'] = Send-ObsHookCommand $Run.Root 'command-obs-looks-reload'
+        # Command-file consumption precedes the awaited reload; the next command tick is the completion barrier.
+        $evidence.reloadState = Get-State $Run.Root "lookfx-$($Look.id)-reload"
+        if (-not $evidence.reloadState) { throw 'LookFx reload-completion snapshot timed out.' }
+        $page = Wait-For {
+            $p = Get-PageProbe $Chrome; $evidence.lastPage = $p; $o = Get-PageField $p 'options'
+            $same = $p -and (Get-Prop (Get-PageField $p 'look') 'id') -ceq $expected.id
+            foreach ($key in $expected.options.PSObject.Properties.Name) {
+                $same = $same -and (Get-Prop $o $key) -ceq (Get-Prop $expected.options $key)
+            }
+            $newEvent = $null -ne $epoch -and $null -ne $seq -and
+                (Get-PageField $p 'lookEpoch') -ceq $epoch -and (Get-PageField $p 'lookSeq') -gt $seq
+            $evidence.newEvent = [bool] $newEvent
+            if ($same -and (-not $changed -or $newEvent)) { $p }
+        } 10 25
+        if (-not $page) { throw "LookFx native push was not acknowledged for $($Look.id)." }
+        $stored = @( (Read-ObsLooksFile $Run.Root).looks | Where-Object { $_.id -ceq $Look.id })
+        $evidence.storedName = if ($stored.Count -eq 1) { $stored[0].name } else { $null }
+        if ($evidence.storedName -cne $expected.name) { throw "LookFx stored name does not match for $($Look.id)." }
+        Start-Sleep -Milliseconds 150
+        $result = if ($Fixture) { Wait-LookFxFixture $Chrome $expected $Fixture } else { Get-LookFxProbe $Chrome }
+        $result | Add-Member -NotePropertyName lookPush -NotePropertyValue $evidence -Force
+        $result
+    } catch {
+        $evidence['error'] = $_.Exception.Message
+        if (-not $evidence.reloadState) {
+            try { $evidence.reloadState = Get-State $Run.Root "lookfx-$($Look.id)-failure" 2 }
+            catch { $evidence['reloadStateError'] = $_.Exception.Message }
+        }
+        $evidence['reloadStore'] = Get-Overlay $evidence.reloadState 'looks'
+        try {
+            $evidence.diskHash = Get-Sha256 $path
+            $evidence['actualDocument'] = Get-Content -Raw -LiteralPath $path
+        } catch { $evidence['diskEvidenceError'] = $_.Exception.Message }
+        $failurePath = Join-Path $runDirectory "lookfx-push-$($script:labelSeq)-$(ConvertTo-SafeName $Look.id)-failure.json"
+        [IO.File]::WriteAllText($failurePath, (ConvertTo-Json -InputObject $evidence -Depth 20), [Text.UTF8Encoding]::new($false))
+        throw "$($evidence.error) Evidence: $([IO.Path]::GetRelativePath($runDirectory, $failurePath))"
+    }
+}
+function Test-LookFxCounters($Before, $After, [int] $Draws) {
+    $a = Get-PageField $Before 'counters'; $b = Get-PageField $After 'counters'
+    $null -ne (Get-Prop $a 'blurDraws') -and $null -ne (Get-Prop $b 'blurDraws') -and
+        [int] $b.blurDraws - [int] $a.blurDraws -eq $Draws -and
+        $a.coverLoads -eq $b.coverLoads -and $a.quantizerRuns -eq $b.quantizerRuns -and
+        @($Before.art).Count -eq @($After.art).Count
+}
+function Test-LookFxRgb([string] $Colour, [double[]] $Expected) {
+    $numbers = @([regex]::Matches($Colour, '[\d.]+') | ForEach-Object { [double] $_.Value })
+    if ($numbers.Count -eq 3) { $numbers += 1.0 }
+    $numbers.Count -eq 4 -and @((0..3) | Where-Object {
+        [Math]::Abs($numbers[$_] - $Expected[$_]) -gt 0.001
+    }).Count -eq 0
+}
+function Test-LookFxColours($Page, $Baseline, [string] $Theme, $Options) {
+    $d = Get-LookFxDefaults $Theme
+    $p = Get-Prop $Options 'playedBrightness'; if ($null -eq $p) { $p = $d.playedBrightness }
+    $u = Get-Prop $Options 'unplayedBrightness'; if ($null -eq $u) { $u = $d.unplayedBrightness }
+    $b = Get-Prop $Options 'backgroundBrightness'; if ($null -eq $b) { $b = $d.backgroundBrightness }
+    $blur = Get-Prop $Options 'backgroundBlur'; if ($null -eq $blur) { $blur = $d.backgroundBlur }
+    $resolved = $Page.fx.resolved
+    $ok = $resolved.blur -eq $blur -and $resolved.played -eq $p -and $resolved.unplayed -eq $u -and $resolved.background -eq $b
+    if ($Theme -ne 'pill') {
+        $base = if ((Get-Prop $Options 'colours') -eq 'custom') { $Options.accent }
+            elseif ($Theme -in @('matte', 'matte-light')) { Get-PageField $Baseline 'accent' } else { '#ffffff' }
+        $rgb = @(@(1, 3, 5) | ForEach-Object {
+            [Math]::Min([double] 255, [Math]::Floor([Convert]::ToInt32($base.Substring($_, 2), 16) * $p / 100 + 0.5))
+        })
+        $alpha = switch ($Theme) { 'matte' { .12 } 'matte-light' { .18 } 'simple' { .4 } 'album-art' { .3 } default { .25 } }
+        $greyValue = [Math]::Floor(255 * $u / 100 + 0.5)
+        $ok = $ok -and (Test-LookFxRgb $Page.fx.played ($rgb + @(1))) -and
+            (Test-LookFxRgb $Page.fx.track @($greyValue, $greyValue, $greyValue, $alpha))
+        if ($Theme -eq 'classic') { $ok = $ok -and (Test-LookFxRgb $Page.fx.head ($rgb + @(1))) }
+    }
+    $active = $Theme -eq 'pill' -or ($Theme -in @('standard', 'classic', 'card') -and $Options.colours -eq 'auto') -or
+        ($Theme -eq 'album-art' -and $Options.showArt)
+    if ($active -and (Get-PageField $Page 'artFailed') -eq $false) {
+        $key = ConvertFrom-Json -InputObject (Get-PageField $Page 'rasterKey') -NoEnumerate
+        $expectedKey = if ($Theme -eq 'pill') { @($blur, $p, $u, $b) } else { @($blur, $b) }
+        $ok = $ok -and (ConvertTo-Json -InputObject $key[8] -Compress) -ceq (ConvertTo-Json -InputObject $expectedKey -Compress)
+        $c = $Page.fx.canvases
+        $k = [double] $Options.scale / 100
+        $radius = [Math]::Floor($blur * $k * 10 + .5) / 10
+        if ($Theme -eq 'pill') {
+            $ok = $ok -and [Math]::Abs($c.colour.blur - $radius) -lt .001 -and
+                [Math]::Abs($c.colour.brightness - $p / 100 * $b / 100) -lt .001 -and $c.colour.saturate -eq 1.3 -and
+                [Math]::Abs($c.grey.blur - $radius) -lt .001 -and
+                [Math]::Abs($c.grey.brightness - $u / 100 * $b / 100) -lt .001 -and $c.grey.grayscale -eq .75 -and
+                [Math]::Abs($c.grey.alpha - .6) -lt .001
+        } elseif ($Theme -eq 'album-art') {
+            $enabled = $blur -ne 0 -or $b -ne 100
+            $ok = $ok -and $(if ($enabled) {
+                $s = if ($radius -gt 0) { [Math]::Min([double] 1, [Math]::Sqrt(100000 / ([double] $Options.width * $Options.width))) } else { [double] 1 }
+                $Page.fx.coverFx -eq 'true' -and $Page.fx.styles.'cover-fx'.display -ne 'none' -and
+                    [Math]::Abs($c.'cover-fx'.blur - $radius * $s) -lt .001 -and
+                    [Math]::Abs($c.'cover-fx'.brightness - $b / 100) -lt .001 -and $c.'cover-fx'.saturate -eq 1
+            } else { $Page.fx.coverFx -ne 'true' -and $Page.fx.styles.'cover-fx'.display -eq 'none' })
+        } else {
+            $cssW = [double] $Options.width - $(if ($Theme -eq 'classic' -and $Options.showArt) { 90 * $k } else { 0 })
+            $s = [Math]::Min([double] 1, [Math]::Sqrt(100000 / ($cssW * [double] (Get-PageField $Page 'box').h)))
+            $ok = $ok -and [Math]::Abs($c.colour.blur - $radius * $s) -lt .001 -and
+                [Math]::Abs($c.colour.brightness - $b / 100) -lt .001 -and $c.colour.saturate -eq 1.2
+        }
+    }
+    [bool] $ok
+}
+function ConvertTo-LookFxNormalizedOptions($Options) {
+    $normalized = [ordered]@{}
+    $copy = if ($Options -is [Collections.IDictionary]) { $Options } else {
+        $values = [ordered]@{}
+        foreach ($property in $Options.PSObject.Properties) { $values[$property.Name] = $property.Value }
+        $values
+    }
+    $defaults = Get-LookFxDefaults $copy.theme
+    foreach ($key in @($copy.Keys | Sort-Object)) {
+        $normalized[$key] = if ($defaults.Contains($key) -and $null -eq $copy[$key]) { $defaults[$key] } else { $copy[$key] }
+    }
+    $normalized
+}
+function Test-LookFxRestoredMetadata($Reference, $Page) {
+    # Fixture validation checks complete expected options/art/source/state on both sides of every capture.
+    # Keep exact resolved FX, raster/style and DOM geometry identity independent of the pixel differential.
+    $terms = [ordered]@{
+        options = (ConvertTo-Json -InputObject (ConvertTo-LookFxNormalizedOptions $Reference.captureMetadata.options) -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject (ConvertTo-LookFxNormalizedOptions $Page.captureMetadata.options) -Compress -Depth 16)
+        fx = (ConvertTo-Json -InputObject $Reference.fx -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.fx -Compress -Depth 16)
+        elements = (ConvertTo-Json -InputObject $Reference.captureMetadata.elements -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.captureMetadata.elements -Compress -Depth 16)
+        geometry = (ConvertTo-Json -InputObject $Reference.geometry -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.geometry -Compress -Depth 16)
+        boxRect = (ConvertTo-Json -InputObject $Reference.boxRect -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.boxRect -Compress -Depth 16)
+        nativeFixture = (ConvertTo-Json -InputObject $Reference.nativeFixture -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.nativeFixture -Compress -Depth 16)
+        images = (ConvertTo-Json -InputObject $Reference.captureMetadata.images -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.captureMetadata.images -Compress -Depth 16)
+        animations = (ConvertTo-Json -InputObject $Reference.captureMetadata.animations -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.captureMetadata.animations -Compress -Depth 16)
+        css = (ConvertTo-Json -InputObject $Reference.css -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.css -Compress -Depth 16)
+        attrs = (ConvertTo-Json -InputObject $Reference.attrs -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.attrs -Compress -Depth 16)
+        pageSize = (ConvertTo-Json -InputObject $Reference.pageSize -Compress -Depth 16) -ceq
+            (ConvertTo-Json -InputObject $Page.pageSize -Compress -Depth 16)
+        opacity = $Reference.opacity -ceq $Page.opacity
+        fill = $Reference.clipPx -ceq $Page.clipPx -and $Reference.frac -ceq $Page.frac
+    }
+    @($terms.Values | Where-Object { -not $_ }).Count -eq 0
+}
+function Get-LookFxPaintSignature($Case, $Page, [string] $Stage, [ref] $IneligibleReason = $null) {
+    if ($null -eq $IneligibleReason) { $ignoredReason = $null; $IneligibleReason = [ref] $ignoredReason }
+    $IneligibleReason.Value = $null
+    # Registered from retained pre-LookFx 8ce7688 frames, not learned from the current differential.
+    # Fresh null/explicit and all undocumented pure-FX paths always remain absolute0.
+    if ($Stage -eq 'initial-explicit') { $IneligibleReason.Value = 'fresh-initial-explicit-requires-exact0'; return $null }
+    if ($Case.theme -notin @('simple', 'album-art')) { $IneligibleReason.Value = 'unregistered-theme'; return $null }
+    $registeredCases = @('fx-default', 'fx-played-min', 'fx-played-max', 'fx-unplayed-min', 'fx-unplayed-max')
+    if ($Case.theme -eq 'album-art') { $registeredCases += @('fx-blur-0', 'fx-blur-max', 'fx-bg-min', 'fx-bg-max') }
+    if ($Case.case -notin $registeredCases) { $IneligibleReason.Value = 'unregistered-case'; return $null }
+    if ($Stage -eq 'pure-reset' -and -not (
+        ($Case.theme -eq 'simple' -and $Case.case -eq 'fx-played-min') -or
+        ($Case.theme -eq 'album-art' -and $Case.case -eq 'fx-unplayed-min'))) {
+        $IneligibleReason.Value = 'unregistered-pure-reset-case'; return $null
+    }
+    if ($Stage -notin @('pure-reset', 'reset', 'final-explicit')) { $IneligibleReason.Value = 'unregistered-stage'; return $null }
+    $simple = $Case.theme -eq 'simple'
+    $expected = [ordered]@{ theme = $Case.theme; font = $null; scale = 100
+        width = $(if ($simple) { 440 } else { 200 }); align = 'left'; colours = 'auto'; text = '#ffffff'
+        background = $(if ($simple) { '#202020' } else { '#000000' })
+        backgroundOpacity = $(if ($simple) { 100 } else { 80 }); accent = '#8a8a95'
+        backgroundBlur = 0; playedBrightness = 100; unplayedBrightness = $(if ($simple) { 0 } else { 100 })
+        backgroundBrightness = 100; textShadow = $true; showArt = $true; showArtist = $true
+        showProgress = $true; showTimes = $true; paused = 'dim'; showAnimation = 'slide-up'; hideAnimation = 'fade' }
+    if ((ConvertTo-Json -InputObject (ConvertTo-LookFxNormalizedOptions $expected) -Compress) -cne
+        (ConvertTo-Json -InputObject (ConvertTo-LookFxNormalizedOptions $Page.captureMetadata.options) -Compress)) {
+        $IneligibleReason.Value = 'nondefault-normalized-options'; return $null
+    }
+    $elements = $Page.captureMetadata.elements
+    $bar = $elements.bar; $fill = $elements.barfill; $scrim = $elements.scrim
+    $dimensions = if ($simple) { @(480, 120, 440, 80, 158, 82, 252, -6, 246, 88) } else { @(240, 240, 200, 200, 32, 210, 176, -82, 94, 62) }
+    if ($Page.pageSize.width -ne $dimensions[0] -or $Page.pageSize.height -ne $dimensions[1] -or $Page.pageSize.dpr -ne 1 -or
+        $Page.boxRect.x -ne 20 -or $Page.boxRect.y -ne 20 -or
+        $Page.boxRect.width -ne $dimensions[2] -or $Page.boxRect.height -ne $dimensions[3] -or
+        $bar.rect.x -ne $dimensions[4] -or $bar.rect.y -ne $dimensions[5] -or $bar.rect.width -ne $dimensions[6] -or $bar.rect.height -ne 3 -or
+        $fill.rect.x -ne $dimensions[7] -or $fill.rect.right -ne $dimensions[8] -or $fill.rect.y -ne $dimensions[5] -or
+        $fill.rect.width -ne $dimensions[6] -or $fill.rect.height -ne 3 -or $Page.clipPx -ne $dimensions[9] -or
+        $Page.opacity -ne .7 -or $Page.fx.played -cne 'rgb(255, 255, 255)' -or
+        $Page.fx.track -cne $(if ($simple) { 'rgba(0, 0, 0, 0.4)' } else { 'rgba(255, 255, 255, 0.3)' }) -or
+        $Page.fx.resolved.blur -ne 0 -or $Page.fx.resolved.played -ne 100 -or
+        $Page.fx.resolved.unplayed -ne $expected.unplayedBrightness -or $Page.fx.resolved.background -ne 100 -or
+        $Page.fx.coverFx -cne 'false' -or $Page.fx.requestedArt -cne '/art/sample' -or $Page.fx.loadedArt -cne '/art/sample' -or
+        (ConvertTo-Json -InputObject $Page.fx.artPixel -Compress) -cne '[102,65,172,255]') {
+        $IneligibleReason.Value = 'default-source-geometry-fill-or-paint-state-mismatch'; return $null
+    }
+    if ($bar.customProperties.'--played-fill' -cne '' -or $bar.customProperties.'--unplayed-track' -cne '' -or
+        $bar.customProperties.'--bg' -cne $expected.background -or
+        $bar.customProperties.'--bg-a' -cne $(if ($simple) { '1' } else { '0.8' })) {
+        $IneligibleReason.Value = 'nondefault-paint-variables'; return $null
+    }
+    # overlayUrl already ends in '/'; URI resolution preserves the exact /art/sample identity.
+    $expectedArtSource = [Uri]::new([Uri] $overlayUrl, 'art/sample').AbsoluteUri
+    foreach ($image in $Page.captureMetadata.images) {
+        if (-not $image.complete -or $image.naturalWidth -ne 256 -or $image.naturalHeight -ne 256) {
+            $IneligibleReason.Value = 'artwork-not-loaded-at-registered-size'; return $null
+        }
+        if ($image.src -cne $expectedArtSource) {
+            $IneligibleReason.Value = "artwork-source-mismatch: expected=$expectedArtSource; actual=$($image.src)"; return $null
+        }
+    }
+    if (@($Page.captureMetadata.images).Count -ne 2 -or @($Page.captureMetadata.animations).Count -ne 0) {
+        $IneligibleReason.Value = 'image-count-or-animation-state-mismatch'; return $null
+    }
+    $root = 'artifacts/obs-overlay/20261005T011732Z/screenshots/'
+    if ($simple) {
+        if ($bar.transform -cne 'matrix(1, 0, 0, 1, 0, 0.5)' -or $fill.transform -cne 'matrix(1, 0, 0, 1, -164, 0)') {
+            $IneligibleReason.Value = 'Simple-default-fill-transforms-mismatch'; return $null
+        }
+        return [ordered]@{ name = 'pre-LookFx.Simple.played-fill-top-AA.v1'; region = @(158, 82, 245, 82)
+            width = 480; height = 120; preLookFxCommit = '8ce7688'; evidence = @(
+                @{ path = "${root}fxpaint-simple-no-fx-custom-auto-default.png"; sha256 = 'ad5bcd5c13af0e325af105276630f7b0c2de6f2aa7e3b46538b3b97de40c6175' },
+                @{ path = "${root}fxpaint-simple-no-fx-custom-auto-reset.png"; sha256 = '8c999f3f1be15f1f49f05c39b09b798ee91d5ab86881ca84327b45d566514693' }) }
+    }
+    if ($bar.transform -cne 'none' -or $fill.transform -cne 'matrix(1, 0, 0, 1, -114, 0)' -or
+        $scrim.rect.x -ne 20 -or $scrim.rect.y -ne 132 -or $scrim.rect.width -ne 200 -or $scrim.rect.height -ne 88 -or
+        $scrim.opacity -cne '0.8' -or $scrim.backgroundImage -cne 'linear-gradient(rgba(0, 0, 0, 0), rgb(0, 0, 0))' -or
+        $scrim.customProperties.'--bg' -cne '#000000' -or $scrim.customProperties.'--bg-a' -cne '0.8' -or
+        $bar.customProperties.'--played-fill' -cne '' -or $bar.customProperties.'--unplayed-track' -cne '') {
+        $IneligibleReason.Value = 'Album-default-scrim-track-or-transform-mismatch'; return $null
+    }
+    [ordered]@{ name = 'pre-LookFx.Album.scrim-band-with-unplayed-track.v1'; region = @(20, 132, 219, 219)
+        width = 240; height = 240; preLookFxCommit = '8ce7688'; evidence = @(
+            @{ path = "${root}fxpaint-album-art-no-fx-custom-auto-default.png"; sha256 = 'e34ac2297c6596489e10f2f3120ce7e7a3cb1d7f70c0fafce52e03dc1ed1d713' },
+            @{ path = "${root}fxpaint-album-art-no-fx-custom-auto-reset.png"; sha256 = '5859ecd4c727c5626cbd521b2330cf564788c45aa5c628d4dff10dbc4cb22cd8' },
+            @{ path = "${root}fxpaint-album-art-no-fx-showart-false-true-default.png"; sha256 = 'e34ac2297c6596489e10f2f3120ce7e7a3cb1d7f70c0fafce52e03dc1ed1d713' },
+            @{ path = "${root}fxpaint-album-art-no-fx-showart-false-true-reset.png"; sha256 = '8ce3d264745a0d815637c5ef5305a01094ef129837e88d62ba4ca33b741b9dcd' }) }
+}
+function Compare-LookFxPaint($Reference, $Capture, $Case, [string] $Stage, [string] $Stem) {
+    $diffPath = Join-Path $shotDirectory "$Stem-$Stage-absolute-diff.png"
+    $pixels = Compare-Png $Reference.bytes $Capture.bytes $diffPath 0
+    $referencePage = $Reference.evidence.frames[0].before
+    $valid = $Reference.valid -and $Capture.valid
+    $restored = $valid
+    foreach ($frame in @($Reference.evidence.frames) + @($Capture.evidence.frames)) {
+        foreach ($page in @($frame.before, $frame.after)) {
+            if (-not (Test-LookFxRestoredMetadata $referencePage $page)) { $restored = $false }
+        }
+    }
+    $signatureIneligibleReason = if (-not $valid) { 'invalid-capture' } elseif (-not $restored) { 'restored-state-mismatch' } else { $null }
+    $signature = if ($valid -and $restored) {
+        Get-LookFxPaintSignature $Case $referencePage $Stage ([ref] $signatureIneligibleReason)
+    } else { $null }
+    $max = [ordered]@{ r = 0; g = 0; b = 0; a = 0 }
+    $outside = 0; $alpha = 0; $invalid = 0
+    $expectedStream = [IO.MemoryStream]::new($Reference.bytes); $actualStream = [IO.MemoryStream]::new($Capture.bytes)
+    $expected = $null; $actual = $null
+    try {
+        $expected = [Drawing.Bitmap]::new($expectedStream); $actual = [Drawing.Bitmap]::new($actualStream)
+        $sameSize = $expected.Width -eq $actual.Width -and $expected.Height -eq $actual.Height
+        if ($sameSize) {
+            for ($y = 0; $y -lt $expected.Height; $y++) {
+                for ($x = 0; $x -lt $expected.Width; $x++) {
+                    $a = $expected.GetPixel($x, $y); $b = $actual.GetPixel($x, $y)
+                    $dr = [int] $b.R - [int] $a.R; $dg = [int] $b.G - [int] $a.G
+                    $db = [int] $b.B - [int] $a.B; $da = [int] $b.A - [int] $a.A
+                    $max.r = [Math]::Max($max.r, [Math]::Abs($dr)); $max.g = [Math]::Max($max.g, [Math]::Abs($dg))
+                    $max.b = [Math]::Max($max.b, [Math]::Abs($db)); $max.a = [Math]::Max($max.a, [Math]::Abs($da))
+                    if ($da -ne 0) { $alpha++ }
+                    if ($dr -eq 0 -and $dg -eq 0 -and $db -eq 0 -and $da -eq 0) { continue }
+                    $inside = $signature -and $x -ge $signature.region[0] -and $x -le $signature.region[2] -and
+                        $y -ge $signature.region[1] -and $y -le $signature.region[3]
+                    if (-not $inside) { $outside++; continue }
+                    if ($Case.theme -eq 'simple') {
+                        $delta = if ($x -eq 158) { 2 } else { 9 }
+                        if ($dr -ne $dg -or $dr -ne $db -or [Math]::Abs($dr) -ne $delta) { $invalid++ }
+                    } elseif ([Math]::Abs($dr) -gt 1 -or [Math]::Abs($dg) -gt 1 -or [Math]::Abs($db) -gt 1) { $invalid++ }
+                }
+            }
+        }
+    } finally {
+        if ($actual) { $actual.Dispose() }; if ($expected) { $expected.Dispose() }
+        $actualStream.Dispose(); $expectedStream.Dispose()
+    }
+    $exact = $sameSize -and $pixels.differing -eq 0
+    $known = $valid -and $restored -and $signature -and $sameSize -and $pixels.width -eq $signature.width -and
+        $pixels.height -eq $signature.height -and $pixels.differing -gt 0 -and $outside -eq 0 -and $alpha -eq 0 -and $invalid -eq 0
+    if (-not $sameSize) { $max = $null; $outside = $null; $alpha = $null; $invalid = $null }
+    [ordered]@{ exactPixels = [bool] $exact; matchesKnownPaintSignature = [bool] $known
+        differingPixels = $pixels.differing; maxDeltas = $max; outsideRegionCount = $outside
+        alphaDifferenceCount = $alpha; invalidSignatureCount = $invalid; validCapture = [bool] $valid
+        exactRestoredState = [bool] $restored; accepted = [bool] ($valid -and $restored -and ($exact -or $known))
+        acceptance = $(if (-not ($valid -and $restored -and ($exact -or $known))) { 'rejected' } elseif ($exact) { 'exact0' } else { 'known-paint-signature (not exact0)' })
+        signature = $signature; signatureIneligibleReason = $signatureIneligibleReason; absolutePixels = $pixels; evidencePaths = @(
+            $Reference.evidence.frames.image; $Capture.evidence.frames.image
+            [IO.Path]::GetRelativePath($runDirectory, $diffPath); "$Stem-$Stage-capture.json"; "$Stem-null-capture.json"
+            if ($signature) { $signature.evidence.path }) }
+}
+
+function Test-LookFxCase($Run, $Chrome, $Case, $Source) {
+    $prefix = "A-LOOK.$($Case.theme).$($Case.case)"
+    $nullOptions = Copy-LookOptions $Case.options
+    foreach ($key in (Get-LookFxDefaults $Case.theme).Keys) { $nullOptions[$key] = $null }
+    $look = New-ObsLook $Case.lookId "$($Case.theme) $($Case.case)" $nullOptions
+    # Native sample streams keep their own song/clock/artwork when SetLooks pushes paired data.
+    $fixture = @{ mode = 'paused'; source = $Source; href = "$($overlayUrl)?look=$($look.id)&sample=paused"
+        captures = [Collections.Generic.List[object]]::new() }
+    $stem = "$($Case.theme)-$($Case.case)"
+    $actions = [Collections.Generic.List[object]]::new()
+    $comparisons = [ordered]@{ initialExplicit = $null; pureReset = $null; reset = $null; explicit = $null }
+    $identityCaptures = [ordered]@{}
+    $baselineBehavior = [ordered]@{
+        observation = 'Zero tolerance by default; only registered pre-LookFx paint signatures may pass with nonzero pixels, exact restored state and valid recaptures.'
+        preLookFxCommit = '8ce7688'
+        currentRun = 'artifacts/obs-overlay/20261005T011507Z'
+        preLookFxRun = 'artifacts/obs-overlay/20261005T011732Z'
+        regions = @(
+            [ordered]@{ theme = 'simple'; history = 'Custom to Auto'; differingPixels = 88; region = 'antialiased edge of the played fill' },
+            [ordered]@{ theme = 'album-art'; history = 'Custom to Auto'; differingPixels = 3511; region = 'scrim dither, channel differences of plus/minus 1' },
+            [ordered]@{ theme = 'album-art'; history = 'ShowArt false to true'; differingPixels = 6629; region = 'scrim dither, channel differences of plus/minus 1' }
+        )
+        upstreamCause = 'not proved'; visibility = 'not assessed'
+    }
+    $evidence = [ordered]@{ baselineBehavior = $baselineBehavior; actions = $actions; pixels = $comparisons
+        identityCaptures = $identityCaptures; fixture = $fixture }
+    $recordStage = {
+        param([string] $Stage, $Page)
+        $record = [ordered]@{ stage = $Stage; name = $look.name; options = Copy-LookOptions $look.options
+            pairedDelivery = [bool] $Page.lookPush.newEvent; page = $Page; capture = "$stem-$Stage-capture.json" }
+        $actions.Add($record)
+        $capture = Get-LookFxIdentityCapture $Chrome $look $fixture "$stem-$Stage" "$prefix.captureEvidence.$Stage"
+        $record['evidence'] = $capture.evidence
+        $identityCaptures[$Stage] = $capture.evidence
+        $capture
+    }
+    try {
+    $samplePage = Set-LookFxSamplePage $Run $Chrome $look $fixture -ReloadLookBeforeAdmission
+    $evidence['samplePage'] = $samplePage
+    $baseline = Push-LookFx $Run $Chrome $look $fixture
+    $nullCapture = & $recordStage 'null' $baseline
+    $initialIdentity = $true
+    if ($Case.case -eq 'fx-default') {
+        $look.options = Copy-LookOptions $Case.options
+        $initialExplicit = Push-LookFx $Run $Chrome $look $fixture
+        $initialExplicitCapture = & $recordStage 'initial-explicit' $initialExplicit
+        $initialPixels = Compare-LookFxPaint $nullCapture $initialExplicitCapture $Case 'initial-explicit' $stem
+        $initialIdentity = $initialPixels.accepted
+        $comparisons.initialExplicit = $initialPixels
+        Add-Check "$prefix.defaultIdentity.initialExplicit" 'fresh initial null and explicit defaults are absolutely RGBA/style/geometry identical, zero pixels' $initialPixels $initialIdentity
+        $look.options = Copy-LookOptions $nullOptions
+        $baseline = Push-LookFx $Run $Chrome $look $fixture
+        [void] (& $recordStage 'initial-null-return' $baseline)
+    }
+    # Initial explicit/reset draws are legitimate setup; the effect/cache check uses a fresh counter baseline.
+    $baseline = Wait-LookFxFixture $Chrome $look $fixture
+    $look.options = Copy-LookOptions $Case.options
+    $changed = Push-LookFx $Run $Chrome $look $fixture
+    [void] (& $recordStage 'effect' $changed)
+    Add-Check "$prefix.colours" 'resolved values, bar RGB/alpha or both canvas filters and applicable raster effect tuple match independent defaults' $changed (Test-LookFxColours $changed $baseline $Case.theme $look.options)
+    $defaults = Get-LookFxDefaults $Case.theme
+    $rasterKeys = if ($Case.theme -eq 'pill') { @($defaults.Keys) }
+        elseif ($Case.theme -in @('standard', 'classic', 'card', 'album-art')) { @('backgroundBlur', 'backgroundBrightness') } else { @() }
+    $expectedChange = @($rasterKeys | Where-Object {
+        $value = Get-Prop $Case.options $_
+        $null -ne $value -and $value -ne $defaults[$_]
+    }).Count -gt 0
+    $draws = if ($expectedChange -and $Case.theme -in @('pill', 'standard', 'classic', 'card')) { 1 }
+        elseif ($expectedChange -and $Case.theme -eq 'album-art') { 1 } else { 0 }
+    Add-Check "$prefix.cache" 'effect-only push draws exactly once iff applicable; progress-only non-pill edits draw zero; no cover fetch or matte quantization' (
+        [ordered]@{ before = $baseline; after = $changed; expectedDraws = $draws }) (
+        (Test-LookFxCounters $baseline $changed $draws) -and
+        ((Get-PageField $baseline 'rasterKey') -cne (Get-PageField $changed 'rasterKey')) -eq $expectedChange)
+    $protected = @('stripe', 'scrim', 'title', 'artist')
+    $stylesSame = @($protected | Where-Object {
+        (ConvertTo-Json -InputObject $baseline.fx.styles.$_ -Compress) -cne (ConvertTo-Json -InputObject $changed.fx.styles.$_ -Compress)
+    }).Count -eq 0
+    Add-Check "$prefix.protectedStyles" 'matte stripe, album scrim and text styles are unchanged; sampled matte floor precedes dimming' (
+        [ordered]@{ baseline = $baseline.fx.styles; changed = $changed.fx.styles; accent = Get-PageField $baseline 'accent' }) (
+        $stylesSame -and $(if ($Case.theme -eq 'matte') {
+            $hex = Get-PageField $baseline 'accent'
+            $luma = (.2126 * [Convert]::ToInt32($hex.Substring(1,2),16) + .7152 * [Convert]::ToInt32($hex.Substring(3,2),16) + .0722 * [Convert]::ToInt32($hex.Substring(5,2),16)) / 255
+            $luma -ge .5 -and (Get-PageField $changed 'accent') -ceq $hex
+        } else { $true }))
+    $equal = Push-LookFx $Run $Chrome $look $fixture
+    [void] (& $recordStage 'equal' $equal)
+    Add-Check "$prefix.equal" 'equal native reload causes no raster work and retains raster key/styles' $equal (
+        (Test-LookFxCounters $changed $equal 0) -and (Get-PageField $changed 'rasterKey') -ceq (Get-PageField $equal 'rasterKey') -and
+        (ConvertTo-Json -InputObject $changed.fx -Compress -Depth 8) -ceq (ConvertTo-Json -InputObject $equal.fx -Compress -Depth 8))
+    $look.name += ' renamed'
+    $named = Push-LookFx $Run $Chrome $look $fixture
+    [void] (& $recordStage 'name-only' $named)
+    Add-Check "$prefix.nameOnly" 'rename is saved on disk and emits a newer same-epoch look event with no raster work or style change' $named (
+        $named.lookPush.storedName -ceq $look.name -and $named.lookPush.newEvent -and
+        (Test-LookFxCounters $equal $named 0) -and (ConvertTo-Json -InputObject $equal.fx -Compress -Depth 8) -ceq (ConvertTo-Json -InputObject $named.fx -Compress -Depth 8))
+    # This reset is scored before any Custom/inactive/ShowArt history can contaminate it.
+    $look.options = Copy-LookOptions $nullOptions
+    $pureReset = Push-LookFx $Run $Chrome $look $fixture
+    $pureResetCapture = & $recordStage 'pure-reset' $pureReset
+    $purePixels = Compare-LookFxPaint $nullCapture $pureResetCapture $Case 'pure-reset' $stem
+    $pureIdentity = $purePixels.accepted
+    $evidence['pureReset'] = $pureReset
+    $evidence['pureResetAbsolute'] = $purePixels.absolutePixels
+    $comparisons.pureReset = $purePixels
+    Add-Check "$prefix.defaultIdentity.pureReset" 'isolated pure-FX reset: exact0, or explicitly registered Simple played-min/Album unplayed-min signature; exact restored state and valid recaptures mandatory' $purePixels $pureIdentity
+    $look.options = Copy-LookOptions $Case.options
+    $reapplied = Push-LookFx $Run $Chrome $look $fixture
+    [void] (& $recordStage 'reapply' $reapplied)
+    if ($Case.theme -ne 'pill') {
+        $custom = Copy-LookOptions $look.options; $custom['colours'] = 'custom'; $custom['accent'] = '#123456'
+        $look.options = $custom; $customPage = Push-LookFx $Run $Chrome $look $fixture
+        [void] (& $recordStage 'custom-accent' $customPage)
+        Add-Check "$prefix.customAccent" 'custom accent remains exact (never matte-floored) before played dimming' $customPage (
+            (Get-PageField $customPage 'accent') -ceq '#123456' -and (Test-LookFxColours $customPage $customPage $Case.theme $custom))
+    }
+    if ($Case.theme -in @('standard', 'classic', 'card', 'album-art')) {
+        $inactive = Copy-LookOptions $nullOptions
+        if ($Case.theme -eq 'album-art') { $inactive['showArt'] = $false } else { $inactive['colours'] = 'custom' }
+        $look.options = $inactive; $before = Push-LookFx $Run $Chrome $look $fixture
+        [void] (& $recordStage 'inactive' $before)
+        $inactive['backgroundBlur'] = 32; $inactive['backgroundBrightness'] = 200
+        $after = Push-LookFx $Run $Chrome $look $fixture
+        [void] (& $recordStage 'inactive-fx' $after)
+        Add-Check "$prefix.inactive" 'Custom backgrounds or hidden album art retain overrides but are style/counter no-ops' ([ordered]@{ before = $before; after = $after }) (
+            (Test-LookFxCounters $before $after 0) -and (Get-PageField $before 'rasterKey') -ceq (Get-PageField $after 'rasterKey') -and
+            (ConvertTo-Json -InputObject $before.fx.styles -Compress -Depth 8) -ceq (ConvertTo-Json -InputObject $after.fx.styles -Compress -Depth 8))
+    }
+    $look.options = Copy-LookOptions $nullOptions; $reset = Push-LookFx $Run $Chrome $look $fixture
+    $resetCapture = & $recordStage 'reset' $reset
+    $explicit = $null; $explicitCapture = $null
+    if ($Case.case -eq 'fx-default') {
+        $look.options = Copy-LookOptions $Case.options; $explicit = Push-LookFx $Run $Chrome $look $fixture
+        $explicitCapture = & $recordStage 'final-explicit' $explicit
+    }
+    $evidence['baseline'] = $baseline; $evidence['changed'] = $changed; $evidence['equal'] = $equal
+    $evidence['named'] = $named; $evidence['reset'] = $reset; $evidence['explicit'] = $explicit
+
+    $resetPixels = Compare-LookFxPaint $nullCapture $resetCapture $Case 'reset' $stem
+    $evidence['resetAbsolute'] = $resetPixels.absolutePixels
+    $resetIdentity = $resetPixels.accepted
+    $comparisons.reset = $resetPixels
+    Add-Check "$prefix.defaultIdentity.reset" 'mixed-history reset: exact0 or explicitly labelled registered paint signature; exact restored state and valid recaptures mandatory' $resetPixels $resetIdentity
+    $identity = $initialIdentity -and $pureIdentity -and $resetIdentity
+    if ($Case.case -eq 'fx-default') {
+        $explicitPixels = Compare-LookFxPaint $nullCapture $explicitCapture $Case 'final-explicit' $stem
+        $evidence['explicitAbsolute'] = $explicitPixels.absolutePixels
+        Add-Check "$prefix.defaultIdentity.finalExplicit" 'explicit defaults after mixed history: exact0 or registered paint signature, never an exception to fresh initial explicit identity' $explicitPixels $explicitPixels.accepted
+        $identity = $identity -and $explicitPixels.accepted
+        $comparisons.explicit = $explicitPixels
+    }
+    Add-Check "$prefix.defaultIdentity" 'fresh defaults absolute0; pure/mixed resets exact0 or visibly labelled known signature; all restored state and capture checks exact' $comparisons $identity
+    if ($Case.case -eq 'fx-default' -and $Case.theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) {
+        $look.options = Copy-LookOptions $nullOptions
+        $look.options['showProgress'] = $false; $look.options['showTimes'] = $false
+        # Setup only: the scored before/after pages both use these disabled moving elements.
+        [void] (Push-LookFx $Run $Chrome $look)
+        $sizes = Get-Content -Raw (Join-Path $fixtureDirectory 'expected-sizes.json') | ConvertFrom-Json -AsHashtable -Depth 16
+        $noArtSize = @($sizes.rows | Where-Object { $_.theme -ceq $Case.theme -and $_.width -eq $look.options.width -and
+            $_.scale -eq $look.options.scale -and $_.showArt -eq $look.options.showArt -and
+            $_.showArtist -eq $look.options.showArtist -and -not $_.showProgress -and -not $_.showTimes })
+        if ($noArtSize.Count -ne 1) { throw "LookFx missing independent noArt source size for $($look.id)." }
+        $noArtFixture = @{ mode = 'noart'; source = $noArtSize[0].source; href = "$($overlayUrl)?look=$($look.id)&sample=noart"
+            captures = [Collections.Generic.List[object]]::new() }
+        $noArtPage = Set-LookFxSamplePage $Run $Chrome $look $noArtFixture
+        $before = Wait-LookFxFixture $Chrome $look $noArtFixture
+        $beforeShot = Get-LookFxShotBytes $Chrome $look $noArtFixture
+        $look.options['backgroundBlur'] = 32; $look.options['backgroundBrightness'] = 200
+        $after = Push-LookFx $Run $Chrome $look $noArtFixture
+        $noArtPixels = Compare-Png $beforeShot (Get-LookFxShotBytes $Chrome $look $noArtFixture) (Join-Path $shotDirectory "$($Case.theme)-noart-diff.png") 0
+        Add-Check "$prefix.noArt" 'without art, blur/background overrides draw/re-fetch nothing and leave pixels/styles unchanged' ([ordered]@{ before = $before; after = $after; pixels = $noArtPixels }) (
+            (Test-LookFxCounters $before $after 0) -and (Get-PageField $after 'artFailed') -eq $true -and
+            $noArtPixels.differing -eq 0 -and
+            (ConvertTo-Json -InputObject $before.fx.styles -Compress -Depth 8) -ceq (ConvertTo-Json -InputObject $after.fx.styles -Compress -Depth 8) -and
+            (ConvertTo-Json -InputObject $before.fx.canvases -Compress -Depth 8) -ceq (ConvertTo-Json -InputObject $after.fx.canvases -Compress -Depth 8))
+        $evidence['noArt'] = [ordered]@{ before = $before; after = $after; pixels = $noArtPixels; samplePage = $noArtPage; fixture = $noArtFixture }
+    }
+    } finally {
+        [IO.File]::WriteAllText((Join-Path $runDirectory "lookfx-$stem.json"), (ConvertTo-Json -InputObject $evidence -Depth 100), [Text.UTF8Encoding]::new($false))
+    }
+    $caseChecks = @($checks | Where-Object { $_.name -like "$prefix.*" })
+    $pixelSummary = [ordered]@{}
+    foreach ($key in $comparisons.Keys) {
+        $comparison = $comparisons[$key]
+        if ($null -eq $comparison) { $pixelSummary[$key] = $null; continue }
+        $metrics = [ordered]@{}
+        foreach ($field in @('exactPixels', 'matchesKnownPaintSignature', 'differingPixels', 'maxDeltas',
+            'outsideRegionCount', 'alphaDifferenceCount', 'invalidSignatureCount', 'validCapture',
+            'exactRestoredState', 'accepted', 'acceptance', 'signatureIneligibleReason', 'evidencePaths')) { $metrics[$field] = $comparison[$field] }
+        $metrics['signatureName'] = if ($comparison.signature) { $comparison.signature.name } else { $null }
+        $pixelSummary[$key] = $metrics
+    }
+    $summary = [ordered]@{ theme = $Case.theme; case = $Case.case; defaultIdentity = [bool] $identity
+        checkCount = $caseChecks.Count; pass = @($caseChecks | Where-Object { $_.status -eq 'pass' }).Count
+        fail = @($caseChecks | Where-Object { $_.status -eq 'fail' }).Count
+        validCaptures = @($identityCaptures.Values | Where-Object { $_.valid }).Count
+        captureCount = $identityCaptures.Count; pixels = $pixelSummary }
+    New-RunEvidenceReference -RelativePath "lookfx-$stem.json" -Summary $summary
+}
+
+# Opt-in painter evidence only. No generated cases, journal rows or required gate inventory are added.
+function Get-FxPaintLayerSnapshot($Chrome) {
+    $Chrome = Resolve-Chrome $Chrome
+    $document = Get-Prop (Invoke-Cdp $Chrome 'DOM.getDocument' @{ depth = 0 }) 'root'
+    $nodes = [ordered]@{}
+    foreach ($id in @('bar', 'barclip', 'barfill', 'scrim', 'cover', 'thumb')) {
+        $nodeId = Get-Prop (Invoke-Cdp $Chrome 'DOM.querySelector' @{ nodeId = $document.nodeId; selector = "#$id" }) 'nodeId'
+        $backend = if ($nodeId) { Get-Prop (Get-Prop (Invoke-Cdp $Chrome 'DOM.describeNode' @{ nodeId = $nodeId }) 'node') 'backendNodeId' } else { $null }
+        $nodes[$id] = [ordered]@{ nodeId = $nodeId; backendNodeId = $backend; present = [bool] $nodeId; layers = @()
+            status = if ($nodeId) { 'tree-unavailable' } else { 'node-absent' } }
+    }
+    $tree = $Chrome.Events | Where-Object { $_.method -eq 'LayerTree.layerTreeDidChange' } | Select-Object -Last 1
+    $layers = @(Get-Prop (Get-Prop $tree 'params') 'layers' | Where-Object { $null -ne $_ })
+    foreach ($id in $nodes.Keys) {
+        if (-not $nodes[$id].present) { continue }
+        $nodes[$id].layers = @($layers | Where-Object {
+            (Get-Prop $_ 'backendNodeId') -eq $nodes[$id].backendNodeId
+        } | ForEach-Object {
+            $entry = [ordered]@{ layer = $_; compositingReasons = $null; error = $null }
+            try { $entry.compositingReasons = Invoke-Cdp $Chrome 'LayerTree.compositingReasons' @{ layerId = $_.layerId } }
+            catch { $entry.error = $_.Exception.Message }
+            $entry
+        })
+        $nodes[$id].status = if (-not $tree) { 'tree-unavailable' } elseif ($nodes[$id].layers.Count) { 'composited' } else { 'no-compositing-layer' }
+    }
+    [ordered]@{ treeAvailable = $null -ne $tree; layerTree = $tree; nodes = $nodes }
+}
+
+function Test-ALookFxPaint {
+    $summaryPath = Join-Path $runDirectory 'fxpaint-summary.json'
+    $summary = [ordered]@{ version = 1; diagnosticOnly = $true; tolerance = 0; comparison = 'exact RGBA'
+        noFxMeaning = 'FX fields omitted from every saved/pushed payload; no FX activation or mutation.'
+        appDirectory = $appDirectory; alternatePreLookFxBuild = [bool] $fxPaintLegacyBuild
+        histories = [ordered]@{} }
+    $fxKeys = @('backgroundBlur', 'playedBrightness', 'unplayedBrightness', 'backgroundBrightness')
+    try {
+        foreach ($theme in @('simple', 'album-art')) {
+            $base = Get-ThemeDefaults $theme; $base['paused'] = 'dim'
+            if (-not $fxPaintLegacyBuild) { foreach ($key in $fxKeys) { $base[$key] = $null } }
+            $look = New-ObsLook "paint$(if ($theme -eq 'simple') { '001' } else { '002' })" "$theme paint history" $base
+            $source = (Get-DefaultThemeSize $theme).source
+            $run = Start-OverlayRun "A-LOOK-fxpaint-$theme" @{} 'PlayingLong' -NoReader -LooksJson (
+                ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
+            $chrome = $null
+            try {
+                [void] (Wait-BenchReady $run.Root)
+                $chrome = Start-Chrome "A-LOOK-fxpaint-$theme" -Plain
+                $histories = @(
+                    @{ name = 'custom-auto'; option = 'colours'; value = 'custom'; stage = 'custom'; noFx = $false },
+                    @{ name = 'played0-null'; option = 'playedBrightness'; value = 0; stage = 'played0'; noFx = $false }
+                )
+                if ($theme -eq 'simple') {
+                    $histories += @{ name = 'unplayed100-null'; option = 'unplayedBrightness'; value = 100; stage = 'unplayed100'; noFx = $false }
+                } else {
+                    $histories += @{ name = 'showart-false-true'; option = 'showArt'; value = $false; stage = 'art-hidden'; noFx = $false }
+                    $histories += @{ name = 'blur32-null'; option = 'backgroundBlur'; value = 32; stage = 'cover-fx'; noFx = $false }
+                }
+                $histories += @{ name = 'no-fx-custom-auto'; option = 'colours'; value = 'custom'; stage = 'custom'; noFx = $true }
+                if ($theme -eq 'album-art') {
+                    $histories += @{ name = 'no-fx-showart-false-true'; option = 'showArt'; value = $false; stage = 'art-hidden'; noFx = $true }
+                }
+                foreach ($history in $histories) {
+                    $prefix = "A-LOOK.fxpaint.$theme.$($history.name)"
+                    $stem = "fxpaint-$theme-$($history.name)"
+                    if ($fxPaintLegacyBuild -and -not $history.noFx) {
+                        $skip = [ordered]@{ theme = $theme; history = $history.name; status = 'skipped-not-applicable'
+                            reason = 'Alternate pre-LookFx hook build: FX histories are not applicable, not passed.' }
+                        $summary.histories["$theme.$($history.name)"] = $skip
+                        $check = [ordered]@{ name = "$prefix.identity"; expected = 'LookFx-capable hook build'
+                            observed = $skip.reason; status = 'skipped-not-applicable' }
+                        Add-JournalCheck $check; $checks.Add($check)
+                        continue
+                    }
+                    $defaults = Copy-LookOptions $base
+                    if ($history.noFx) { foreach ($key in $fxKeys) { $defaults.Remove($key) } }
+                    $look.options = $defaults
+                    $fixture = @{ mode = 'paused'; source = $source; href = "$($overlayUrl)?look=$($look.id)&sample=paused"; noFx = [bool] $history.noFx
+                        captures = [Collections.Generic.List[object]]::new() }
+                    $record = [ordered]@{ theme = $theme; history = $history.name; noFx = $history.noFx
+                        initialOptions = Copy-LookOptions $defaults; stages = [Collections.Generic.List[object]]::new()
+                        differingPixels = $null; identity = $false; completed = $false; trace = $null; error = $null }
+                    $summary.histories["$theme.$($history.name)"] = $record
+                    try {
+                        $record['freshPage'] = Reset-ChromeCasePage $chrome
+                        [void] (Wait-OverlayStreams $run 0 "$stem-fresh-page")
+                        # Restore on a blank target, never warm or replace the reference document.
+                        [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
+                        $record['setupReloadQpc'] = Send-ObsHookCommand $run.Root 'command-obs-looks-reload'
+                        $record['setupState'] = Get-State $run.Root "$stem-setup"
+                        if (-not $record.setupState) { throw "$stem native setup reload did not complete." }
+                        # Only this fresh owned target's enable-time snapshot can seed the trace's layer evidence.
+                        $chrome.Events.Clear()
+                        Set-OverlayViewport $chrome $source
+                        [void] (Invoke-Cdp $chrome 'DOM.enable')
+                        [void] (Invoke-Cdp $chrome 'LayerTree.enable')
+                        $state = @{ baseline = $null; previous = $null; final = $null; error = $null }
+                        # Bounded to this one three-stage history, including first paint and the isolated reset.
+                        $record.trace = Invoke-FrameTrace $chrome $stem 0 {
+                            try {
+                            foreach ($stage in @('default', $history.stage, 'reset')) {
+                                $push = $null
+                                if ($stage -eq 'default') {
+                                    [void] (Invoke-Cdp $chrome 'Page.bringToFront')
+                                    [void] (Invoke-ChromeNavigate $chrome $fixture.href)
+                                } else {
+                                    $look.options = Copy-LookOptions $defaults
+                                    if ($stage -ne 'reset') {
+                                        $look.options[$history.option] = $history.value
+                                        if ($history.option -eq 'colours') { $look.options['accent'] = '#123456' }
+                                    }
+                                    $push = Push-LookFx $run $chrome $look $fixture
+                                }
+                                $capture = Get-LookFxIdentityCapture $chrome $look $fixture "$stem-$stage" "$prefix.captureEvidence.$stage" -PaintDiagnostic
+                                if ($stage -eq 'default') { $state.baseline = $capture }
+                                $fromDefault = Compare-Png $state.baseline.bytes $capture.bytes (Join-Path $shotDirectory "$stem-$stage-default-diff.png") 0
+                                $fromPrevious = if ($state.previous) {
+                                    Compare-Png $state.previous.bytes $capture.bytes (Join-Path $shotDirectory "$stem-$stage-previous-diff.png") 0
+                                } else { $null }
+                                $record.stages.Add([ordered]@{ stage = $stage; options = Copy-LookOptions $look.options; push = $push
+                                    capture = "$stem-$stage-capture.json"; evidence = $capture.evidence
+                                    fromDefault = $fromDefault; fromPrevious = $fromPrevious })
+                                $state.previous = $capture; $state.final = $capture
+                            }
+                            } catch { $state.error = $_.Exception.Message }
+                        } -PreserveLayerEvents -Categories '-*,blink,cc,skia,devtools.timeline,disabled-by-default-devtools.timeline.frame,disabled-by-default-devtools.timeline.layers,disabled-by-default-cc.debug'
+                        $record['layerEvents'] = @($chrome.Events | Where-Object { $_.method -like 'LayerTree.*' })
+                        if ($state.error) { throw $state.error }
+                        $record.differingPixels = $record.stages[2].fromDefault.differing
+                        $record.identity = $state.baseline.valid -and $state.final.valid -and $null -ne $record.differingPixels -and $record.differingPixels -eq 0
+                        Add-Check "$prefix.identity" 'fresh default and isolated reset exactly RGBA-identical, zero tolerance, with valid original/recapture frames' (
+                            [ordered]@{ differingPixels = $record.differingPixels; stages = @($record.stages | ForEach-Object {
+                                [ordered]@{ stage = $_.stage; fromDefault = $_.fromDefault; fromPrevious = $_.fromPrevious; capture = $_.capture } }) }) $record.identity
+                        $layerFailures = @($fixture.captures | Where-Object {
+                            -not $_.layers.treeAvailable -or @($_.layers.nodes.Values | ForEach-Object { $_.layers } | Where-Object { $_.error }).Count -gt 0
+                        })
+                        Add-Check "$prefix.layers" 'LayerTree retained for every frame; compositingReasons recorded for each requested node with a layer' (
+                            [ordered]@{ frames = $fixture.captures.Count; failedFrames = $layerFailures.Count }) ($layerFailures.Count -eq 0)
+                        if ($fxPaintLegacyBuild) {
+                            $unexpectedFx = @($fixture.captures | Where-Object {
+                                $_.before.captureMetadata.lookFxAvailable -or $_.after.captureMetadata.lookFxAvailable -or
+                                $null -ne (Get-PageField $_.before 'fx') -or $null -ne (Get-PageField $_.after 'fx')
+                            })
+                            Add-Check "$prefix.preLookFx" 'alternate build exposes neither effectsOf nor fx state' $unexpectedFx.Count ($unexpectedFx.Count -eq 0)
+                        }
+                        $record.completed = $true
+                    } catch {
+                        $record.error = $_.Exception.Message
+                        Add-Check "$prefix.completed" 'isolated painter history completed; all captured evidence retained' $record.error $false
+                        if (-not @($checks | Where-Object { $_.name -ceq "$prefix.identity" }).Count) {
+                            Add-Check "$prefix.identity" 'complete valid captures and exact RGBA identity, zero tolerance' $record.error $false
+                        }
+                    } finally {
+                        if ($record.error) { $record['partialCaptures'] = @($fixture.captures) }
+                        [IO.File]::WriteAllText((Join-Path $runDirectory "$stem.json"), (ConvertTo-Json -InputObject $record -Depth 32), [Text.UTF8Encoding]::new($false))
+                        [IO.File]::WriteAllText($summaryPath, (ConvertTo-Json -InputObject $summary -Depth 32), [Text.UTF8Encoding]::new($false))
+                    }
+                }
+            } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+        }
+    } finally {
+        [IO.File]::WriteAllText($summaryPath, (ConvertTo-Json -InputObject $summary -Depth 32), [Text.UTF8Encoding]::new($false))
+    }
+    $summary
+}
+
 function Test-ALook {
     if (-not (Test-ChromeAvailable 'A-LOOK')) { return }
+    if ('fxpaint' -in $Section) {
+        $scenarioResults['A-LOOK'] = [ordered]@{ fxpaint = Test-ALookFxPaint }
+        return
+    }
     $allCases = @(New-LookCases)
     $pillCases = @($allCases | Where-Object { $_.theme -eq 'pill' })
     $otherCases = @($allCases | Where-Object { $_.theme -ne 'pill' })
@@ -2002,12 +3050,12 @@ function Test-ALook {
     $obs = [ordered]@{ pillCases = $pillCases.Count; otherCases = $otherCases.Count; cases = [ordered]@{} }
     $selectedCases = @($allCases | Where-Object {
         $name = "$($_.theme).$($_.case)"
-        @($LookCase | Where-Object { $name -like $_ }).Count -gt 0
+        @($LookCase | Where-Object { $name -like $_ }).Count -gt 0 -and
+            (Test-SectionSelected $(if ($_.case -like 'fx-*') { 'fx' } else { 'geometry' }))
     })
-    if ($selectedCases.Count -eq 0 -and (Test-SectionSelected 'geometry')) { throw "No generated A-LOOK cases match: $($LookCase -join ', ')" }
+    if ($selectedCases.Count -eq 0 -and ((Test-SectionSelected 'geometry') -or (Test-SectionSelected 'fx'))) { throw "No generated A-LOOK cases match: $($LookCase -join ', ')" }
     $batches = @($selectedCases | Group-Object { $_.batch } | Sort-Object { [int] $_.Name })
     foreach ($batch in $batches) {
-        if (-not (Test-SectionSelected 'geometry')) { continue }
         $lookDocsList = [Collections.Generic.List[object]]::new()
         foreach ($case in $batch.Group) {
             if ($case.theme -eq 'pill' -and $case.case -eq 'default') {
@@ -2043,6 +3091,7 @@ function Test-ALook {
                 $releasedCases = @($groupRows.Values | ForEach-Object { $_.Case })
                 foreach ($row in $groupRows.Values) {
                     try {
+                        if ($row.Chrome) { $row.TargetId = $row.Chrome.TargetId }
                         if ($row.TargetId) {
                             # Destroy the exact owned document; navigation can retain EventSource in BFCache.
                             $closed = Invoke-Cdp $chrome 'Target.closeTarget' @{ targetId = $row.TargetId }
@@ -2223,6 +3272,7 @@ function Test-ALook {
                 }
                 $caseKey = "$($case.theme).$($case.case)"
                 $obs.cases[$caseKey] = [ordered]@{ look = [bool] $lookEvent; data = [bool] $dataEvent; geometry = $geometry; titleEllipsis = $page.titleEllipsis }
+                if ($case.case -like 'fx-*') { $obs.cases[$caseKey]['fx'] = Test-LookFxCase $run $caseChrome $case $size.source }
                 if ($LookGroup -eq 1) {
                     # Close the owned target, not just navigate away: no retained EventSource can survive the case.
                     $obs.cases[$caseKey]['release'] = Reset-ChromeCasePage $chrome
@@ -2331,13 +3381,18 @@ function Test-ALookReloadDelete {
         $renamedEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'reload01' } 15 $reloadQpc
         $renamedPage = Wait-For {
             $p = Get-PageProbe $chrome
-            if ((Get-PageField $p 'lookSeq') -gt (Get-PageField $initial 'lookSeq')) { $p }
+            if ((Get-PageField $p 'lookEpoch') -ceq (Get-PageField $initial 'lookEpoch') -and
+                (Get-PageField $p 'lookSeq') -gt (Get-PageField $initial 'lookSeq')) { $p }
         } 10 100
         $blurAfter = Get-Prop (Get-Prop $renamedPage.s 'counters') 'blurDraws'
-        Add-Check 'A-LOOK.reload.nameOnlyNoRaster' 'look-file reload of a name-only change does not redraw artwork/quantizer' ([ordered]@{
-            reloadLook = [bool] $renamedEvent; blurDrawsBefore = $blurBefore; blurDrawsAfter = $blurAfter
+        $storedRename = @((Read-ObsLooksFile $run.Root).looks | Where-Object { $_.id -ceq 'reload01' })
+        Add-Check 'A-LOOK.reload.nameOnlyNoRaster' 'rename is saved and emits a newer same-epoch look event without redrawing artwork/quantizer' ([ordered]@{
+            reloadLook = Get-Prop $renamedEvent 'data'; storedName = if ($storedRename.Count -eq 1) { $storedRename[0].name } else { $null }
+            blurDrawsBefore = $blurBefore; blurDrawsAfter = $blurAfter
             lookApplies = Get-Prop (Get-Prop $renamedPage.s 'counters') 'lookApplies' }) (
-            $renamedEvent -and $renamedPage -and $blurBefore -eq $blurAfter)
+            $renamedEvent -and $renamedPage -and $storedRename.Count -eq 1 -and $storedRename[0].name -ceq $renamed.name -and
+            (Get-Prop $renamedEvent.data 'epoch') -ceq (Get-PageField $initial 'lookEpoch') -and
+            (Get-Prop $renamedEvent.data 'seq') -gt (Get-PageField $initial 'lookSeq') -and $blurBefore -eq $blurAfter)
         $deleteQpc = Get-Qpc
         $delete = Invoke-ObsLookCommit $run.Root 901 @{ action = 'delete'; id = 'reload01' }
         $missingEvent = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq 'reload01' -and (Get-Prop $m 'missing') -eq $true } 15 $deleteQpc
@@ -2553,10 +3608,38 @@ function Get-CadenceAssertion($Start, $End, [string] $Theme, [bool] $ShowTimes, 
     $passed = if ($labelApplicable) {
         $ticks -le $maxTicks -and $timeWrites -le $maxTicks -and [Math]::Abs([double] $advance - $Seconds * $Rate) -le 2
     } else { $fill -le $maxFill -and $ticks -eq $fill }
+    $passed = $passed -and $Seconds -gt 0
     [ordered]@{ passed = $passed; seconds = $Seconds; rate = $Rate; showTimes = $ShowTimes
         labelApplicable = $labelApplicable; duration = $Duration; barPx = $BarPx; maxFill = $maxFill; maxTicks = $maxTicks
         ticks = $ticks; fillWrites = $fill; timeWrites = $timeWrites; elapsedStart = $Start.elapsed
         elapsedEnd = $End.elapsed; advance = $advance }
+}
+
+function Save-CadenceEvidence([string] $CheckId, $Start, $End, [switch] $Steady) {
+    $seconds = ([double] (Get-Prop $End 'pageNow') - [double] (Get-Prop $Start 'pageNow')) / 1000
+    $startSeq = Get-PageField $Start 'cadenceLogSequence'; $endSeq = Get-PageField $End 'cadenceLogSequence'
+    $log = @(Get-PageField $End 'cadenceLog')
+    $window = @($log | Where-Object { $_ -and $_.sequence -gt $startSeq -and $_.sequence -le $endSeq })
+    $complete = $null -ne $startSeq -and $null -ne $endSeq -and $endSeq -ge $startSeq -and
+        $window.Count -eq ([long] $endSeq - [long] $startSeq)
+    $reanchors = @($window | Where-Object {
+        ($_.kind -eq 'stepFill' -and $_.reason -ne 'timer') -or ($Steady -and $_.reason -eq 'reanchor')
+    })
+    $record = [ordered]@{ id = $CheckId; seconds = $seconds; pageStartMs = Get-Prop $Start 'pageNow'
+        pageEndMs = Get-Prop $End 'pageNow'; qpcStart = Get-Prop $Start 'qpc'; qpcEnd = Get-Prop $End 'qpc'
+        qpcFrequency = $freq; qpcSeconds = Get-Seconds (Get-Prop $Start 'qpc') (Get-Prop $End 'qpc')
+        startSequence = $startSeq; endSequence = $endSeq; timelineComplete = [bool] $complete
+        reanchors = $reanchors; steadyWindow = $complete -and $reanchors.Count -eq 0
+        start = $Start; end = $End; cadenceLog = $log; windowTimeline = $window }
+    $path = Join-Path $runDirectory "cadence-$(ConvertTo-SafeName $CheckId).json"
+    $record['artifact'] = [IO.Path]::GetRelativePath($runDirectory, $path)
+    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $record -Depth 20), [Text.UTF8Encoding]::new($false))
+    $summary = [ordered]@{ artifact = $record.artifact; seconds = $seconds; qpcSeconds = $record.qpcSeconds
+        timelineComplete = [bool] $complete; events = $window.Count; reanchors = $reanchors.Count
+        steadyWindow = $record.steadyWindow }
+    Add-Check "$CheckId.evidence" 'start/end page probes, QPC, actual T and complete hook cadence timeline retained' $summary (
+        $complete -and $seconds -gt 0 -and $record.qpcSeconds -gt 0)
+    $summary
 }
 
 function Test-ThemeCadence([string] $Theme, [int] $Width, [bool] $ShowTimes, [double] $Rate,
@@ -2570,7 +3653,7 @@ function Test-ThemeCadence([string] $Theme, [int] $Width, [bool] $ShowTimes, [do
     if ($size.Count -ne 1) { throw "A-LOOK cadence missing expected size for $label" }
     $run = Start-OverlayRun "A-LOOK-cadence-$label" @{} $(if ($Sample) { $null } else { 'PlayingLong' }) -NoReader `
         -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id $label $options))))
-    $chrome = $null
+    $chrome = $null; $readHeld = $false
     try {
         [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($Sample) { $null } else { 'PlayingLong' }))
         if (-not $Sample -and $Rate -ne 1) { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$Rate") }
@@ -2579,21 +3662,32 @@ function Test-ThemeCadence([string] $Theme, [int] $Width, [bool] $ShowTimes, [do
         [void] (Invoke-ChromeNavigate $chrome ("$($overlayUrl)?look=$id" + $(if ($Sample) { '&sample=playing' } else { '' })))
         $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
             (Get-PageField $p 'state') -eq 'playing' -and (Get-PageField $p 'shown') -eq $true -and
-            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
+            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) {
+                $p = Get-LookFxProbe $chrome; if ($p.fx.rate -eq $Rate) { $p }
+            } } 15 250
         if (-not $connected) { throw "Cadence page $label never reached its connected playing look state" }
+        # Score the page scheduler against one acknowledged rate-aware anchor, not live clock corrections.
+        $readHeld = $true
+        $holdQpc = Send-ObsHookCommand $run.Root 'command-obs-hold-read'
         Start-Sleep -Seconds 5
         $start = Get-PageProbe $chrome
         Start-Sleep -Seconds 60
         $end = Get-PageProbe $chrome
-        $predicate = Get-CadenceAssertion $start $end $Theme $ShowTimes $Rate ([double] $size[0].bar.width) $(if ($Sample) { 240 } else { 14400 })
-        $ok = $predicate.passed -and (Test-OverlayViewport $end $size[0].source)
+        $evidence = Save-CadenceEvidence "A-LOOK.cadence.$label" $start $end -Steady
+        $predicate = Get-CadenceAssertion $start $end $Theme $ShowTimes $Rate ([double] $size[0].bar.width) $(if ($Sample) { 240 } else { 14400 }) $evidence.seconds
+        $ok = $predicate.passed -and $evidence.steadyWindow -and (Test-OverlayViewport $end $size[0].source)
         $record = [ordered]@{ label = $label; rate = $Rate; showTimes = $ShowTimes; sample = [bool] $Sample
             duration = if ($Sample) { 240 } else { 14400 }; barPx = $predicate.barPx; maxFill = $predicate.maxFill
             ticks = $predicate.ticks; fillWrites = $predicate.fillWrites; timeWrites = $predicate.timeWrites; elapsedStart = $start.elapsed
-            elapsedEnd = $end.elapsed; advance = $predicate.advance }
-        Add-Check "A-LOOK.cadence.$label" '60s after settle: times <=61 ticks/advances rate*60 ±2; hidden times pixel-only bound' $record $ok
+            elapsedEnd = $end.elapsed; advance = $predicate.advance; seconds = $predicate.seconds
+            maxTicks = $predicate.maxTicks; evidence = $evidence; holdQpc = $holdQpc }
+        Add-Check "A-LOOK.cadence.$label.steadyWindow" 'reader held before settle; complete scoring timeline with zero reanchors' $record $evidence.steadyWindow
+        Add-Check "A-LOOK.cadence.$label" 'after settle over actual T: times <=ceil(T)+1 (61 at T=60), advance rate*T ±2; hidden times pixel-only bound' $record $ok
         return $record
-    } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    } finally {
+        try { if ($readHeld) { [void] (Send-ObsHookCommand $run.Root 'command-obs-release-read') } }
+        finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+    }
 }
 
 function Test-ALookCadence {
@@ -2602,13 +3696,19 @@ function Test-ALookCadence {
         if ($GateProfile -eq 'Fast-v2' -and $rate -notin @(0.25, 2)) { continue }
         $results["rate$rate"] = Invoke-JournalCadenceRow -Id "cadence.timesHidden.rate$rate" -Measure {
         $run = Start-OverlayRun "A-LOOK-cadence-rate$rate" @{} 'PlayingLong' -NoReader
-        $chrome = $null
+        $chrome = $null; $readHeld = $false
         try {
             [void] (Wait-BenchReady $run.Root)
             [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$rate")
             $chrome = Start-Chrome "A-LOOK-cadence-rate$rate"
             [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
-            [void] (Wait-PageConnected $chrome 15)
+            $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
+                (Get-PageField $p 'shown') -eq $true -and (Get-PageField $p 'state') -eq 'playing') {
+                    $p = Get-LookFxProbe $chrome; if ($p.fx.rate -eq $rate) { $p }
+                } } 15 250
+            if (-not $connected) { throw "Cadence timesHidden rate$rate did not acknowledge its playing rate." }
+            $readHeld = $true
+            $holdQpc = Send-ObsHookCommand $run.Root 'command-obs-hold-read'
             Start-Sleep -Seconds 5
             $start = Get-PageProbe $chrome
             Start-Sleep -Seconds 60
@@ -2617,12 +3717,18 @@ function Test-ALookCadence {
             $fillWrites = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
             $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
             $barPx = 400; $duration = 14400
-            $maximum = [int] [Math]::Ceiling($barPx * $rate * 60 / $duration) + 2
-            Add-Check "A-LOOK.cadence.timesHidden.rate$rate" 'after 5 s settle/60 s: fillWrites ≤ ceil(barPx*rate*60/duration)+2 and ticks=fillWrites' (
-                [ordered]@{ rate = $rate; fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }) (
-                $fillWrites -le $maximum -and $ticks -eq $fillWrites)
-            $results["rate$rate"] = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
-        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+            $evidence = Save-CadenceEvidence "A-LOOK.cadence.timesHidden.rate$rate" $start $end -Steady
+            $maximum = [int] [Math]::Ceiling($barPx * $rate * $evidence.seconds / $duration) + 2
+            $record = [ordered]@{ rate = $rate; fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum
+                seconds = $evidence.seconds; evidence = $evidence; holdQpc = $holdQpc }
+            Add-Check "A-LOOK.cadence.timesHidden.rate$rate.steadyWindow" 'reader held before settle; complete scoring timeline with zero reanchors' $record $evidence.steadyWindow
+            Add-Check "A-LOOK.cadence.timesHidden.rate$rate" 'after 5 s settle over actual T: fillWrites ≤ ceil(barPx*rate*T/duration)+2 and ticks=fillWrites' $record (
+                $evidence.steadyWindow -and $evidence.seconds -gt 0 -and $fillWrites -le $maximum -and $ticks -eq $fillWrites)
+            $results["rate$rate"] = $record
+        } finally {
+            try { if ($readHeld) { [void] (Send-ObsHookCommand $run.Root 'command-obs-release-read') } }
+            finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+        }
         $results["rate$rate"]
         }
     }
@@ -2641,10 +3747,13 @@ function Test-ALookCadence {
         $a = Get-Prop $start.s 'counters'; $b = Get-Prop $end.s 'counters'
         $fillWrites = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
         $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
-        $maximum = [int] [Math]::Ceiling(400 * 60 / 240) + 2
-        Add-Check 'A-LOOK.cadence.sample240s' 'pill sample phase duration 240 s stays within hidden-time fillWrites/ticks budget' ([ordered]@{
-            fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }) ($fillWrites -le $maximum -and $ticks -eq $fillWrites)
-        $results.sample240s = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum }
+        $evidence = Save-CadenceEvidence 'A-LOOK.cadence.sample240s' $start $end
+        $maximum = [int] [Math]::Ceiling(400 * $evidence.seconds / 240) + 2
+        $record = [ordered]@{ fillWrites = $fillWrites; ticks = $ticks; maximum = $maximum
+            seconds = $evidence.seconds; evidence = $evidence }
+        Add-Check 'A-LOOK.cadence.sample240s' 'pill sample phase duration 240 s stays within actual-T hidden-time fillWrites/ticks budget' $record (
+            $evidence.seconds -gt 0 -and $fillWrites -le $maximum -and $ticks -eq $fillWrites)
+        $results.sample240s = $record
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
     $results.sample240s
     }
@@ -2662,9 +3771,10 @@ function Test-ALookCadence {
         $p = Wait-For { $x = Get-PageProbe $chrome; if ((Get-Prop (Get-Prop $x 'attrs') 'showProgress') -eq 'false') { $x } } 15 100
         Start-Sleep -Seconds 5
         $after = Get-PageProbe $chrome
+        $evidence = Save-CadenceEvidence 'A-LOOK.cadence.progressOffNoTimer' $p $after
         Add-Check 'A-LOOK.cadence.progressOffNoTimer' 'showProgress=false means fill=100%, fillTimer=0 and no ticks after settle' ([ordered]@{
             fill = Get-Prop $after 'clipPx'; fillTimer = Get-Prop $after.s 'fillTimer'
-            ticks = Get-Prop (Get-Prop $after.s 'counters') 'ticks' }) (
+            ticks = Get-Prop (Get-Prop $after.s 'counters') 'ticks'; evidence = $evidence }) (
             $p -and $after.clipPx -eq 400 -and (Get-Prop $after.s 'fillTimer') -eq 0 -and
             (Get-Prop $after.s 'counters' | ForEach-Object { Get-Prop $_ 'ticks' }) -eq 0)
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
@@ -3152,11 +4262,115 @@ function Test-StoreReadOnlyCase([string] $Root, [string] $Label, [byte[]] $Bytes
     [pscustomobject]@{ store = $store; readOnly = $readOnly; reason = $reason; beforeHash = $beforeHash; afterHash = $afterHash }
 }
 
+function Test-StoreLookFx($Run) {
+    $keys = @('backgroundBlur', 'playedBrightness', 'unplayedBrightness', 'backgroundBrightness')
+    $vectors = @(
+        @{ name = 'malicious'; raw = @('url(https://invalid.example/x)', '<img onerror=1>', 'calc(1)', 'NaN'); expected = @($null,$null,$null,$null) },
+        @{ name = 'string'; raw = @('14','100','45','40'); expected = @($null,$null,$null,$null) },
+        @{ name = 'boolean'; raw = @($true,$false,$true,$false); expected = @($null,$null,$null,$null) },
+        @{ name = 'array'; raw = @(@(1),@(2),@(3),@(4)); expected = @($null,$null,$null,$null) },
+        @{ name = 'object'; raw = @(@{v=1},@{v=2},@{v=3},@{v=4}); expected = @($null,$null,$null,$null) },
+        @{ name = 'negative'; raw = @(-.1,-1,-5,-100); expected = @($null,$null,$null,$null) },
+        @{ name = 'aboveRange'; raw = @(32.1,201,101,201); expected = @($null,$null,$null,$null) },
+        @{ name = 'fractional'; raw = @(14.49,112.49,47.49,37.49); expected = @(14,110,45,35) },
+        @{ name = 'tiesUp'; raw = @(14.5,112.5,47.5,37.5); expected = @(15,115,50,40) },
+        @{ name = 'minimum'; raw = @(0,0,0,0); expected = @(0,0,0,0) },
+        @{ name = 'maximum'; raw = @(32,200,100,200); expected = @(32,200,100,200) }
+    )
+    $chrome = $null
+    try {
+        if (Test-ChromeAvailable 'A-STORE-1.fx') { $chrome = Start-Chrome 'A-STORE-1-fx' }
+        $index = 0
+        foreach ($vector in $vectors) {
+            [void] (Wait-OverlayStreams $Run 0 "fx-$($vector.name)-before")
+            $index++; $id = 'fxs{0:D5}' -f $index
+            $o = Get-ThemeDefaults 'card'
+            for ($n = 0; $n -lt 4; $n++) { $o[$keys[$n]] = $vector.raw[$n] }
+            $path = Write-ObsLooksFile $Run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id 'FX normalization' $o))))
+            $hash = Get-Sha256 $path
+            if ($chrome) {
+                $chrome.Events.Clear()
+                [void] (Invoke-Cdp $chrome 'Network.enable')
+            }
+            [void] (Send-ObsHookCommand $Run.Root 'command-obs-looks-reload')
+            $reader = Start-SseReader "A-STORE-1-fx-$($vector.name)" 20 "/events?look=$id"
+            try {
+                $event = Wait-SseLook $reader { param($m) (Get-Prop $m 'id') -eq $id } 10
+                $wire = Get-Prop (Get-Prop $event 'data') 'options'
+                $wireOk = [bool] $event
+                for ($n = 0; $n -lt 4; $n++) { $wireOk = $wireOk -and (Get-Prop $wire $keys[$n]) -ceq $vector.expected[$n] }
+                Add-Check "A-STORE-1.fx.$($vector.name).wire" 'native file normalizes all four keys to null or snapped numbers (ties up)' (
+                    [ordered]@{ raw = $vector.raw; expected = $vector.expected; wire = $wire }) $wireOk
+                if ($chrome) {
+                    [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
+                    $pagePoll = @{ last = $null; errors = [Collections.Generic.List[string]]::new() }
+                    $page = Wait-For {
+                        try {
+                            $p = Get-LookFxProbe $chrome; $pagePoll.last = $p
+                            if ((Get-PageField $p 'connection') -eq 'open' -and
+                                (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p }
+                        } catch { $pagePoll.errors.Add($_.Exception.Message) }
+                    } 10 50
+                    if (-not $page) {
+                        [void] (Save-P2Evidence "store1-fx-$($vector.name)-page-timeout" ([ordered]@{
+                            expectedId = $id; raw = $vector.raw; expected = $vector.expected; lastPage = $pagePoll.last
+                            errors = $pagePoll.errors; server = Get-State $Run.Root "fx-$($vector.name)-timeout"
+                            reader = @(Read-Sse $reader); cdpEventSource = $chrome.Events.ToArray(); targetId = $chrome.TargetId }))
+                    }
+                    $pageOk = [bool] $page
+                    $resolvedKeys = @('blur','played','unplayed','background'); $defaults = Get-LookFxDefaults 'card'
+                    for ($n = 0; $n -lt 4; $n++) {
+                        $value = $vector.expected[$n]
+                        $resolved = if ($null -eq $value) { $defaults[$keys[$n]] } else { $value }
+                        $pageOk = $pageOk -and (Get-Prop (Get-PageField $page 'options') $keys[$n]) -ceq $value -and
+                            (Get-Prop $page.fx.resolved $resolvedKeys[$n]) -eq $resolved
+                    }
+                    Add-Check "A-STORE-1.fx.$($vector.name).page" 'page nullable options and resolved defaults agree with independently expected native normalization' $page $pageOk
+                    # Exercise the page trust boundary with original raw values, not only native-cleaned SSE.
+                    $raw = ConvertTo-Json -InputObject $o -Compress -Depth 8
+                    $r = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = "({options:normalizeOptions($raw),resolved:effectsOf(normalizeOptions($raw))})"; returnByValue = $true }
+                    $direct = Get-Prop (Get-Prop $r 'result') 'value'
+                    $directOk = $null -ne $direct -and -not (Get-Prop $r 'exceptionDetails')
+                    for ($n = 0; $n -lt 4; $n++) {
+                        $value = $vector.expected[$n]; $resolved = if ($null -eq $value) { $defaults[$keys[$n]] } else { $value }
+                        $directOk = $directOk -and (Get-Prop $direct.options $keys[$n]) -ceq $value -and
+                            (Get-Prop $direct.resolved $resolvedKeys[$n]) -eq $resolved
+                    }
+                    Add-Check "A-STORE-1.fx.$($vector.name).pageBoundary" 'raw malicious/types/ranges/fractions independently normalize identically at the page boundary' $direct $directOk
+                } else {
+                    Add-Blocked "A-STORE-1.fx.$($vector.name).page" 'page nullable options and resolved defaults match native' 'Chrome unavailable'
+                    Add-Blocked "A-STORE-1.fx.$($vector.name).pageBoundary" 'raw page trust-boundary normalization matches native' 'Chrome unavailable'
+                }
+                Add-Check "A-STORE-1.fx.$($vector.name).readOnlyBytes" 'loading and serving malformed FX never rewrite file bytes' (
+                    [ordered]@{ before = $hash; after = Get-Sha256 $path }) ($hash -ceq (Get-Sha256 $path))
+            } finally {
+                Stop-SseReader $reader
+                try {
+                    $release = if ($chrome) { Reset-ChromeCasePage $chrome } else { $null }
+                    $drained = Wait-OverlayStreams $Run 0 "fx-$($vector.name)-released"
+                    $byLook = Get-Overlay $drained 'streamsByLook'
+                    if ($null -eq $byLook -or [int] (Get-Prop $byLook $id) -ne 0) {
+                        throw "Prior FX vector $id did not drain from by-look stream counts."
+                    }
+                    [void] (Save-P2Evidence "store1-fx-$($vector.name)-release" @{ target = $release; server = $drained })
+                } catch {
+                    $reason = $_.Exception.Message
+                    $evidencePath = Save-P2Evidence "store1-fx-$($vector.name)-release-timeout" ([ordered]@{
+                        reason = $reason; priorId = $id; server = Get-State $Run.Root "fx-$($vector.name)-release-timeout"
+                        reader = @(Read-Sse $reader); cdpEventSource = $(if ($chrome) { $chrome.Events.ToArray() } else { @() }) })
+                    throw "$reason Evidence: $evidencePath"
+                }
+            }
+        }
+    } finally { Stop-Chrome $chrome }
+}
+
 function Test-AStore1 {
     $empty = ConvertTo-ObsLooksJson (New-ObsLooksDocument @())
     $run = Start-OverlayRun 'A-STORE-1' @{} 'PlayingLong' -NoReader -LooksJson $empty
     try {
         [void] (Wait-BenchReady $run.Root)
+        Test-StoreLookFx $run
         $badFiles = @(
             @{ name = 'oversize'; bytes = [byte[]]::new(65537) },
             @{ name = 'invalidUtf8'; bytes = [byte[]] @(0xC3, 0x28) },
@@ -3266,6 +4480,9 @@ function Test-AStore1 {
         $normFirstOptions = Get-Prop (Get-Prop $normFirst 'data') 'options'
         $normCommit = Invoke-ObsLookCommit $run.Root 600 @{ action = 'create'; name = 'Idempotence check'; options = (New-DefaultPillOptions) }
         $writtenOptions = (Read-ObsLooksFile $run.Root).looks | Where-Object { $_.id -eq 'norm0001' } | Select-Object -First 1
+        $savedText = [IO.File]::ReadAllText((Join-Path $run.Root 'data/obs-looks.json'))
+        Add-Check 'A-STORE-1.fx.explicitNullSave' 'successful Save appends the four explicit nullable FX keys after hideAnimation; load remains read-only' $writtenOptions (
+            $savedText -match '"hideAnimation"\s*:\s*"[^"]+"\s*,\s*"backgroundBlur"\s*:\s*null\s*,\s*"playedBrightness"\s*:\s*null\s*,\s*"unplayedBrightness"\s*:\s*null\s*,\s*"backgroundBrightness"\s*:\s*null')
         Stop-SseReader $normReader
         [void] (Send-ObsHookCommand $run.Root 'command-obs-looks-reload')
         $normAgainReader = Start-SseReader 'A-STORE-1-normalize-twice' 20 '/events?look=norm0001'
@@ -4450,7 +5667,7 @@ function Get-LanIPv4 {
 }
 function Test-ASec {
 $savedLook = New-ObsLook 'sec00001' 'Security look' (New-DefaultPillOptions)
-    $run = Start-OverlayRun 'A-SEC' @{} 'Playing' -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($savedLook)))
+    $run = Start-OverlayRun 'A-SEC' @{ ObsOverlay = $true } 'Playing' -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($savedLook)))
     $raws = [Collections.Generic.List[object]]::new(); $table = [ordered]@{}; $responses = [Collections.Generic.List[object]]::new()
     $previewReader = $null; $newNonceReader = $null; $lastReader = $null
     try {
@@ -4591,7 +5808,7 @@ $savedLook = New-ObsLook 'sec00001' 'Security look' (New-DefaultPillOptions)
             $lastOpen -and $afterClosePv.status -eq 410)
         Stop-SseReader $newNonceReader; Stop-SseReader $lastReader; Stop-SseReader $previewReader
         [void] (Wait-OverlayStreams $run 0 'previewMatrixReleased')
-        Add-Deferred 'P2' 'A-SEC.previewHostHandler' 'preview host cancels disallowed NavigationStarting URLs, window.open, downloads and permissions' 'NativeBrowserHost and OverlayDesignerWindow are P2; this P0 script records the check as deferred until that owner-approved phase.'
+        [void] (Test-P2PreviewHostSecurity $run)
         if (Test-ChromeAvailable 'A-SEC') {
             $evilFont = 'Bad "family\); url(http://localhost:47813/unexpected.png)'
             $evilOptions = New-DefaultPillOptions
@@ -5464,7 +6681,7 @@ function Test-FrameNetwork([string] $Theme) {
     $run = Start-OverlayRun "A-FRAMES-network-$Theme" @{} $null -NoReader -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
     $chrome = $null
     try {
-        $chrome = Start-Chrome "A-FRAMES-network-$Theme"
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize $Theme
         Set-OverlayViewport $chrome $expectedSize.source
         [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=playing")
@@ -5484,29 +6701,74 @@ function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $
     $isSample = $Condition -in @('sample-art', 'no-art')
     $run = Start-OverlayRun "A-FRAMES-$Label" @{} $(if ($isSample) { $null } else { 'PlayingLong' }) -NoReader `
         -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id "Frames $($Options.theme)" $Options))))
-    $chrome = $null; $trace = $null; $record = $null
+    $chrome = $null; $trace = $null; $record = $null; $readHeld = $false; $holdQpc = $null; $fixtureSetup = $null
+    $fastPixel = $GateProfile -eq 'Fast-v2' -and $Condition -eq 'pixel-only'
+    $syntheticMetadata = $Condition -in @('long-sample-art', 'long-no-art') -or $fastPixel
+    $testFrameAnchor = {
+        param($p)
+        (Get-PageField $p 'connection') -eq 'open' -and (Get-PageField $p 'state') -eq 'playing' -and
+            (Get-PageField $p 'shown') -eq $true -and (Get-Prop (Get-PageField $p 'look') 'id') -eq $id -and
+            $p.nativeFixture.duration -eq 14400 -and $p.nativeFixture.rate -eq $Rate -and $p.nativeFixture.clock -eq $true
+    }
     try {
         [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($isSample) { $null } else { 'PlayingLong' }))
         if ($Condition -eq 'fixture-max') { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-art' 'fixture-max') }
         if ($Condition -eq 'long-text') { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-text-long') }
         if (-not $isSample -and $Rate -ne 1) { [void] (Send-ObsHookCommand $run.Root 'command-obs-fixture-rate' "$Rate") }
-        $chrome = Start-Chrome "A-FRAMES-$Label"
+        $chrome = Start-Chrome $run.Name
         Set-OverlayViewport $chrome $Size.source
         $query = "?look=$id" + $(if ($Condition -eq 'no-art') { '&sample=noart' } elseif ($isSample) { '&sample=playing' } else { '' })
         [void] (Invoke-ChromeNavigate $chrome ($overlayUrl + $query))
         $connected = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'connection') -eq 'open' -and
             (Get-PageField $p 'state') -eq 'playing' -and (Get-PageField $p 'shown') -eq $true -and
-            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id) { $p } } 15 250
-        if (-not $connected) { throw "Frame page $Label never reached its connected playing look state" }
-        $fastPixel = $GateProfile -eq 'Fast-v2' -and $Condition -eq 'pixel-only'
-        $syntheticMetadata = $Condition -in @('long-sample-art', 'long-no-art') -or $fastPixel
+            (Get-Prop (Get-PageField $p 'look') 'id') -eq $id -and
+            (-not $syntheticMetadata -or (& $testFrameAnchor $p))) { $p } } 15 250
+        if (-not $connected) { throw "Frame page $Label never acknowledged its connected playing look/rate/duration/clock state" }
         if ($syntheticMetadata) {
+            # Hold the acknowledged PlayingLong anchor, not a stale rate=1 snapshot.
+            $readHeld = $true
+            $holdQpc = Send-ObsHookCommand $run.Root 'command-obs-hold-read'
+            # Drain already queued data/look/art delivery before the one-shot substitution.
+            $drain = @{ signature = $null; stableSince = 0; probes = 0 }
+            $drained = Wait-For {
+                $p = Get-PageProbe $chrome; $drain.probes++
+                $signature = ConvertTo-Json -Compress -InputObject @(
+                    (Get-PageField $p 'receivedAt'), (Get-PageField $p 'lookReceivedAt'),
+                    (Get-PageField $p 'lookEpoch'), (Get-PageField $p 'lookSeq'),
+                    (Get-PageField $p 'artSeq'), (Get-PageField $p 'artLoadedSeq'),
+                    (Get-Prop (Get-PageField $p 'counters') 'coverLoads'), @($p.art).Count)
+                if (-not (& $testFrameAnchor $p) -or $signature -cne $drain.signature -or
+                    (Get-PageField $p 'artSeq') -ne (Get-PageField $p 'artLoadedSeq')) {
+                    $drain.signature = $signature; $drain.stableSince = $p.pageNow
+                } elseif ([double] $p.pageNow - [double] $drain.stableSince -ge 1000) { $p }
+            } 10 100
+            if (-not $drained) { throw "Frame page $Label did not settle queued delivery while its reader was held" }
             # Keep PlayingLong's 14,400 s duration, clock, position and native rate.
-            # Substitute metadata/art once, before the 5 s settle.
-            $artLiteral = if ($Condition -eq 'long-sample-art') { "'/art/sample'" } else { 'null' }
+            $expectedArt = if ($Condition -eq 'long-sample-art') { '/art/sample' } else { $null }
+            $testSyntheticFixture = {
+                param($p)
+                $cover = Get-Prop (Get-PageField $p 'raster') 'cover'
+                (& $testFrameAnchor $p) -and (Get-PageField $p 'id') -eq (Get-PageField $connected 'id') -and
+                    $p.title -ceq 'Sample song' -and $p.artist -ceq 'Sample artist' -and
+                    (Get-PageField $p 'title') -ceq 'Sample song' -and (Get-PageField $p 'artist') -ceq 'Sample artist' -and
+                    $p.nativeFixture.requestedArt -ceq $expectedArt -and $p.nativeFixture.loadedArt -ceq $expectedArt -and
+                    (Get-PageField $p 'artSeq') -ge 1 -and
+                    (Get-PageField $p 'artSeq') -eq (Get-PageField $p 'artLoadedSeq') -and
+                    $(if ($expectedArt) {
+                        [int] (Get-Prop $cover 'w') -gt 0 -and [int] (Get-Prop $cover 'h') -gt 0 -and
+                            (Get-PageField $p 'artFailed') -eq $false -and
+                            @($p.art | Where-Object { $_.name -ceq $expectedArt }).Count -gt 0
+                    } else { $null -eq $cover -and (Get-PageField $p 'artFailed') -eq $true })
+            }
+            $artLiteral = if ($expectedArt) { "'$expectedArt'" } else { 'null' }
             $expression = "apply({...msg,id:state.id,title:'Sample song',artist:'Sample artist',artwork:$artLiteral})"
             $result = Invoke-Cdp $chrome 'Runtime.evaluate' @{ expression = $expression }
             if (Get-Prop $result 'exceptionDetails') { throw "Long-track sample substitution failed for $Label" }
+            $fixtureReady = Wait-For { $p = Get-PageProbe $chrome; if (& $testSyntheticFixture $p) { $p } } 10 100
+            if (-not $fixtureReady) { throw "Frame page $Label did not acknowledge the intended synthetic metadata/art fixture" }
+            $fixtureSetup = [ordered]@{ anchor = $connected; holdQpc = $holdQpc; drained = $drained
+                stableMilliseconds = [double] $drained.pageNow - [double] $drain.stableSince
+                drainProbes = $drain.probes; fixture = $fixtureReady }
         }
         if ($isSample -and $Rate -ne 1) {
             # Samples are fixed at rate=1 on the wire. Re-anchor the *real page scheduler* at rate 4,
@@ -5525,10 +6787,47 @@ function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $
             $trace = Invoke-FrameTrace $chrome $Label $Seconds
         }
         $end = $trace.endPage
+        $cadenceEvidence = Save-CadenceEvidence "A-FRAMES.playing.$Label.cadence" $start $end -Steady:$syntheticMetadata
         $a = Get-PageField $start 'counters'; $b = Get-PageField $end 'counters'
         $ticks = [int] (Get-Prop $b 'ticks') - [int] (Get-Prop $a 'ticks')
         $fill = [int] (Get-Prop $b 'fillWrites') - [int] (Get-Prop $a 'fillWrites')
         $times = [int] (Get-Prop $b 'timeWrites') - [int] (Get-Prop $a 'timeWrites')
+        $syntheticFixture = $null; $syntheticFixtureOk = $true
+        if ($syntheticMetadata) {
+            $startPosition = $start.nativeFixture.projectedPosition; $endPosition = $end.nativeFixture.projectedPosition
+            $advance = [double] $endPosition - [double] $startPosition
+            $startArtResources = @($start.resources | Where-Object { $_.path -like '/art/*' }).Count
+            $endArtResources = @($end.resources | Where-Object { $_.path -like '/art/*' }).Count
+            $syntheticFixture = [ordered]@{
+                readHeld = $readHeld; holdQpc = $holdQpc; setup = $fixtureSetup
+                startValid = [bool] (& $testSyntheticFixture $start); endValid = [bool] (& $testSyntheticFixture $end)
+                steadyWindow = [bool] $cadenceEvidence.steadyWindow; reanchors = $cadenceEvidence.reanchors
+                dataAnchorUnchanged = $null -ne (Get-PageField $start 'receivedAt') -and
+                    (Get-PageField $start 'receivedAt') -eq (Get-PageField $end 'receivedAt')
+                lookAnchorUnchanged = $null -ne (Get-PageField $start 'lookReceivedAt') -and
+                    (Get-PageField $start 'lookReceivedAt') -eq (Get-PageField $end 'lookReceivedAt') -and
+                    (Get-PageField $start 'lookEpoch') -ceq (Get-PageField $end 'lookEpoch') -and
+                    (Get-PageField $start 'lookSeq') -eq (Get-PageField $end 'lookSeq')
+                advance = $advance; expectedAdvance = $Rate * $cadenceEvidence.seconds
+                progressOk = $null -ne $startPosition -and $null -ne $endPosition -and
+                    [Math]::Abs($advance - $Rate * $cadenceEvidence.seconds) -le 2
+                steppedProgressOk = $fill -gt 0 -and $ticks -gt 0 -and
+                    (Get-PageField $end 'projectedPosition') -gt (Get-PageField $start 'projectedPosition')
+                coverLoadsStart = Get-Prop $a 'coverLoads'; coverLoadsEnd = Get-Prop $b 'coverLoads'
+                artResourcesStart = $startArtResources; artResourcesEnd = $endArtResources
+                noArtRefetchOk = $(if ($expectedArt) { $true } else {
+                    $null -ne (Get-Prop $a 'coverLoads') -and $null -ne (Get-Prop $b 'coverLoads') -and
+                        (Get-Prop $a 'coverLoads') -eq (Get-Prop $b 'coverLoads') -and
+                        @($start.art).Count -eq @($end.art).Count -and $startArtResources -eq $endArtResources
+                })
+            }
+            $syntheticFixtureOk = $readHeld -and $null -ne $holdQpc -and $syntheticFixture.startValid -and
+                $syntheticFixture.endValid -and $syntheticFixture.steadyWindow -and
+                $syntheticFixture.dataAnchorUnchanged -and $syntheticFixture.lookAnchorUnchanged -and
+                $syntheticFixture.progressOk -and $syntheticFixture.steppedProgressOk -and $syntheticFixture.noArtRefetchOk
+            $syntheticFixture['passed'] = [bool] $syntheticFixtureOk
+            Add-Check "A-FRAMES.playing.$Label.syntheticFixture" 'reader held; intended 14400s/rate-aware metadata/art at both endpoints; zero scored reanchors; progress advances; no no-art cover loads/resources grow' $syntheticFixture $syntheticFixtureOk
+        }
         $bar = Get-Prop $end.geometry 'bar'
         $geometryOk = (Test-OverlayViewport $end $Size.source) -and (Get-PageField $end 'theme') -eq $Options.theme -and
             [Math]::Abs([double] $end.boxRect.width - [double] $Size.box.w) -le 1 -and
@@ -5575,22 +6874,24 @@ function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $
         $rasterOk = $rasterResult.pass
         $duration = if ($isSample) { 240 } else { 14400 }
         $measuredT = [double] $trace.seconds
-        $limit = [int] [Math]::Ceiling([double] $Size.bar.width * $Rate * $measuredT / $duration) + 2
-        $tickLimit = [int] [Math]::Ceiling($measuredT) + 1
+        $cadenceT = $cadenceEvidence.seconds
+        $limit = [int] [Math]::Ceiling([double] $Size.bar.width * $Rate * $cadenceT / $duration) + 2
+        $tickLimit = [int] [Math]::Ceiling($cadenceT) + 1
         $cadence = if ($Options.showTimes -and $Options.theme -notin @('pill', 'album-art') -and $Condition -ne 'pixel-only') {
             $ticks -le $tickLimit -and $times -le $tickLimit -and $times -ge 1
         } else { $fill -le $limit -and $ticks -eq $fill }
+        $cadence = $cadence -and $cadenceT -gt 0
         $network = @(Get-UnexpectedOverlayRequests $end.resources)
         $cadenceAssertion = $null; $networkAssertion = $null
         if ($GateProfile -eq 'Fast-v2') {
             $frameRows = @($script:requiredRowInventory | Where-Object {
                 $_.class -in @('playing', 'pixel') -and $_.label -eq $Label })
             if ($frameRows.Count -ne 1) { throw "Shared cadence requires one inventory frame row for $Label" }
-            $cadenceT = ([double] $end.pageNow - [double] $start.pageNow) / 1000
             $cadenceAssertion = Get-CadenceAssertion $start $end $Options.theme ([bool] $Options.showTimes) $Rate ([double] $Size.bar.width) $duration $cadenceT
             $cadenceAssertion['id'] = "cadence.shared.$($frameRows[0].id)"
             $cadenceAssertion['traceSeconds'] = $measuredT
             $cadenceAssertion['pageStartMs'] = $start.pageNow; $cadenceAssertion['pageEndMs'] = $end.pageNow
+            $cadenceAssertion['evidence'] = $cadenceEvidence
             $cadenceAssertion.passed = $cadenceAssertion.passed -and $cadenceT -gt 0
             $cadence = $cadence -and $cadenceAssertion.passed
             Add-Check $cadenceAssertion.id 'shared scored-window cadence: label advance rate*T ±2; ceil(T)+1 ticks/timeWrites; hidden times pixel-only bound' $cadenceAssertion $cadenceAssertion.passed
@@ -5617,17 +6918,27 @@ function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $
             geometryOk = $geometryOk; rasterOk = $rasterOk; canvasAreas = $canvasAreas
             contained = $contained; longTextOk = $longOk; artOk = $artOk; badRequests = $network
             frameMeasurement = $frameMeasurement; shortSampleWindowOk = $shortSampleWindowOk
-            cadenceAssertion = $cadenceAssertion; networkAssertion = $networkAssertion
+            cadenceAssertion = $cadenceAssertion; cadenceEvidence = $cadenceEvidence; networkAssertion = $networkAssertion
             syntheticMetadata = [ordered]@{ applied = $syntheticMetadata; title = $(if ($syntheticMetadata) { 'Sample song' } else { $null })
                 artist = $(if ($syntheticMetadata) { 'Sample artist' } else { $null }); artwork = $(if ($Condition -eq 'long-sample-art') { '/art/sample' } else { $null })
-                retainedDuration = $(if ($syntheticMetadata) { 14400 } else { $null }); retainedRate = $(if ($syntheticMetadata) { $Rate } else { $null }) }
+                retainedDuration = $(if ($syntheticMetadata) { 14400 } else { $null }); retainedRate = $(if ($syntheticMetadata) { $Rate } else { $null })
+                fixture = $syntheticFixture }
             o3Trigger = [bool] $frameMeasurement.exceeded
         }
         $ok = $frameMeasurement.measured -and -not $frameMeasurement.exceeded -and $geometryOk -and $contained -and $longOk -and
             $artOk -and $rasterOk -and $cadence -and $shortSampleWindowOk -and
-            $(if ($syntheticMetadata) { $end.title -eq 'Sample song' -and $end.artist -eq 'Sample artist' } else { $true }) -and
+            $syntheticFixtureOk -and
             $network.Count -eq 0
         if ($Condition -eq 'pixel-only') { $ok = $ok -and $trace.frames -le $fill + 1 }
+        if ((Get-Prop $Options 'backgroundBlur') -eq 32) {
+            $steadyRaster = (Test-LookFxCounters $start $end 0) -and
+                (Get-PageField $start 'rasterKey') -ceq (Get-PageField $end 'rasterKey') -and
+                (Get-Prop (Get-PageField $start 'options') 'backgroundBlur') -eq 32 -and
+                (Get-Prop (Get-PageField $end 'options') 'backgroundBlur') -eq 32
+            $ok = $ok -and $steadyRaster
+            Add-Check "A-FRAMES.$Label.steadyRaster" 'max-blur 32: steady raster key/counters, no artwork refetch or quantization throughout scored 60s' (
+                [ordered]@{ start = $start; end = $end; measurement = $frameMeasurement }) $steadyRaster
+        }
         $record.artifact = Save-FrameTraceRecord $Label $record $ok
         Add-Check "A-FRAMES.playing.$Label" 'measured frame ceiling, scheduler cadence, expected size, raster, containment, art and network' (
             [ordered]@{ artifact = $record.artifact; measurement = $frameMeasurement; trace = $trace; cadence = $cadence
@@ -5640,7 +6951,10 @@ function Test-FramePlaying([string] $Label, $Options, [double] $Rate, [string] $
                 Keep-FrameTrace $trace
                 if ($record) { [void] (Save-FrameRecord $Label $record) }
             }
-        } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+        } finally {
+            try { if ($readHeld) { [void] (Send-ObsHookCommand $run.Root 'command-obs-release-read') } }
+            finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+        }
     }
 }
 
@@ -5655,7 +6969,7 @@ function Test-FrameIdle([string] $Theme, [string] $Condition) {
     $chrome = $null; $trace = $null; $result = $null
     try {
         [void] (Wait-BenchReady $run.Root -BenchProfile $(if ($sample) { $null } else { 'PlayingLong' }))
-        $chrome = Start-Chrome "A-FRAMES-idle-$Theme-$Condition"
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize $Theme
         Set-OverlayViewport $chrome $expectedSize.source
         [void] (Invoke-ChromeNavigate $chrome ("$($overlayUrl)?look=$id" + $(if ($Condition -in @('dim-Paused', 'hidden-Paused')) { '&sample=paused' } elseif ($sample) { '&sample=playing' } else { '' })))
@@ -5694,7 +7008,7 @@ function Test-FrameIdle([string] $Theme, [string] $Condition) {
     }
 }
 
-function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
+function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions, [bool] $LookFx = $false) {
     $records = [ordered]@{}
     foreach ($condition in $Conditions) {
         if ($condition -notin @('dim-Paused', 'hidden-Paused', 'ended', 'clock-mismatch', 'progress-hidden') -or $records.Contains($condition)) {
@@ -5705,12 +7019,14 @@ function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
     if ($Conditions.Count -eq 0) { return $records }
     $id = 'isc' + [guid]::NewGuid().ToString('N').Substring(0, 5)
     $look = New-ObsLook $id "Structural idle $Theme" (Get-ThemeDefaults $Theme)
-    $run = Start-OverlayRun "A-FRAMES-idlecheck-$Theme" @{} 'PlayingLong' -NoReader -LooksJson (
+    if ($LookFx) { $look.options['backgroundBlur'] = 32 }
+    $sessionName = if ($LookFx) { 'A-FRAMES-fx-card-max-blur-idlecheck' } else { "A-FRAMES-idlecheck-$Theme" }
+    $run = Start-OverlayRun $sessionName @{} 'PlayingLong' -NoReader -LooksJson (
         ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
     $chrome = $null
     try {
         [void] (Wait-BenchReady $run.Root -BenchProfile 'PlayingLong')
-        $chrome = Start-Chrome "A-FRAMES-idlecheck-$Theme"
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize $Theme
         Set-OverlayViewport $chrome $expectedSize.source
         # Navigate the same owned target; never carry a sample/message/timer into the next phase.
@@ -5738,7 +7054,7 @@ function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
                 (Test-OverlayViewport $p $expectedSize.source)
         }
         foreach ($condition in $Conditions) {
-            $rowId = "frames.$Theme.idlecheck.$condition"
+            $rowId = if ($LookFx) { 'frames.fx.card.max-blur.idlecheck' } else { "frames.$Theme.idlecheck.$condition" }
             Start-JournalRow -Id $rowId -Meta @{ independent = $false; structural = $true; theme = $Theme; condition = $condition }
             $phaseQpc = Get-Qpc
             $record = [ordered]@{ theme = $Theme; condition = $condition; passed = $false
@@ -5754,6 +7070,7 @@ function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
                 [void] (Send-ObsHookCommand $run.Root 'command-obs-hide-paused-on')
                 [void] (Send-ObsHookCommand $run.Root 'command-obs-reduce-motion-off')
                 $options = Get-ThemeDefaults $Theme
+                if ($LookFx) { $options['backgroundBlur'] = 32 }
                 $options['paused'] = 'hide'; $options['showProgress'] = $true
                 $look.options = $options
                 [void] (Write-ObsLooksFile $run.Root (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look))))
@@ -5822,15 +7139,63 @@ function Test-FrameIdleStructural([string] $Theme, [string[]] $Conditions) {
                     $null -ne (Get-Prop $a 'ticks') -and $null -ne (Get-Prop $b 'ticks') -and
                     $null -ne (Get-Prop $a 'fillWrites') -and $null -ne (Get-Prop $b 'fillWrites') -and
                     (Get-Prop $a 'ticks') -eq (Get-Prop $b 'ticks') -and (Get-Prop $a 'fillWrites') -eq (Get-Prop $b 'fillWrites'))
+                if ($LookFx) {
+                    $record.passed = $record.passed -and (Test-LookFxCounters $before $after 0) -and
+                        (Get-PageField $before 'rasterKey') -ceq (Get-PageField $after 'rasterKey') -and
+                        (Get-Prop (Get-PageField $before 'options') 'backgroundBlur') -eq 32 -and
+                        (Get-Prop (Get-PageField $after 'options') 'backgroundBlur') -eq 32
+                }
             } catch { $record.error = $_.Exception.Message }
             $record.timings.totalSeconds = Round3 (Get-Seconds $phaseQpc (Get-Qpc))
-            Add-Check "A-FRAMES.idlecheck.$Theme.$condition" 'acknowledged final state, own 5s settle, then no fill timer, ticks, fill writes or running animations over 1s' $record $record.passed
-            $record.artifact = Save-FrameRecord "idlecheck-$Theme-$condition" $record
+            $checkName = if ($LookFx) { 'A-FRAMES.fx.card.max-blur.idlecheck' } else { "A-FRAMES.idlecheck.$Theme.$condition" }
+            Add-Check $checkName 'acknowledged final state, own 5s settle, then no fill timer, ticks, fill writes or running animations over 1s; max-blur FX also retain raster counters' $record $record.passed
+            $record.artifact = Save-FrameRecord $(if ($LookFx) { 'fx.card.max-blur.idlecheck' } else { "idlecheck-$Theme-$condition" }) $record
             $records[$condition] = $record
             Complete-JournalRow -Id $rowId -Result $record -Artifacts @($record.artifact)
         }
         return $records
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
+}
+
+function Test-FrameFxPushes($Run, $Chrome, $Look, [string] $Prefix) {
+    $initial = Wait-For { $p = Get-LookFxProbe $Chrome; if ((Get-PageField $p 'artFailed') -eq $false -and
+        (Get-PageField $p 'artLoadedSeq') -eq (Get-PageField $p 'artSeq')) { $p } } 10 25
+    if (-not $initial) { throw "Frame FX fixture artwork was not loaded: $Prefix" }
+    $records = [ordered]@{ initial = $initial; rapid = @() }
+    $before = $initial
+    foreach ($blur in @(32, 0, 31, 32)) {
+        $previous = $before.fx.resolved.blur
+        $Look.options['backgroundBlur'] = $blur
+        $after = Push-LookFx $Run $Chrome $Look
+        $draws = if ($previous -eq $blur -or ($Look.options.theme -eq 'album-art' -and $blur -eq 0)) { 0 } else { 1 }
+        $ok = (Test-LookFxCounters $before $after $draws) -and
+            (Test-LookFxColours $after $initial $Look.options.theme $Look.options) -and
+            (Get-PageField $initial 'artSeq') -eq (Get-PageField $after 'artSeq') -and
+            (Get-PageField $after 'artLoadedSeq') -eq (Get-PageField $initial 'artLoadedSeq')
+        $records.rapid += [ordered]@{ blur = $blur; expectedDraws = $draws; before = $before; after = $after; passed = $ok }
+        $before = $after
+    }
+    $rapidOk = @($records.rapid | Where-Object { -not $_.passed }).Count -eq 0
+    Add-Check "$Prefix.fx.rapid" 'rapid native effect-only edits ending at max blur: exact raster delta per resolved key, no refetch, newest artwork retained' $records.rapid $rapidOk
+    $equal = Push-LookFx $Run $Chrome $Look
+    Add-Check "$Prefix.fx.equal" 'equal max-blur push does zero raster work and retains the key' $equal (
+        (Test-LookFxCounters $before $equal 0) -and (Get-PageField $before 'rasterKey') -ceq (Get-PageField $equal 'rasterKey'))
+    $Look.name += ' fx rename'
+    $named = Push-LookFx $Run $Chrome $Look
+    Add-Check "$Prefix.fx.nameOnly" 'max-blur rename is saved and emits a newer same-epoch look event with no raster work or refetch' $named (
+        $named.lookPush.storedName -ceq $Look.name -and $named.lookPush.newEvent -and
+        (Test-LookFxCounters $equal $named 0) -and (Get-PageField $equal 'rasterKey') -ceq (Get-PageField $named 'rasterKey'))
+    $Look.options['backgroundBlur'] = $null
+    $reset = Push-LookFx $Run $Chrome $Look
+    $draws = if ($Look.options.theme -eq 'album-art') { 0 } else { 1 }
+    Add-Check "$Prefix.fx.reset" 'null reset restores default effects with the expected raster delta, no refetch, newest artwork still wins' $reset (
+        (Test-LookFxCounters $named $reset $draws) -and
+        (Test-LookFxColours $reset $initial $Look.options.theme $Look.options) -and
+        (Get-PageField $reset 'artLoadedSeq') -eq (Get-PageField $initial 'artLoadedSeq') -and
+        (Get-PageField $reset 'artSeq') -eq (Get-PageField $initial 'artSeq') -and
+        (Get-PageField $reset 'artFailed') -eq $false)
+    $records.equal = $equal; $records.named = $named; $records.reset = $reset
+    $records
 }
 
 function Test-FrameTransitions([string] $Theme) {
@@ -5841,7 +7206,7 @@ function Test-FrameTransitions([string] $Theme) {
         ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
     $chrome = $null; $records = [ordered]@{}
     try {
-        $chrome = Start-Chrome "A-FRAMES-transitions-$Theme"
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize $Theme
         Set-OverlayViewport $chrome $expectedSize.source
         [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id&sample=playing")
@@ -5850,6 +7215,9 @@ function Test-FrameTransitions([string] $Theme) {
         Add-Check "A-FRAMES.transitions.$Theme.viewport" 'native default source viewport fully contains theme' (
             [ordered]@{ source = $expectedSize.source; actual = $initial.pageSize; box = $initial.boxRect }) (
             (Test-OverlayViewport $initial $expectedSize.source))
+        if ($Theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) {
+            $records.fx = Test-FrameFxPushes $run $chrome $look "A-FRAMES.transitions.$Theme"
+        }
         foreach ($kind in @('show', 'hide')) {
             foreach ($animation in @('fade', 'slide-up', 'slide-down', 'slide-left', 'slide-right', 'none')) {
                 $options[$kind + 'Animation'] = $animation
@@ -5939,13 +7307,16 @@ function Test-FrameTransitions([string] $Theme) {
 
 function Test-FrameLateArt([string] $Theme) {
     $id = 'lat' + [guid]::NewGuid().ToString('N').Substring(0, 5)
+    $o = Get-ThemeDefaults $Theme
+    if ($Theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) { $o['backgroundBlur'] = 32 }
+    $look = New-ObsLook $id "Late art $Theme" $o
     $run = Start-OverlayRun "A-FRAMES-late-art-$Theme" @{} 'ArtSwap' -NoReader -LooksJson (
-        ConvertTo-ObsLooksJson (New-ObsLooksDocument @((New-ObsLook $id "Late art $Theme" (Get-ThemeDefaults $Theme)))))
+        ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
     $chrome = $null
     try {
         $ready = Wait-BenchReady $run.Root
         $start = Get-ReadyQpc $ready
-        $chrome = Start-Chrome "A-FRAMES-late-art-$Theme"
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize $Theme
         Set-OverlayViewport $chrome $expectedSize.source
         [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
@@ -5963,6 +7334,15 @@ function Test-FrameLateArt([string] $Theme) {
             (Get-PageField $page 'artFailed') -eq $false -and
             [int] (Get-Prop $counters 'blurDraws') -le [int] (Get-Prop $counters 'coverLoads') -and
             (Test-OverlayViewport $page $expectedSize.source))
+        if ($Theme -in @('pill', 'standard', 'classic', 'album-art', 'card')) {
+            $result.fx = Test-FrameFxPushes $run $chrome $look "A-FRAMES.lateart.$Theme"
+            $latest = $result.fx.reset.fx
+            # Fixture B at (96,96): t=floor(192*255/254)=192, low=floor(t/4)=48.
+            Add-Check "A-FRAMES.lateart.$Theme.fx.newestArt" 'after max-blur edits/reset the loaded bitmap is deterministic B, never delayed A; no new resource fetch' $latest (
+                $latest.requestedArt -ceq $art[-1].name -and $latest.loadedArt -ceq $latest.requestedArt -and
+                (ConvertTo-Json -InputObject $latest.artPixel -Compress) -ceq '[48,48,192,255]')
+            $result.artifact = Save-FrameRecord "late-art-$Theme" $result
+        }
         return $result
     } finally { Stop-Chrome $chrome; Stop-OverlayRun $run }
 }
@@ -5975,7 +7355,7 @@ function Test-FrameRenewal([double] $SteadyFps) {
     $chrome = $null; $trace = $null; $result = $null
     try {
         [void] (Wait-BenchReady $run.Root)
-        $chrome = Start-Chrome 'A-FRAMES-renewal'
+        $chrome = Start-Chrome $run.Name
         $expectedSize = Get-DefaultThemeSize 'matte'
         Set-OverlayViewport $chrome $expectedSize.source
         [void] (Invoke-ChromeNavigate $chrome "$($overlayUrl)?look=$id")
@@ -6062,7 +7442,7 @@ function Invoke-FrameCalibration {
                 $run = Start-OverlayRun "A-FRAMES-mutant-$mutant" @{} $profile -NoReader `
                     -Override @{ NATIVUNE_TEST_OBS_MUTANT = $mutant } -LooksJson (ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
                 [void] (Wait-BenchReady $run.Root -BenchProfile $profile)
-                $chrome = Start-Chrome "A-FRAMES-mutant-$mutant"
+                $chrome = Start-Chrome $run.Name
                 Set-OverlayViewport $chrome (Get-DefaultThemeSize $theme).source
                 $url = "$($overlayUrl)?look=$id" + $(if ($mutant -eq 'bar-transition') { '&sample=playing' } else { '' })
                 [void] (Invoke-ChromeNavigate $chrome $url)
@@ -6117,7 +7497,10 @@ function Invoke-FrameCalibration {
 }
 function Test-AFrames {
     $calibration = Invoke-FrameCalibration
-    $obs = [ordered]@{ protocol = $GateProfile; mutants = $calibration.mutants; configurations = [ordered]@{}; assertions = [ordered]@{}; o3 = [ordered]@{} }
+    $obs = [ordered]@{ protocol = $GateProfile; mutants = $calibration.mutants; configurations = [ordered]@{}; assertions = [ordered]@{}; o3 = [ordered]@{}
+        supplemental = [ordered]@{ protocol = 'LookFx-v1'
+            rowIds = @($script:requiredRowInventory | Where-Object { $_.scenario -eq 'A-FRAMES' -and (Get-Prop $_ 'supplemental') -eq 'LookFx-v1' } | ForEach-Object { $_.id })
+            extendedRowIds = @($script:requiredRowInventory | Where-Object { $_.scenario -eq 'A-FRAMES' -and (Get-Prop $_ 'lookFxSupplemental') -eq $true } | ForEach-Object { $_.id }) } }
     if (-not $calibration.passed) {
         Add-Blocked 'A-FRAMES.calibration' 'all four sensitivity guards: legacy mutants rejected, ceiling-low accepted, ceiling-high rejected' 'calibration not established; all dependent frame rows blocked'
         $aggregate = if (-not (Test-DefaultRowSelectors)) { 'A-FRAMES.selectedRows' } elseif ($GateProfile -eq 'Fast-v2') { 'A-FRAMES.fastProfileRows' } else { 'A-FRAMES.allRequiredRows' }
@@ -6130,14 +7513,20 @@ function Test-AFrames {
     # The inventory is the single scheduling source: identical serial rows/windows, plus the required late-art row.
     $frameRows = @($script:requiredRowInventory | Where-Object { $_.scenario -eq 'A-FRAMES' })
     if ($Rotation) {
-        $orderedPlaying = @($frameRows | Where-Object { $_.class -eq 'playing' } | Sort-Object rotationOrder)
+        $orderedPlaying = @($frameRows | Where-Object { $_.class -eq 'playing' -and -not $_.Contains('supplemental') } | Sort-Object rotationOrder)
         $playingIndex = 0
-        $frameRows = @($frameRows | ForEach-Object { if ($_.class -eq 'playing') { $orderedPlaying[$playingIndex]; $playingIndex++ } else { $_ } })
+        $frameRows = @($frameRows | ForEach-Object { if ($_.class -eq 'playing' -and -not $_.Contains('supplemental')) { $orderedPlaying[$playingIndex]; $playingIndex++ } else { $_ } })
     }
     $rowRecords = @{}; $structuralThemes = [Collections.Generic.HashSet[string]]::new()
     $worst = $null; $pausedExtensions = [Collections.Generic.List[string]]::new()
     foreach ($entry in $frameRows | Where-Object { $_.selected -and $_.class -ne 'mutant' }) {
         $rowId = $entry.id; $record = $null; $theme = Get-Prop $entry 'theme'
+        if ($entry.class -eq 'fx-idlecheck') {
+            $phases = Test-FrameIdleStructural $theme @($entry.condition) $true
+            $obs.configurations[$entry.label] = $phases[$entry.condition]
+            $obs.supplemental['idlecheck'] = $phases[$entry.condition]
+            continue
+        }
         if ($entry.class -eq 'idlecheck') {
             if (-not $structuralThemes.Contains($theme)) {
                 $conditions = @($frameRows | Where-Object { $_.selected -and $_.class -eq 'idlecheck' -and $_.theme -eq $theme } | ForEach-Object { $_.condition })
@@ -6172,6 +7561,7 @@ function Test-AFrames {
                         $o['showTimes'] = $false; $condition = 'pixel-only'
                         if ($GateProfile -eq 'Fast-v2') { $o['width'] = $entry.width; $o['scale'] = $entry.scale }
                     }
+                    if ($null -ne (Get-Prop $entry 'backgroundBlur')) { $o['backgroundBlur'] = $entry.backgroundBlur }
                     $row = @($sizes.rows | Where-Object { $_.theme -eq $theme -and $_.width -eq $o.width -and $_.scale -eq $o.scale -and
                         $_.showArt -and $_.showArtist -and $_.showProgress -and $_.showTimes -eq $o.showTimes } | Select-Object -First 1)
                     if ($row.Count -ne 1) { throw "A-FRAMES: missing independent size row $($entry.label)" }
@@ -6197,9 +7587,13 @@ function Test-AFrames {
         if ($entry.class -eq 'renewal') { $obs.renewal = $record; continue }
         $obs.configurations[$entry.label] = $record
         $rowRecords[$rowId] = $record
-        if ($entry.class -eq 'playing' -and ($entry.condition -eq 'fixture-max' -or $GateProfile -eq 'Fast-v2')) {
+        if ((Get-Prop $entry 'supplemental') -eq 'LookFx-v1') { $obs.supplemental['playing'] = $record }
+        # Preserve the established exhaustive-worst anchor/pointer universe; FX is reported separately.
+        if ($entry.class -eq 'playing' -and -not $entry.Contains('supplemental') -and
+            ($entry.condition -eq 'fixture-max' -or $GateProfile -eq 'Fast-v2')) {
             $o = Copy-LookOptions (Get-ThemeDefaults $theme)
             $o['width'] = $entry.width; $o['scale'] = $entry.scale; $o['showTimes'] = $entry.showTimes
+            if ($null -ne (Get-Prop $entry 'backgroundBlur')) { $o['backgroundBlur'] = $entry.backgroundBlur }
             $row = @($sizes.rows | Where-Object { $_.theme -eq $theme -and $_.width -eq $o.width -and $_.scale -eq $o.scale -and
                 $_.showArt -and $_.showArtist -and $_.showProgress -and $_.showTimes -eq $o.showTimes } | Select-Object -First 1)
             if ($row.Count -ne 1) { throw "A-FRAMES: missing independent size row $($entry.label)" }
@@ -6241,6 +7635,8 @@ function Test-AFrames {
     $scenarioResults['A-FRAMES'] = $obs
 }
 
+. (Join-Path $PSScriptRoot 'obs-overlay-e2e-p2.ps1')
+
 # ---------------------------------------------------------------------------------------------------------------
 # Runner (serial: every scenario binds the fixed port 47813)
 
@@ -6254,6 +7650,7 @@ $functions = [ordered]@{
     'A-SAMPLE' = { Test-ASample }; 'A-TEXT' = { Test-AText }; 'A-ART' = { Test-AArt }; 'A-SET' = { Test-ASet }
     'A-PROD' = { Test-AProd }; 'A-PAUSEVIEW' = { Test-APauseView }; 'A-TOOLBAR' = { Test-AToolbar }
     'A-FRAMES' = { Test-AFrames }
+    'A-FONT' = { Test-AFont }; 'A-STORE-2' = { Test-AStore2 }; 'A-DESIGNER' = { Test-ADesigner }
 }
 try {
     if (-not $SkipPublish) {
@@ -6286,7 +7683,13 @@ try {
     }
     Add-Check 'harness.foreignViewersAbsent' 'the overlay starts with zero non-harness streams on localhost:47813' ([ordered]@{
         streams = $foreignStreams; diagnostic = $foreignDiagnostic }) ($null -ne $foreignStreams -and $foreignStreams -eq 0)
-    Initialize-RequiredRowInventory
+    if ('fxpaint' -in $Section) {
+        # The diagnostic has no required rows; do not route it through gate selector validation/generation.
+        $script:requiredRowInventory = @()
+        [IO.File]::WriteAllText((Join-Path $runDirectory 'inventory.json'), (ConvertTo-Json -Depth 12 -InputObject (
+            [ordered]@{ version = $script:rowInventoryVersion; protocol = $GateProfile; diagnosticOnly = $true
+                predictedTotalSeconds = 0; rows = @() })), [Text.UTF8Encoding]::new($false))
+    } else { Initialize-RequiredRowInventory }
     $script:frameCalibration = $null
     if ('A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES') -and $null -ne $foreignStreams -and $foreignStreams -eq 0) {
         if (Test-PrefixRegistrable) {
@@ -6302,7 +7705,7 @@ try {
     }
     foreach ($name in $selected) {
         # Section selectors (scripts/obs-overlay-inventory.ps1) can deselect a whole scenario; '*' selects all.
-        if (-not (Test-ScenarioSelected -Name $name)) { continue }
+        if (-not (Test-ScenarioSelected -Name $name) -and -not ($name -eq 'A-LOOK' -and 'fxpaint' -in $Section)) { continue }
         if ($null -eq $foreignStreams -or $foreignStreams -ne 0) {
             $why = if ($foreignDiagnostic) { $foreignDiagnostic } else { 'preflight could not verify zero foreign viewers' }
             Add-Blocked "$name.foreignViewer" 'zero non-harness viewers on localhost:47813 before scenarios' $why
@@ -6356,7 +7759,7 @@ try {
     Add-Check 'runner.completed' 'harness setup succeeded' $_.Exception.Message $false
     $scenarioResults['error'] = [ordered]@{ message = $_.Exception.Message; scriptStackTrace = $_.ScriptStackTrace }
 } finally {
-    foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, $null, 'Process') }
+    foreach ($key in @($testEnv.Keys) + $benchEnvKeys) { [Environment]::SetEnvironmentVariable($key, [NullString]::Value, 'Process') }
     foreach ($d in @($aclDenied)) { & icacls.exe $d /remove:d '*S-1-1-0' | Out-Null }
     foreach ($r in @($readers)) { Stop-SseReader $r }
     foreach ($c in @($chromes)) { Stop-Chrome $c }
@@ -6375,7 +7778,7 @@ try {
 
 # Every selected scenario/row must produce passing evidence; omitted diagnostic sections are not failures.
 foreach ($name in $selected) {
-    if (-not (Test-ScenarioSelected -Name $name)) { continue }
+    if (-not (Test-ScenarioSelected -Name $name) -and -not ($name -eq 'A-LOOK' -and 'fxpaint' -in $Section)) { continue }
     if (-not ($checks | Where-Object { $_.name -like "$name.*" })) { Add-Check "$name.producedChecks" 'at least one check' 0 $false }
 }
 $coverage = Get-RequiredRowCoverage
@@ -6402,6 +7805,26 @@ if ('A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES')) {
     $worstReport['complete'] = [bool] $worstReport['profileComplete']
     [IO.File]::WriteAllText($worstFile, (ConvertTo-Json -Depth 16 -InputObject $worstReport), [Text.UTF8Encoding]::new($false))
 }
+# Compact each scenario independently before building the report; never serialize a second full evidence graph.
+foreach ($scenarioName in @($scenarioResults.Keys)) {
+    $value = $scenarioResults[$scenarioName]
+    $scenarioChecks = @($checks | Where-Object { $_.name -like "$scenarioName.*" })
+    $summary = [ordered]@{ scenario = $scenarioName; checkCount = $scenarioChecks.Count
+        pass = @($scenarioChecks | Where-Object { $_.status -eq 'pass' }).Count
+        fail = @($scenarioChecks | Where-Object { $_.status -eq 'fail' }).Count
+        blocked = @($scenarioChecks | Where-Object { $_.status -eq 'blocked' }).Count }
+    if ($value -is [Collections.IDictionary]) {
+        foreach ($key in $value.Keys) {
+            $item = $value[$key]
+            if ($null -eq $item -or $item -is [ValueType] -or ($item -is [string] -and $item.Length -le 1024)) {
+                $summary[$key] = $item
+            } elseif ($item -is [Collections.IDictionary] -or $item -is [Collections.IList]) {
+                $summary["${key}Count"] = $item.Count
+            }
+        }
+    }
+    $scenarioResults[$scenarioName] = ConvertTo-RunEvidenceReference -Value $value -Label "scenario-$scenarioName" -Summary $summary
+}
 $failed = @($checks | Where-Object { $_.status -eq 'fail' })
 $blocked = @($checks | Where-Object { $_.status -eq 'blocked' })
 $deferredP1 = @($checks | Where-Object { $_.status -eq 'deferred:P1' })
@@ -6423,7 +7846,10 @@ $report = [ordered]@{
     }
     checks = @($checks); passed = [bool] $passed
 }
-[IO.File]::WriteAllText((Join-Path $runDirectory 'report.json'), ($report | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+if ('fxpaint' -in $Section) {
+    $report.summary['skippedNotApplicable'] = @($checks | Where-Object { $_.status -eq 'skipped-not-applicable' }).Count
+}
+[IO.File]::WriteAllText((Join-Path $runDirectory 'report.json'), ($report | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
 if ($exhaustiveComplete -and 'A-FRAMES' -in $selected -and (Test-ScenarioSelected -Name 'A-FRAMES') -and $worstReport.framesGreen) {
     $pointer = [ordered]@{ version = 1; rowId = $worstReport.worst.rowId; configuration = $worstReport.worst.configuration
         sourceReport = [IO.Path]::GetRelativePath($repo, $worstFile).Replace('\', '/')

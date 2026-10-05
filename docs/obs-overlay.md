@@ -94,9 +94,48 @@ Back in Nativune, the status line in Settings › OBS changes from **Waiting for
 
 Once it's set up, you don't need Settings to turn the overlay on or off. The **OBS overlay** button on the left of the toolbar, after **Home**, switches it on or off and saves the change right away. When the overlay is on, a small red dot shows at the button's top-left corner, like a recording light. You can also use **More › Show the OBS overlay**. Hover over the button to see whether OBS is connected, or right-click it for **OBS overlay settings…**.
 
+## Themes and saved looks
+
+While the overlay is running, open **Settings › OBS** and click **Open Overlay designer…**. The native **Overlay designer** window lets you create and edit saved looks.
+
+Choose one of eight themes in **Theme**: **Pill**, **Matte**, **Matte light**, **Standard**, **Classic**, **Simple**, **Album art** or **Card**. Each saved look has its own theme and options. You can keep up to 16 saved looks.
+
+### Create, edit and use a look
+
+1. Click **New look**, or select an existing look under **Saved looks**.
+2. Enter a **Look name** and adjust the options. The live preview shows your draft in isolation: unsaved changes do not change your OBS sources. **Preview song source** lets you choose **Sample song** or **Current song**; the sample can show **Playing**, **Paused** or **No artwork**. **Preview background** lets you check the look against a checkerboard, dark, light or custom colour.
+3. Click **Save look** to keep the changes and update sources using that look. **Revert changes** discards the draft and restores the saved look.
+4. Click **Copy OBS link** and paste it into the URL of an OBS Browser source. Each saved look has its own link; the plain `http://localhost:47813/` link keeps the default overlay.
+5. Set the source's width and height to the dimensions shown by the designer. Changing a look does not resize an existing OBS source.
+
+**Duplicate** starts a copy of the selected saved look; click **Save look** to keep it. **Rename** selects the **Look name** field; enter the new name and click **Save look**. **Delete** asks for confirmation before removing the selected saved look.
+
+### Colours, fonts and layout
+
+Use **Colour mode** to choose **Automatic** or **Custom** colours. Where the theme supports them, **Choose text colour**, **Choose background colour** and **Choose accent colour** open colour pickers; you can also enter hexadecimal colours.
+
+**Font family** lets you choose an installed font. If a saved font is unavailable, the designer shows **Font unavailable; using the theme's default** and uses the theme's default font.
+
+You can also adjust text size, widget width, alignment, background opacity, text shadow, artwork, artist, progress, times, show and hide animations, and **When paused**. Only options supported by the selected theme are available.
+
+### Per-look widget options
+
+Each of these controls has a slider, a numeric field and a **Use theme default** button:
+
+| Control | Range |
+| --- | --- |
+| **Background blur, pixels** | 0–32 px |
+| **Played progress brightness, percent** | 0–200% |
+| **Unplayed progress brightness, percent** | 0–100% |
+| **Background brightness, percent** | 0–200% |
+
+Background blur and background brightness affect only the song-art background in **Pill**, **Standard**, **Classic**, **Album art** and **Card**. They are inactive with **Custom** colours on Standard, Classic or Card, or when **Show artwork** is off on Album art. Their saved values are kept for when the song-art background is active again. Matte, Matte light and Simple have no song-art background.
+
+Played and unplayed progress brightness are supported by all eight themes. Hiding progress makes the progress controls inactive, except that Pill still uses played progress brightness for its artwork.
+
 ## When the song is paused
 
-**Hide the overlay when paused** is on by default: the bar fades out while the song is paused and comes back when it plays.
+For the default overlay link, **Hide the overlay when paused** is on by default: the bar fades out while the song is paused and comes back when it plays. Saved looks use their own **When paused** option in the designer: **Hide** or **Dim**.
 
 If you turn it off, a paused song keeps the bar on screen, dimmed to 70 % and with the progress fill stopped where the song paused.
 

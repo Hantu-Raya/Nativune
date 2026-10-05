@@ -1,0 +1,255 @@
+# Pure checks invoked only by -DryRun. No process, network, sleep or filesystem mutation.
+function Test-ObsBenchWorst {
+    $v1Path = Join-Path $PSScriptRoot 'fixtures/obs-overlay/bench-worst-selfcheck.json'
+    $v2Path = Join-Path $PSScriptRoot 'fixtures/obs-overlay/bench-worst-v2-selfcheck.json'
+    foreach ($designer in @($false, $true)) {
+        $v1 = Read-ObsFramesWorst $v1Path -Designer:$designer
+        if ($v1.version -ne 1 -or $v1.framesGreen -ne $false) { throw 'Legacy v1 evidence changed.' }
+    }
+    $v2 = Read-ObsFramesWorst $v2Path -Designer
+    if ($v2.version -ne 2 -or $v2.framesGreen -ne $false -or $v2.exhaustiveComplete -ne $false) { throw 'Fast-v2 evidence must not be relabelled or certified exhaustive.' }
+    Assert-ObsFramesWorst $v2 -Profile Fast-v1
+    Assert-ObsFramesWorst $v2 -Designer -Profile Fast-v1
+    $json = Get-Content -Raw -LiteralPath $v2Path
+    $certified = $json | ConvertFrom-Json -AsHashtable -Depth 32
+    $certified.protocol = 'Exhaustive-v1'; $certified.framesGreen = $true; $certified.exhaustiveComplete = $true
+    Assert-ObsFramesWorst $certified
+    Assert-ObsFramesWorst $certified -Designer
+    Assert-ObsFramesWorst $certified -Profile Fast-v1
+    $withMetadata = $json | ConvertFrom-Json -AsHashtable -Depth 32
+    $withMetadata.supplemental = @{protocol='LookFx-v1'; rowIds=@('lookfx.playing')}
+    $withMetadata.worst.options.backgroundBlur = 12
+    Assert-ObsFramesWorst $withMetadata -Designer
+    if ($withMetadata.supplemental.protocol -ne 'LookFx-v1' -or $withMetadata.worst.options.backgroundBlur -ne 12) { throw 'Supplemental metadata must be preserved.' }
+    $cases = @(
+        @{name='unsupported version'; edit={$args[0].version=3}; error='version:1 or version:2'}
+        @{name='string v2 version'; edit={$args[0].version='2'}; error='numeric version'}
+        @{name='missing worst'; edit={[void]$args[0].Remove('worst')}; error='worst:'}
+        @{name='missing options'; edit={[void]$args[0].worst.Remove('options')}; error='worst:'}
+        @{name='missing protocol'; edit={[void]$args[0].Remove('protocol')}; error='protocol'}
+        @{name='unknown protocol'; edit={$args[0].protocol='unknown'}; error='protocol'}
+        @{name='profile incomplete'; edit={$args[0].profileComplete=$false}; error='profileComplete'}
+        @{name='missing profile completion'; edit={[void]$args[0].Remove('profileComplete')}; error='profileComplete'}
+        @{name='string profile completion'; edit={$args[0].profileComplete='true'}; error='profileComplete'}
+        @{name='incomplete'; edit={$args[0].complete=$false}; error='complete'}
+        @{name='missing completion'; edit={[void]$args[0].Remove('complete')}; error='complete'}
+        @{name='string completion'; edit={$args[0].complete='true'}; error='complete'}
+        @{name='missing rows'; edit={$args[0].missingIds=@('frames.missing')}; error='missingIds'}
+        @{name='absent missingIds'; edit={[void]$args[0].Remove('missingIds')}; error='missingIds'}
+        @{name='null missingIds'; edit={$args[0].missingIds=$null}; error='missingIds'}
+        @{name='string missingIds'; edit={$args[0].missingIds=''}; error='missingIds'}
+        @{name='unknown theme'; edit={$args[0].worst.theme='unknown'}; error='theme'}
+        @{name='fractional width'; edit={$args[0].worst.width=600.5}; error='geometry'}
+        @{name='string width'; edit={$args[0].worst.width='600'}; error='geometry'}
+        @{name='out-of-range scale'; edit={$args[0].worst.scale=205}; error='configuration range'}
+        @{name='mismatched options'; edit={$args[0].worst.options.width=590}; error='options disagree'}
+        @{name='missing source'; edit={[void]$args[0].worst.Remove('source')}; error='geometry'}
+        @{name='missing source height'; edit={[void]$args[0].worst.source.Remove('h')}; error='geometry'}
+        @{name='wrong source height'; edit={$args[0].worst.source.h=802}; error='canonical geometry'}
+        @{name='fractional source'; edit={$args[0].worst.source.h=800.5}; error='geometry'}
+        @{name='negative source'; edit={$args[0].worst.source.w=-640}; error='geometry'}
+        @{name='missing geometry option'; edit={[void]$args[0].worst.options.Remove('showArt')}; error='geometry option'}
+        @{name='string geometry option'; edit={$args[0].worst.options.showTimes='false'}; error='geometry option'}
+        @{name='mismatched geometry option'; edit={$args[0].worst.options.showTimes=$false}; error='canonical geometry'}
+        @{name='missing framesGreen'; edit={[void]$args[0].Remove('framesGreen')}; error='framesGreen'}
+        @{name='string framesGreen'; edit={$args[0].framesGreen='true'}; error='framesGreen'}
+        @{name='missing exhaustiveComplete'; edit={[void]$args[0].Remove('exhaustiveComplete')}; error='exhaustiveComplete'}
+        @{name='Fast claims exhaustive'; edit={$args[0].exhaustiveComplete=$true}; error='certification'}
+        @{name='Fast claims green'; edit={$args[0].framesGreen=$true}; error='certification'}
+        @{name='incomplete exhaustive Designer'; edit={$args[0].protocol='Exhaustive-v1'}; error='certification'}
+        @{name='Fast real OBS'; edit={}; error='not certified green'; realObs=$true}
+        @{name='incomplete exhaustive real OBS'; edit={$args[0].protocol='Exhaustive-v1'}; error='not certified green'; realObs=$true}
+        @{name='exhaustive green without completion'; edit={$args[0].protocol='Exhaustive-v1';$args[0].framesGreen=$true}; error='certification'; realObs=$true}
+        @{name='Fast OBS profile incomplete';edit={$args[0].profileComplete=$false};error='profileComplete';realObs=$true;profile='Fast-v1'}
+        @{name='Fast OBS incomplete';edit={$args[0].complete=$false};error='complete';realObs=$true;profile='Fast-v1'}
+        @{name='Fast OBS missing rows';edit={$args[0].missingIds=@('frames.missing')};error='missingIds';realObs=$true;profile='Fast-v1'}
+        @{name='Fast OBS absent missingIds';edit={[void]$args[0].Remove('missingIds')};error='missingIds';realObs=$true;profile='Fast-v1'}
+    )
+    foreach ($case in $cases) {
+        $data = $json | ConvertFrom-Json -AsHashtable -Depth 32
+        & $case.edit $data
+        $rejected = $false
+        try { Assert-ObsFramesWorst $data -Designer:(-not $case['realObs']) -Profile $(if ($case['profile']) {$case.profile} else {'Exhaustive-v1'}) }
+        catch {
+            if ($_.Exception.Message -notlike "*$($case.error)*") { throw "Wrong rejection for $($case.name): $($_.Exception.Message)" }
+            $rejected = $true
+        }
+        if (-not $rejected) { throw "Malformed evidence accepted: $($case.name)." }
+    }
+    "Self-check: v1 unchanged; complete Fast-v2 admitted by Designer/Fast-v1 OBS, rejected by Exhaustive OBS; certified Exhaustive-v1 and supplemental metadata accepted; $($cases.Count) schema/geometry/completion/certification rejections PASS"
+}
+function Test-ObsBenchComposedAdmission {
+    $base=Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures/obs-overlay/bench-worst-v2-selfcheck.json') | ConvertFrom-Json -AsHashtable -Depth 32
+    $base.profileComplete=$false;$base.complete=$false;$base.coverageComplete=$true;$base.qualificationComplete=$false
+    $base.provenance=@{kind='Fast-v2-composed';version=1;payloadIdentical=$true;harnessIdentity='attested';originalHarnessBytesRetained=$false
+        limitations=@('Synthetic schema check only; original harness bytes not retained.')
+        sourceRuns=@(@{runId='run-a';manifestSha256=('a'*64)},@{runId='run-b';manifestSha256=('b'*64)})
+        inventory=@{profile='Fast-v2';version=1;hash=('c'*64);requiredRowIds=@('guard','mutant')}
+        selectedRows=@(@{rowId='guard';sourceRun='run-a';evidenceSha256=('d'*64)},@{rowId='mutant';sourceRun='run-b';evidenceSha256=('e'*64)})}
+    $json=$base|ConvertTo-Json -Depth 32
+    foreach ($designer in @($false,$true)) {Assert-ObsFramesWorst $base -Profile Fast-v1 -Designer:$designer}
+    if ((Get-ObsBenchAdmission $base) -ne 'provisional-composed' -or $base.profileComplete -or $base.complete -or $base.qualificationComplete -or $base.framesGreen) {throw 'Provisional composed evidence relabelled as certified.'}
+    foreach ($designer in @($false,$true)) {
+        $rejected=$false
+        try {Assert-ObsFramesWorst $base -Designer:$designer} catch {$rejected=$true}
+        if (-not $rejected) {throw 'Exhaustive profile accepted provisional incomplete composition.'}
+    }
+    $cases=@(
+        @{name='kind';edit={$args[0].provenance.kind='composed'}}
+        @{name='string version';edit={$args[0].provenance.version='1'}}
+        @{name='protocol';edit={$args[0].protocol='Exhaustive-v1'}}
+        @{name='missingIds';edit={$args[0].missingIds=@('guard')}}
+        @{name='coverage';edit={$args[0].coverageComplete=$false}}
+        @{name='qualification';edit={$args[0].qualificationComplete=$true}}
+        @{name='profile completion mixture';edit={$args[0].profileComplete=$true}}
+        @{name='completion mixture';edit={$args[0].complete=$true}}
+        @{name='green mixture';edit={$args[0].framesGreen=$true}}
+        @{name='exhaustive mixture';edit={$args[0].exhaustiveComplete=$true}}
+        @{name='string boolean';edit={$args[0].coverageComplete='true'}}
+        @{name='payload identity';edit={$args[0].provenance.payloadIdentical=$false}}
+        @{name='harness identity';edit={$args[0].provenance.harnessIdentity='verified'}}
+        @{name='original bytes';edit={$args[0].provenance.originalHarnessBytesRetained=$true}}
+        @{name='missing limitations';edit={$args[0].provenance.limitations=@()}}
+        @{name='sources absent';edit={$args[0].provenance.sourceRuns=@()}}
+        @{name='duplicate source';edit={$args[0].provenance.sourceRuns[1].runId='run-a'}}
+        @{name='source hash';edit={$args[0].provenance.sourceRuns[0].manifestSha256='invalid'}}
+        @{name='inventory profile';edit={$args[0].provenance.inventory.profile='Fast-v1'}}
+        @{name='inventory hash';edit={$args[0].provenance.inventory.hash='invalid'}}
+        @{name='inventory version';edit={$args[0].provenance.inventory.version='1'}}
+        @{name='duplicate required';edit={$args[0].provenance.inventory.requiredRowIds=@('guard','guard')}}
+        @{name='dropped required guard';edit={$args[0].provenance.inventory.requiredRowIds=@('mutant')}}
+        @{name='selection incomplete';edit={$args[0].provenance.selectedRows=@($args[0].provenance.selectedRows[0])}}
+        @{name='duplicate selection';edit={$args[0].provenance.selectedRows[1].rowId='guard'}}
+        @{name='unknown row';edit={$args[0].provenance.selectedRows[1].rowId='phantom'}}
+        @{name='unknown source';edit={$args[0].provenance.selectedRows[1].sourceRun='run-c'}}
+        @{name='evidence hash';edit={$args[0].provenance.selectedRows[1].evidenceSha256='invalid'}}
+        @{name='geometry still mandatory';edit={$args[0].worst.source.h=802}}
+    )
+    foreach ($case in $cases) {
+        $data=$json|ConvertFrom-Json -AsHashtable -Depth 32
+        & $case.edit $data
+        foreach ($designer in @($false,$true)) {
+            $rejected=$false
+            try {Assert-ObsFramesWorst $data -Profile Fast-v1 -Designer:$designer} catch {$rejected=$true}
+            if (-not $rejected) {throw "Malformed provisional composition accepted: $($case.name)."}
+        }
+    }
+    "Self-check: authorized provisional composition ONLY in Fast-v1; strict flag bundle, exact inventory/selected set, source references, hashes, unchanged geometry, no certification; $($cases.Count*2) malformed Designer/OBS admissions rejected PASS"
+}
+function Test-ObsBenchProfiles {
+    . (Join-Path $PSScriptRoot 'obs-overlay-bench-runtime.ps1')
+    $themes=@('pill','matte','matte-light','standard','classic','simple','album-art','card')
+    $fast=@(New-ObsBenchSchedule SharedBaseline $themes 47813 -Profile Fast-v1)
+    if ($fast.Count -ne 26 -or $fast[0].id -ne 'B0' -or $fast[-1].id -ne 'B_end' -or
+        @($fast | Where-Object condition -eq A).Count -ne 16 -or @($fast | Where-Object condition -eq B).Count -ne 10) {throw 'Fast shared schedule requires 16 A + 10 B, both endpoints.'}
+    if (($fast.id -join ',') -ne ((@(New-ObsBenchSchedule SharedBaseline $themes 47813 -Profile Fast-v1)).id -join ',')) {throw 'Fast seed reproducibility regression.'}
+    $r1=@($fast | Where-Object {$_.condition -eq 'A' -and $_.round -eq 1} | ForEach-Object theme)
+    $r2=@($fast | Where-Object {$_.condition -eq 'A' -and $_.round -eq 2} | ForEach-Object theme)
+    [array]::Reverse($r1)
+    if (($r1 -join ',') -ne ($r2 -join ',')) {throw 'Fast round 2 must reverse seeded round 1.'}
+    foreach ($theme in $themes) {
+        $aa=@($fast | Where-Object theme -eq $theme)
+        if ($aa.Count -ne 2) {throw 'Fast shared profile dropped a theme or repeat.'}
+        foreach ($a in $aa) {
+            $index=[array]::IndexOf($fast,$a)
+            $b=@($fast | Where-Object id -eq $a.immediateB)[0]
+            if ([Math]::Abs([array]::IndexOf($fast,$b)-$index) -ne 1 -or -not $a.beforeB -or -not $a.afterB) {throw 'Fast adjacency/brackets regression.'}
+        }
+    }
+    $standard=@(New-ObsBenchSchedule Standard @('pill') 1 -Profile Fast-v1)
+    if ($standard.Count -ne 4 -or ($standard.condition -join '') -ne 'ABBA') {throw 'Fast standard requires two balanced pairs.'}
+    if ((26*150+180)/60 -ne 68 -or (26*150+180+420)/60 -ne 75 -or
+        (4*150+180)/60 -ne 13 -or (4*150+180+120)/60 -ne 15) {throw 'Fast OBS arithmetic regression.'}
+    $anchors=@(Get-ObsDesignerConditions Fast-v1)
+    if ($anchors.Count -ne 4 -or ($anchors.name -join ',') -ne 'sample-playing,current-default,current-max-area,current-max-area' -or
+        ($anchors.lyrics -join ',') -ne 'False,False,False,True' -or ($anchors.worst -join ',') -ne 'False,False,True,True' -or
+        @(Get-ObsDesignerConditions Exhaustive-v1).Count -ne 8 -or
+        (4*2*2*150+4*60+2*2*150+60+300)/60 -ne 60) {throw 'Designer profiles/60-minute arithmetic regression.'}
+    if (-not (Test-ObsDesignerDeadlineFits 0 3600 1 3579 20) -or
+        (Test-ObsDesignerDeadlineFits 0 3600 1 3580 20) -or
+        (Test-ObsDesignerDeadlineFits 3590 3600 1 0 20) -or
+        -not (Test-ObsDesignerDeadlineFits 3590 3600 1 0 2)) {throw 'Invocation deadline/cleanup reserve boundary regression.'}
+    foreach ($profile in @('Fast-v1','Exhaustive-v1')) {
+        $s=@(New-ObsBenchSchedule SharedBaseline $themes 47813 -Profile $profile);$records=@{}
+        foreach ($arm in $s) {$records[$arm.id]=@{metrics=@{metric=$(if ($arm.condition -eq 'A') {1} else {0})};retention=$false}}
+        if (@((Get-ObsSharedScore $s $records @{metric=2}).Values | Where-Object status -ne pass).Count) {throw 'Clean profile score must pass.'}
+        $a=@($s | Where-Object condition -eq A)[0]
+        $records[$a.immediateB].retention=$true
+        if ((Get-ObsSharedScore $s $records @{metric=2})[$a.theme].triggers -notcontains 'retention') {throw 'Profile retention guard removed.'}
+        $records[$a.immediateB].retention=$false;$records[$a.beforeB].metrics.metric=-2
+        $score=Get-ObsSharedScore $s $records @{metric=2}
+        if ($score[$a.theme].triggers -notcontains 'drift' -or $score[$a.theme].pairs[0].conservative.metric -ne 3) {throw 'Profile drift/bracket guard removed.'}
+        $records[$a.beforeB].metrics.metric=0;$records[$a.id].metrics.metric=4
+        $score=Get-ObsSharedScore $s $records @{metric=2}
+        if ($score[$a.theme].triggers -notcontains 'cold-cost' -or $score[$a.theme].triggers -notcontains 'mixed') {throw 'Profile cold-cost/mixed guard removed.'}
+    }
+    foreach ($metric in @(@{budget=0.5;gross=1.0},@{budget=80.0;gross=120.0})) {
+        if ((Get-Verdict @($metric.gross) $metric.budget).verdict -ne 'fail' -or
+            (Get-Verdict @($metric.budget) $metric.budget).verdict -ne 'pass' -or
+            (Get-Verdict @($null) $metric.budget).verdict -ne 'blocked') {throw 'Calibration must detect gross failure at unchanged thresholds; absent evidence is blocked.'}
+    }
+    $idle=@{pageNow=0;fillTimer=0;runningAnimations=0;cadenceLogSequence=10;counters=@{ticks=0;fillWrites=1;timeWrites=1}}
+    $after=@{pageNow=5000;fillTimer=0;runningAnimations=0;cadenceLogSequence=10;counters=@{ticks=0;fillWrites=1;timeWrites=1}}
+    if (-not (Test-DesignerPausedDump $idle $after)) {throw 'Stable structural paused probe rejected.'}
+    $after.pageNow=4999
+    if (Test-DesignerPausedDump $idle $after) {throw 'Structural paused probe accepted a shortened window.'}
+    $after.pageNow=5000
+    $after.counters.ticks=1
+    if (Test-DesignerPausedDump $idle $after) {throw 'Structural paused probe accepted running work.'}
+    $after.counters.ticks=0;$after.runningAnimations=1
+    if (Test-DesignerPausedDump $idle $after) {throw 'Structural paused probe accepted animation.'}
+    $after.runningAnimations=0;[void]$after.Remove('fillTimer')
+    if (Test-DesignerPausedDump $idle $after) {throw 'Structural paused probe accepted missing diagnostics.'}
+    'Self-check: Fast/Exhaustive schedules, all 8 themes, balanced pairs, 68+7/13+2/60-minute arithmetic, deadline reserves, unchanged drift/retention guards, calibration thresholds and structural idle PASS'
+}
+function Test-ObsBenchSchedule {
+    $themes = @('pill','matte','matte-light','standard','classic','simple','album-art','card')
+    $s = @(New-ObsBenchSchedule -Protocol SharedBaseline -Themes $themes -Seed 47813)
+    if ($s.Count -ne 50 -or $s[0].id -ne 'B0' -or $s[-1].id -ne 'B_end') { throw 'Shared schedule needs 50 arms and endpoint baselines.' }
+    if (@($s | Where-Object condition -eq A).Count -ne 32 -or @($s | Where-Object condition -eq B).Count -ne 18) { throw 'Shared schedule arithmetic mismatch.' }
+    foreach ($theme in $themes) {
+        $a = @($s | Where-Object theme -eq $theme)
+        if ($a.Count -ne 4) { throw "Four pairs required for $theme." }
+        foreach ($arm in $a) {
+            $i = [array]::IndexOf($s, $arm)
+            $b = @($s | Where-Object id -eq $arm.immediateB)[0]
+            if ([Math]::Abs([array]::IndexOf($s,$b) - $i) -ne 1) { throw 'Immediate B must be adjacent.' }
+            if (-not $arm.beforeB -or -not $arm.afterB) { throw 'Every A needs brackets.' }
+        }
+    }
+    $r1 = @($s | Where-Object { $_.round -eq 1 -and $_.condition -eq 'A' } | ForEach-Object theme)
+    $r2 = @($s | Where-Object { $_.round -eq 2 -and $_.condition -eq 'A' } | ForEach-Object theme)
+    [array]::Reverse($r1)
+    if (($r1 -join ',') -ne ($r2 -join ',')) { throw 'Round 2 must reverse round 1.' }
+    $standard = @(New-ObsBenchSchedule -Protocol Standard -Themes @('pill') -Seed 1)
+    if ($standard.Count -ne 8 -or (($standard.condition -join '') -ne 'ABBAABBA')) { throw 'Standard block must be four AB/BA pairs.' }
+    if ((50 * 150 + 180) / 60 -ne 128) { throw 'Playing window arithmetic changed.' }
+    if ((8 * 150 + 180) / 60 -ne 23) { throw 'Standard window arithmetic changed.' }
+    # Bracket optimism, drift, cold-cost and retention are independent triggers.
+    $records = @{}
+    foreach ($arm in $s) { $records[$arm.id] = @{ metrics = @{ metric = 0 }; retention = $false } }
+    foreach ($arm in @($s | Where-Object condition -eq A)) { $records[$arm.id].metrics.metric = 1 }
+    $score = Get-ObsSharedScore $s $records @{metric=2}
+    if (@($score.Values | Where-Object { $_.status -ne 'pass' }).Count) { throw 'Clean shared score must pass.' }
+    $first = @($s | Where-Object { $_.condition -eq 'A' })[0]
+    $records[$first.immediateB].retention = $true
+    $score = Get-ObsSharedScore $s $records @{metric=2}
+    if ($score[$first.theme].triggers -notcontains 'retention') { throw 'Retention must trigger a fresh block.' }
+    $records[$first.immediateB].retention = $false
+    $records[$first.beforeB].metrics.metric = -2
+    $score = Get-ObsSharedScore $s $records @{metric=2}
+    if ($score[$first.theme].triggers -notcontains 'drift' -or $score[$first.theme].pairs[0].conservative.metric -ne 3) { throw 'Conservative low-baseline bracket and drift regression.' }
+    $records[$first.beforeB].metrics.metric = 0
+    $records[$first.id].metrics.metric = 4
+    $score = Get-ObsSharedScore $s $records @{metric=2}
+    if ($score[$first.theme].triggers -notcontains 'cold-cost' -or $score[$first.theme].triggers -notcontains 'mixed') { throw 'Cold cost and mixed observations require a fresh block.' }
+    foreach ($path in @('obs-overlay-bench.ps1','obs-overlay-bench-protocol.ps1','obs-overlay-bench-selfcheck.ps1','obs-overlay-bench-runtime.ps1','obs-portable.ps1','obs-overlay-obs-e2e.ps1')) {
+        $tokens=$null;$parseErrors=$null
+        [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $path),[ref]$tokens,[ref]$parseErrors)
+        if ($parseErrors.Count) {throw "$path parse errors: $($parseErrors.Message -join '; ')"}
+    }
+    Test-ObsBenchWorst
+    Test-ObsBenchComposedAdmission
+    Test-ObsBenchProfiles
+    'Self-check: schedule, arithmetic, endpoints, adjacency, brackets, reversal, 4 pairs, drift/cold-cost/retention/mixed and script parse PASS'
+}

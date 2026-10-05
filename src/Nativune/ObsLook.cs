@@ -153,6 +153,18 @@ internal sealed record ObsLookOptions(
     ObsLookAnimation ShowAnimation,
     ObsLookAnimation HideAnimation)
 {
+    /// <summary>Song-art background blur in logical pixels (0-32); null uses the theme default.</summary>
+    public int? BackgroundBlur { get; init; }
+
+    /// <summary>Played-progress brightness in percent (0-200, step 5); null uses the theme default.</summary>
+    public int? PlayedBrightness { get; init; }
+
+    /// <summary>Unplayed-progress brightness in percent (0-100, step 5); null uses the theme default.</summary>
+    public int? UnplayedBrightness { get; init; }
+
+    /// <summary>Song-art background brightness in percent (0-200, step 5); null uses the theme default.</summary>
+    public int? BackgroundBrightness { get; init; }
+
     internal const int MinScale = 50;
     internal const int MaxScale = 200;
     internal const int ScaleStep = 5;
@@ -232,6 +244,34 @@ internal sealed record ObsLookOptions(
 
     internal static bool DefaultTextShadow(ObsLookTheme theme) =>
         theme is not (ObsLookTheme.Matte or ObsLookTheme.MatteLight);
+}
+
+/// <summary>Theme effect defaults: logical-pixel blur and played, unplayed and background brightness percentages.</summary>
+internal readonly record struct ObsLookFxDefaults(int Blur, int Played, int Unplayed, int Background)
+{
+    /// <summary>Returns the theme defaults used for null overrides; unknown themes use Pill defaults.</summary>
+    internal static ObsLookFxDefaults Resolve(ObsLookTheme theme) => theme switch
+    {
+        ObsLookTheme.Matte => new(0, 100, 100, 100),
+        ObsLookTheme.MatteLight or ObsLookTheme.Simple => new(0, 100, 0, 100),
+        ObsLookTheme.Standard or ObsLookTheme.Classic => new(14, 100, 100, 40),
+        ObsLookTheme.AlbumArt => new(0, 100, 100, 100),
+        ObsLookTheme.Card => new(16, 100, 100, 35),
+        _ => new(14, 115, 45, 100),
+    };
+
+    /// <summary>Whether the theme supports song-art blur and brightness; progress brightness is supported by all themes.</summary>
+    internal static bool SupportsBackgroundFx(ObsLookTheme theme) =>
+        theme is ObsLookTheme.Pill or ObsLookTheme.Standard or ObsLookTheme.Classic or ObsLookTheme.AlbumArt or ObsLookTheme.Card;
+
+    /// <summary>Whether background effects currently apply; inactive overrides are retained for later mode changes.</summary>
+    internal static bool BackgroundFxActive(ObsLookOptions options) => options.Theme switch
+    {
+        ObsLookTheme.Pill => true,
+        ObsLookTheme.Standard or ObsLookTheme.Classic or ObsLookTheme.Card => options.Colours != ObsLookColours.Custom,
+        ObsLookTheme.AlbumArt => options.ShowArt,
+        _ => false,
+    };
 }
 
 /// <summary>A saved look: id (<c>[a-z0-9]{8}</c>), display name (native text only, never on the wire) and options.</summary>
@@ -383,6 +423,10 @@ internal static class ObsLookValidation
             Paused = Defined(options.Paused),
             ShowAnimation = Defined(options.ShowAnimation),
             HideAnimation = Defined(options.HideAnimation),
+            BackgroundBlur = options.BackgroundBlur,
+            PlayedBrightness = options.PlayedBrightness,
+            UnplayedBrightness = options.UnplayedBrightness,
+            BackgroundBrightness = options.BackgroundBrightness,
         });
     }
 
@@ -414,6 +458,10 @@ internal static class ObsLookValidation
             raw.Paused = ParsePaused(ReadString(options, "paused"));
             raw.ShowAnimation = ParseAnimation(ReadString(options, "showAnimation"));
             raw.HideAnimation = ParseAnimation(ReadString(options, "hideAnimation"));
+            raw.BackgroundBlur = ReadNumber(options, "backgroundBlur");
+            raw.PlayedBrightness = ReadNumber(options, "playedBrightness");
+            raw.UnplayedBrightness = ReadNumber(options, "unplayedBrightness");
+            raw.BackgroundBrightness = ReadNumber(options, "backgroundBrightness");
         }
         return Apply(raw);
     }
@@ -602,6 +650,10 @@ internal static class ObsLookValidation
         internal ObsLookPaused? Paused;
         internal ObsLookAnimation? ShowAnimation;
         internal ObsLookAnimation? HideAnimation;
+        internal double? BackgroundBlur;
+        internal double? PlayedBrightness;
+        internal double? UnplayedBrightness;
+        internal double? BackgroundBrightness;
     }
 
     private static ObsLookOptions Apply(in Raw raw)
@@ -630,7 +682,13 @@ internal static class ObsLookValidation
             raw.ShowTimes ?? true,
             raw.Paused ?? ObsLookPaused.Hide,
             raw.ShowAnimation ?? ObsLookAnimation.SlideUp,
-            raw.HideAnimation ?? ObsLookAnimation.Fade);
+            raw.HideAnimation ?? ObsLookAnimation.Fade)
+        {
+            BackgroundBlur = InRange(raw.BackgroundBlur, 0, 32, 1),
+            PlayedBrightness = InRange(raw.PlayedBrightness, 0, 200, 5),
+            UnplayedBrightness = InRange(raw.UnplayedBrightness, 0, 100, 5),
+            BackgroundBrightness = InRange(raw.BackgroundBrightness, 0, 200, 5),
+        };
     }
 
     // In [min, max] (bounds are multiples of step, so snapping stays in range) -> snapped; else null = use the default.
@@ -807,7 +865,7 @@ internal static class ObsLookJson
             PreviewBackdrop: previewBackdrop,
             FontAvailable: fontAvailable));
 
-    /// <summary>The 18 options as a JSON object in the canonical order shared by the look event and the store file.</summary>
+    /// <summary>Options as a JSON object in the canonical order shared by the look event and the store file.</summary>
     internal static void WriteOptions(Utf8JsonWriter w, ObsLookOptions o)
     {
         w.WriteStartObject();
@@ -830,6 +888,14 @@ internal static class ObsLookJson
         w.WriteString("paused", o.Paused.ToWire());
         w.WriteString("showAnimation", o.ShowAnimation.ToWire());
         w.WriteString("hideAnimation", o.HideAnimation.ToWire());
+        if (o.BackgroundBlur is { } blur) w.WriteNumber("backgroundBlur", blur);
+        else w.WriteNull("backgroundBlur");
+        if (o.PlayedBrightness is { } played) w.WriteNumber("playedBrightness", played);
+        else w.WriteNull("playedBrightness");
+        if (o.UnplayedBrightness is { } unplayed) w.WriteNumber("unplayedBrightness", unplayed);
+        else w.WriteNull("unplayedBrightness");
+        if (o.BackgroundBrightness is { } background) w.WriteNumber("backgroundBrightness", background);
+        else w.WriteNull("backgroundBrightness");
         w.WriteEndObject();
     }
 }

@@ -69,6 +69,34 @@
     <ComboBox x:Name="PausedPicker" Header="When paused" HorizontalAlignment="Stretch" AutomationProperties.Name="When paused"/>
     <ComboBox x:Name="ShowAnimationPicker" Header="Show animation" HorizontalAlignment="Stretch" AutomationProperties.Name="Show animation"/>
     <ComboBox x:Name="HideAnimationPicker" Header="Hide animation" HorizontalAlignment="Stretch" AutomationProperties.Name="Hide animation"/>
+    <StackPanel x:Name="BackgroundBlurRow" Spacing="4">
+     <Slider x:Name="BackgroundBlurSlider" Header="Background blur, pixels" Minimum="0" Maximum="32" StepFrequency="1" AutomationProperties.Name="Background blur, pixels"/>
+     <NumberBox x:Name="BackgroundBlurBox" Minimum="0" Maximum="32" SmallChange="1" LargeChange="5" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Background blur, pixels, numeric value"/>
+     <Button x:Name="BackgroundBlurResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for background blur"/>
+     <TextBlock x:Name="BackgroundBlurStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBlurStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="BackgroundBlurHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBlurHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="PlayedBrightnessRow" Spacing="4">
+     <Slider x:Name="PlayedBrightnessSlider" Header="Played progress brightness, percent" Minimum="0" Maximum="200" StepFrequency="5" AutomationProperties.Name="Played progress brightness, percent"/>
+     <NumberBox x:Name="PlayedBrightnessBox" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Played progress brightness, percent, numeric value"/>
+     <Button x:Name="PlayedBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for played progress brightness"/>
+     <TextBlock x:Name="PlayedBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="PlayedBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="PlayedBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="PlayedBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="UnplayedBrightnessRow" Spacing="4">
+     <Slider x:Name="UnplayedBrightnessSlider" Header="Unplayed progress brightness, percent" Minimum="0" Maximum="100" StepFrequency="5" AutomationProperties.Name="Unplayed progress brightness, percent"/>
+     <NumberBox x:Name="UnplayedBrightnessBox" Minimum="0" Maximum="100" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Unplayed progress brightness, percent, numeric value"/>
+     <Button x:Name="UnplayedBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for unplayed progress brightness"/>
+     <TextBlock x:Name="UnplayedBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="UnplayedBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="UnplayedBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="UnplayedBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="BackgroundBrightnessRow" Spacing="4">
+     <Slider x:Name="BackgroundBrightnessSlider" Header="Background brightness, percent" Minimum="0" Maximum="200" StepFrequency="5" AutomationProperties.Name="Background brightness, percent"/>
+     <NumberBox x:Name="BackgroundBrightnessBox" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Background brightness, percent, numeric value"/>
+     <Button x:Name="BackgroundBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for background brightness"/>
+     <TextBlock x:Name="BackgroundBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="BackgroundBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
     <Button x:Name="CopyLinkButton" Content="Copy OBS link" AutomationProperties.Name="Copy OBS link"/>
     <TextBlock x:Name="SourceSizeText" TextWrapping="Wrap" AutomationProperties.Name="OBS source size" AutomationProperties.LiveSetting="Polite"/>
     <TextBlock Text="Changing a look does not resize an existing OBS source." TextWrapping="Wrap"/>
