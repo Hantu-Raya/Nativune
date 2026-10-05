@@ -6144,6 +6144,24 @@ function Test-AArt {
             $served1 = Get-Overlay $s1 'fixtureArtServed'; $served2 = Get-Overlay $s2 'fixtureArtServed'
             Add-Check 'A-ART.failureNotCounted' 'fixtureArtServed counts successful serves only: +1 for the second good GET, +0 for the two 502s' ([ordered]@{
                 afterFirstGood = $served1; afterFailuresAndSecondGood = $served2 }) ($null -ne $served1 -and [int] $served1 -ge 1 -and [int] $served2 -eq [int] $served1 + 1)
+            # Recency (Codex review): B, C, B, A must keep B (the art before A) and evict C. Without moving a recurring
+            # key to the newest slot, the cache stays [B, C] after the second B and A evicts B instead.
+            $artPrev = $k2; $artKeys = [Collections.Generic.List[string]]::new()
+            foreach ($step in @('b', 'c', 'b', 'a')) {
+                $artAfter = Get-Qpc
+                Send-HookCommand $run.Root "command-fixture-art-$step" | Out-Null
+                $artEvent = Wait-SseData $run.Reader { param($d) "$(Get-Prop $d 'artwork')" -match '^/art/[0-9a-f]{16}$' -and "$(Get-Prop $d 'artwork')" -cne $artPrev } 15 $artAfter
+                $artPrev = if ($artEvent) { [string] (Get-Prop $artEvent.data 'artwork') } else { $null }
+                $artKeys.Add($artPrev)
+                if (-not $artPrev) { break }
+            }
+            $keyB = $artKeys[0]; $keyC = if ($artKeys.Count -gt 1) { $artKeys[1] } else { $null }
+            $recentB = if ($keyB) { Invoke-RawHttp '127.0.0.1' (New-Request -Path $keyB) } else { $null }
+            $evictedC = if ($keyC) { Invoke-RawHttp '127.0.0.1' (New-Request -Path $keyC) } else { $null }
+            Add-Check 'A-ART.recurringKeyStaysRecent' 'art B, C, B, A: B (the art before A) is still served and C was evicted' ([ordered]@{
+                keys = $artKeys.ToArray(); previousB = $recentB.status; evictedC = $evictedC.status }) (
+                $artKeys.Count -eq 4 -and @($artKeys | Where-Object { -not $_ }).Count -eq 0 -and $artKeys[0] -ceq $artKeys[2] -and
+                (& $goodOk $recentB) -and $evictedC.status -eq 404)
         }
         $r['keys'] = [ordered]@{ first = $k1; second = $k2 }
     } finally { Stop-OverlayRun $run }

@@ -112,6 +112,9 @@ public sealed partial class WebHostWindow
             await on.Core.ExecuteScriptAsync("window.__nativuneFixture.setClockMismatch(true)");
         if (TakeDiscordBenchCommand("command-clock-mismatch-off") && _browserHost is { } off)
             await off.Core.ExecuteScriptAsync("window.__nativuneFixture.setClockMismatch(false)");
+        foreach (var letter in "abc")
+            if (TakeDiscordBenchCommand("command-fixture-art-" + letter) && _browserHost is { } art)
+                await art.Core.ExecuteScriptAsync($"window.__nativuneFixture.setArtwork('{letter}')");
         if (TakeDiscordBenchCommand("command-navigate") && _browserHost is { } nav && !_closing && !_disposed)
             nav.Core.Reload();
         await ProcessObsDesignerBenchCommandsAsync();

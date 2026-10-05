@@ -527,11 +527,18 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
     private string Opaque(string domain, string value) =>
         Convert.ToHexStringLower(HMACSHA256.HashData(_wireKey, Encoding.UTF8.GetBytes(domain + "\0" + value)), 0, 8);
 
-    // Caller holds _gate. Keeps the current and previous artwork only.
+    // Caller holds _gate. Keeps the current and previous artwork only: a recurring key moves to the newest slot, so
+    // the entry evicted next is always the older of the two (A, B, A, C keeps A for streams still on it).
     private void RegisterArt(string key, string url)
     {
-        foreach (var known in _art)
-            if (known.Key == key) return;
+        var index = _art.FindIndex(known => known.Key == key);
+        if (index >= 0)
+        {
+            var known = _art[index];
+            _art.RemoveAt(index);
+            _art.Add(known);
+            return;
+        }
         if (_art.Count >= MaxArtEntries) _art.RemoveAt(0);
         _art.Add(new ArtEntry(key, url));
     }

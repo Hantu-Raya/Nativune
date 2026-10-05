@@ -151,6 +151,12 @@
   let clockMismatch = false;
   window.__nativuneFixture = {
     setClockMismatch(on) { clockMismatch = !!on; render(); },
+    // Shows one of the locally generated fixture pictures (a, b or c); called after the page script has run.
+    setArtwork(letter) {
+      if (letter !== 'a' && letter !== 'b' && letter !== 'c') return false;
+      setArt('https://lh3.googleusercontent.com/fixture-' + letter + '=w544-h544');
+      return true;
+    },
     setPlaybackRate(rate) {
       const value = Number(rate);
       if (![0.25, 1, 2, 4].includes(value)) return null;
