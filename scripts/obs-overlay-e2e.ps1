@@ -6091,6 +6091,19 @@ function Test-AText {
         $start = Get-PageStartQpc $initial
         $chrome = Start-Chrome 'A-TEXT-artswap'
         [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+        # While a changed artwork is still loading (artSeq > artLoadedSeq) the previous cover must already be gone.
+        $artSamples = [Collections.Generic.List[object]]::new()
+        Wait-UntilQpc ($start + 9.5 * $freq)
+        while ((Get-Qpc) -lt $start + 14 * $freq) {
+            $v = Get-Prop (Get-Prop (Invoke-Cdp $chrome 'Runtime.evaluate' @{ returnByValue = $true; expression =
+                "JSON.stringify({ art: document.documentElement.getAttribute('data-art'), seq: window.__state && __state.artSeq, loaded: window.__state && __state.artLoadedSeq })" }) 'result') 'value'
+            if ($v) { $artSamples.Add(($v | ConvertFrom-Json)) }
+            Start-Sleep -Milliseconds 100
+        }
+        $pending = @($artSamples | Where-Object { $null -ne $_.seq -and [int] $_.seq -gt [int] $_.loaded })
+        Add-Check 'A-TEXT.artSwapNoStaleCover' 'while the changed artwork loads, the previous cover is not shown (data-art false)' ([ordered]@{
+            samples = $artSamples.Count; pending = $pending.Count; pendingShown = @($pending | Where-Object { $_.art -ne 'false' }).Count }) (
+            $pending.Count -ge 1 -and @($pending | Where-Object { $_.art -ne 'false' }).Count -eq 0)
         Wait-UntilQpc ($start + 18 * $freq)
         $p = Get-PageProbe $chrome
         $s = Get-State $run.Root 'art'

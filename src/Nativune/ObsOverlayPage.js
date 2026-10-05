@@ -559,6 +559,9 @@ function syncRaster(g) {
 function loadArt(raw) {
   const url = raw == null ? null : acceptArtwork(raw);
   if (url !== null && url === artUrl && !state.artFailed) return;
+  // A different artwork: drop the previous song's cover at once, so the new title never shows with it; the
+  // placeholder fills the same slot until the new image loads. A retry of the same URL keeps what is shown.
+  if (url !== artUrl && artImg !== null) clearArt();
   artUrl = url;
   const seq = ++state.artSeq;
   if (url === null) {
