@@ -34,6 +34,21 @@ internal sealed partial class ObsOverlayServer
     private int _hookFixtureArtServed;
     private int _hookPendingWrites;
     private string? _hookLastStreamEnd;
+    private int _hookFailFetches;   // E2E: the next N fixture artwork fetches fail (a transient upstream failure)
+
+    internal void HookFailNextFetches(int count) => Volatile.Write(ref _hookFailFetches, Math.Clamp(count, 0, 10));
+
+    private bool TakeHookFetchFailure()
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref _hookFailFetches);
+            if (current <= 0) return false;
+        }
+        while (Interlocked.CompareExchange(ref _hookFailFetches, current - 1, current) != current);
+        return true;
+    }
 
     partial void HookAppendScript(ref byte[] overlayJs)
     {
@@ -59,7 +74,7 @@ internal sealed partial class ObsOverlayServer
     partial void HookFetchArtwork(string url, CancellationToken cancellation, ref Task<ArtworkPayload?>? fetch)
     {
         if (TryFixtureArtwork(url, out var letter, out var delay))
-            fetch = FixtureFetchAsync(letter, delay, cancellation);
+            fetch = TakeHookFetchFailure() ? Task.FromResult<ArtworkPayload?>(null) : FixtureFetchAsync(letter, delay, cancellation);
         else if (Uri.TryCreate(url, UriKind.Absolute, out var uri)
             && uri.Host.Equals("lh3.googleusercontent.com", StringComparison.OrdinalIgnoreCase)
             && uri.AbsolutePath.StartsWith("/fixture-", StringComparison.Ordinal))

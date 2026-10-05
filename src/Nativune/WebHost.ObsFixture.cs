@@ -106,6 +106,7 @@ public sealed partial class WebHostWindow
             _obsReadHold = null;
         }
         if (TakeDiscordBenchCommand("command-obs-burst")) _obsOverlay?.HookBurst();
+        if (TakeDiscordBenchCommand("command-obs-art-fail-next")) _obsOverlay?.HookFailNextFetches(1);
         if (TakeDiscordBenchCommand("command-controls-unavailable-on")) PlayerControls.HookForceUnavailable = true;
         if (TakeDiscordBenchCommand("command-controls-unavailable-off")) PlayerControls.HookForceUnavailable = false;
         if (TakeDiscordBenchCommand("command-clock-mismatch-on") && _browserHost is { } on)

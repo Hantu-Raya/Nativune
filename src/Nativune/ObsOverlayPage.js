@@ -69,7 +69,7 @@ const state = {
   accent: null, fontAvailable: null, reduceMotion: false
 };
 // Raster and scheduler work counters (hook build only reads them); quantizerRuns is reserved for the themes' accent sampler.
-const counters = { blurDraws: 0, quantizerRuns: 0, coverLoads: 0, lookApplies: 0, fillWrites: 0, timeWrites: 0, ticks: 0 };
+const counters = { blurDraws: 0, quantizerRuns: 0, coverLoads: 0, lookApplies: 0, fillWrites: 0, timeWrites: 0, ticks: 0, artRetries: 0 };
 
 const root = document.documentElement;
 const pill = document.getElementById('pill');
@@ -94,6 +94,10 @@ let artImg = null;       // bitmap currently drawn on the band canvases, kept so
 let rasterKey = '';      // artwork, geometry, paint mode and applicable resolved effects
 let artImgUrl = null;
 let blurRasterScale = 1;
+// A failed /art/<key> load is retried after the server's 10 s failure window (a steady song sends no new data event
+// that would retry it), at most ART_RETRY_LIMIT times per artwork URL.
+const ART_RETRY_MS = 11000, ART_RETRY_LIMIT = 3;
+let artRetryTimer = 0, artRetryUrl = null, artRetryCount = 0;
 const accentCanvas = document.createElement('canvas');
 accentCanvas.width = accentCanvas.height = 32;
 const accentCache = new WeakMap(); // loaded bitmap identity -> theme -> sampled accent
@@ -584,6 +588,17 @@ function loadArt(raw) {
     clearArt();
     state.artFailed = true;
     state.artLoadedSeq = seq;
+    if (artRetryUrl !== url) { artRetryUrl = url; artRetryCount = 0; }
+    if (artRetryCount >= ART_RETRY_LIMIT) return;
+    artRetryCount++;
+    clearTimeout(artRetryTimer);
+    artRetryTimer = setTimeout(() => {
+      artRetryTimer = 0;
+      // Only the same, still-current, still-failed artwork; a newer song or a later success makes this a no-op.
+      if (seq !== state.artSeq || artUrl !== url || !state.artFailed) return;
+      counters.artRetries++;
+      loadArt(raw);
+    }, ART_RETRY_MS);
   };
   img.src = url;
 }

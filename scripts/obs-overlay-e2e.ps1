@@ -6162,6 +6162,26 @@ function Test-AArt {
                 keys = $artKeys.ToArray(); previousB = $recentB.status; evictedC = $evictedC.status }) (
                 $artKeys.Count -eq 4 -and @($artKeys | Where-Object { -not $_ }).Count -eq 0 -and $artKeys[0] -ceq $artKeys[2] -and
                 (& $goodOk $recentB) -and $evictedC.status -eq 404)
+            # Transient failure (Codex review): the first /art fetch fails, the page shows no art, then retries after the
+            # server's 10 s failure window and recovers without any new data event.
+            if (Test-ChromeAvailable 'A-ART') {
+                $chrome = $null
+                try {
+                    $chrome = Start-Chrome 'A-ART-retry'
+                    [void] (Invoke-ChromeNavigate $chrome $overlayUrl)
+                    $loaded = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'artFailed') -eq $false -and (Get-PageField $p 'artSeq') -ge 1) { $p } } 15 200
+                    Send-ObsHookCommand $run.Root 'command-obs-art-fail-next' | Out-Null
+                    Send-HookCommand $run.Root 'command-fixture-art-c' | Out-Null
+                    $failed = Wait-For { $p = Get-PageProbe $chrome; if ((Get-PageField $p 'artFailed') -eq $true) { $p } } 10 200
+                    $recovered = Wait-For { $p = Get-PageProbe $chrome
+                        if ((Get-PageField $p 'artFailed') -eq $false -and (Get-PageField $p 'artSeq') -eq (Get-PageField $p 'artLoadedSeq') -and
+                            [int] (Get-Prop (Get-PageField $p 'counters') 'artRetries') -ge 1) { $p } } 25 250
+                    Add-Check 'A-ART.transientFailureRetried' 'after one failed /art fetch the page retries after the server window and shows the art again' ([ordered]@{
+                        loadedFirst = [bool] $loaded; failedSeen = [bool] $failed
+                        retries = if ($recovered) { Get-Prop (Get-PageField $recovered 'counters') 'artRetries' } }) (
+                        [bool] $loaded -and [bool] $failed -and [bool] $recovered)
+                } finally { Stop-Chrome $chrome }
+            }
         }
         $r['keys'] = [ordered]@{ first = $k1; second = $k2 }
     } finally { Stop-OverlayRun $run }
