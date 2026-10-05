@@ -51,6 +51,7 @@ internal sealed class NativeIconCache : IDisposable
             ["like"] = "like",
             ["minimize"] = "minimize",
             ["next"] = "next",
+            ["obs"] = "obs",
             ["overflow"] = "overflow",
             ["pause"] = "pause",
             ["pin"] = "pin",

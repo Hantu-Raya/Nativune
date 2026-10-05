@@ -64,6 +64,10 @@ internal static class ShellTheme
         ? ResourceColor("SystemColorWindowTextColor", SystemColor(ColorWindowText, PrimaryTextColor))
         : PrimaryTextColor;
 
+    /// <summary>System highlight color (used for the OBS recording dot in high contrast).</summary>
+    internal static UiColor HighlightColor
+        => ResourceColor("SystemColorHighlightColor", SystemColor(ColorHighlight, PrimaryTextColor));
+
     /// <summary>
     /// Applies the resource-selected theme and accessibility policy to a native
     /// visual tree. Every call is idempotent and safe to make after a theme change.

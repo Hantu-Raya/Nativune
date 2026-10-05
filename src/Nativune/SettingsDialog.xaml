@@ -29,6 +29,7 @@
         <NavigationViewItem x:Name="ShortcutsNavItem" Content="Shortcuts" Tag="Shortcuts" AutomationProperties.Name="Shortcuts" />
         <NavigationViewItem x:Name="PrivacyNavItem" Content="Privacy" Tag="Privacy" AutomationProperties.Name="Privacy" />
         <NavigationViewItem x:Name="DiscordNavItem" Content="Discord" Tag="Discord" AutomationProperties.Name="Discord" />
+        <NavigationViewItem x:Name="ObsNavItem" Content="OBS" Tag="Obs" AutomationProperties.Name="OBS" />
         <NavigationViewItem x:Name="LyricsNavItem" Content="Lyrics" Tag="Lyrics" AutomationProperties.Name="Lyrics" />
         <NavigationViewItem x:Name="AboutNavItem" Content="About" Tag="About" AutomationProperties.Name="About" />
       </NavigationView.MenuItems>
@@ -400,6 +401,112 @@
                        Margin="28,0,0,0"
                        Foreground="{ThemeResource SecondaryTextBrush}"
                        AutomationProperties.Name="Discord connection status"
+                       AutomationProperties.LiveSetting="Polite" />
+          </StackPanel>
+
+          <StackPanel x:Name="ObsPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="OBS (early preview)"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       Foreground="{ThemeResource PrimaryTextBrush}"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <TextBlock x:Name="ObsPreviewNotice"
+                       Text="The OBS overlay and the Overlay designer are an early preview. Themes and options may change in later versions, and the designer's live preview uses noticeable extra CPU while it is open. When the overlay is off, none of it runs."
+                       TextWrapping="Wrap"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.AutomationId="ObsPreviewNotice" />
+            <CheckBox x:Name="ObsOverlayCheckBox"
+                      Content="Enable OBS overlay"
+                      MinHeight="36"
+                      IsChecked="False"
+                      Foreground="{ThemeResource PrimaryTextBrush}"
+                      AutomationProperties.Name="Enable OBS overlay"
+                      AutomationProperties.HelpText="Off by default. Serves a now-playing overlay for an OBS Browser source on this PC." />
+            <TextBlock x:Name="ObsDisclosureText"
+                       Text="When on, apps on this PC can read the song title, artist, artwork and playback time at http://localhost:47813/. Other PCs and websites cannot. Nativune downloads the artwork from YouTube's image servers and passes it to OBS."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,-6,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="OBS overlay privacy disclosure" />
+            <StackPanel x:Name="ObsOptionsPanel" Margin="28,0,0,0" Spacing="6">
+              <CheckBox x:Name="ObsHidePausedCheckBox"
+                        Content="Hide the overlay when paused"
+                        MinHeight="36"
+                        IsChecked="True"
+                        Foreground="{ThemeResource PrimaryTextBrush}"
+                        AutomationProperties.Name="Hide the overlay when paused"
+                        AutomationProperties.HelpText="On by default. Available while the OBS overlay is on." />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="28,0,0,0">
+              <TextBox x:Name="ObsLinkTextBox"
+                       Text="http://localhost:47813/"
+                       IsReadOnly="True"
+                       MinWidth="240"
+                       AutomationProperties.Name="Overlay link"
+                       AutomationProperties.HelpText="Paste this link into the URL of an OBS Browser source." />
+              <Button x:Name="ObsCopyLinkButton"
+                      Content="Copy link"
+                      AutomationProperties.Name="Copy link"
+                      AutomationProperties.HelpText="Copies the overlay link to the clipboard." />
+            </StackPanel>
+            <TextBlock x:Name="ObsCopyLinkResult"
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Copy link result"
+                       AutomationProperties.LiveSetting="Polite" />
+            <Button x:Name="ObsDesignerButton"
+                    Content="Open Overlay designer…"
+                    Margin="28,0,0,0"
+                    IsEnabled="False"
+                    AutomationProperties.Name="Open Overlay designer"
+                    AutomationProperties.HelpText="Opens the overlay look designer while the OBS overlay is running." />
+            <TextBlock x:Name="ObsDesignerResult"
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Overlay designer result"
+                       AutomationProperties.LiveSetting="Polite" />
+            <Button x:Name="ObsGuideButton"
+                    Content="How to set up…"
+                    Margin="28,0,0,0"
+                    AutomationProperties.Name="How to set up"
+                    AutomationProperties.HelpText="Opens the OBS overlay setup guide in your browser." />
+            <TextBlock x:Name="ObsGuideResult"
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Setup guide result"
+                       AutomationProperties.LiveSetting="Polite" />
+            <TextBlock x:Name="ObsAdTipText"
+                       Text="Ads hide the overlay while they play. To reduce ads you can turn on Block ads in Settings › Privacy. YouTube may detect it, interrupt playback or warn your account. Restart required."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="Ad tip" />
+            <Button x:Name="ObsOpenBlockAdsButton"
+                    Content="Open Block ads setting"
+                    Margin="28,0,0,0"
+                    AutomationProperties.Name="Open Block ads setting"
+                    AutomationProperties.HelpText="Shows the Privacy page. It does not change the Block ads setting." />
+            <TextBlock x:Name="ObsStepsText"
+                       Text="1. OBS › Sources › + › Browser.&#x0a;2. URL = the link; Width 440; Height 96.&#x0a;3. Tick &quot;Shutdown source when not visible&quot;.&#x0a;4. Tick &quot;Use custom frame rate&quot;, 30.&#x0a;5. Leave &quot;Refresh browser when scene becomes active&quot; off.&#x0a;6. Use one source; add it to other scenes as a reference (Paste (Reference)), not a copy.&#x0a;7. If OBS was opened first, click Refresh."
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="OBS setup steps" />
+            <TextBlock x:Name="ObsStatusText"
+                       TextWrapping="Wrap"
+                       FontSize="12"
+                       Margin="28,0,0,0"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.Name="OBS overlay status"
                        AutomationProperties.LiveSetting="Polite" />
           </StackPanel>
 

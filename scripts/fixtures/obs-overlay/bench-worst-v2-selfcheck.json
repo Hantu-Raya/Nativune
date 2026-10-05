@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "protocol": "Fast-v2",
+  "scope": "Fast-v2 observed",
+  "worstDescription": "worst observed in this profile",
+  "syntheticSelfCheck": true,
+  "worst": {
+    "score": 912000,
+    "theme": "card", "width": 600, "scale": 200,
+    "options": {"theme":"card","width":600,"scale":200,"font":null,"align":"left","colours":"auto","text":"#ffffff","background":"#1a1a1a","backgroundOpacity":94,"accent":"#8a8a95","textShadow":true,"showArt":true,"showArtist":true,"showProgress":true,"showTimes":true,"paused":"hide","showAnimation":"slide-up","hideAnimation":"fade"},
+    "rowId": "frames.card.max-k200.timesTrue.r4.fixture-max",
+    "configuration": {"theme":"card","config":"max-k200","showTimes":true,"rate":4,"condition":"fixture-max"},
+    "source": {"w":640.0,"h":800.0},
+    "trace": null
+  },
+  "pausedExtensions": [],
+  "profileComplete": true,
+  "exhaustiveComplete": false,
+  "framesGreen": false,
+  "complete": true,
+  "missingIds": []
+}

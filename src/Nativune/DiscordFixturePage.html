@@ -60,6 +60,27 @@
     ReaderGap  track A paused at 60 s; 5 s the player title empties (no coherent player: the reader returns null,
              past the 8 s hold the card clears); 32 s the same paused song returns, after its original pause
              deadline. It must not get a fresh deadline (no card after the gap).
+
+  OBS overlay profiles (scripts/obs-overlay-e2e.ps1; same meta slot, same validation as above):
+    ShortGap   track A (1800 s) playing; 10 s the player title empties for 3 s (shorter than the 8 s hold)
+    IdOnly     track A (1800 s) playing; 10 s only the video id changes (route + title link -> fixtureSnA2);
+               title, artist and position stay the same
+    Text       track A (1800 s) playing with a 250-char title and a CJK + Arabic artist; 15 s a new song
+               (fixtureTxt2) whose title is the literal text "<b>&amp;</b>" (set as textContent)
+    ArtSwap    track A (1800 s) playing with art fixture-c; 10 s art fixture-a=w544-h544-d3000 (the overlay
+               server delays it 3 s), 11.5 s art fixture-b=w544-h544 (immediate); same id throughout
+    DomGap     track A (1800 s) playing; 10 s #left-controls is removed for 20 s (failed/incoherent reads,
+               not the native unavailable branch), 30 s it is restored in place
+    PausedSeek track A (1800 s) paused at 60 s; 10 s position 120 s, 25 s position 150 s, still paused
+    AdFallback the default timeline, but 65-75 s adds only .ad-interrupting (never ad-showing) and the
+               title link keeps the song's own text and /watch?v= URL
+    PlayingLong track A (14,400 s) playing from 0 with the Playing profile's unmuted silent PCM; no timeline
+               events (long-track overlay progress cadence, read at playback rates 0.25 to 4)
+  window.__nativuneFixture.setClockMismatch(on): while on, time-info shows the position + 30 s, so the
+  reader reports clockMismatch (all profiles).
+  window.__nativuneFixture.setPlaybackRate(rate): 0.25, 1, 2 or 4 sets the media element's playbackRate (all
+  profiles), so the page clock advances rate x faster and the reader reports it as PlaybackRate; any other value
+  is ignored (null).
 -->
 <style>
   html, body { margin: 0; font: 14px sans-serif; background: #030303; color: #fff; }
@@ -127,11 +148,28 @@
   const videoPlayer = $('ytmusic-player .html5-video-player');
   const titleLink = $('ytmusic-player a.ytp-title-link');
   let track = tracks.A, position = 0, lastMediaTime = 0, ended = false;
+  let clockMismatch = false;
+  window.__nativuneFixture = {
+    setClockMismatch(on) { clockMismatch = !!on; render(); },
+    // Shows one of the locally generated fixture pictures (a, b or c); called after the page script has run.
+    setArtwork(letter) {
+      if (letter !== 'a' && letter !== 'b' && letter !== 'c') return false;
+      setArt('https://lh3.googleusercontent.com/fixture-' + letter + '=w544-h544');
+      return true;
+    },
+    setPlaybackRate(rate) {
+      const value = Number(rate);
+      if (![0.25, 1, 2, 4].includes(value)) return null;
+      media.defaultPlaybackRate = value;
+      media.playbackRate = value;
+      return media.playbackRate;
+    }
+  };
 
-  // Five seconds of silent 8 kHz 8-bit mono PCM; the element loops it and the fixture clock
+  // Silent 8 kHz 8-bit mono PCM (five seconds by default); the element loops it and the fixture clock
   // accumulates its progress, so the page clock only moves while the media element really plays.
-  const silentWav = () => {
-    const rate = 8000, samples = rate * 5, bytes = new Uint8Array(44 + samples);
+  const silentWav = (seconds = 5) => {
+    const rate = 8000, samples = rate * seconds, bytes = new Uint8Array(44 + samples);
     const view = new DataView(bytes.buffer);
     const ascii = (offset, text) => [...text].forEach((c, i) => bytes[offset + i] = c.charCodeAt(0));
     ascii(0, 'RIFF'); view.setUint32(4, 36 + samples, true); ascii(8, 'WAVE');
@@ -152,6 +190,7 @@
     slider.setAttribute('aria-valuenow', String(Math.floor(shown)));
     $('#primaryProgress').style.width = (100 * shown / track.duration) + '%';
     timeInfo.textContent = clockText(shown) + ' / ' + clockText(track.duration);
+    if (clockMismatch) timeInfo.textContent = clockText(shown + 30) + ' / ' + clockText(track.duration);
     playButton.setAttribute('aria-label', media.paused ? 'Play' : 'Pause');
   };
   const tick = () => {
@@ -159,7 +198,8 @@
     if (!ended) {
       let delta = now - lastMediaTime;
       if (delta < 0 && Number.isFinite(media.duration)) delta += media.duration;
-      if (!media.paused && delta > 0 && delta < 2) position = Math.min(position + delta, track.duration);
+      // A tick may cover up to 2 s of media time at rates up to 1 and 2 x rate above that (rate 4: 1 s per 250 ms tick).
+      if (!media.paused && delta > 0 && delta < 2 * Math.max(1, media.playbackRate)) position = Math.min(position + delta, track.duration);
     }
     lastMediaTime = now;
     render();
@@ -212,15 +252,36 @@
   ];
 
   const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
-  if (profile === 'Playing' || profile === 'Paused') {
-    load(Object.assign({}, tracks.A, { duration: 1800 }));
+  if (profile === 'Playing' || profile === 'Paused' || profile === 'PlayingLong') {
+    load(Object.assign({}, tracks.A, { duration: profile === 'PlayingLong' ? 14400 : 1800 }));
     // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
     // audible YouTube Music playback never hits. The PCM is silence, so nothing is audible.
     media.muted = false;
-    media.src = silentWav();
-    if (profile === 'Playing') play();
-    else { position = 60; media.pause(); }
-    setInterval(tick, 250);
+    // Avoid PCM loop-reset stalls throughout the longest 120 s cadence row at rate 4 (480 s plus settle).
+    media.src = silentWav(profile === 'PlayingLong' ? 600 : 5);
+    if (profile === 'Paused') {
+      position = 60; media.pause();
+      setInterval(tick, 250);
+    } else {
+      lastMediaTime = media.currentTime;
+      let wasPlaying = !media.paused;
+      // Media events stay fresh when hidden-page timers throttle. Count only actual PCM progress,
+      // including loop seeks and large positive deltas; never extrapolate wall time.
+      const updateClock = () => {
+        const now = media.currentTime;
+        if (wasPlaying && !ended && !media.error) {
+          let delta = now - lastMediaTime;
+          if (delta < 0 && media.loop && Number.isFinite(media.duration)) delta += media.duration;
+          if (Number.isFinite(delta) && delta > 0) position = Math.min(position + delta, track.duration);
+        }
+        lastMediaTime = now;
+        wasPlaying = !media.paused && !media.error;
+        render();
+      };
+      for (const event of ['timeupdate', 'play', 'pause', 'seeking', 'seeked'])
+        media.addEventListener(event, updateClock);
+      play();
+    }
   } else if (profile === 'ArtGap') {
     load(tracks.A);
     media.muted = false; // see the Playing profile note
@@ -247,6 +308,55 @@
     setTimeout(() => { $('.title').textContent = ''; }, 5000);
     setTimeout(() => { $('.title').textContent = tracks.A.title; }, 32000);
     setInterval(tick, 250);
+  } else if (profile === 'ShortGap' || profile === 'IdOnly' || profile === 'Text' || profile === 'ArtSwap'
+      || profile === 'DomGap' || profile === 'PausedSeek') {
+    const long = Object.assign({}, tracks.A, { duration: 1800 });
+    if (profile === 'Text') Object.assign(long, {
+      title: 'Fixture Long Title '.repeat(14).slice(0, 249) + '!',
+      byline: '<a class="yt-simple-endpoint" href="channel/UCfixtureArtist000000001">\u97f3\u697d\u30c6\u30b9\u30c8 \u0627\u0644\u0641\u0646\u0627\u0646</a> \u2022 2026' });
+    if (profile === 'ArtSwap') long.artwork = 'https://lh3.googleusercontent.com/fixture-c=w544-h544';
+    load(long);
+    media.muted = false; // see the Playing profile note
+    media.src = silentWav();
+    if (profile === 'PausedSeek') {
+      position = 60; media.pause();
+      setTimeout(() => { position = 120; render(); }, 10000);
+      setTimeout(() => { position = 150; render(); }, 25000);
+    } else play();
+    if (profile === 'ShortGap') {
+      setTimeout(() => { $('.title').textContent = ''; }, 10000);
+      setTimeout(() => { $('.title').textContent = track.title; }, 13000);
+    } else if (profile === 'IdOnly') {
+      setTimeout(() => {
+        track = Object.assign({}, track, { id: 'fixtureSnA2' });
+        history.pushState(null, '', '/watch?v=' + track.id);
+        titleLink.href = 'https://music.youtube.com/watch?v=' + track.id;
+      }, 10000);
+    } else if (profile === 'Text') {
+      setTimeout(() => { const p = position; load(Object.assign({}, track, { id: 'fixtureTxt2', title: '<b>&amp;</b>' }));
+        position = p; render(); }, 15000);
+    } else if (profile === 'ArtSwap') {
+      setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-a=w544-h544-d3000'), 10000);
+      setTimeout(() => setArt('https://lh3.googleusercontent.com/fixture-b=w544-h544'), 11500);
+    } else if (profile === 'DomGap') {
+      const controls = $('#left-controls'), parent = controls.parentNode, next = controls.nextSibling;
+      setTimeout(() => controls.remove(), 10000);
+      setTimeout(() => parent.insertBefore(controls, next), 30000);
+    }
+    setInterval(tick, 250);
+  } else if (profile === 'AdFallback') {
+    load(tracks.A);
+    media.muted = true;
+    media.src = silentWav();
+    play();
+    const adTimeline = timeline.map(([at, step]) =>
+      at === 65 ? [at, () => videoPlayer.classList.add('ad-interrupting')]
+      : at === 75 ? [at, () => videoPlayer.classList.remove('ad-interrupting')]
+      : [at, step]);
+    const started = performance.now();
+    for (const [at, step] of adTimeline)
+      setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
+    setInterval(tick, 250);
   } else if (profile === 'Empty') {
     titleLink.remove();
     slider.setAttribute('aria-valuemax', '0');
@@ -262,8 +372,10 @@
     setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
   setInterval(tick, 250);
   }
-  media.addEventListener('play', render);
-  media.addEventListener('pause', render);
+  if (profile !== 'Playing' && profile !== 'PlayingLong') {
+    media.addEventListener('play', render);
+    media.addEventListener('pause', render);
+  }
 })();
 </script>
 </body>

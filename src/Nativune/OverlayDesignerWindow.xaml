@@ -1,0 +1,132 @@
+<Window x:Class="Nativune.OverlayDesignerWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Overlay designer">
+ <Grid x:Name="Root" Background="{ThemeResource CanvasBrush}" Padding="16" ColumnSpacing="16"
+       AutomationProperties.Name="Overlay designer window" AutomationProperties.AutomationId="OverlayDesignerWindow">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="400"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <ScrollViewer x:Name="EditorScroll" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" IsTabStop="False">
+   <StackPanel x:Name="Editor" Spacing="12">
+    <TextBlock x:Name="PreviewNotice" TextWrapping="Wrap" Foreground="{ThemeResource SecondaryTextBrush}"
+               Text="Early preview: designs and options may change in later versions. The live preview uses extra CPU while this window is open."
+               AutomationProperties.AutomationId="DesignerPreviewNotice"/>
+    <TextBlock Text="Saved looks" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+    <TextBlock x:Name="MissingLooksText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    <TextBlock x:Name="StoreStatusText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    <Button x:Name="ReloadLooksButton" Content="Reload looks file" Visibility="Collapsed" AutomationProperties.Name="Reload looks file"/>
+    <ListView x:Name="SavedLooksList" MaxHeight="180" SelectionMode="Single" AutomationProperties.Name="Saved looks"/>
+    <Grid ColumnSpacing="8" RowSpacing="8">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <Button x:Name="NewLookButton" Content="New look" AutomationProperties.Name="New look"/>
+     <Button Grid.Column="1" x:Name="DuplicateLookButton" Content="Duplicate" AutomationProperties.Name="Duplicate look"/>
+     <Button Grid.Row="1" x:Name="RenameLookButton" Content="Rename" AutomationProperties.Name="Rename look"/>
+     <Button Grid.Row="1" Grid.Column="1" x:Name="DeleteLookButton" Content="Delete" AutomationProperties.Name="Delete look"/>
+    </Grid>
+    <TextBox x:Name="LookNameBox" Header="Look name" AutomationProperties.Name="Look name"/>
+    <TextBlock x:Name="NameError" Visibility="Collapsed" TextWrapping="Wrap"/>
+    <ComboBox x:Name="ThemePicker" Header="Theme" HorizontalAlignment="Stretch" AutomationProperties.Name="Theme"/>
+    <ComboBox x:Name="FontPicker" Header="Font family" HorizontalAlignment="Stretch" AutomationProperties.Name="Font family"/>
+    <TextBlock x:Name="FontStatusText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    <StackPanel x:Name="ScaleRow" Spacing="4">
+     <Slider x:Name="ScaleSlider" Header="Text size, percent" Minimum="50" Maximum="200" StepFrequency="5" AutomationProperties.Name="Text size, percent"/>
+     <NumberBox x:Name="ScaleBox" Minimum="50" Maximum="200" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Text size, percent, numeric value"/>
+    </StackPanel>
+    <StackPanel x:Name="WidthRow" Spacing="4">
+     <Slider x:Name="WidthSlider" Header="Widget width, pixels" Minimum="320" Maximum="800" StepFrequency="10" AutomationProperties.Name="Widget width, pixels"/>
+     <NumberBox x:Name="WidthBox" Minimum="320" Maximum="800" SmallChange="10" LargeChange="50" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Widget width, pixels, numeric value"/>
+    </StackPanel>
+    <ComboBox x:Name="AlignPicker" Header="Alignment" HorizontalAlignment="Stretch" AutomationProperties.Name="Alignment"/>
+    <ComboBox x:Name="ColoursPicker" Header="Colour mode" HorizontalAlignment="Stretch" AutomationProperties.Name="Colour mode"/>
+    <StackPanel x:Name="TextColourRow" Spacing="4">
+     <TextBox x:Name="TextHexBox" Header="Text colour, hexadecimal" AutomationProperties.Name="Text colour, hexadecimal"/>
+     <TextBlock x:Name="TextColourError" Visibility="Collapsed" TextWrapping="Wrap"/>
+     <Button x:Name="ChooseTextColourButton" AutomationProperties.Name="Choose text colour">
+      <StackPanel Orientation="Horizontal" Spacing="8"><Border x:Name="TextSwatch" Width="20" Height="20" BorderThickness="1" BorderBrush="{ThemeResource PrimaryTextBrush}"/><TextBlock Text="Choose text colour"/></StackPanel>
+     </Button>
+    </StackPanel>
+    <StackPanel x:Name="BackgroundColourRow" Spacing="4">
+     <TextBox x:Name="BackgroundHexBox" Header="Background colour, hexadecimal" AutomationProperties.Name="Background colour, hexadecimal"/>
+     <TextBlock x:Name="BackgroundColourError" Visibility="Collapsed" TextWrapping="Wrap"/>
+     <Button x:Name="ChooseBackgroundColourButton" AutomationProperties.Name="Choose background colour">
+      <StackPanel Orientation="Horizontal" Spacing="8"><Border x:Name="BackgroundSwatch" Width="20" Height="20" BorderThickness="1" BorderBrush="{ThemeResource PrimaryTextBrush}"/><TextBlock Text="Choose background colour"/></StackPanel>
+     </Button>
+    </StackPanel>
+    <StackPanel x:Name="OpacityRow" Spacing="4">
+     <Slider x:Name="OpacitySlider" Header="Background opacity, percent" Minimum="0" Maximum="100" StepFrequency="1" AutomationProperties.Name="Background opacity, percent"/>
+     <NumberBox x:Name="OpacityBox" Minimum="0" Maximum="100" SmallChange="1" LargeChange="5" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Background opacity, percent, numeric value"/>
+    </StackPanel>
+    <StackPanel x:Name="AccentColourRow" Spacing="4">
+     <TextBox x:Name="AccentHexBox" Header="Accent colour, hexadecimal" AutomationProperties.Name="Accent colour, hexadecimal"/>
+     <TextBlock x:Name="AccentColourError" Visibility="Collapsed" TextWrapping="Wrap"/>
+     <Button x:Name="ChooseAccentColourButton" AutomationProperties.Name="Choose accent colour">
+      <StackPanel Orientation="Horizontal" Spacing="8"><Border x:Name="AccentSwatch" Width="20" Height="20" BorderThickness="1" BorderBrush="{ThemeResource PrimaryTextBrush}"/><TextBlock Text="Choose accent colour"/></StackPanel>
+     </Button>
+    </StackPanel>
+    <TextBlock x:Name="ContrastText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    <TextBlock x:Name="ColourModeHelp" TextWrapping="Wrap"/>
+    <CheckBox x:Name="TextShadowToggle" Content="Text shadow" AutomationProperties.Name="Text shadow"/>
+    <CheckBox x:Name="ShowArtToggle" Content="Show artwork" AutomationProperties.Name="Show artwork"/>
+    <CheckBox x:Name="ShowArtistToggle" Content="Show artist" AutomationProperties.Name="Show artist"/>
+    <CheckBox x:Name="ShowProgressToggle" Content="Show progress" AutomationProperties.Name="Show progress"/>
+    <CheckBox x:Name="ShowTimesToggle" Content="Show times" AutomationProperties.Name="Show times"/>
+    <ComboBox x:Name="PausedPicker" Header="When paused" HorizontalAlignment="Stretch" AutomationProperties.Name="When paused"/>
+    <ComboBox x:Name="ShowAnimationPicker" Header="Show animation" HorizontalAlignment="Stretch" AutomationProperties.Name="Show animation"/>
+    <ComboBox x:Name="HideAnimationPicker" Header="Hide animation" HorizontalAlignment="Stretch" AutomationProperties.Name="Hide animation"/>
+    <StackPanel x:Name="BackgroundBlurRow" Spacing="4">
+     <Slider x:Name="BackgroundBlurSlider" Header="Background blur, pixels" Minimum="0" Maximum="32" StepFrequency="1" AutomationProperties.Name="Background blur, pixels"/>
+     <NumberBox x:Name="BackgroundBlurBox" Minimum="0" Maximum="32" SmallChange="1" LargeChange="5" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Background blur, pixels, numeric value"/>
+     <Button x:Name="BackgroundBlurResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for background blur"/>
+     <TextBlock x:Name="BackgroundBlurStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBlurStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="BackgroundBlurHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBlurHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="PlayedBrightnessRow" Spacing="4">
+     <Slider x:Name="PlayedBrightnessSlider" Header="Played progress brightness, percent" Minimum="0" Maximum="200" StepFrequency="5" AutomationProperties.Name="Played progress brightness, percent"/>
+     <NumberBox x:Name="PlayedBrightnessBox" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Played progress brightness, percent, numeric value"/>
+     <Button x:Name="PlayedBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for played progress brightness"/>
+     <TextBlock x:Name="PlayedBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="PlayedBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="PlayedBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="PlayedBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="UnplayedBrightnessRow" Spacing="4">
+     <Slider x:Name="UnplayedBrightnessSlider" Header="Unplayed progress brightness, percent" Minimum="0" Maximum="100" StepFrequency="5" AutomationProperties.Name="Unplayed progress brightness, percent"/>
+     <NumberBox x:Name="UnplayedBrightnessBox" Minimum="0" Maximum="100" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Unplayed progress brightness, percent, numeric value"/>
+     <Button x:Name="UnplayedBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for unplayed progress brightness"/>
+     <TextBlock x:Name="UnplayedBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="UnplayedBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="UnplayedBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="UnplayedBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <StackPanel x:Name="BackgroundBrightnessRow" Spacing="4">
+     <Slider x:Name="BackgroundBrightnessSlider" Header="Background brightness, percent" Minimum="0" Maximum="200" StepFrequency="5" AutomationProperties.Name="Background brightness, percent"/>
+     <NumberBox x:Name="BackgroundBrightnessBox" Minimum="0" Maximum="200" SmallChange="5" LargeChange="25" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Background brightness, percent, numeric value"/>
+     <Button x:Name="BackgroundBrightnessResetButton" Content="Use theme default" AutomationProperties.Name="Use theme default for background brightness"/>
+     <TextBlock x:Name="BackgroundBrightnessStatusText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBrightnessStatusText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+     <TextBlock x:Name="BackgroundBrightnessHelpText" TextWrapping="Wrap" AutomationProperties.AutomationId="BackgroundBrightnessHelpText" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </StackPanel>
+    <Button x:Name="CopyLinkButton" Content="Copy OBS link" AutomationProperties.Name="Copy OBS link"/>
+    <TextBlock x:Name="SourceSizeText" TextWrapping="Wrap" AutomationProperties.Name="OBS source size" AutomationProperties.LiveSetting="Polite"/>
+    <TextBlock Text="Changing a look does not resize an existing OBS source." TextWrapping="Wrap"/>
+    <TextBlock x:Name="SmallTextWarning" Text="Small text may be hard to read" Visibility="Collapsed" TextWrapping="Wrap"/>
+    <StackPanel Spacing="8">
+     <Button x:Name="SaveLookButton" Content="Save look" AutomationProperties.Name="Save look"/>
+     <Button x:Name="RevertChangesButton" Content="Revert changes" AutomationProperties.Name="Revert changes"/>
+    </StackPanel>
+    <TextBlock x:Name="DesignerResult" TextWrapping="Wrap" AutomationProperties.Name="Designer result" AutomationProperties.LiveSetting="Polite"/>
+   </StackPanel>
+  </ScrollViewer>
+  <Grid Grid.Column="1" RowSpacing="12">
+   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" IsTabStop="False">
+    <StackPanel Orientation="Horizontal" Spacing="12">
+     <ComboBox x:Name="PreviewSongSourcePicker" Header="Preview song source" AutomationProperties.Name="Preview song source"/>
+     <ComboBox x:Name="PreviewStatePicker" Header="Preview playback state" AutomationProperties.Name="Preview playback state"/>
+     <ComboBox x:Name="PreviewBackgroundPicker" Header="Preview background" AutomationProperties.Name="Preview background"/>
+    </StackPanel>
+   </ScrollViewer>
+   <Grid Grid.Row="1" ColumnSpacing="8">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock x:Name="DesignerPreviewStatus" TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    <Button Grid.Column="1" x:Name="RetryPreviewButton" Content="Retry" Visibility="Collapsed" AutomationProperties.Name="Retry preview"/>
+   </Grid>
+   <Button Grid.Row="2" x:Name="OverlayPreviewEntry" Content="Overlay preview" AutomationProperties.Name="Overlay preview"/>
+   <Grid Grid.Row="3" x:Name="PreviewSlot" Background="{ThemeResource RaisedBrush}"/>
+  </Grid>
+ </Grid>
+</Window>

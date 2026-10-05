@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "framesGreen": false,
+  "syntheticSelfCheck": true,
+  "worst": {
+    "theme": "card", "width": 600, "scale": 200,
+    "options": {"theme":"card","width":600,"scale":200,"font":null,"align":"left","colours":"auto","text":"#ffffff","background":"#1a1a1a","backgroundOpacity":94,"accent":"#8a8a95","textShadow":false,"showArt":true,"showArtist":true,"showProgress":true,"showTimes":true,"paused":"dim","showAnimation":"slide-up","hideAnimation":"fade"},
+    "source": {"w":640,"h":800}
+  },
+  "pausedExtensions": []
+}

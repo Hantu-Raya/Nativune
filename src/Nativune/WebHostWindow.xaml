@@ -16,7 +16,7 @@
 
     <!-- Full-window command bar, which is also the title bar: Windows draws the minimize, maximize and
          close buttons over CaptionButtonsColumn and the empty TitleDragRegion moves the window.
-         Left: window mode, then browser navigation. Right: app output, pause timer and the More
+         Left: window mode, then browser navigation and the OBS overlay toggle. Right: app output, pause timer and the More
          overflow | Discord and update indicators beside the caption buttons. Website playback stays
          with the site's own player bar and the More menu. -->
     <Border x:Name="ToolbarHost"
@@ -78,7 +78,7 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" />
           <!-- Always leave a drag area. When the window is too narrow, WebHost.Toolbar.cs collapses
-               Forward, Update, Discord, Timer, volume and Home (in that order) into More. -->
+               Forward, Update, Discord, OBS, Timer, volume and Home (in that order) into More. -->
           <ColumnDefinition Width="*" MinWidth="40" />
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition x:Name="CaptionButtonsColumn" Width="8" />
@@ -112,6 +112,35 @@
                   AutomationProperties.Name="Open Music Home"
                   ToolTipService.ToolTip="Open Music Home"
                   Content="Home" />
+          <!-- OBS overlay toggle. The icon is added in code (WebHost.cs SetButtonIcons) at index 0 of ObsIconHost;
+               the recording dot shows only while the overlay setting is on (WebHost.Obs.cs RefreshObsSurfaces). -->
+          <Button x:Name="ObsButton"
+                  Style="{StaticResource ToolbarButtonStyle}"
+                  AutomationProperties.Name="OBS overlay: off"
+                  AutomationProperties.HelpText="OBS overlay: off. Right-click for OBS overlay settings."
+                  ToolTipService.ToolTip="OBS overlay: off. Right-click for OBS overlay settings.">
+            <Button.Content>
+              <Grid x:Name="ObsIconHost" Width="20" Height="20">
+                <Ellipse x:Name="ObsRecordingDot"
+                         Width="7"
+                         Height="7"
+                         HorizontalAlignment="Left"
+                         VerticalAlignment="Top"
+                         Fill="#E81123"
+                         Stroke="{ThemeResource SurfaceBrush}"
+                         StrokeThickness="1"
+                         IsHitTestVisible="False"
+                         AutomationProperties.AccessibilityView="Raw"
+                         Visibility="Collapsed" />
+              </Grid>
+            </Button.Content>
+            <Button.ContextFlyout>
+              <MenuFlyout>
+                <MenuFlyoutItem x:Name="ObsSettingsContextItem" Text="OBS overlay settings…" />
+                <MenuFlyoutItem x:Name="ObsDesignerContextItem" Text="Overlay designer…" IsEnabled="False" />
+              </MenuFlyout>
+            </Button.ContextFlyout>
+          </Button>
         </StackPanel>
 
         <!-- App output, pause timer and the More overflow | Discord and update at the far right. -->
