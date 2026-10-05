@@ -838,7 +838,13 @@ public sealed partial class OverlayDesignerWindow : Window
             _overlayOffPending = false;
             if (_host is null) _ = InitializePreviewAsync(); else NavigatePreview();
         }
-        else { _overlayOffPending = true; _ = OverlayOffAsync(); }
+        else
+        {
+            // Overlay off: nothing to preview, so release the preview browser now (Cancel keeps the editor open
+            // without a running WebView). Turning the overlay back on recreates it above.
+            _host?.Dispose(); _host = null; _processFailed = false;
+            _overlayOffPending = true; _ = OverlayOffAsync();
+        }
     }
     private async Task OverlayOffAsync()
     {
@@ -953,7 +959,7 @@ public sealed partial class OverlayDesignerWindow : Window
             dialogActive = _dialogActive, dialogTitle = _activeDialog?.Title?.ToString(),
             fonts = new { failed = _fonts.Failed, count = _fonts.Families.Count },
             state = _processFailed ? "Stopped" : _owner.DesignerPreviewState(_nonce),
-            navigation = _navigationDecisions.ToArray(), hostVisible = visible,
+            navigation = _navigationDecisions.ToArray(), hostVisible = visible, previewHost = _host is not null,
             settings = new { hostObjects, webMessages }, options = _options, size = SourceSizeText.Text, result = DesignerResult.Text };
     }
 #endif

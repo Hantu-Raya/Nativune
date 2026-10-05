@@ -6,6 +6,9 @@
   <Grid.ColumnDefinitions><ColumnDefinition Width="400"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
   <ScrollViewer x:Name="EditorScroll" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" IsTabStop="False">
    <StackPanel x:Name="Editor" Spacing="12">
+    <TextBlock x:Name="PreviewNotice" TextWrapping="Wrap" Foreground="{ThemeResource SecondaryTextBrush}"
+               Text="Early preview: designs and options may change in later versions. The live preview uses extra CPU while this window is open."
+               AutomationProperties.AutomationId="DesignerPreviewNotice"/>
     <TextBlock Text="Saved looks" Style="{ThemeResource SubtitleTextBlockStyle}"/>
     <TextBlock x:Name="MissingLooksText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>
     <TextBlock x:Name="StoreStatusText" TextWrapping="Wrap" AutomationProperties.Name="{Binding Text, RelativeSource={RelativeSource Self}}"/>

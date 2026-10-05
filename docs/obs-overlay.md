@@ -2,6 +2,8 @@
 
 Nativune can show what you're playing as a small "now playing" bar in OBS Studio: the song's title, artist, artwork and a progress fill. You add it to OBS as a Browser source. It is optional and off by default.
 
+> **Early preview.** The overlay and the Overlay designer are still being worked on: themes and options may change in later versions, and the designer's live preview uses noticeable extra CPU while it is open. When the overlay is off, none of it runs.
+
 ![The overlay in OBS: a rounded bar with the song's artwork, title and artist, and a fill that follows the song's progress, then changing to the next song](images/obs-overlay/04-overlay.gif)
 
 ## Set it up, step by step

@@ -165,9 +165,10 @@ public sealed partial class WebHostWindow
     private bool OverlayReadActive => _obsOverlay is { IsRunning: true, RealStreams: > 0 }
         && !_closing && !_disposed && !_playerSuspended;
 
+    // Off costs nothing: no server, listener, reads or looks-file read until the overlay is turned on (the looks
+    // load lazily for the server, Settings and the designer).
     private void InitializeObsOverlay()
     {
-        EnsureObsLooksLoaded();
         if (_settings.ObsOverlay) _ = ReconcileObsOverlayAsync();
     }
 

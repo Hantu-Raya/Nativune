@@ -6146,7 +6146,7 @@ function Test-AArt {
 # ---------------------------------------------------------------------------------------------------------------
 # A-SET
 
-$obsIds = @('ObsNavItem', 'ObsOverlayCheckBox', 'ObsDisclosureText', 'ObsHidePausedCheckBox', 'ObsLinkTextBox', 'ObsCopyLinkButton', 'ObsCopyLinkResult',
+$obsIds = @('ObsNavItem', 'ObsPreviewNotice', 'ObsOverlayCheckBox', 'ObsDisclosureText', 'ObsHidePausedCheckBox', 'ObsLinkTextBox', 'ObsCopyLinkButton', 'ObsCopyLinkResult',
     'ObsGuideButton', 'ObsGuideResult', 'ObsAdTipText', 'ObsOpenBlockAdsButton', 'ObsStepsText', 'ObsStatusText')
 function Test-ASet {
     $obs = [ordered]@{}; $shots = [ordered]@{}

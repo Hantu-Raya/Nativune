@@ -1332,6 +1332,12 @@ function Test-P2OffActions {
             $run = Start-OverlayRun "A-STORE-2-off-$branch" @{} 'PlayingLong' -NoReader -LooksJson (
                 ConvertTo-ObsLooksJson (New-ObsLooksDocument @($look)))
             $designer = Open-P2Designer $run
+            if ($branch -eq 'Save') {
+                $notice = (Assert-P2Control $designer 'DesignerPreviewNotice').Current.Name
+                $shot = Save-WindowShot $designer.Hwnd 'A-STORE-2-designer-preview-notice'
+                Add-Check 'A-STORE-2.designerPreviewNotice' 'designer shows the early-preview notice to sighted and UIA users' ([ordered]@{
+                    name = $notice; screenshot = $shot }) ($notice -like 'Early preview:*')
+            }
             [void] (Select-P2Look $designer 'Off look')
             Set-P2Range $designer 'WidthSlider' 450
             Send-ObsHookCommand $run.Root 'command-obs-store-fault' 'slow 3000' | Out-Null
@@ -1359,11 +1365,22 @@ function Test-P2OffActions {
                 $entry.disk.looks[0].options.width -eq $(if ($branch -eq 'Save') { 460 } else { 450 }) -and
                 $(if ($branch -in @('Save', 'Discard')) { -not $entry.after.open } else {
                     $entry.after.open -and $entry.after.state.dirty -and $entry.after.state.options.Width -eq 460 -and
+                    $entry.after.state.previewHost -eq $false -and
                     $(if ($branch -eq 'SaveFailure') {
                         $entry.after.state.result -ceq 'Could not save; OBS sources are unchanged.' -and
                         $entry.detail -like '*looks file could not be written*'
                     } else { $true })
                 }))
+            if ($branch -eq 'Cancel') {
+                # Off releases the preview WebView; On recreates and renavigates it while the draft is kept.
+                Send-HookCommand $run.Root 'command-obs-on' | Out-Null
+                $entry.reopened = Wait-For {
+                    $s = Get-P2DesignerHook $run
+                    if ($s.open -and $s.state.previewHost -and $s.state.navigated -and $s.state.dirty) { $s }
+                } 20
+                Add-Check 'A-STORE-2.off.Cancel.previewRecreated' 'overlay back on: preview WebView recreated and navigated; draft kept' $entry (
+                    $null -ne $entry.reopened -and $entry.reopened.state.options.Width -eq 460)
+            }
         } finally {
             $all.Add($entry)
             Close-P2Designer $designer -Cleanup; if ($run) { Stop-OverlayRun $run }

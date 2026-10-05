@@ -405,11 +405,16 @@
           </StackPanel>
 
           <StackPanel x:Name="ObsPage" Spacing="10" Visibility="Collapsed">
-            <TextBlock Text="OBS"
+            <TextBlock Text="OBS (early preview)"
                        FontSize="20"
                        FontWeight="SemiBold"
                        Foreground="{ThemeResource PrimaryTextBrush}"
                        AutomationProperties.HeadingLevel="Level1" />
+            <TextBlock x:Name="ObsPreviewNotice"
+                       Text="The OBS overlay and the Overlay designer are an early preview. Themes and options may change in later versions, and the designer's live preview uses noticeable extra CPU while it is open. When the overlay is off, none of it runs."
+                       TextWrapping="Wrap"
+                       Foreground="{ThemeResource SecondaryTextBrush}"
+                       AutomationProperties.AutomationId="ObsPreviewNotice" />
             <CheckBox x:Name="ObsOverlayCheckBox"
                       Content="Enable OBS overlay"
                       MinHeight="36"
