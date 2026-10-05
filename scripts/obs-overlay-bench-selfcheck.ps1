@@ -201,6 +201,109 @@ function Test-ObsBenchProfiles {
     $after.runningAnimations=0;[void]$after.Remove('fillTimer')
     if (Test-DesignerPausedDump $idle $after) {throw 'Structural paused probe accepted missing diagnostics.'}
     'Self-check: Fast/Exhaustive schedules, all 8 themes, balanced pairs, 68+7/13+2/60-minute arithmetic, deadline reserves, unchanged drift/retention guards, calibration thresholds and structural idle PASS'
+    $off=@{complete=$true;itemsOff=$true;streams=0;realStreams=0;demand='None';shape='pages:4|renderers:1';expectedShape='pages:4|renderers:1'
+        overlayTargets=@();overlayFrames=@();mappedSurvivors=@();unknownRenderers=@();unknownTargets=@();unknownFrames=@()}
+    if (@(Get-ObsOffCertificationReasons $off).Count) {throw 'Independently evidenced unowned infrastructure renderer must pass certified-off.'}
+    foreach ($mutation in @(
+        @{field='overlayTargets';value=@('disabled-source-target')},
+        @{field='overlayFrames';value=@('disabled-source-frame')},
+        @{field='mappedSurvivors';value=@('123@birth')},
+        @{field='unknownRenderers';value=@('456@birth')},
+        @{field='unknownTargets';value=@('unattributed-page')},
+        @{field='unknownFrames';value=@('unattributed-frame')},
+        @{field='complete';value=$false},@{field='itemsOff';value=$false},
+        @{field='streams';value=1},@{field='realStreams';value=1},
+        @{field='demand';value='Overlay'},@{field='demand';value=$null},
+        @{field='shape';value='pages:5|renderers:2'})) {
+        $bad=$off.Clone();$bad[$mutation.field]=$mutation.value
+        if (-not @(Get-ObsOffCertificationReasons $bad).Count) {throw "Certified-off accepted $($mutation.field)."}
+    }
+    if ((Get-ObsPairedDiagnostic (Get-Verdict @(0.404,1.719) 0.5)) -ne 'mixed paired values' -or
+        (Get-ObsPairedDiagnostic (Get-Verdict @($null) 0.5)) -ne 'missing paired values') {throw 'Mixed paired CPU values must not be reported as missing.'}
+    if (-not (Test-ObsFixturePosition 305 305 14400) -or -not (Test-ObsFixturePosition 605 605 14400) -or
+        (Test-ObsFixturePosition 677 298 14400) -or (Test-ObsFixturePosition 305 305 1800) -or
+        (Test-ObsFixturePosition 14200 14200 14400 -RemainingSeconds 150)) {throw 'Long fixture hidden-boundary/wrap freshness or full-arm age guard changed.'}
+    $rootCreated=[datetime]'2026-10-05T00:00:00Z'
+    $processes=@(
+        @{pid=10;parent=1;created='2026-10-05T00:00:00Z'},
+        @{pid=20;parent=10;created='2026-10-05T00:00:01Z'},
+        @{pid=30;parent=20;created='2026-10-05T00:00:02Z'},
+        @{pid=40;parent=99;created='2026-10-05T00:00:02Z'})
+    $rootChain=Get-ObsDebugOwnerChain 10 10 $rootCreated $processes
+    $childChain=Get-ObsDebugOwnerChain 30 10 $rootCreated $processes
+    if (-not $rootChain -or -not $childChain -or $rootChain.Count -ne 1 -or
+        $childChain.Count -ne 3) {throw 'Owned OBS root/CEF descendant listener rejected.'}
+    if ($null -ne (Get-ObsDebugOwnerChain 40 10 $rootCreated $processes) -or
+        $null -ne (Get-ObsDebugOwnerChain 30 10 $rootCreated.AddSeconds(1) $processes)) {throw 'Foreign listener or recycled OBS identity accepted.'}
+    foreach ($mutation in @(
+        @{parent=10;created='2026-10-05T00:00:03Z'},
+        @{parent=30;created='2026-10-05T00:00:01Z'},
+        @{parent=10;created=$null})) {
+        $bad=@($processes | ForEach-Object {$_.Clone()})
+        $bad[1].parent=$mutation.parent;$bad[1].created=$mutation.created
+        if ($null -ne (Get-ObsDebugOwnerChain 30 10 $rootCreated $bad)) {throw 'Invalid/missing parent-birth chain accepted.'}
+    }
+    'Self-check: listener owned root/descendant chain passes; foreign/recycled roots, cycles, impossible birth order and missing creation identity BLOCK PASS'
+    if ((Get-ObsCefBaselineState @(@{pid=10;name='obs64.exe'})) -ne 'cef-not-started' -or
+        (Get-ObsCefBaselineState @(@{pid=10;name='obs64.exe'},@{pid=20;name='obs-browser-page.exe'})) -ne 'cef-processes-present') {
+        throw 'Lazy CEF baseline must distinguish zero browser children from initialized browser infrastructure.'
+    }
+    $empty=@{before=@();after=@();tracedTargets=@();markerTargets=@();changedDuringCapture=$false}
+    $page=@{before=@('p1');after=@('p1');tracedTargets=@('p1');markerTargets=@('p1');changedDuringCapture=$false}
+    if (@(Get-ObsTargetCensusReasons $empty).Count -or @(Get-ObsTargetCensusReasons $page).Count) {throw 'Complete empty/page-bound CDP census rejected.'}
+    foreach ($mutation in @(
+        @{field='after';value=@('p2')},
+        @{field='markerTargets';value=@()},
+        @{field='changedDuringCapture';value=$true})) {
+        $bad=$page.Clone();$bad[$mutation.field]=$mutation.value
+        if (-not @(Get-ObsTargetCensusReasons $bad).Count) {throw 'Incomplete/changing page CDP inventory accepted.'}
+    }
+    $old=@{pid=100;created='2026-10-05T00:00:01Z';key='100@2026-10-05T00:00:01Z';slot='slot0'}
+    $replacement=@{pid=200;created='2026-10-05T00:00:03Z';key='200@2026-10-05T00:00:03Z'}
+    $active=@{complete=$true;census=$page;renderersBefore=@($old,$replacement);renderers=@($old,$replacement)
+        cdpRenderersBefore=@(100,200);cdpRenderers=@(100,200)
+        targets=@(@{id='p1';role='overlay'});frames=@(@{id='f1';role='overlay'})
+        traceFrames=@(@{id='f1';role='overlay';key=$old.key})}
+    $generation=@{consumed=$old;mapping=@{key=$old.key;look='bench000';phase='active-pill'}
+        candidate=$replacement;active=$active;activationStartUtc='2026-10-05T00:00:02Z'
+        activationEndUtc='2026-10-05T00:00:04Z';beforeKeys=@($old.key)}
+    $closed=@{complete=$true;census=$empty;renderersBefore=@($replacement);renderers=@($replacement)
+        cdpRenderersBefore=@(200);cdpRenderers=@(200);targets=@();frames=@();traceFrames=@()}
+    if (@(Get-ObsRendererGenerationReasons $generation $closed @($old.key) 1).Count) {
+        throw 'Consumed spare replacement born before overlay exit must pass with complete active/off ownership evidence.'
+    }
+    foreach ($mutation in @('mapped-survivor','missing-census','changed-census','extra-slot','no-consumption','pid-reuse','replacement-mapped','unrelated-target','inventory-mismatch','late-birth')) {
+        $g=$generation | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
+        $b=$closed | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
+        $mapped=@($old.key)
+        switch ($mutation) {
+            'mapped-survivor' {$b.renderers+=@($old);$b.renderersBefore+=@($old);$b.cdpRenderers+=100;$b.cdpRenderersBefore+=100}
+            'missing-census' {[void]$g.active.Remove('census')}
+            'changed-census' {$g.active.census.after=@('p2')}
+            'extra-slot' {$b.renderers+=@(@{pid=300;created='2026-10-05T00:00:03Z';key='300@birth'})}
+            'no-consumption' {$g.mapping.key='999@unowned'}
+            'pid-reuse' {$g.candidate.pid=100}
+            'replacement-mapped' {$mapped+=@($replacement.key)}
+            'unrelated-target' {$g.active.targets+=@(@{id='foreign';role='unowned'})}
+            'inventory-mismatch' {$g.active.cdpRenderers=@(100)}
+            'late-birth' {$g.activationEndUtc='2026-10-05T00:00:02Z'}
+        }
+        if (-not @(Get-ObsRendererGenerationReasons $g $b $mapped 1).Count) {throw "Consumed-spare certificate accepted $mutation."}
+    }
+    # A certified replacement can itself be consumed, but former membership never
+    # exempts it from the irrevocable overlay-mapped survivor rule.
+    $next=@{pid=300;created='2026-10-05T00:00:06Z';key='300@2026-10-05T00:00:06Z'}
+    $second=$generation | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
+    $second.consumed=$replacement.Clone();$second.consumed.slot='slot0';$second.mapping.key=$replacement.key
+    $second.candidate=$next;$second.beforeKeys=@($replacement.key)
+    $second.activationStartUtc='2026-10-05T00:00:05Z';$second.activationEndUtc='2026-10-05T00:00:07Z'
+    $second.active.renderersBefore=@($replacement,$next);$second.active.renderers=@($replacement,$next)
+    $second.active.cdpRenderersBefore=@(200,300);$second.active.cdpRenderers=@(200,300);$second.active.traceFrames[0].key=$replacement.key
+    $secondOff=$closed.Clone();$secondOff.renderersBefore=@($next);$secondOff.renderers=@($next)
+    $secondOff.cdpRenderersBefore=@(300);$secondOff.cdpRenderers=@(300)
+    if (@(Get-ObsRendererGenerationReasons $second $secondOff @($old.key,$replacement.key) 1).Count) {throw 'Second consumed-spare generation rejected.'}
+    'Self-check: two consumed-spare generations pass, including birth before overlay exit; mapped survivors, missing/changing census, extra slot, no chain, PID reuse, later mapping and unknown ownership BLOCK PASS'
+    'Self-check: certified off allows evidenced infrastructure only; disabled target/frame, mapped survivor, unknown ownership, missing inventory, shape drift and demand fail; long clock freshness and mixed/missing diagnostics PASS'
 }
 function Test-ObsBenchSchedule {
     $themes = @('pill','matte','matte-light','standard','classic','simple','album-art','card')

@@ -1,4 +1,23 @@
 # Full-length OBS designer protocol v5 §7.3/7.4. This file has no top-level side effects.
+# §7.4 certified off: all eight items disabled, zero streams/realStreams/demand,
+# zero Overlay reads throughout B settle/measure, no overlay CDP target/frame or
+# live PID@creation ever mapped to an overlay. Infrastructure is a certified
+# replaceable renderer slot, with recorded consumed-spare generations, not a
+# lifetime PID whitelist. Unknown targetless renderers are never inferred safe.
+# Zero pre-scene browser children records cef-not-started, NOT a CDP certificate.
+# Listener ownership is loopback plus a live parent/birth chain to the owned OBS.
+# Unknown attribution still BLOCKS; a mapped survivor can never be reclassified.
+# shape0 equality is required at every B pre/post including B0 and B_end.
+# Attribution traces are drained outside scored windows; all descendants remain
+# in resource totals. -AttributionOnly runs the same bounded warm-up oracle only.
+# Chromium's browser target has no WebContents. Each enumerated page therefore
+# needs its own drained trace/frame marker; an empty off-state uses matching
+# complete before/after Target.getTargets censuses, not a fabricated marker.
+# All eight inputs receive bounded unscored show/hide bootstrap transitions,
+# with every live page mapped before each hide, before exact-one warm-up visits.
+# The ordinary warm-up remains 15 s per look, >=180 s excluding bootstrap.
+# Only then certify infrastructure and shape0; every mapped overlay PID@creation
+# must be gone, even with no remaining target.
 function New-ObsBenchSchedule {
     param([ValidateSet('Standard','SharedBaseline')] [string] $Protocol, [string[]] $Themes, [int] $Seed,
         [ValidateSet('Fast-v1','Exhaustive-v1')] [string] $Profile = 'Exhaustive-v1')
@@ -68,6 +87,117 @@ function Get-Verdict($Deltas, [double] $Budget) {
 function Test-ObsDesignerDeadlineFits([double]$NowQpc, [double]$DeadlineQpc, [double]$Frequency,
     [double]$RequiredSeconds, [double]$ReserveSeconds = 20) {
     $NowQpc + ($RequiredSeconds + $ReserveSeconds) * $Frequency -lt $DeadlineQpc
+}
+function Get-ObsOffCertificationReasons($Evidence) {
+    $reasons=[Collections.Generic.List[string]]::new()
+    if (-not $Evidence -or $Evidence['complete'] -ne $true) {
+        $reasons.Add('off attribution missing or ambiguous')
+        return @($reasons)
+    }
+    if ($Evidence['itemsOff'] -ne $true) {$reasons.Add('off state: all eight items must be disabled')}
+    foreach ($field in @('streams','realStreams')) {
+        if ($null -eq $Evidence[$field] -or $Evidence[$field] -ne 0) {$reasons.Add("off state: $field must be zero")}
+    }
+    if ($Evidence['demand'] -cne 'None') {$reasons.Add('off state: demand must be None (zero consumers)')}
+    if ($Evidence['shape'] -ne $Evidence['expectedShape']) {$reasons.Add('B shape differs from shape0')}
+    if (@($Evidence['overlayTargets']).Count -or @($Evidence['overlayFrames']).Count) {$reasons.Add('off retention: surviving overlay target/frame (disabled sources included)')}
+    if (@($Evidence['mappedSurvivors']).Count) {$reasons.Add('off retention: mapped overlay renderer survives without its target')}
+    if (@($Evidence['unknownRenderers']).Count) {$reasons.Add('off attribution unknown renderer; BLOCKED')}
+    if (@($Evidence['unknownTargets']).Count) {$reasons.Add('off attribution unknown target; BLOCKED')}
+    if (@($Evidence['unknownFrames']).Count) {$reasons.Add('off attribution unknown frame; BLOCKED')}
+    @($reasons)
+}
+function Get-ObsTargetCensusReasons($Census) {
+    $reasons=[Collections.Generic.List[string]]::new()
+    $before=[Collections.Generic.HashSet[string]]::new()
+    $after=[Collections.Generic.HashSet[string]]::new()
+    foreach ($id in @($Census['before'])) {
+        if (-not $id -or -not $before.Add([string]$id)) {$reasons.Add('CDP before-target census missing/ambiguous')}
+    }
+    foreach ($id in @($Census['after'])) {
+        if (-not $id -or -not $after.Add([string]$id)) {$reasons.Add('CDP after-target census missing/ambiguous')}
+    }
+    if (-not $before.SetEquals($after) -or $Census['changedDuringCapture'] -ne $false) {
+        $reasons.Add('CDP target census changed during attribution; BLOCKED')
+    }
+    foreach ($target in @($Census['tracedTargets'])) {
+        if (-not $target -or $target -notin $Census['markerTargets']) {$reasons.Add('Page frame inventory marker missing; attribution BLOCKED')}
+    }
+    @($reasons | Select-Object -Unique)
+}
+function Get-ObsRendererCensusReasons($Attribution) {
+    $reasons=[Collections.Generic.List[string]]::new()
+    if (-not $Attribution -or $Attribution['complete'] -ne $true -or -not $Attribution['census']) {
+        return @('Renderer generation missing complete target/frame census; BLOCKED')
+    }
+    foreach ($reason in @(Get-ObsTargetCensusReasons $Attribution.census)) {$reasons.Add($reason)}
+    foreach ($field in @('renderersBefore','renderers','cdpRenderersBefore','cdpRenderers')) {
+        if (-not $Attribution.Contains($field)) {$reasons.Add("Renderer generation missing $field census; BLOCKED")}
+    }
+    $before=@($Attribution['renderersBefore']);$after=@($Attribution['renderers'])
+    if (@(Compare-Object @($before | ForEach-Object key) @($after | ForEach-Object key)).Count -or
+        @(Compare-Object @($before | ForEach-Object pid) @($Attribution['cdpRenderersBefore'])).Count -or
+        @(Compare-Object @($after | ForEach-Object pid) @($Attribution['cdpRenderers'])).Count) {
+        $reasons.Add('Renderer generation OS/CDP inventories changed or disagree; BLOCKED')
+    }
+    foreach ($p in $after) {
+        if (-not $p.created -or $p.key -cne "$($p.pid)@$($p.created)" -or
+            @($after | Where-Object pid -eq $p.pid).Count -ne 1) {$reasons.Add('Renderer generation missing/reused birth identity; BLOCKED')}
+    }
+    @($reasons | Select-Object -Unique)
+}
+function Get-ObsRendererGenerationReasons($Generation,$Off,$OverlayKeys,[int]$SlotCount) {
+    $reasons=[Collections.Generic.List[string]]::new()
+    if (-not $Generation) {return @('Renderer generation missing consumed-spare chain; BLOCKED')}
+    foreach ($row in @($Generation['active'],$Off)) {
+        foreach ($reason in @(Get-ObsRendererCensusReasons $row)) {$reasons.Add($reason)}
+    }
+    $old=$Generation['consumed'];$candidate=$Generation['candidate'];$active=$Generation['active']
+    if (-not $old -or -not $candidate -or -not $old['slot'] -or
+        $Generation['mapping']['key'] -cne $old['key'] -or $old['key'] -notin $OverlayKeys -or
+        $old['key'] -notin $Generation['beforeKeys'] -or $candidate['key'] -in $Generation['beforeKeys'] -or
+        $old['key'] -notin @($active['traceFrames'] | Where-Object role -eq overlay | ForEach-Object key)) {
+        $reasons.Add('Renderer generation missing positive certified-spare consumption; BLOCKED')
+    }
+    $born=[datetime]::MinValue;$start=[datetime]::MinValue;$end=[datetime]::MinValue
+    if (-not [datetime]::TryParse([string]$candidate['created'],[ref]$born) -or
+        -not [datetime]::TryParse([string]$Generation['activationStartUtc'],[ref]$start) -or
+        -not [datetime]::TryParse([string]$Generation['activationEndUtc'],[ref]$end) -or
+        $born -lt $start -or $born -gt $end -or $candidate['pid'] -eq $old['pid'] -or
+        $candidate['key'] -cne "$($candidate['pid'])@$($candidate['created'])" -or
+        $candidate['key'] -notin @($active['renderers'] | ForEach-Object key)) {
+        $reasons.Add('Renderer generation candidate missing valid activation birth identity; BLOCKED')
+    }
+    if ($candidate['key'] -in $OverlayKeys -or
+        @($active['traceFrames'] | Where-Object key -eq $candidate['key']).Count) {
+        $reasons.Add('Renderer generation candidate has frame ownership; BLOCKED')
+    }
+    if (@($active['targets'] | Where-Object role -ne overlay).Count -or
+        @($active['frames'] | Where-Object role -ne overlay).Count -or
+        @($active['traceFrames'] | Where-Object role -ne overlay).Count) {$reasons.Add('Renderer generation unknown active ownership; BLOCKED')}
+    foreach ($frame in @($active['frames'])) {
+        if (-not @($active['traceFrames'] | Where-Object {$_.id -eq $frame.id -and $_.role -eq 'overlay' -and $_.key}).Count) {
+            $reasons.Add('Renderer generation active frame unmapped; BLOCKED')
+        }
+    }
+    if (@($Off['targets']).Count -or @($Off['frames']).Count -or @($Off['traceFrames']).Count -or
+        @($Off['renderers'] | Where-Object {$_.key -in $OverlayKeys}).Count) {
+        $reasons.Add('off retention: renderer generation still has mapped ownership')
+    }
+    if (@($Off['renderers']).Count -ne $SlotCount -or
+        @($Off['renderers'] | Where-Object key -eq $candidate['key']).Count -ne 1) {$reasons.Add('Renderer generation does not fit certified slots; BLOCKED')}
+    @($reasons | Select-Object -Unique)
+}
+function Get-ObsPairedDiagnostic($Verdict) {
+    if ($Verdict.verdict -eq 'between') {'mixed paired values'}
+    else {'missing paired values'}
+}
+function Test-ObsFixturePosition([double]$Age, $Position, $Duration,
+    [double]$TrackSeconds = 14400, [double]$Tolerance = 5, [double]$RemainingSeconds = 0) {
+    $null -ne $Position -and $null -ne $Duration -and
+        [double]::IsFinite([double]$Position) -and [double]::IsFinite([double]$Duration) -and
+        [Math]::Abs([double]$Position-$Age) -le $Tolerance -and
+        [double]$Duration -ge $TrackSeconds -and $Age+$RemainingSeconds -le [double]$Duration-60
 }
 function Get-ObsSharedScore($Schedule, $Records, $Budgets) {
     $result=[ordered]@{}

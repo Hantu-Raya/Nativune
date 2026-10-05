@@ -253,9 +253,29 @@
     media.muted = false;
     // Avoid PCM loop-reset stalls throughout the longest 120 s cadence row at rate 4 (480 s plus settle).
     media.src = silentWav(profile === 'PlayingLong' ? 600 : 5);
-    if (profile === 'Paused') { position = 60; media.pause(); }
-    else play();
-    setInterval(tick, 250);
+    if (profile === 'Paused') {
+      position = 60; media.pause();
+      setInterval(tick, 250);
+    } else {
+      lastMediaTime = media.currentTime;
+      let wasPlaying = !media.paused;
+      // Media events stay fresh when hidden-page timers throttle. Count only actual PCM progress,
+      // including loop seeks and large positive deltas; never extrapolate wall time.
+      const updateClock = () => {
+        const now = media.currentTime;
+        if (wasPlaying && !ended && !media.error) {
+          let delta = now - lastMediaTime;
+          if (delta < 0 && media.loop && Number.isFinite(media.duration)) delta += media.duration;
+          if (Number.isFinite(delta) && delta > 0) position = Math.min(position + delta, track.duration);
+        }
+        lastMediaTime = now;
+        wasPlaying = !media.paused && !media.error;
+        render();
+      };
+      for (const event of ['timeupdate', 'play', 'pause', 'seeking', 'seeked'])
+        media.addEventListener(event, updateClock);
+      play();
+    }
   } else if (profile === 'ArtGap') {
     load(tracks.A);
     media.muted = false; // see the Playing profile note
@@ -346,8 +366,10 @@
     setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
   setInterval(tick, 250);
   }
-  media.addEventListener('play', render);
-  media.addEventListener('pause', render);
+  if (profile !== 'Playing' && profile !== 'PlayingLong') {
+    media.addEventListener('play', render);
+    media.addEventListener('pause', render);
+  }
 })();
 </script>
 </body>

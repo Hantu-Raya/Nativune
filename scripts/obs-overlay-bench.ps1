@@ -30,6 +30,7 @@ param(
     [ValidateSet(2, 4)] [int] $Pairs = 4,
     [switch] $Designer,
     [switch] $DryRun,
+    [switch] $AttributionOnly,
     [ValidateSet('Standard', 'SharedBaseline')] [string] $Protocol = 'Standard',
     [string[]] $Looks = @('All'),
     [ValidateSet('pill','matte','matte-light','standard','classic','simple','album-art','card')] [string] $Look = 'pill',
@@ -83,6 +84,9 @@ if ($FallbackFrom) {
     if (-not $fallback -or $fallback.status -ne 'fresh-block-required') {throw 'FallbackFrom does not request this look.'}
 }
 if ($Designer -and ($AppOnly -or $Protocol -ne 'Standard')) { throw '-Designer cannot be combined with AppOnly or SharedBaseline.' }
+if ($AttributionOnly -and ($Designer -or $AppOnly -or $Protocol -ne 'Standard' -or $WorstFrom -or $FallbackFrom -or $Workload[0] -ne 'Playing')) {
+    throw '-AttributionOnly requires Standard Playing OBS; no Designer/AppOnly/Worst/fallback.'
+}
 if ($Protocol -eq 'SharedBaseline' -and ($Workload[0] -ne 'Playing' -or ($Looks -join ',') -ne 'All' -or $WorstFrom -or $Width -or $Scale -ne 100)) {
     throw 'SharedBaseline requires -Workload Playing -Looks All at defaults.'
 }
@@ -98,18 +102,24 @@ if (-not $TimeBoxMinutes) {
         if ($Designer) {60} elseif ($Protocol -eq 'SharedBaseline') {75} else {15}
     } else { if ($Designer) {180} elseif ($Protocol -eq 'SharedBaseline') {150} else {30} }
 }
+if ($AttributionOnly -and -not $PSBoundParameters.ContainsKey('TimeBoxMinutes')) {$TimeBoxMinutes=5}
 if ($DryRun) {
     . (Join-Path $PSScriptRoot 'obs-overlay-bench-selfcheck.ps1')
     Test-ObsBenchSchedule
     $count = if ($Designer) { @(Get-ObsDesignerConditions $Profile).Count } else { 1 }
     $warmup = if ($Designer) { 60 } else { 180 }
     $reserve = if ($Designer) { 0 } elseif ($Protocol -eq 'SharedBaseline') { if ($Profile -eq 'Fast-v1') {420} else {240} } else {120}
-    $windows = $schedule.Count * 150
+    $windows = if ($AttributionOnly) {0} else {$schedule.Count * 150}
     $minutes = ($windows + $warmup + $reserve) / 60
     $total = $minutes * $count
     if ($Designer -and $Profile -eq 'Fast-v1') { $total += 10 + 1 + 5 }
     if ($total -gt $TimeBoxMinutes) { throw "Profile requires $total minutes including switching reserve; box is $TimeBoxMinutes." }
     Write-Output "Mode: $(if ($Designer) {'Designer'} elseif ($WorstFrom) {'Worst'} else {$Protocol}) / $($Workload[0]); profile=$Profile; version=1; seed=$Seed"
+    if ($AttributionOnly) {
+        Write-Output 'Warm-up-only attribution diagnostic: bounded unscored all-8 show/hide bootstrap, then all 8 exact-one live look mappings and off-state exit certification, 180s minimum excluding bootstrap; no scored arms or resource qualification.'
+        Write-Output 'DryRun only: no listener/process/filesystem mutation; diagnostic time box includes OBS switching.'
+        return
+    }
     if ($Designer) {
         foreach ($c in @(Get-ObsDesignerConditions $Profile)) {
             $theme = if ($c.worst) {$selectedOptions.theme} else {'pill'}
@@ -172,7 +182,7 @@ $port = 47813
 $overlayUrl = "http://localhost:$port/"
 $sceneName = 'Overlay'
 $sourceName = 'Nativune Overlay'
-$trackSeconds = if ($Designer) {1800.0} else {14400.0}
+$trackSeconds = 14400.0
 $ageMarginSeconds = 60.0
 $settleSeconds = 30.0
 $measureSeconds = 120.0
@@ -531,7 +541,7 @@ $roleNames = @('host', 'browser', 'renderer', 'gpu-process', 'utility', 'crashpa
 function Get-ProcessRole($Proc) {
     $role = 'other'; $sub = $null
     if ($Proc -and $Proc.Name -ieq 'Nativune.exe') { $role = 'host' }
-    elseif ($Proc -and $Proc.Name -ieq 'msedgewebview2.exe' -and $Proc.CommandLine) {
+    elseif ($Proc -and $Proc.Name -in @('msedgewebview2.exe','obs-browser-page.exe') -and $Proc.CommandLine) {
         $m = [regex]::Match([string] $Proc.CommandLine, '(?:^|\s)--type=([^\s"]+)')
         if (-not $m.Success) { $role = 'browser' }
         elseif ($m.Groups[1].Value -in @('renderer', 'gpu-process', 'utility', 'crashpad-handler')) {
@@ -663,15 +673,22 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
     if ($Designer) {
         Copy-Item -LiteralPath (Join-Path $repo '.tools/better-lyrics') -Destination (Join-Path $root '.tools/better-lyrics') -Recurse
     }
-    $profile=if ($Designer) {'Playing'} elseif ($WorkloadName -eq 'Playing') {'PlayingLong'} else {'Paused'}
+    $profile=if ($WorkloadName -eq 'Playing') {'PlayingLong'} else {'Paused'}
     $app = Start-App $root $profile
     $ctx = [pscustomobject]@{ Name = $name; Workload = $WorkloadName; Block = $Block; Launch = $script:launchIndex; Root = $root
         App = $app; AppStart = $null; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
         ReadyQpc = $null; ItemEnabled = $false; PageArtBaseline = 0; Record = $record; Reader = $null
-        Items = $null; ActiveTheme = $selectedOptions.theme; LookId = $configurations[$selectedOptions.theme].id; Shape0 = $null; ArmTrace = $null }
+        Items = $null; ActiveTheme = $selectedOptions.theme; LookId = $configurations[$selectedOptions.theme].id; Shape0 = $null; ArmTrace = $null
+        PreviewCandidates=@();PreviewBirths=@();PreviewBefore=@();PreviewCloseKeys=@();PreviewOpenUtc=$null
+        OverlayRenderers=@{};OverlayTargets=@{};InfrastructureRenderers=@{};RendererGenerations=@{};RendererActivation=$null
+        InfrastructureSlotCount=0;CefBaselinePending=$false;WarmingUp=$false }
     $script:currentCtx = $ctx
     try {
         $record['fixtureProfile']=$profile
+        $record['designerLifecycle']=[Collections.Generic.List[object]]::new()
+        $record['fixtureProgress']=[Collections.Generic.List[object]]::new()
+        $record['obsAttribution']=[Collections.Generic.List[object]]::new()
+        $record['rendererGenerations']=[Collections.Generic.List[object]]::new()
         $ctx.AppStart = $app.StartTime
         $ready = Wait-BenchReady $root
         if (-not $ready) { throw "$name`: no fixture ready.json (failed.json or timeout)." }
@@ -698,11 +715,13 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
         $record['mode'] = if ($AppOnly) { 'apponly' } else { 'obs' }
         if ($AppOnly) { return $ctx }
 
-        $ctx.Obs = New-ObsPortable -RunDir (Join-Path $rootBase "$name-obs")
+        $ctx.Obs = New-ObsPortable -RunDir (Join-Path $rootBase "$name-obs") -RemoteDebuggingPort (Get-ObsPortableFreePort)
         $script:obsLaunchQpc = Get-Qpc
         $ctx.ObsProcess = Start-ObsPortable $ctx.Obs
         $ctx.ObsStart = $ctx.ObsProcess.StartTime
         $ctx.Session = Connect-ObsWebSocket $ctx.Obs
+        Get-ObsPreSceneAttribution $ctx
+        $record['cdpListener']=$ctx.Obs.DebugListener
         $ctx.Items = Initialize-ObsOverlayEightSourceScene $ctx.Session $specs
         $record['sceneSpecs'] = $specs
         $record['sceneItems'] = $ctx.Items
@@ -764,10 +783,26 @@ function Stop-Launch($Ctx) {
     }
 }
 function Set-SourceEnabled($Ctx, [bool] $Enabled) {
+    if (-not $Enabled -and $Ctx.ItemEnabled) {
+        [void](Get-ObsAttribution $Ctx "before-disable-$($Ctx.ActiveTheme)")
+    }
+    if ($Enabled) {
+        $Ctx.RendererActivation=@{beforeKeys=@(Get-ObsRendererInventory $Ctx | ForEach-Object key);startUtc=[DateTime]::UtcNow.ToString('o')}
+    }
     Set-ObsOverlayEightSource $Ctx.Session $Ctx.Items $(if ($Enabled) {$Ctx.ActiveTheme} else {$null})
+    if ($Enabled) {
+        $Ctx.LookId=$Ctx.Items[$Ctx.ActiveTheme].lookId
+        if ($Ctx.CefBaselinePending) {Initialize-ObsLazyAttribution $Ctx}
+        if (-not (Wait-For {$s=Get-State $Ctx.Root 'sourceattribution';if (Test-ObsBenchA $Ctx $s) {$s}} 15)) {
+            throw 'Source not ready for pre-window renderer attribution.'
+        }
+        try {[void](Get-ObsAttribution $Ctx "active-$($Ctx.ActiveTheme)")}
+        finally {$Ctx.RendererActivation=$null}
+    }
     $Ctx.ItemEnabled = $Enabled
     if (-not $Enabled) {
         [void](Wait-For {$s=Get-State $Ctx.Root 'switchzero';Test-ObsBenchB $s} 10)
+        if (-not $Ctx.WarmingUp) {Wait-ObsOverlayTeardown $Ctx}
         $shapeDeadline=(Get-Qpc)+10*$freq
         do {
             $shape=Get-ObsOffShape $Ctx
@@ -799,8 +834,11 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     $arm['id'] = "l$($Ctx.Launch)-p$Pair-$Condition-a$Attempt"
     $arm['theme'] = $Ctx.ActiveTheme
     $arms.Add($arm)
-    $invalid = { param($r) $arm.valid = $false; $arm.reasons.Add($r) }
+    $invalid = { param($r) $arm.valid = $false; if (-not $arm.reasons.Contains($r)) {$arm.reasons.Add($r)} }
     $wantState = $Ctx.Workload.ToLowerInvariant()
+    $arm['sampledExits']=[Collections.Generic.List[object]]::new()
+    $reportedExits=[Collections.Generic.HashSet[string]]::new()
+    if ($Designer -and -not $Ctx.Reader) {Wait-DesignerPreviewTeardown $Ctx}
     $settleStart = Get-Qpc
     $settleEnd = $settleStart + $settleSeconds * $freq
     $arm['elapsedSinceReadyAtStart'] = Round3 (Get-Seconds $Ctx.ReadyQpc $settleStart)
@@ -879,10 +917,18 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if (-not $arm.calibrationAck) { & $invalid 'Calibration pre-window load acknowledgement missing or mismatched' }
     }
     if ($Condition -eq 'A' -and -not (Test-ObsBenchA $Ctx $sPre)) { & $invalid 'A pre-window workload/preview/count mismatch' }
+    if ($Condition -eq 'A' -and $sPre -and $Ctx.Workload -eq 'Playing' -and
+        (-not $Designer -or $script:designerCondition.kind -eq 'current')) {
+        $age=Get-Seconds $Ctx.ReadyQpc $sPre.qpc
+        if (-not (Test-ObsFixturePosition $age (Get-Overlay $sPre 'latestPosition') (Get-Overlay $sPre 'latestDuration') $trackSeconds $positionTolerance $measureSeconds)) {
+            & $invalid 'A pre-window fixture position freshness/duration mismatch'
+        }
+    }
     if ($Condition -eq 'B' -and -not (Test-ObsBenchB $sPre)) { & $invalid 'B pre-window designer/count mismatch' }
     if (-not $AppOnly -and $Condition -eq 'B') {
-        $shape=Get-ObsOffShape $Ctx; $arm['shapePre']=$shape
-        if ($shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $shape" }
+        $off=Get-ObsCertifiedOff $Ctx $sPre "$($arm.id)-pre";$arm['offPre']=$off;$arm['shapePre']=$off.shape
+        foreach ($reason in $off.reasons) {& $invalid $reason}
+        if ($off.shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $($off.shape)" }
     }
     $failureLog=Join-Path $Ctx.Root 'data/nativune.log'
     $failureCountBefore = $Ctx.ArmTrace.failureCountBefore
@@ -908,6 +954,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     $samples = [Collections.Generic.List[object]]::new()
     $stats = [Collections.Generic.List[object]]::new()
     $mStart = Get-Qpc
+    $Ctx.ArmTrace.measureStartUtc=[DateTime]::UtcNow
     $mEnd = $mStart + $measureSeconds * $freq
     $nextStats = $mStart
     $i = 0; $lastQpc = $null; $maxGap = 0.0; $firstChildChange = $null
@@ -930,10 +977,22 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if ($newObsPid -and $gpuOk) { [void] (Update-GpuCounters $obsPids) }
         $q = Get-Qpc
         $a = Measure-Tree $appTree $appSeen; $o = Measure-Tree $obsTree $obsSeen
-        foreach ($processEntry in @($appTree)+@($obsTree)) {[void]$Ctx.ArmTrace.ids.Add($processEntry.pid)}
+        foreach ($processEntry in @($appTree)+@($obsTree)) {
+            [void]$Ctx.ArmTrace.ids.Add($processEntry.pid)
+            $role=if ($roleByKey.ContainsKey($processEntry.key)) {$roleByKey[$processEntry.key].label} else {'owned OBS descendant'}
+            $Ctx.ArmTrace.observed[$processEntry.key]=@{pid=$processEntry.pid;key=$processEntry.key;created=$processEntry.created;role=$role
+                owner=$(if ($Designer -and $processEntry.key -in @($Ctx.PreviewCandidates | ForEach-Object key)) {'designer preview candidate'} else {'owned tree; preview ownership unknown/shared'})}
+        }
         # StrictMode: member enumeration on an empty array (AppOnly has no OBS tree) throws, so project explicitly.
         $liveAppKeys = @($appTree | ForEach-Object { $_.key }); $liveObsKeys = @($obsTree | ForEach-Object { $_.key })
-        if (@($appNames.Keys | Where-Object {$_ -notin $liveAppKeys}).Count -or @($obsNames.Keys | Where-Object {$_ -notin $liveObsKeys}).Count) { & $invalid 'descendant process exited inside measurement window' }
+        foreach ($key in @($appNames.Keys)+@($obsNames.Keys)) {
+            if ($key -notin $liveAppKeys -and $key -notin $liveObsKeys) {
+                & $invalid 'descendant process exited inside measurement window'
+                if ($reportedExits.Add($key)) {
+                    $arm.sampledExits.Add(@{key=$key;observedUtc=[DateTime]::UtcNow.ToString('o');tSeconds=Round3 (Get-Seconds $mStart $now)})
+                }
+            }
+        }
         $rc = Get-RoleCpu $appSeen $roleByKey
         $gpu = if ($gpuOk) { Read-GpuSum $obsPids } else { $null }
         if ($null -ne $lastQpc) { $maxGap = [Math]::Max($maxGap, (Get-Seconds $lastQpc $q)) }
@@ -947,6 +1006,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if ($q -ge $mEnd) { break }
         Wait-UntilQpc ([Math]::Min($mEnd, $mStart + $i * $freq))
     }
+    $measureEndUtc=[DateTime]::UtcNow
     if (-not $AppOnly) { try { $stats.Add([ordered]@{ t = Round3 (Get-Seconds $mStart (Get-Qpc)); v = (Get-ObsStats $Ctx) }) } catch { & $invalid "GetStats failed: $($_.Exception.Message)" } }
     $wall = Get-Seconds $mStart $lastQpc
 
@@ -955,7 +1015,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $lastKeys = @($Last | ForEach-Object { $_.key })
         $added = @($Names.Keys | Where-Object { $Keys0 -notcontains $_ })
         $exited = @($Names.Keys | Where-Object { $lastKeys -notcontains $_ })
-        [ordered]@{ added = $added.Count; addedNames = @($added | ForEach-Object { $Names[$_] }); exited = $exited.Count; exitedNames = @($exited | ForEach-Object { $Names[$_] }) }
+        [ordered]@{ added = $added.Count; addedKeys=$added; addedNames = @($added | ForEach-Object { $Names[$_] }); exited = $exited.Count; exitedKeys=$exited; exitedNames = @($exited | ForEach-Object { $Names[$_] }) }
     }
     $arm['measure'] = [ordered]@{ seconds = Round3 $wall; samples = $samples.Count; maxGapSeconds = Round3 $maxGap
         appProcesses = @($appTree0).Count; obsProcesses = @($obsTree0).Count; firstChildChangeAt = $firstChildChange
@@ -964,7 +1024,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         gpuCounters = $script:gpuCounters.Count }
     if ($maxGap -gt $maxGapSeconds) { & $invalid "sample gap $(Round3 $maxGap) s > $maxGapSeconds s" }
     if (-not (Test-RootsAlive $Ctx)) { & $invalid 'Nativune or obs64 root process restarted or exited' }
-    $arm['treeExits'] = @(Stop-ObsArmTrace $Ctx.ArmTrace); $Ctx.ArmTrace=$null
+    $arm['treeExits'] = @(Stop-ObsArmTrace $Ctx.ArmTrace $measureEndUtc); $Ctx.ArmTrace=$null
     if ($arm.treeExits.Count) { & $invalid 'root or descendant process exited inside settle/measurement window' }
     if (-not $AppOnly -and (-not $gpuOk -or $script:gpuCounters.Count -eq 0)) { & $invalid 'missing GPU counter' }
     $failureCountAfter=if (Test-Path $failureLog) {@(Select-String -LiteralPath $failureLog -Pattern 'process-failed').Count} else {0}
@@ -996,6 +1056,21 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $arm['post'] = [ordered]@{ streams = Get-Overlay $sPost 'streams'; latestState = Get-Overlay $sPost 'latestState'; fixtureArtServed = Get-Overlay $sPost 'fixtureArtServed'
             renewalRetrySeconds = $renewalRetry
             overlayScriptChars = if ($sPre -and $sPostWindow) { Get-OverlayScriptChars $sPre $sPostWindow } else { $null } }
+        if ($sPre -and $sPost -and $Ctx.Workload -eq 'Playing' -and (-not $Designer -or $script:designerCondition.kind -eq 'current')) {
+            $age=Get-Seconds $Ctx.ReadyQpc $sPost.qpc
+            $position=Get-Overlay $sPost 'latestPosition';$duration=Get-Overlay $sPost 'latestDuration'
+            $progress=@{arm=$arm.id;ageSeconds=Round3 $age;position=$position;duration=$duration
+                afterHiddenBoundary=$age -ge 305;afterPcmWrap=$age -ge 605
+                fresh=Test-ObsFixturePosition $age $position $duration $trackSeconds $positionTolerance}
+            $Ctx.Record['fixtureProgress'].Add($progress);$arm.post['fixtureProgress']=$progress
+            if (-not $progress.fresh) {& $invalid 'A after measure: fixture position frozen/stale or duration mismatch'}
+            $prePosition=Get-Overlay $sPre 'latestPosition'
+            $preAge=Get-Seconds $Ctx.ReadyQpc $sPre.qpc
+            if ($null -eq $prePosition -or $null -eq $position -or
+                [Math]::Abs(([double]$position-[double]$prePosition)-($age-$preAge)) -gt $positionTolerance) {
+                & $invalid 'A after measure: position did not progress with fixture epoch'
+            }
+        }
         # fixtureArtServed is recorded but not required: it resets to 0 when the 5-minute stream lifetime renews and
         # the page keeps its already-loaded image (checked once, at settle).
         if (-not (Test-ObsBenchA $Ctx $sPost)) { & $invalid 'A after measure: exact stream/workload/preview state not met' }
@@ -1003,10 +1078,11 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     } else {
         $reads = if ($sPre -and $sPost) { Get-OverlayReads $sPre $sPost } else { $null }
         $arm['post'] = [ordered]@{ streams = Get-Overlay $sPost 'streams'; overlayReadsDuringMeasure = $reads }
-        if (-not (Test-ObsBenchB $sPost) -or $reads -ne 0) { & $invalid 'B after measure: streams 0 and no overlay reads not both met' }
+        if (-not (Test-ObsBenchB $sPost) -or $null -eq $reads -or $reads -ne 0) { & $invalid 'B after measure: zero streams/realStreams/demand and no overlay reads not all met' }
         if (-not $AppOnly) {
-            $shape=Get-ObsOffShape $Ctx; $arm['shapePost']=$shape
-            if ($shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $shape" }
+            $off=Get-ObsCertifiedOff $Ctx $sPost "$($arm.id)-post";$arm['offPost']=$off;$arm['shapePost']=$off.shape
+            foreach ($reason in $off.reasons) {& $invalid $reason}
+            if ($off.shape -ne $Ctx.Shape0) { & $invalid "B shape differs from shape0: $($off.shape)" }
         }
     }
 
@@ -1035,7 +1111,11 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
 
 # Once-only full warm-up after every fresh launch; never scored.
 function Invoke-Warmup($Ctx) {
+    # Bootstrap is setup overhead, not part of the >=180 s ordinary warm-up.
+    if (-not $AppOnly -and $Ctx.CefBaselinePending) {Initialize-ObsLazyAttribution $Ctx}
     $start = Get-Qpc
+    $Ctx.WarmingUp=$true
+    try {
     if ($Designer) {
         Start-BenchReader $Ctx
         if (-not (Wait-For {$s=Get-State $Ctx.Root 'warmopen';if (Test-ObsBenchA $Ctx $s) {$s}} 30)) {throw 'Designer warmup preview did not connect visibly.'}
@@ -1045,17 +1125,39 @@ function Invoke-Warmup($Ctx) {
         Wait-UntilQpc ($start+60*$freq); Stop-BenchReader $Ctx
         Wait-UntilQpc ($start+180*$freq)
     } else {
+        $Ctx.Record['warmupVisits']=[Collections.Generic.List[object]]::new()
         foreach ($theme in $allThemes) {
             $Ctx.ActiveTheme=$theme; Set-SourceEnabled $Ctx $true
-            Wait-UntilQpc ((Get-Qpc)+15*$freq); Set-SourceEnabled $Ctx $false
-            if (-not (Wait-For {$s=Get-State $Ctx.Root 'warmzero';if (Test-ObsBenchB $s) {$s}} 10)) {throw 'Warmup source failed to release stream.'}
+            $visibleStart=Get-Qpc
+            Wait-UntilQpc ($visibleStart+15*$freq)
+            $visibleSeconds=Get-Seconds $visibleStart (Get-Qpc)
+            Set-SourceEnabled $Ctx $false
+            $zero=Wait-For {$s=Get-State $Ctx.Root 'warmzero';if (Test-ObsBenchB $s) {$s}} 10
+            if (-not $zero) {throw 'Warmup source failed to release stream/demand.'}
+            # Infrastructure is still uncertified until all ordinary visits end.
+            [void](Get-ObsAttribution $Ctx "warmoff-$theme")
+            $after=Get-State $Ctx.Root 'warmzeroafter'
+            $reads=Get-OverlayReads $zero $after
+            $Ctx.Record['warmupVisits'].Add(@{theme=$theme;visibleSeconds=Round3 $visibleSeconds
+                streams=Get-Overlay $after 'streams';realStreams=Get-Overlay $after 'realStreams';demand=Get-Overlay $after 'demand'
+                overlayReads=$reads;zeroStartQpc=$zero.qpc;zeroEndQpc=Get-Prop $after 'qpc'})
+            if (-not (Test-ObsBenchB $after) -or $null -eq $reads -or $reads -ne 0) {throw 'Warmup off interval has demand or overlay reads.'}
         }
         $Ctx.ActiveTheme=$selectedOptions.theme; $Ctx.LookId=$Ctx.Items[$Ctx.ActiveTheme].lookId
         Wait-UntilQpc ($start+180*$freq)
-        $Ctx.Shape0=Get-ObsOffShape $Ctx; $Ctx.Record['shape0']=$Ctx.Shape0
-        if ($Ctx.Shape0 -notmatch '\|renderers:0$') {throw 'Warmup off-state retains a renderer; shape0 cannot certify it.'}
+        Wait-ObsOverlayTeardown $Ctx
+        [void](Get-ObsAttribution $Ctx 'warm-infrastructure' -BeforeScene)
+        $final=Get-State $Ctx.Root 'warmfinal'
+        $finalReads=Get-OverlayReads $zero $final
+        if (-not (Test-ObsBenchB $final) -or $null -eq $finalReads -or $finalReads -ne 0) {throw 'Final warmup off interval has demand or overlay reads.'}
+        $off=Get-ObsCertifiedOff $Ctx $final 'warmfinal'
+        $off['overlayReadsSinceLastWarmVisit']=$finalReads
+        if (-not $off.certified) {throw "Warmup certified-off failed: $($off.reasons -join '; ')"}
+        $Ctx.Shape0=$off.shape;$Ctx.Record['shape0']=$Ctx.Shape0;$Ctx.Record['certifiedOff0']=$off
+        $Ctx.InfrastructureSlotCount=@($off.infrastructureRenderers).Count
     }
     $Ctx.Record['warmup']=@{seconds=Round3 (Get-Seconds $start (Get-Qpc));minimumSeconds=$(if ($Designer) {60} else {180});allSourcesOff=$true}
+    } finally {$Ctx.WarmingUp=$false}
 }
 function Test-AgeFits($Ctx) {
     if ($Ctx.Workload -ne 'Playing') { return $true }
@@ -1110,6 +1212,13 @@ function Invoke-Block([string] $WorkloadName, [int] $Block, [switch] $ProbeAfter
             $pairs.Add([ordered]@{ block = $Block; pair = $p; order = ($order -join ''); launch = $ctx.Launch; delta = $delta; roleDelta = $roleDelta
                 a = $pairArms['A'].id; b = $pairArms['B'].id; look = $ctx.ActiveTheme
                 overlayScriptChars = $pairArms['A'].post['overlayScriptChars'] })
+        }
+        if ($Designer -and $script:designerCondition.kind -eq 'current') {
+            $progress=@($ctx.Record['fixtureProgress'] | Where-Object fresh)
+            $proof=@{hiddenBoundary=@($progress | Where-Object afterHiddenBoundary).Count -gt 0
+                pcmWrap=@($progress | Where-Object afterPcmWrap).Count -gt 0;trackSeconds=$trackSeconds}
+            $ctx.Record['fixtureClockProof']=$proof
+            if (-not $proof.hiddenBoundary -or -not $proof.pcmWrap) {throw 'Current fixture clock not verified after hidden 5-minute boundary and 600-second PCM wrap.'}
         }
         if ($ProbeAfter) { Invoke-DesignerPausedProbe $ctx }
         if ($CalibrationAfter) { Invoke-DesignerGrossCalibration $ctx }
@@ -1173,6 +1282,20 @@ try {
     Assert-DesignerDeadline
     if (-not ($Designer -and $Profile -eq 'Fast-v1')) { $ownerBefore = Get-OwnerObsProfileSnapshot }
     if ($Designer -and $Profile -eq 'Exhaustive-v1') {$script:designerRunStart=Get-Qpc}
+    if ($AttributionOnly) {
+        $ctx=$null
+        try {
+            $ctx=Start-Launch 'Playing' 1;Invoke-Warmup $ctx
+            Add-Check 'OBS.attributionOnly' 'all 8 look renderer mappings exit; certified off; unknown BLOCKS' $ctx.Record['certifiedOff0'] $true
+        } catch {
+            Add-RunError 'attribution' 'Playing' 1 $script:launchIndex $_
+            if ($_.Exception.Message -match 'off retention:|off state:') {
+                Add-Check 'OBS.attributionOnly' 'certified zero overlay demand/ownership' $_.Exception.Message $false
+            } else {
+                Add-Blocked 'OBS.attributionOnly' 'complete owned CDP attribution; unknown BLOCKS' $_.Exception.Message
+            }
+        } finally {Stop-Launch $ctx}
+    } else {
     foreach ($w in $Workload) {
         if ($script:timeBoxHit) {
             foreach ($m in $budgets.Keys) { Add-Blocked "G3.$w.$m" "paired delta A-B <= $($budgets[$m])" 'time box reached before this workload' }
@@ -1184,6 +1307,7 @@ try {
             try { Stop-Launch $script:currentCtx } catch { }
             foreach ($m in $budgets.Keys) { if (-not ($checks | Where-Object { $_.name -eq "G3.$w.$m" })) { Add-Blocked "G3.$w.$m" "paired delta A-B <= $($budgets[$m])" 'workload aborted' } }
         }
+    }
     }
 } catch {
     Add-RunError 'harness' $null $null $null $_
@@ -1223,6 +1347,7 @@ $failed = @($checks | Where-Object { $_.status -eq 'fail' })
 $blocked = @($checks | Where-Object { $_.status -eq 'blocked' })
 $passed = $checks.Count -gt 0 -and $failed.Count -eq 0 -and $blocked.Count -eq 0
 $profileComplete = $checks.Count -gt 0 -and $blocked.Count -eq 0 -and $errors.Count -eq 0
+if ($AttributionOnly) {$profileComplete=$false}
 if ($Designer -and $Profile -eq 'Fast-v1') {
     $profileComplete = $profileComplete -and $script:designerProfileRows.Count -eq 7 -and
         @($script:designerProfileRows.Values | Where-Object { $_.status -eq 'blocked' }).Count -eq 0
@@ -1231,13 +1356,13 @@ $report = [ordered]@{
     version = 1; profile = $Profile; profileVersion = 1; profileComplete = [bool]$profileComplete
     exhaustiveComplete = [bool]($Profile -eq 'Exhaustive-v1' -and $profileComplete)
     admission = $admission
-    qualificationComplete = [bool]($Profile -eq 'Exhaustive-v1' -and $passed -and $admission -ne 'provisional-composed')
+    qualificationComplete = [bool](-not $AttributionOnly -and $Profile -eq 'Exhaustive-v1' -and $passed -and $admission -ne 'provisional-composed')
     invocationUtc = $invocationUtc.ToString('o'); invocationElapsedMinutes = Round3 ((Get-Seconds $invocationQpc (Get-Qpc))/60)
     deadlineUtc = $(if ($Designer -and $Profile -eq 'Fast-v1') {$invocationUtc.AddMinutes(60).ToString('o')} else {$null})
     framesEvidence = $framesEvidence
     provenance = $(if ($framesEvidence) {Get-Prop $framesEvidence 'provenance'} else {$null})
     payloadIdentityVerification = $(if ($admission -eq 'provisional-composed') {'attested assertion; source manifests/historical harness bytes not independently verified by this reader'} else {'not composed'})
-    qualification = $(if ($Profile -eq 'Fast-v1') {'diagnostic only; exhaustive qualification deferred'} else {'exhaustive profile'})
+    qualification = $(if ($AttributionOnly) {'warm-up attribution only; no resource qualification'} elseif ($Profile -eq 'Fast-v1') {'diagnostic only; exhaustive qualification deferred'} else {'exhaustive profile'})
     designerRows = $script:designerProfileRows
     deferred = $(if ($Designer -and $Profile -eq 'Fast-v1') {@(
         @{kind='resource';id='sample-paused-lyrics-False';status='deferred';to='Exhaustive-v1'},
@@ -1248,6 +1373,7 @@ $report = [ordered]@{
     harnessElevated = $isElevated; budgets = $budgets; timeBoxMinutes = $TimeBoxMinutes; obsOnScreenMinutes = Round3 ($script:obsUsedSeconds / 60)
     appOnly = [bool] $AppOnly; pairsPerBlock = $pairsPerBlock; warmupSeconds = $WarmupSeconds; warmupASeconds = $WarmupASeconds; readProbe = $ReadProbe
     mode = $Protocol; designer = [bool]$Designer; seed = $Seed; schedule = $schedule; options = $selectedOptions
+    attributionOnly=[bool]$AttributionOnly
     framesFrom = $FramesFrom; worstFrom = $WorstFrom; stillsReport = $StillsReport; fallbackFrom = $FallbackFrom
     pausedExtensions = $(if (Get-Variable gate -ErrorAction SilentlyContinue) { @($gate.pausedExtensions) } else { @() })
     protocol = [ordered]@{ settleSeconds = $settleSeconds; measureSeconds = $measureSeconds; sampleSeconds = 1; statsEverySeconds = $statsEverySeconds

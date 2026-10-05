@@ -116,7 +116,7 @@ function New-ObsPortable {
         RunDir = $RunDir; Exe = $exe; Cwd = (Split-Path -Parent $exe); Port = $port; PasswordFile = $passwordFile
         ConfigDir = $config; SceneCollectionFile = $sceneFile; Version = $productVersion
         Process = $null; ProcessId = $null; StartTime = $null; OwnedCheck = $null; Paths = $null
-        RemoteDebuggingPort = $RemoteDebuggingPort; DebugListener = $null
+        RemoteDebuggingPort = $RemoteDebuggingPort; DebugListener = $null; DebugDiagnostics = $null
         OwnerBefore = $ownerBefore; OwnerChanged = $null; Stopped = $false; SeededUtc = [DateTime]::UtcNow
     }
     } catch {
@@ -242,7 +242,6 @@ function Start-ObsPortable {
     }
     [void] (Update-ObsPortablePaths $Obs)
     if (-not $Obs.OwnedCheck.passed) { throw "Owned-instance check failed: $($Obs.OwnedCheck | ConvertTo-Json -Compress)" }
-    if ($Obs.RemoteDebuggingPort) { Assert-ObsDebugLoopback $Obs }
     return $process
     } catch {
         # Kill the owned tree and remove the run folder (Stop-ObsPortable is idempotent via $Obs.Stopped).
@@ -406,19 +405,137 @@ function Set-ObsOverlayEightSource {
     $visible = @((Invoke-ObsRequest $Session 'GetSceneItemList' @{sceneName=$script:ObsPortableSceneName}).sceneItems | Where-Object sceneItemEnabled)
     if ($visible.Count -ne $(if ($Theme) {1} else {0})) { throw 'Scene must show exactly one source, or zero for B.' }
 }
+# Pure parent/birth check; no process name can establish listener ownership.
+function Get-ObsDebugOwnerChain([int]$ListenerPid,[int]$RootPid,[datetime]$RootCreated,$Entries) {
+    $byPid=@{};foreach ($p in $Entries) {$byPid[[int]$p.pid]=$p}
+    $chain=[Collections.Generic.List[object]]::new();$seen=[Collections.Generic.HashSet[int]]::new()
+    $current=$ListenerPid;$childCreated=$null
+    while ($true) {
+        if (-not $seen.Add($current) -or -not $byPid.ContainsKey($current)) {return $null}
+        $entry=$byPid[$current]
+        if (-not $entry.created) {return $null}
+        $created=([datetime]$entry.created).ToUniversalTime()
+        if ($null -ne $childCreated -and $created -gt $childCreated) {return $null}
+        $chain.Add($entry)
+        if ($current -eq $RootPid) {
+            # CIM serializes microseconds; Get-Process exposes 100 ns. Compare the
+            # same millisecond, then independently recheck every live process.
+            if ($created.ToString('yyyy-MM-ddTHH:mm:ss.fff') -cne $RootCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff')) {return $null}
+            return ,$chain.ToArray()
+        }
+        $childCreated=$created;$current=[int]$entry.parent
+    }
+}
+function Get-ObsDebugProcessInventory {
+    @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate,CommandLine | ForEach-Object {
+        $roleMatch=[regex]::Match([string]$_.CommandLine,'(?:^|\s)--type=([^\s"]+)')
+        @{pid=[int]$_.ProcessId;parent=[int]$_.ParentProcessId;name=[string]$_.Name
+            created=$(if ($_.CreationDate) {([datetime]$_.CreationDate).ToUniversalTime().ToString('o')} else {$null})
+            role=$(if ($roleMatch.Success) {$roleMatch.Groups[1].Value} else {'host/browser'})}
+    })
+}
+function Get-ObsDebugDiagnostics($Obs,$Entries,$Connections) {
+    $owned=@($Entries | Where-Object {
+        $null -ne (Get-ObsDebugOwnerChain $_.pid $Obs.ProcessId $Obs.StartTime $Entries)
+    })
+    @{utc=[DateTime]::UtcNow.ToString('o');requestedPort=$Obs.RemoteDebuggingPort
+        obsPid=$Obs.ProcessId;obsCreated=$Obs.StartTime.ToUniversalTime().ToString('o')
+        processes=@($owned | ForEach-Object {
+            $p=$_;@{pid=$p.pid;parent=$p.parent;created=$p.created;name=$p.name;role=$p.role
+                listeningPorts=@($Connections | Where-Object OwningProcess -eq $p.pid | ForEach-Object {
+                    @{port=$_.LocalPort;address=$(if ($_.LocalAddress -in @('127.0.0.1','::1')) {$_.LocalAddress} else {'<non-loopback>'})}
+                })}
+        })
+        requestedPortListeners=@($Connections | Where-Object LocalPort -eq $Obs.RemoteDebuggingPort |
+            ForEach-Object {@{pid=[int]$_.OwningProcess;port=$_.LocalPort;address=$(if ($_.LocalAddress -in @('127.0.0.1','::1')) {$_.LocalAddress} else {'<non-loopback>'})}})}
+}
 function Assert-ObsDebugLoopback {
     param([Parameter(Mandatory)]$Obs)
+    $live=Get-Process -Id $Obs.ProcessId -ErrorAction SilentlyContinue
+    $rootMatches=$live -and $live.StartTime -eq $Obs.StartTime
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    do {
-        $listeners = @(Get-NetTCPConnection -LocalPort $Obs.RemoteDebuggingPort -State Listen -ErrorAction SilentlyContinue)
-        if ($listeners.Count) { break }
-        if ($Obs.Process.HasExited) { throw 'OBS exited before CDP listener appeared.' }
-        Start-Sleep -Milliseconds 250
-    } while ([DateTime]::UtcNow -lt $deadline)
-    if (-not $listeners.Count -or @($listeners | Where-Object { $_.LocalAddress -notin @('127.0.0.1','::1') -or $_.OwningProcess -ne $Obs.ProcessId }).Count) {
-        throw 'CDP blocked: listener must exist only on loopback and belong to the owned OBS PID.'
+    $listeners=@()
+    if ($rootMatches) {
+        do {
+            $listeners = @(Get-NetTCPConnection -LocalPort $Obs.RemoteDebuggingPort -State Listen -ErrorAction SilentlyContinue)
+            if ($listeners.Count -or $Obs.Process.HasExited) {break}
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $deadline)
     }
-    $Obs.DebugListener = @($listeners | Select-Object LocalAddress,LocalPort,OwningProcess)
+    $entries=@(Get-ObsDebugProcessInventory)
+    $connections=@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+    $listeners=@($connections | Where-Object LocalPort -eq $Obs.RemoteDebuggingPort)
+    $Obs.DebugDiagnostics=Get-ObsDebugDiagnostics $Obs $entries $connections
+    $confirmed=[Collections.Generic.List[object]]::new()
+    foreach ($listener in $listeners) {
+        $chain=Get-ObsDebugOwnerChain ([int]$listener.OwningProcess) $Obs.ProcessId $Obs.StartTime $entries
+        $valid=$rootMatches -and $null -ne $chain -and $listener.LocalAddress -in @('127.0.0.1','::1')
+        foreach ($entry in @($chain)) {
+            if (-not $entry) {continue}
+            $process=Get-Process -Id $entry.pid -ErrorAction SilentlyContinue
+            if (-not $process -or $process.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff') -cne
+                ([datetime]$entry.created).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fff')) {$valid=$false}
+        }
+        if (-not $valid) {
+            throw 'CDP blocked: listener is not loopback or its parent/birth chain is not the live owned OBS tree.'
+        }
+        $confirmed.Add(@{LocalAddress=$listener.LocalAddress;LocalPort=$listener.LocalPort;OwningProcess=[int]$listener.OwningProcess;ownerChain=$chain})
+    }
+    if (-not $rootMatches) {throw 'CDP blocked: owned OBS birth identity changed; process/port diagnostics retained.'}
+    if (-not $confirmed.Count) {throw 'CDP blocked: listener missing after lazy CEF startup wait; process/port diagnostics retained.'}
+    $Obs.DebugListener=@($confirmed)
+}
+
+# Bench-only browser CDP. No target creation/navigation; callers close each
+# socket and finish/drain tracing before starting a performance window.
+function Connect-ObsBenchCdp($Obs) {
+    Assert-ObsDebugLoopback $Obs
+    $version=Invoke-RestMethod -NoProxy -TimeoutSec 5 -Uri "http://127.0.0.1:$($Obs.RemoteDebuggingPort)/json/version"
+    $uri=[Uri]$version.webSocketDebuggerUrl
+    if ($uri.Scheme -ne 'ws' -or $uri.Host -notin @('127.0.0.1','localhost','[::1]','::1') -or
+        $uri.Port -ne $Obs.RemoteDebuggingPort -or $uri.AbsolutePath -notlike '/devtools/browser/*') {
+        throw 'CDP blocked: invalid owned browser endpoint.'
+    }
+    $socket=[Net.WebSockets.ClientWebSocket]::new()
+    $cts=[Threading.CancellationTokenSource]::new(5000)
+    try {
+        [void]$socket.ConnectAsync($uri,$cts.Token).GetAwaiter().GetResult()
+        @{Socket=$socket;NextId=0;Events=[Collections.Generic.List[object]]::new()}
+    } catch {$socket.Dispose();throw} finally {$cts.Dispose()}
+}
+function Invoke-ObsBenchCdp($Cdp,[string]$Method,[hashtable]$Params=@{},[string]$SessionId='') {
+    $Cdp.NextId++;$id=$Cdp.NextId
+    $message=@{id=$id;method=$Method;params=$Params}
+    if ($SessionId) {$message.sessionId=$SessionId}
+    $bytes=[Text.Encoding]::UTF8.GetBytes(($message|ConvertTo-Json -Compress -Depth 16))
+    $cts=[Threading.CancellationTokenSource]::new(10000)
+    try {
+        [void]$Cdp.Socket.SendAsync([ArraySegment[byte]]::new($bytes),[Net.WebSockets.WebSocketMessageType]::Text,$true,$cts.Token).GetAwaiter().GetResult()
+        $buffer=[byte[]]::new(65536)
+        while ($true) {
+            $ms=[IO.MemoryStream]::new()
+            try {
+                do {
+                    $r=$Cdp.Socket.ReceiveAsync([ArraySegment[byte]]::new($buffer),$cts.Token).GetAwaiter().GetResult()
+                    if ($r.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Close) {throw 'CDP browser socket closed.'}
+                    $ms.Write($buffer,0,$r.Count)
+                    if ($ms.Length -gt 16MB) {throw 'CDP attribution message exceeds bounded size.'}
+                } until ($r.EndOfMessage)
+                $reply=[Text.Encoding]::UTF8.GetString($ms.ToArray())|ConvertFrom-Json -AsHashtable -Depth 64
+            } finally {$ms.Dispose()}
+            if ($reply['id'] -eq $id) {
+                if ($reply['error']) {throw "CDP $Method unavailable: $($reply.error.message)"}
+                return $reply['result']
+            }
+            if ($reply['method']) {
+                if ($Cdp.Events.Count -ge 10000) {throw 'CDP attribution event buffer overflow; BLOCKED.'}
+                $Cdp.Events.Add($reply)
+            }
+        }
+    } finally {$cts.Dispose()}
+}
+function Close-ObsBenchCdp($Cdp) {
+    if ($Cdp) {$Cdp.Socket.Dispose()}
 }
 
 # Graceful close (WM_CLOSE via the main window; OBS saves the scene collection on exit), then relaunch the same run
