@@ -30,6 +30,13 @@ public sealed partial class WebHostWindow
         browserArguments = string.IsNullOrWhiteSpace(browserArguments)
             ? "--autoplay-policy=no-user-gesture-required"
             : browserArguments + " --autoplay-policy=no-user-gesture-required";
+        // Bench-only startup stabilisation, not a product CPU fix: run Chromium's DX12 info collection at startup
+        // instead of 120 s later, so its short-lived GPU process cannot exit inside a Designer bench window.
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_OVERLAY_EAGER_GPU_INFO") == "1")
+        {
+            browserArguments += " --no-delay-for-dx12-vulkan-info-collection";
+            AppLog.Write("designer-bench-browser-args", browserArguments);
+        }
     }
 
     private void InstallDiscordFixturePage(CoreWebView2 core)

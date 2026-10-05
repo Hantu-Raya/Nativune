@@ -18,6 +18,15 @@
 # The ordinary warm-up remains 15 s per look, >=180 s excluding bootstrap.
 # Only then certify infrastructure and shape0; every mapped overlay PID@creation
 # must be gone, even with no remaining target.
+# Designer-only DX12-eager diagnostic: the env seam appends only the DX switch.
+# Before the first switch, an unscored UTC-safe browser-age wait targets measure
+# start >= CreationDate+150s with a conservative 10s switch estimate; after the
+# actual switch any remaining wait occurs BEFORE the unchanged exact 30s settle.
+# Waits count toward the hard deadline. Arm trace stays at settle-start: switch
+# exits are excluded as today; settle/measurement exits still invalidate/retry.
+# Collector/argv-delivery trace is informational; no allowlist or relaunch path.
+# Calibration alone admits 10s switching +20s cleanup; anchors retain old reserves.
+# No product CPU fix or runtime equivalence is claimed; role/CPU evidence is informational.
 function New-ObsBenchSchedule {
     param([ValidateSet('Standard','SharedBaseline')] [string] $Protocol, [string[]] $Themes, [int] $Seed,
         [ValidateSet('Fast-v1','Exhaustive-v1')] [string] $Profile = 'Exhaustive-v1')

@@ -1,4 +1,240 @@
 # Dot-sourced after the existing sampler helpers. No top-level side effects.
+function ConvertTo-ObsBenchUtc($Value) { ([DateTimeOffset]$Value).UtcDateTime }
+function Test-DesignerGpuCollector([string]$CommandLine) {
+    # Positive flags, never "the second GPU process" or a lifetime/PID whitelist.
+    $CommandLine -match '(?:^|\s)--type=gpu-process(?:\s|$)' -and
+        $CommandLine -match '(?:^|\s)--use-gl=disabled(?:\s|$)' -and
+        $CommandLine -match '(?:^|\s)--disable-gpu-sandbox(?:\s|$)' -and
+        $CommandLine -match '(?:^|\s)--gpu-vendor-id=\d+(?:\s|$)' -and
+        $CommandLine -match '(?:^|\s)--gpu-device-id=\d+(?:\s|$)'
+}
+function Test-DesignerTraceBirth([datetime]$Created,[datetime]$EventTime,[datetime]$LaunchStart) {
+    # CIM CreationDate is identity; TIME_CREATED is a later event timestamp.
+    $createdUtc=$Created.ToUniversalTime();$eventUtc=$EventTime.ToUniversalTime()
+    $createdUtc -ge $LaunchStart.ToUniversalTime() -and $eventUtc -ge $createdUtc -and $eventUtc -le $createdUtc.AddSeconds(5)
+}
+function Get-DesignerStartupGateMath($BrowserCreated,[datetime]$Now,[double]$SwitchSeconds = 10) {
+    $created=ConvertTo-ObsBenchUtc $BrowserCreated
+    $age=($Now.ToUniversalTime()-$created).TotalSeconds
+    $wait=[Math]::Max(0,150-$age-30-$SwitchSeconds)
+    @{browserAgeSeconds=$age;waitSeconds=$wait;switchEstimateSeconds=$SwitchSeconds
+        settleSeconds=30;minimumMeasureAgeSeconds=150;projectedMeasureAgeSeconds=$age+$wait+$SwitchSeconds+30}
+}
+function Get-DesignerAdmissionSeconds([double]$WindowSeconds,[bool]$Calibration) {
+    $WindowSeconds + $(if ($Calibration) {10} else {60})
+}
+function Wait-DesignerStartupGate($Ctx,[switch]$BeforeSettle) {
+    if (-not $Designer -or $Ctx.GpuGateComplete) {return}
+    Update-DesignerGpuTrace $Ctx
+    $gate=$Ctx.Record.gpuInfo.gate
+    try {
+        $browsers=@(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -Property ProcessId,CreationDate,CommandLine |
+            Where-Object {$_.CreationDate -and $_.CommandLine -and $_.CommandLine.Contains($Ctx.Root,[StringComparison]::OrdinalIgnoreCase) -and
+                $_.CommandLine -notmatch '(?:^|\s)--type='})
+        if ($browsers.Count -ne 1) {throw 'Startup-age gate requires exactly one live browser CreationDate.'}
+        $browser=$browsers[0]
+        $created=ConvertTo-ObsBenchUtc $browser.CreationDate
+        $gate['browserCreationUtc']=$created.ToString('o')
+        $gate['browserKey']="$($browser.ProcessId)@$($created.ToString('o'))"
+        $Ctx.Record.gpuInfo.effectiveBrowserArguments=@([string]$browser.CommandLine)
+        $Ctx.Record.gpuInfo['dxSwitchDelivered']=$browser.CommandLine -match '(?:^|\s)--no-delay-for-dx12-vulkan-info-collection(?:\s|$)'
+        $estimate=if ($BeforeSettle) {0} else {10}
+        $start=Get-Qpc
+        $math=Get-DesignerStartupGateMath $created ([DateTime]::UtcNow) $estimate
+        $gate[$(if ($BeforeSettle) {'ageBeforeSettleWaitSeconds'} else {'ageBeforeSwitchWaitSeconds'})]=$math.browserAgeSeconds
+        $gate['conservativeSwitchSeconds']=10
+        do {
+            $math=Get-DesignerStartupGateMath $created ([DateTime]::UtcNow) $estimate
+            $required=$math.waitSeconds+(Get-DesignerAdmissionSeconds $armSeconds ([bool]$script:designerCalibration))
+            if (-not (Test-TimeFits $required)) {
+                $script:timeBoxHit=$true
+                throw 'Startup-age wait plus complete arm/switching/cleanup cannot fit deadline.'
+            }
+            if ($math.waitSeconds -le 0) {break}
+            Wait-UntilQpc ((Get-Qpc)+$math.waitSeconds*$freq)
+        } while ($true)
+        $wait=Get-Seconds $start (Get-Qpc)
+        $gate[$(if ($BeforeSettle) {'preSettleWaitSeconds'} else {'preSwitchWaitSeconds'})]=Round3 $wait
+        $gate['waitSeconds']=Round3 ([double]$gate.preSwitchWaitSeconds+[double]$gate.preSettleWaitSeconds)
+        $gate[$(if ($BeforeSettle) {'ageAtSettleStartSeconds'} else {'ageAtSwitchStartSeconds'})]=$math.browserAgeSeconds
+        $gate['minimumMeasureAgeSeconds']=150
+        $gate['settleSeconds']=30
+        if ($BeforeSettle) {$Ctx.GpuGateComplete=$true;$gate.outcome='measurement-age-gated'}
+    } catch {
+        $gate.outcome='BLOCKED'
+        $gate['reason']=$_.Exception.Message
+        throw
+    }
+}
+function Get-ObsArmExitReasons($Exits) {
+    if (@($Exits).Count) {'root or descendant process exited inside settle/measurement window'}
+}
+function Get-DesignerCollectorWindowEvents($Collectors,[datetime]$Start,[datetime]$End) {
+    foreach ($collector in @($Collectors)) {
+        $born=$collector.created -and (ConvertTo-ObsBenchUtc $collector.created) -ge $Start.ToUniversalTime() -and (ConvertTo-ObsBenchUtc $collector.created) -le $End.ToUniversalTime()
+        $exited=$collector.exitUtc -and (ConvertTo-ObsBenchUtc $collector.exitUtc) -ge $Start.ToUniversalTime() -and (ConvertTo-ObsBenchUtc $collector.exitUtc) -le $End.ToUniversalTime()
+        if ($born -or $exited) {@{key=$collector.key;created=$collector.created;exitUtc=$collector.exitUtc;birthInside=[bool]$born;exitInside=[bool]$exited}}
+    }
+}
+
+# Ready is signalled only AFTER both subscriptions exist, before the app starts.
+# Only process births trigger CIM lookups: no continuous extra polling in windows.
+function Start-DesignerGpuTrace([string]$Root,$Record) {
+    $state=[hashtable]::Synchronized(@{stop=$false;readySuccess=$false;traceStartUtc=[DateTime]::UtcNow;ready=[Threading.ManualResetEventSlim]::new($false)
+        rows=[Collections.Concurrent.ConcurrentQueue[object]]::new()})
+    $worker={
+        param($State,$Root,$BirthPredicate)
+        $ErrorActionPreference='Stop'
+        $prefix='designer-launch-'+[guid]::NewGuid().ToString('N');$active=@{}
+        try {
+            Set-Item -Path Function:Test-DesignerTraceBirth -Value ([scriptblock]::Create($BirthPredicate))
+            [void](Register-CimIndicationEvent -Query 'SELECT * FROM Win32_ProcessStartTrace' -SourceIdentifier "$prefix-start")
+            [void](Register-CimIndicationEvent -Query 'SELECT * FROM Win32_ProcessStopTrace' -SourceIdentifier "$prefix-stop")
+            $State.readySuccess=$true
+            $State.ready.Set()
+            while (-not $State.stop) {
+                $events=@(Get-Event | Where-Object {$_.SourceIdentifier -like "$prefix-*"} | Sort-Object {[long]$_.SourceEventArgs.NewEvent.TIME_CREATED})
+                foreach ($event in $events) {
+                    $e=$event.SourceEventArgs.NewEvent;$at=[datetime]::FromFileTimeUtc([long]$e.TIME_CREATED)
+                    $id=[int]$e.ProcessID
+                    if ($event.SourceIdentifier -eq "$prefix-start" -and $e.ProcessName -ieq 'msedgewebview2.exe') {
+                        $captured=$false
+                        $p=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate
+                        if ($p -and $p.CreationDate -and $p.CommandLine -and $p.CommandLine.Contains($Root,[StringComparison]::OrdinalIgnoreCase)) {
+                            $created=([datetime]$p.CreationDate).ToUniversalTime()
+                            # Reject pre-launch/recycled births, allowing bounded event latency.
+                            if (Test-DesignerTraceBirth $created $at $State.traceStartUtc) {
+                                $parent=$active[[int]$p.ParentProcessId]
+                                $row=@{pid=$id;key="$id@$($created.ToString('o'))";created=$created.ToString('o')
+                                    parent=[int]$p.ParentProcessId;parentKey=$(if ($parent -and $parent.created -and ([DateTimeOffset]$parent.created).UtcDateTime -le $created) {$parent.key} else {$null})
+                                    commandLine=[string]$p.CommandLine;traceBirthUtc=$at.ToString('o');exitUtc=$null}
+                                $active[$id]=$row
+                                $State.rows.Enqueue(@{kind='birth';process=$row.Clone()})
+                                $captured=$true
+                            }
+                        }
+                        if (-not $captured) {
+                            $parent=$active[[int]$e.ParentProcessID]
+                            if ($parent -and $parent.commandLine -and $parent.commandLine -notmatch '(?:^|\s)--type=' -and
+                                $parent.created -and ([DateTimeOffset]$parent.created).UtcDateTime -le $at) {
+                                # A short child may be gone before CIM: retain the observed
+                                # birth, explicitly without CreationDate/argv/collector proof.
+                                $row=@{pid=$id;key="$id@trace:$($at.ToString('o'))";created=$null;parent=[int]$e.ParentProcessID;parentKey=$parent.key
+                                    commandLine=$null;traceBirthUtc=$at.ToString('o');exitUtc=$null;identityBasis='trace-only birth; CreationDate and argv unavailable'}
+                                $active[$id]=$row
+                                $State.rows.Enqueue(@{kind='birth';process=$row.Clone()})
+                            }
+                        }
+                    } elseif ($event.SourceIdentifier -eq "$prefix-stop" -and $active.ContainsKey($id)) {
+                        $row=$active[$id]
+                        $birthTime=if ($row.created) {([DateTimeOffset]$row.created).UtcDateTime} else {([DateTimeOffset]$row.traceBirthUtc).UtcDateTime}
+                        if ($at -ge $birthTime) {$State.rows.Enqueue(@{kind='exit';key=$row.key;utc=$at.ToString('o')});$active.Remove($id)}
+                    }
+                    Remove-Event -EventIdentifier $event.EventIdentifier
+                }
+                Start-Sleep -Milliseconds 100
+            }
+        } catch {$State.rows.Enqueue(@{kind='error';message=$_.Exception.Message})}
+        finally {
+            $State.ready.Set()
+            foreach ($suffix in @('start','stop')) {
+                Unregister-Event -SourceIdentifier "$prefix-$suffix" -ErrorAction SilentlyContinue
+                Get-Event -SourceIdentifier "$prefix-$suffix" -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    $ps=[PowerShell]::Create()
+    # Share the production predicate with the pure selfcheck and isolated worker.
+    $birthPredicate=${function:Test-DesignerTraceBirth}.ToString()
+    [void]$ps.AddScript($worker.ToString()).AddArgument($state).AddArgument($Root).AddArgument($birthPredicate)
+    $handle=$ps.BeginInvoke()
+    $trace=@{state=$state;ps=$ps;handle=$handle;processes=@{};failed=$false}
+    $Record['gpuInfo']=@{traceStartedUtc=$state.traceStartUtc.ToString('o');effectiveBrowserArguments=@()
+        browsers=@();browserChildren=@();collectors=@();gate=@{outcome='not-run';preSwitchWaitSeconds=0;preSettleWaitSeconds=0;waitSeconds=0}
+        limitations='Collector trace is informational. DX-eager path bypasses the GPU-ID check; no runtime equivalence claim.'}
+    if (-not $state.ready.Wait(10000) -or -not $state.readySuccess -or $handle.IsCompleted) {
+        $state.stop=$true
+        try {$ps.Stop()} finally {$ps.Dispose();$state.ready.Dispose()}
+        $Record.gpuInfo['traceError']='Informational launch trace unavailable before app start.'
+        return $null
+    }
+    $Record.gpuInfo['traceReadyUtc']=[DateTime]::UtcNow.ToString('o')
+    $trace
+}
+function Update-DesignerGpuTrace($Ctx) {
+    $trace=$Ctx.GpuTrace
+    if (-not $trace) {return}
+    $row=$null
+    while ($trace.state.rows.TryDequeue([ref]$row)) {
+        switch ($row.kind) {
+            'birth' {$trace.processes[$row.process.key]=$row.process}
+            'exit' {if ($trace.processes.ContainsKey($row.key)) {$trace.processes[$row.key].exitUtc=$row.utc}}
+            'error' {$trace.failed=$true;$Ctx.Record.gpuInfo['traceError']=$row.message}
+        }
+    }
+    if ($trace.handle.IsCompleted -and -not $trace.state.stop) {$trace.failed=$true}
+    $browsers=@($trace.processes.Values | Where-Object {$_.commandLine -and $_.commandLine -notmatch '(?:^|\s)--type='})
+    $collectors=@($trace.processes.Values | Where-Object {(Test-DesignerGpuCollector $_.commandLine) -and
+        $_.parentKey -in @($browsers | ForEach-Object key)})
+    $Ctx.Record.gpuInfo.browsers=$browsers
+    $Ctx.Record.gpuInfo.browserChildren=@($trace.processes.Values | Where-Object {$_.parentKey -in @($browsers | ForEach-Object key)})
+    if ($browsers.Count) {$Ctx.Record.gpuInfo.effectiveBrowserArguments=@($browsers | ForEach-Object commandLine)}
+    $Ctx.Record.gpuInfo.collectors=$collectors
+}
+function Stop-DesignerGpuTrace($Ctx) {
+    if (-not $Ctx.GpuTrace) {return}
+    $trace=$Ctx.GpuTrace
+    try {
+        $trace.state.stop=$true
+        if (-not $trace.handle.AsyncWaitHandle.WaitOne(5000)) {$trace.ps.Stop()}
+        [void]$trace.ps.EndInvoke($trace.handle)
+        Update-DesignerGpuTrace $Ctx
+        $Ctx.Record.gpuInfo['traceStoppedUtc']=[DateTime]::UtcNow.ToString('o')
+    } finally {$trace.ps.Dispose();$trace.state.ready.Dispose();$Ctx.GpuTrace=$null}
+}
+function Get-DesignerRoleSignature($Roles) {
+    (@($Roles.Keys | Sort-Object | ForEach-Object {"$($_):$($Roles[$_].count)"}) -join '|')
+}
+function Add-DesignerRoleInventory($Ctx,$Arm,$Initial,$RoleByKey) {
+    Update-DesignerGpuTrace $Ctx
+    $baselinePath='artifacts/obs-overlay-designer/20261005T151642Z-apponly/bench-report.json'
+    if ($null -eq $script:designerRoleBaseline) {
+        $path=Join-Path $repo $baselinePath
+        $script:designerRoleBaseline=@{conditions=@{};source=$baselinePath;available=$false}
+        if (Test-Path -LiteralPath $path) {
+            try {
+                $old=Get-Content -Raw -LiteralPath $path | ConvertFrom-Json -AsHashtable -Depth 64
+                foreach ($name in $old.workloads.Keys) {
+                    $ids=@($old.workloads[$name].pairs | ForEach-Object {$_.a;$_.b})
+                    $script:designerRoleBaseline.conditions[$name]=@($old.arms | Where-Object {$_.valid -and $_.id -in $ids} |
+                        ForEach-Object {@{arm=$_.id;condition=$_.condition;roles=$_.metrics.roles}})
+                }
+                $script:designerRoleBaseline.available=$true
+                $script:designerRoleBaseline['sha256']=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            } catch {$script:designerRoleBaseline['error']=$_.Exception.Message}
+        }
+    }
+    $baseline=$script:designerRoleBaseline
+    $name=$Ctx.Record.designerCondition
+    $previous=@($baseline.conditions[$name] | Where-Object {$_ -and $_.condition -eq $Arm.condition})
+    $roles=Get-Prop (Get-Prop $Arm 'metrics') 'roles'
+    $comparison=@{source=$baseline.source;available=$baseline.available;condition=$name;armCondition=$Arm.condition
+        informational=$true;previous=$previous;countsMatch=$null;bRoleCpu=$null}
+    if ($baseline.ContainsKey('sha256')) {$comparison['sha256']=$baseline.sha256}
+    if ($roles -and $previous.Count) {
+        $signature=Get-DesignerRoleSignature $roles
+        $comparison.countsMatch=$signature -in @($previous | ForEach-Object {Get-DesignerRoleSignature $_.roles})
+        $comparison['persistentGpuCountOne']=$roles['gpu-process'].count -eq 1
+        if ($Arm.condition -eq 'B') {
+            $comparison.bRoleCpu=@{current=$roles;previous=@($previous | ForEach-Object roles);informational=$true}
+        }
+    }
+    $row=@{arm=$Arm.id;condition=$Arm.condition;valid=$Arm.valid
+        measurementStart=@($Initial | ForEach-Object {@{pid=$_.pid;key=$_.key;created=$_.created;role=$RoleByKey[$_.key].label}})
+        measuredRoles=$roles;comparison=$comparison}
+    $Ctx.Record.roleInventory.Add($row)
+    $Arm['roleInventory']=$row
+}
 function Send-ObsBenchPayload($Ctx,[string]$Command,[string]$Payload) {
     Assert-DesignerDeadline
     [IO.File]::WriteAllText((Join-Path (Get-BenchDirectory $Ctx.Root) $Command),$Payload,[Text.UTF8Encoding]::new($false))
@@ -406,7 +642,7 @@ function Stop-ObsArmTrace($Trace,[datetime]$EndUtc=[DateTime]::UtcNow) {
                 if ($Trace.ids.Contains([int]$e.ParentProcessID)) {
                     [void]$Trace.ids.Add([int]$e.ProcessID)
                     $matches=@($Trace.observed.Values | Where-Object {$_.pid -eq [int]$e.ProcessID -and $_.created -and
-                        [Math]::Abs(($time-[datetime]$_.created).TotalSeconds) -lt 1})
+                        [Math]::Abs(($time-(ConvertTo-ObsBenchUtc $_.created)).TotalSeconds) -lt 1})
                     $active[[int]$e.ProcessID]=if ($matches.Count -eq 1) {$matches[0]} else {
                         @{pid=[int]$e.ProcessID;key=$null;created=$null;traceBirthUtc=$time.ToString('o')
                             role='unknown (trace-only birth)';owner='owned descendant; preview ownership unknown'}
@@ -465,7 +701,7 @@ function Start-DesignerPreview($Ctx) {
     $inventory=@(Get-DesignerProcessInventory $Ctx)
     $beforeKeys=@($Ctx.PreviewBefore | ForEach-Object key)
     $Ctx.PreviewBirths=@($inventory | Where-Object {$_.key -notin $beforeKeys -and
-        $_.created -and [datetime]$_.created -ge $Ctx.PreviewOpenUtc})
+        $_.created -and (ConvertTo-ObsBenchUtc $_.created) -ge $Ctx.PreviewOpenUtc})
     $Ctx.PreviewCandidates=@($Ctx.PreviewBirths | Where-Object role -eq renderer)
     $Ctx.Record['designerLifecycle'].Add(@{event='navigated';utc=[DateTime]::UtcNow.ToString('o');qpc=Get-Qpc
         processes=$inventory;previewCandidates=$Ctx.PreviewCandidates;ownershipBasis='birth after open, absent pre-open; confirmed only after close/exit'})
@@ -481,7 +717,7 @@ function Stop-DesignerPreview($Ctx) {
         $Ctx.PreviewCloseKeys=@($inventory | ForEach-Object key)
         $beforeKeys=@($Ctx.PreviewBefore | ForEach-Object key)
         $newBirths=@($inventory | Where-Object {$_.key -notin $beforeKeys -and
-            $_.created -and [datetime]$_.created -ge $Ctx.PreviewOpenUtc})
+            $_.created -and (ConvertTo-ObsBenchUtc $_.created) -ge $Ctx.PreviewOpenUtc})
         $Ctx.PreviewBirths=@(@($Ctx.PreviewBirths)+$newBirths | Sort-Object key -Unique)
         $Ctx.PreviewCandidates=@(@($Ctx.PreviewCandidates)+@($Ctx.PreviewBirths | Where-Object role -eq renderer) | Sort-Object key -Unique)
         $Ctx.Record['designerLifecycle'].Add(@{event='pre-close';utc=[DateTime]::UtcNow.ToString('o');qpc=Get-Qpc;processes=$inventory;previewCandidates=$Ctx.PreviewCandidates})
@@ -612,13 +848,13 @@ function Invoke-DesignerGrossCalibration($Ctx) {
         @{id='gross-memory';metric='app.privateMiB';cpuPp=0.0;memMiB=120.0})) {
         $id=$spec.id
         try {
-            if (-not (Test-TimeFits (2*$armSeconds+60))) {throw 'deadline: full calibration AB pair and cleanup cannot fit'}
+            if (-not (Test-TimeFits (Get-DesignerAdmissionSeconds (2*$armSeconds) $true))) {throw 'deadline: full calibration AB pair and cleanup cannot fit'}
             $script:designerCalibration=@{cpuPp=$spec.cpuPp;memMiB=$spec.memMiB}
             $pair=@{}
             foreach ($condition in @('A','B')) {
                 $arm=$null
                 for ($attempt=1;$attempt -le 2;$attempt++) {
-                    $remaining=if ($condition -eq 'A') {2*$armSeconds+60} else {$armSeconds+60}
+                    $remaining=Get-DesignerAdmissionSeconds $(if ($condition -eq 'A') {2*$armSeconds} else {$armSeconds}) $true
                     if (-not (Test-TimeFits $remaining)) {throw 'deadline: calibration windows and cleanup cannot fit'}
                     if (-not (Test-AgeFits $Ctx)) {throw 'Calibration fixture-age guard reached.'}
                     $arm=Invoke-Arm $Ctx $(if ($id -eq 'gross-cpu') {3} else {4}) $condition $attempt
@@ -633,7 +869,8 @@ function Invoke-DesignerGrossCalibration($Ctx) {
             $detected=$v.verdict -eq 'fail'
             $row=@{kind='calibration';label='gross attribution check; not near-ceiling sensitivity';status=$(if ($detected) {'pass'} else {'fail'})
                 verdict=$(if ($detected) {'calibration detected'} else {'calibration NOT detected'});metric=$spec.metric;budget=$budgets[$spec.metric]
-                injected=$script:designerCalibration;delta=$delta;metricVerdict=$v.verdict;a=$pair.A.id;b=$pair.B.id;ack=$pair.A.calibrationAck;offAck=$Ctx.Record['calibrationOff']}
+                injected=$script:designerCalibration;delta=$delta;metricVerdict=$v.verdict;a=$pair.A.id;b=$pair.B.id;ack=$pair.A.calibrationAck;offAck=$Ctx.Record['calibrationOff']
+                admission=@{switchingSeconds=10;cleanupSeconds=20;pairRequiredSeconds=2*$armSeconds+10+20}}
             $script:designerProfileRows[$id]=$row
             Add-Check "Designer.$id" "A-only gross load: $($spec.metric) MUST FAIL unchanged budget (calibration detected)" $row $detected
         } catch {

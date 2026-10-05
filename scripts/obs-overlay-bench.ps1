@@ -64,6 +64,7 @@ $invocationQpc = [double][Diagnostics.Stopwatch]::GetTimestamp()
 $invocationUtc = [DateTime]::UtcNow
 $script:designerCleaning = $false
 $script:designerCalibration = $null
+$script:designerRoleBaseline = $null
 $script:designerProfileRows = [ordered]@{}
 $script:designerRunStart = $invocationQpc
 $script:designerDeadlineQpc = $invocationQpc + 3600.0 * [Diagnostics.Stopwatch]::Frequency
@@ -130,10 +131,12 @@ if ($DryRun) {
         Write-Output 'Arithmetic: 4 anchors x 2 pairs x 2 arms x (30+120)s = 40 min; 4 x 60s warm-up = 4 min; 2 calibration AB pairs = 10 min; structural probe reserve = 1 min; setup/switching/cleanup reserve = 5 min; total=60 min; hard deadline from invocation'
         Write-Output 'Structural: sample-paused, fillTimer=0, runningAnimations=0, counters stable over 5s; NOT a resource pass. Sample-paused resources and omitted Lyrics interactions deferred to Exhaustive-v1.'
         Write-Output 'Calibration: A-only +1 pp CPU and +120 MiB retained memory, single AB pair each; target metric must FAIL budget (calibration detected); gross attribution checks, NOT near-ceiling sensitivity.'
+        Write-Output 'Calibration-only admission: 10s switching + 20s cleanup; anchors retain existing reserves; startup-age waits count toward the hard deadline.'
     } else {
         Write-Output "Arithmetic: $($schedule.Count) arms x (30+120)s + ${warmup}s warm-up = $(($windows+$warmup)/60) min + $($reserve/60) min switching reserve = $minutes min/block; $count block(s) = $total min; time box=$TimeBoxMinutes min; fits=True"
     }
     if ($Designer) { Write-Output 'A=preview Open+visible; B=closed; whole-owned-tree budgets +80 MiB/+0.5 pp. WorstFrom must satisfy the selected profile admission.' }
+    if ($Designer) { Write-Output 'DX12-eager only. Before the first switch, wait unscored so the exact 30s settle ends at browser age >=150s; recheck after switching and put extra wait before settle, never inside it. Collector trace/argv delivery informational; exits inside settle/measurement still invalidate; no runtime equivalence claim.' }
     if ($Protocol -eq 'SharedBaseline') { Write-Output "$($Pairs*8) A + $($Pairs*4+2) B (B0/B_end included); only adjacent A share each B; conservative brackets; drift/cold-cost/retention/mixed -> separately approved fresh Exhaustive-v1 four-pair 30-minute command." }
     if ($Workload[0] -eq 'Paused') { Write-Output $(if ($Profile -eq 'Fast-v1') {'Pill standard baseline; frames-worst.json pausedExtensions each require a separate approved command; fast profile is diagnostic only.'} else {'Pill standard baseline; frames-worst.json pausedExtensions each require a separate 30-minute command.'}) }
     Write-Output "Frames admission: $admission$(if ($admission -eq 'provisional-composed') {'; qualificationComplete=false; source hashes/payload identity are attested assertions, not independently verified; NOT certification'})"
@@ -210,7 +213,7 @@ $testEnv = [ordered]@{
     NATIVUNE_TEST_DISCORD_FIXTURE_PAGE = '1'
 }
 $benchEnvKeys = @('NATIVUNE_TEST_DISCORD_BENCH_PROFILE', 'NATIVUNE_TEST_DISCORD_BENCH_STATE', 'NATIVUNE_TEST_DISCORD_MIN_WRITE_SECONDS',
-    'NATIVUNE_TEST_DISCORD_PAUSE_SECONDS', 'NATIVUNE_TEST_OVERLAY_READ_PROBE')
+    'NATIVUNE_TEST_DISCORD_PAUSE_SECONDS', 'NATIVUNE_TEST_OVERLAY_READ_PROBE', 'NATIVUNE_TEST_OVERLAY_EAGER_GPU_INFO')
 $isElevated = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 $budgets = if ($AppOnly) {
@@ -361,6 +364,8 @@ function Start-App([string] $Root, [string] $BenchProfile) {
     foreach ($key in $benchEnvKeys) { $environment[$key] = $null }
     $environment['NATIVUNE_TEST_DISCORD_BENCH_PROFILE'] = $BenchProfile
     $environment['NATIVUNE_TEST_DISCORD_BENCH_STATE'] = 'Hidden'
+    # Explicitly clear inherited opt-in for non-Designer runs (including runas).
+    $environment['NATIVUNE_TEST_OVERLAY_EAGER_GPU_INFO'] = if ($Designer) {'1'} else {$null}
     # Hook-only overlay read probe (PlayerControls.ReadPlaybackStateAsync); absent = normal reads.
     if ($ReadProbe -ne 'none') { $environment['NATIVUNE_TEST_OVERLAY_READ_PROBE'] = $ReadProbe }
     $arguments = @('web', '--root', $Root)
@@ -674,16 +679,22 @@ function Start-Launch([string] $WorkloadName, [int] $Block) {
         Copy-Item -LiteralPath (Join-Path $repo '.tools/better-lyrics') -Destination (Join-Path $root '.tools/better-lyrics') -Recurse
     }
     $profile=if ($WorkloadName -eq 'Playing') {'PlayingLong'} else {'Paused'}
-    $app = Start-App $root $profile
     $ctx = [pscustomobject]@{ Name = $name; Workload = $WorkloadName; Block = $Block; Launch = $script:launchIndex; Root = $root
-        App = $app; AppStart = $null; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
+        App = $null; AppStart = $null; Obs = $null; ObsProcess = $null; ObsStart = $null; Session = $null; ItemId = $null
         ReadyQpc = $null; ItemEnabled = $false; PageArtBaseline = 0; Record = $record; Reader = $null
         Items = $null; ActiveTheme = $selectedOptions.theme; LookId = $configurations[$selectedOptions.theme].id; Shape0 = $null; ArmTrace = $null
         PreviewCandidates=@();PreviewBirths=@();PreviewBefore=@();PreviewCloseKeys=@();PreviewOpenUtc=$null
         OverlayRenderers=@{};OverlayTargets=@{};InfrastructureRenderers=@{};RendererGenerations=@{};RendererActivation=$null
-        InfrastructureSlotCount=0;CefBaselinePending=$false;WarmingUp=$false }
+        InfrastructureSlotCount=0;CefBaselinePending=$false;WarmingUp=$false;GpuTrace=$null;GpuGateComplete=$false }
     $script:currentCtx = $ctx
     try {
+        if ($Designer) {
+            $record['designerCondition']="$($script:designerCondition.name)-lyrics-$($script:designerCondition.lyrics)"
+            $record['roleInventory']=[Collections.Generic.List[object]]::new()
+            $ctx.GpuTrace=Start-DesignerGpuTrace $root $record
+        }
+        $app=Start-App $root $profile
+        $ctx.App=$app
         $record['fixtureProfile']=$profile
         $record['designerLifecycle']=[Collections.Generic.List[object]]::new()
         $record['fixtureProgress']=[Collections.Generic.List[object]]::new()
@@ -766,6 +777,9 @@ function Stop-Launch($Ctx) {
     try {
         if ($Ctx.ArmTrace) { try { [void](Stop-ObsArmTrace $Ctx.ArmTrace) } catch {} ; $Ctx.ArmTrace=$null }
         try { Stop-BenchReader $Ctx } catch { $Ctx.Record['readerStopError']=$_.Exception.Message }
+        if ($Ctx.GpuTrace) {
+            try { Stop-DesignerGpuTrace $Ctx } catch { $Ctx.Record.gpuInfo['traceStopError']=$_.Exception.Message }
+        }
         Clear-GpuCounters
         if ($Ctx.Obs) {
             try { Stop-ObsPortable $Ctx.Obs } catch { $Ctx.Record['obsStopError'] = $_.Exception.Message }
@@ -828,7 +842,9 @@ function Test-RootsAlive($Ctx) {
 # One arm: 30 s settle (validity from hook state) + 120 s measure (samples only) + post-measure validity.
 
 function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
-    Assert-DesignerDeadline ($armSeconds + 60)
+    Assert-DesignerDeadline (Get-DesignerAdmissionSeconds $armSeconds ([bool]$script:designerCalibration))
+    $firstGpuWindow=$Designer -and -not $Ctx.GpuGateComplete
+    Wait-DesignerStartupGate $Ctx
     $arm = [ordered]@{ workload = $Ctx.Workload; block = $Ctx.Block; launch = $Ctx.Launch; pair = $Pair; condition = $Condition
         attempt = $Attempt; valid = $true; reasons = [Collections.Generic.List[string]]::new() }
     $arm['id'] = "l$($Ctx.Launch)-p$Pair-$Condition-a$Attempt"
@@ -868,6 +884,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         if (-not $AppOnly) { $arm['artBaseline'] = $Ctx.PageArtBaseline }
         # Settle-start validity: the stream, workload state, fixture art (page only), and (Playing) a fresh position.
         # fixtureArtServed resets when a stream opens, so require >= 1 from a snapshot taken with streams >= 1.
+        if ($firstGpuWindow) {Wait-DesignerStartupGate $Ctx -BeforeSettle}
         $settleStart = Get-Qpc; $settleEnd = $settleStart + $settleSeconds * $freq
         $Ctx.ArmTrace = Start-ObsArmTrace $Ctx
         $settleOk = { param($s) Test-ObsBenchA $Ctx $s }
@@ -900,6 +917,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         }
     } else {
         if ($AppOnly) { Stop-BenchReader $Ctx } elseif ($Ctx.ItemEnabled) { Set-SourceEnabled $Ctx $false }
+        if ($firstGpuWindow) {Wait-DesignerStartupGate $Ctx -BeforeSettle}
         $settleStart = Get-Qpc; $settleEnd = $settleStart + $settleSeconds * $freq
         $Ctx.ArmTrace = Start-ObsArmTrace $Ctx
         $zero = Wait-For { $s = Get-State $Ctx.Root 'bzero'; if ((Get-Overlay $s 'streams') -eq 0) { $s } } ($settleSeconds - 8) 500
@@ -955,6 +973,12 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
     $stats = [Collections.Generic.List[object]]::new()
     $mStart = Get-Qpc
     $Ctx.ArmTrace.measureStartUtc=[DateTime]::UtcNow
+    if ($firstGpuWindow) {
+        $gate=$Ctx.Record.gpuInfo.gate
+        $gate['ageAtMeasurementStartSeconds']=($Ctx.ArmTrace.measureStartUtc-(ConvertTo-ObsBenchUtc $gate.browserCreationUtc)).TotalSeconds
+        $gate['measurementAgeMet']=$gate.ageAtMeasurementStartSeconds -ge 150
+        if (-not $gate.measurementAgeMet) { & $invalid 'First measurement began before browser age 150s' }
+    }
     $mEnd = $mStart + $measureSeconds * $freq
     $nextStats = $mStart
     $i = 0; $lastQpc = $null; $maxGap = 0.0; $firstChildChange = $null
@@ -1024,8 +1048,14 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         gpuCounters = $script:gpuCounters.Count }
     if ($maxGap -gt $maxGapSeconds) { & $invalid "sample gap $(Round3 $maxGap) s > $maxGapSeconds s" }
     if (-not (Test-RootsAlive $Ctx)) { & $invalid 'Nativune or obs64 root process restarted or exited' }
+    $protectedStartUtc=$Ctx.ArmTrace.startUtc
     $arm['treeExits'] = @(Stop-ObsArmTrace $Ctx.ArmTrace $measureEndUtc); $Ctx.ArmTrace=$null
-    if ($arm.treeExits.Count) { & $invalid 'root or descendant process exited inside settle/measurement window' }
+    foreach ($reason in @(Get-ObsArmExitReasons $arm.treeExits)) { & $invalid $reason }
+    if ($Designer) {
+        Update-DesignerGpuTrace $Ctx
+        $arm['gpuCollectorsInWindow']=@(Get-DesignerCollectorWindowEvents $Ctx.Record.gpuInfo.collectors $protectedStartUtc $measureEndUtc)
+        foreach ($reason in @(Get-ObsArmExitReasons @($arm.gpuCollectorsInWindow | Where-Object exitInside))) { & $invalid $reason }
+    }
     if (-not $AppOnly -and (-not $gpuOk -or $script:gpuCounters.Count -eq 0)) { & $invalid 'missing GPU counter' }
     $failureCountAfter=if (Test-Path $failureLog) {@(Select-String -LiteralPath $failureLog -Pattern 'process-failed').Count} else {0}
     if ($failureCountAfter -gt $failureCountBefore) { & $invalid 'ProcessFailed inside window' }
@@ -1102,6 +1132,7 @@ function Invoke-Arm($Ctx, [int] $Pair, [string] $Condition, [int] $Attempt) {
         $metrics['roles'] = New-RoleMetrics $f.roles $l.roles $span $roleByKey
         $arm['metrics'] = $metrics
     } else { & $invalid 'fewer than 2 samples' }
+    if ($Designer) { Add-DesignerRoleInventory $Ctx $arm $appTree0 $roleByKey }
     $arm['reasons'] = @($arm.reasons)
     $arm
 }

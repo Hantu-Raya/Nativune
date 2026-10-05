@@ -305,6 +305,63 @@ function Test-ObsBenchProfiles {
     'Self-check: two consumed-spare generations pass, including birth before overlay exit; mapped survivors, missing/changing census, extra slot, no chain, PID reuse, later mapping and unknown ownership BLOCK PASS'
     'Self-check: certified off allows evidenced infrastructure only; disabled target/frame, mapped survivor, unknown ownership, missing inventory, shape drift and demand fail; long clock freshness and mixed/missing diagnostics PASS'
 }
+function Test-DesignerGpuInfo {
+    . (Join-Path $PSScriptRoot 'obs-overlay-bench-runtime.ps1')
+    $birth=ConvertTo-ObsBenchUtc '2026-10-05T00:00:00Z'
+    $knownCreated=ConvertTo-ObsBenchUtc '2026-10-05T15:46:45.156368Z'
+    $knownEvent=ConvertTo-ObsBenchUtc '2026-10-05T15:46:46.736298Z'
+    if ([Math]::Abs(($knownEvent-$knownCreated).TotalSeconds-1.579930) -gt 0.000001 -or
+        -not (Test-DesignerTraceBirth $knownCreated $knownEvent $birth) -or
+        -not (Test-DesignerTraceBirth $birth $birth.AddSeconds(5) $birth) -or
+        (Test-DesignerTraceBirth $birth $birth.AddSeconds(5.000001) $birth) -or
+        (Test-DesignerTraceBirth $birth $birth.AddTicks(-1) $birth) -or
+        (Test-DesignerTraceBirth $birth $birth.AddSeconds(1) $birth.AddTicks(1))) {throw 'Process birth event latency bounds changed.'}
+    $initial=Get-DesignerStartupGateMath $birth $birth.AddSeconds(66) 10
+    $local=Get-DesignerStartupGateMath '2026-10-05T08:00:00+08:00' $birth.AddSeconds(66).ToLocalTime() 10
+    if ($initial.waitSeconds -ne 44 -or $initial.browserAgeSeconds -ne 66 -or
+        $initial.settleSeconds -ne 30 -or $initial.projectedMeasureAgeSeconds -ne 150 -or
+        $local.waitSeconds -ne $initial.waitSeconds -or
+        -not (Test-ObsDesignerDeadlineFits 66000 3600000 1000 ($initial.waitSeconds+210) 20)) {throw 'UTC/local gate math or wait-counting deadline regression.'}
+    foreach ($switchSeconds in @(0,2.446,10,35,130)) {
+        $afterSwitch=$birth.AddSeconds(66+$initial.waitSeconds+$switchSeconds)
+        $remaining=Get-DesignerStartupGateMath $birth $afterSwitch 0
+        $settleStartAge=66+$initial.waitSeconds+$switchSeconds+$remaining.waitSeconds
+        if ($settleStartAge+30 -lt 150 -or $remaining.settleSeconds -ne 30 -or
+            ($switchSeconds -lt 10 -and $remaining.waitSeconds -le 0) -or
+            ($switchSeconds -ge 10 -and $remaining.waitSeconds -ne 0)) {throw 'Switch duration must be rechecked; extra wait belongs before the exact 30s settle.'}
+    }
+    if ((Get-DesignerStartupGateMath $birth $birth.AddSeconds(120) 0).waitSeconds -ne 0 -or
+        (Get-DesignerStartupGateMath $birth $birth.AddSeconds(165) 10).waitSeconds -ne 0 -or
+        (Get-DesignerAdmissionSeconds 300 $true) -ne 310 -or
+        (Get-DesignerAdmissionSeconds 150 $true) -ne 160 -or
+        (Get-DesignerAdmissionSeconds 300 $false) -ne 360 -or
+        (Get-DesignerAdmissionSeconds 150 $false) -ne 210 -or
+        -not (Test-ObsDesignerDeadlineFits 3269 3600 1 (Get-DesignerAdmissionSeconds 300 $true) 20) -or
+        (Test-ObsDesignerDeadlineFits 3270 3600 1 (Get-DesignerAdmissionSeconds 300 $true) 20) -or
+        -not (Test-ObsDesignerDeadlineFits 3219 3600 1 (Get-DesignerAdmissionSeconds 300 $false) 20) -or
+        (Test-ObsDesignerDeadlineFits 3220 3600 1 (Get-DesignerAdmissionSeconds 300 $false) 20)) {throw 'Calibration-only 10s switching +20s cleanup, unchanged anchor reserves, or fail-closed deadline boundary changed.'}
+    $flags='--type=gpu-process --disable-gpu-sandbox --use-gl=disabled --gpu-vendor-id=4098 --gpu-device-id=30032'
+    if (-not (Test-DesignerGpuCollector $flags) -or (Test-DesignerGpuCollector '--type=gpu-process --use-gl=angle')) {throw 'Informational collector identity must remain positive, not count/order.'}
+    # Ignored DX switch: delayed collector exits in settle, never exempted.
+    $collector=@{key='20@birth';created=$birth.AddSeconds(121).ToString('o');exitUtc=$birth.AddSeconds(124).ToString('o');commandLine=$flags}
+    $events=@(Get-DesignerCollectorWindowEvents @($collector) $birth.AddSeconds(120) $birth.AddSeconds(270))
+    if ($events.Count -ne 1 -or -not $events[0].exitInside -or
+        @(Get-ObsArmExitReasons @($events | Where-Object exitInside)).Count -ne 1 -or
+        @(Get-ObsArmExitReasons @()).Count) {throw 'Ignored-switch collector exit inside settle/measure must still invalidate.'}
+    $switchExit=$collector.Clone();$switchExit.created=$birth.AddSeconds(111).ToString('o');$switchExit.exitUtc=$birth.AddSeconds(115).ToString('o')
+    if (@(Get-DesignerCollectorWindowEvents @($switchExit) $birth.AddSeconds(120) $birth.AddSeconds(270)).Count) {throw 'Excluded switch exit must remain outside arm trace/windows.'}
+    $queue=[Collections.Concurrent.ConcurrentQueue[object]]::new()
+    $queue.Enqueue(@{kind='birth';process=@{key='10@birth';created=$birth.ToString('o');commandLine='msedgewebview2.exe --no-delay-for-dx12-vulkan-info-collection';parentKey=$null}})
+    $queue.Enqueue(@{kind='birth';process=@{key='20@trace';created=$null;commandLine=$null;parentKey='10@birth';traceBirthUtc=$birth.AddSeconds(121).ToString('o');exitUtc=$null}})
+    $queue.Enqueue(@{kind='exit';key='20@trace';utc=$birth.AddSeconds(124).ToString('o')})
+    $ctx=@{GpuTrace=@{state=@{rows=$queue;stop=$false};handle=@{IsCompleted=$false};processes=@{};failed=$false}
+        Record=@{gpuInfo=@{browsers=@();browserChildren=@();collectors=@();effectiveBrowserArguments=@()}}}
+    Update-DesignerGpuTrace $ctx
+    if ($ctx.Record.gpuInfo.browsers.Count -ne 1 -or $ctx.Record.gpuInfo.browserChildren.Count -ne 1 -or
+        -not $ctx.Record.gpuInfo.browserChildren[0].exitUtc -or $ctx.Record.gpuInfo.collectors.Count) {throw 'Short-lived trace-only child must stay informational, not become browser/collector proof.'}
+    'Self-check: UTC/local startup-age wait, fast/long switch recheck before exact 30s settle, measurement age >=150s; ignored-switch settle exits invalidate, switch exits excluded; calibration-only 10+20 reserve and unchanged anchors/deadline boundaries PASS'
+}
+
 function Test-ObsBenchSchedule {
     $themes = @('pill','matte','matte-light','standard','classic','simple','album-art','card')
     $s = @(New-ObsBenchSchedule -Protocol SharedBaseline -Themes $themes -Seed 47813)
@@ -354,5 +411,6 @@ function Test-ObsBenchSchedule {
     Test-ObsBenchWorst
     Test-ObsBenchComposedAdmission
     Test-ObsBenchProfiles
+    Test-DesignerGpuInfo
     'Self-check: schedule, arithmetic, endpoints, adjacency, brackets, reversal, 4 pairs, drift/cold-cost/retention/mixed and script parse PASS'
 }
