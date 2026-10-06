@@ -36,7 +36,7 @@ foreach ($rate in @(48000,44100)) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','element-replacement','navigation-new-world')) {
+        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -55,6 +55,15 @@ public static class EqE2EInput {
  [DllImport("user32.dll")] static extern uint SendInput(uint count,Input[] input,int size);
  [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+ [StructLayout(LayoutKind.Sequential)] struct Point { public int x,y; }
+ [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point p);
+ [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h,uint flags);
+ [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h,IntPtr after,int x,int y,int cx,int cy,uint flags);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+ // Background processes may not take the foreground, so a click could land on whatever covers the button.
+ // Raising the target to topmost (and back) makes the hit window deterministic; the root under the point is verified.
+ public static void Topmost(IntPtr h,bool on){SetWindowPos(h,new IntPtr(on?-1:-2),0,0,0,0,0x0001|0x0002|0x0010|0x0040);}
+ public static uint RootProcessAt(int x,int y){var p=new Point{x=x,y=y};uint pid;GetWindowThreadProcessId(GetAncestor(WindowFromPoint(p),2),out pid);return pid;}
  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
  [DllImport("advapi32.dll")] static extern bool OpenProcessToken(IntPtr p,uint access,out IntPtr t);
@@ -113,12 +122,19 @@ function Click-Page {
     # Wait for the page's own trusted-click receipt: SendInput only queues input, so a click can be lost (focus)
     # or land after the next hook. Send exactly once (a re-send could arrive late and act as an extra gesture).
     $before = (Hook 'eq-media').trustedClicks
-    [void][EqE2EInput]::SetForegroundWindow([IntPtr]$window.Current.NativeWindowHandle)
-    $bounds = $button.Current.BoundingRectangle
-    [EqE2EInput]::Click([int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2))
-    if (-not (Wait-For { (Hook 'eq-media').trustedClicks -gt $before } 5)) {
-        throw 'The fixture never received the trusted click (input not delivered).'
-    }
+    $handle = [IntPtr]$window.Current.NativeWindowHandle
+    [EqE2EInput]::Topmost($handle, $true)
+    try {
+        [void][EqE2EInput]::SetForegroundWindow($handle)
+        $bounds = $button.Current.BoundingRectangle
+        $x = [int]($bounds.X+$bounds.Width/2); $y = [int]($bounds.Y+$bounds.Height/2)
+        $owner = [EqE2EInput]::RootProcessAt($x, $y)
+        if ($owner -ne $script:process.Id) { throw "Click target is covered by process $owner (input would be misdirected)." }
+        [EqE2EInput]::Click($x, $y)
+        if (-not (Wait-For { (Hook 'eq-media').trustedClicks -gt $before } 5)) {
+            throw 'The fixture never received the trusted click (input not delivered).'
+        }
+    } finally { [EqE2EInput]::Topmost($handle, $false) }
 }
 $launchHelper = Join-Path $rootBase 'launch-helper.ps1'
 [IO.File]::WriteAllText($launchHelper, @'
@@ -306,6 +322,17 @@ function Run-Rate([int] $Rate) {
         [void](Hook 'eq-profile' "tones-$Rate")
         $sourceRecovered=Status-Is 'active'
         Row "$Rate.source-restored-after-attach" $sourceRecovered $script:lastStatus
+        $blockedBefore=Hook 'eq-status'
+        $generationBefore=(Get-Content -Raw (Join-Path $script:root ('data/discord-bench/eq-r'+$script:sequence.ToString('d5')+'.json'))|ConvertFrom-Json).generation
+        [void](Hook 'eq-blocked-navigate')
+        $blockedAfter=Hook 'eq-status'
+        $generationAfter=(Get-Content -Raw (Join-Path $script:root ('data/discord-bench/eq-r'+$script:sequence.ToString('d5')+'.json'))|ConvertFrom-Json).generation
+        $blockedOff=Apply $series -12 $false
+        Row "$Rate.blocked-navigation-keeps-eq" ($blockedBefore.state -ceq 'active' -and $blockedBefore.attached -and
+            $blockedAfter.state -ceq 'active' -and $blockedAfter.attached -and $generationAfter -eq $generationBefore -and
+            $blockedOff.state -ceq 'off' -and $blockedOff.attached) @{
+                before=$blockedBefore;after=$blockedAfter;generationBefore=$generationBefore;generationAfter=$generationAfter;off=$blockedOff}
+        [void](Apply $series -12)
         [void](Hook 'eq-replace-element')
         $replaced=Status-Is 'reloadNeeded'
         Row "$Rate.element-replacement" $replaced $script:lastStatus

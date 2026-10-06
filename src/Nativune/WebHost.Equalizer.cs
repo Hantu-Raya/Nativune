@@ -272,9 +272,21 @@ public sealed partial class WebHostWindow
             SetStatus("Equalizer setting could not be saved. Reload cancelled.", isError: true);
             return false;
         }
-        if (_closing || _disposed || !IsCurrentEqualizerCore(core) || !IsEqualizerMusicOrigin(core.Source)) return false;
-        core.Reload();
-        return true;
+        try
+        {
+            if (!_closing && !_disposed && IsCurrentEqualizerCore(core) && IsEqualizerMusicOrigin(core.Source))
+            {
+                core.Reload();
+                return true;
+            }
+        }
+        catch (Exception) { }
+        _settings = _settings with { Equalizer = previous };
+        var restored = await SaveSettingsConfirmedAsync();
+        SetStatus(restored
+            ? "Reload was not issued; equalizer setting restored."
+            : "Reload was not issued; equalizer setting could not be restored.", isError: true);
+        return false;
     }
 
     private void DisposeEqualizer()

@@ -1025,10 +1025,10 @@ public sealed partial class WebHostWindow : Window
         // A main-frame navigation replaces the document (account pages included).
         InvalidateDiscord();
         InvalidateOverlay();
-        InvalidateEqualizer();
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
+            if (!args.Cancel) InvalidateEqualizer();
             return;
         }
 
@@ -1046,6 +1046,7 @@ public sealed partial class WebHostWindow : Window
         }
         else if (!PlayerControls.IsMusicUri(args.Uri))
         {
+            InvalidateEqualizer();
             var preserveStartupIntent = _compactStartupPending && _settings.StartCompact;
             if (_compact || _compactWhenReady || preserveStartupIntent)
             {
@@ -1054,6 +1055,10 @@ public sealed partial class WebHostWindow : Window
             }
             _settings = _settings with { LastSection = "home" };
             CaptureSettings();
+        }
+        else
+        {
+            InvalidateEqualizer();
         }
     }
 

@@ -637,6 +637,15 @@ public sealed partial class WebHostWindow
                             throw new InvalidDataException("profile");
                         result = await host.Core.ExecuteScriptAsync($"globalThis.__nativuneFixture.eqProfile({JsonSerializer.Serialize(profile)})");
                         break;
+                    case "eq-blocked-navigate":
+                        var blockedNavigationBefore = _blockedNavigation;
+                        await host.Core.ExecuteScriptAsync("location.href='https://example.com/'");
+                        for (var attempt = 0; attempt < 100 && _blockedNavigation == blockedNavigationBefore; attempt++)
+                            await Task.Delay(50, _lifetime.Token);
+                        if (_blockedNavigation == blockedNavigationBefore)
+                            throw new InvalidOperationException("Blocked navigation was not observed.");
+                        result = new { blocked = true };
+                        break;
                     case "eq-replace-element":
                         result = await host.Core.ExecuteScriptAsync("globalThis.__nativuneFixture.eqReplaceElement()");
                         break;
