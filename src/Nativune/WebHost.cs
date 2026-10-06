@@ -877,6 +877,8 @@ public sealed partial class WebHostWindow : Window
             core.HistoryChanged += (_, _) => UpdateNavigation();
             core.SourceChanged += (_, _) => ObserveSection();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
+            // Keep the live document's controller through cancelled navigations and redirects.
+            core.ContentLoading += (_, _) => InvalidateEqualizer();
             core.NewWindowRequested += (_, args) => OnNewWindowRequested(args);
             core.PermissionRequested += (_, args) => OnPermissionRequested(args);
             core.DownloadStarting += (_, args) => OnDownloadStarting(args);
@@ -1028,7 +1030,6 @@ public sealed partial class WebHostWindow : Window
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
-            if (!args.Cancel) InvalidateEqualizer();
             return;
         }
 
@@ -1046,7 +1047,6 @@ public sealed partial class WebHostWindow : Window
         }
         else if (!PlayerControls.IsMusicUri(args.Uri))
         {
-            InvalidateEqualizer();
             var preserveStartupIntent = _compactStartupPending && _settings.StartCompact;
             if (_compact || _compactWhenReady || preserveStartupIntent)
             {
@@ -1055,10 +1055,6 @@ public sealed partial class WebHostWindow : Window
             }
             _settings = _settings with { LastSection = "home" };
             CaptureSettings();
-        }
-        else
-        {
-            InvalidateEqualizer();
         }
     }
 

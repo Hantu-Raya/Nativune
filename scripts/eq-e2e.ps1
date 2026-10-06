@@ -36,7 +36,7 @@ foreach ($rate in @(48000,44100)) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world','superseded-timeout-ignored','indeterminate-apply-reload-needed')) {
+        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','redirect-blocked-keeps-eq','element-replacement','navigation-new-world','superseded-timeout-ignored','indeterminate-apply-reload-needed')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -332,6 +332,18 @@ function Run-Rate([int] $Rate) {
             $blockedAfter.state -ceq 'active' -and $blockedAfter.attached -and $generationAfter -eq $generationBefore -and
             $blockedOff.state -ceq 'off' -and $blockedOff.attached) @{
                 before=$blockedBefore;after=$blockedAfter;generationBefore=$generationBefore;generationAfter=$generationAfter;off=$blockedOff}
+        [void](Apply $series -12)
+        $redirectBefore=Hook 'eq-status'
+        $generationBefore=(Get-Content -Raw (Join-Path $script:root ('data/discord-bench/eq-r'+$script:sequence.ToString('d5')+'.json'))|ConvertFrom-Json).generation
+        $redirect=Hook 'eq-redirect-navigate'
+        $redirectAfter=Hook 'eq-status'
+        $generationAfter=(Get-Content -Raw (Join-Path $script:root ('data/discord-bench/eq-r'+$script:sequence.ToString('d5')+'.json'))|ConvertFrom-Json).generation
+        $redirectOff=Apply $series -12 $false
+        Row "$Rate.redirect-blocked-keeps-eq" ($redirect.blocked -and
+            $redirectBefore.state -ceq 'active' -and $redirectBefore.attached -and
+            $redirectAfter.state -ceq 'active' -and $redirectAfter.attached -and $generationAfter -eq $generationBefore -and
+            $redirectOff.state -ceq 'off' -and $redirectOff.attached) @{
+                redirect=$redirect;before=$redirectBefore;after=$redirectAfter;generationBefore=$generationBefore;generationAfter=$generationAfter;off=$redirectOff}
         [void](Apply $series -12)
         [void](Hook 'eq-replace-element')
         $replaced=Status-Is 'reloadNeeded'

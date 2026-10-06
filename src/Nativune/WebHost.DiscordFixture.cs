@@ -88,6 +88,14 @@ public sealed partial class WebHostWindow
         }
         if (https && uri!.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase))
         {
+            if (args.ResourceContext == CoreWebView2WebResourceContext.Document &&
+                uri.AbsolutePath == "/__nativune_eq_redirect" &&
+                Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
+            {
+                args.Response = sender.Environment.CreateWebResourceResponse(null, 302, "Found",
+                    "Cache-Control: no-store\r\nLocation: https://example.com/");
+                return;
+            }
             args.Response = args.ResourceContext == CoreWebView2WebResourceContext.Document
                 ? DiscordFixtureResponse(sender, s_discordFixturePage!, 200, "OK", "text/html; charset=utf-8")
                 : DiscordFixtureResponse(sender, null, 204, "No Content", null);
@@ -686,8 +694,11 @@ public sealed partial class WebHostWindow
                         result = await host.Core.ExecuteScriptAsync($"globalThis.__nativuneFixture.eqProfile({JsonSerializer.Serialize(profile)})");
                         break;
                     case "eq-blocked-navigate":
+                    case "eq-redirect-navigate":
                         var blockedNavigationBefore = _blockedNavigation;
-                        await host.Core.ExecuteScriptAsync("location.href='https://example.com/'");
+                        await host.Core.ExecuteScriptAsync(command == "eq-redirect-navigate"
+                            ? "location.href='https://music.youtube.com/__nativune_eq_redirect'"
+                            : "location.href='https://example.com/'");
                         for (var attempt = 0; attempt < 100 && _blockedNavigation == blockedNavigationBefore; attempt++)
                             await Task.Delay(50, _lifetime.Token);
                         if (_blockedNavigation == blockedNavigationBefore)
