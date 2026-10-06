@@ -1142,7 +1142,9 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             // Compact has one short status line: only surface EQ states that need the user's attention.
             EqualizerState.Off or EqualizerState.Active or EqualizerState.Bypassed => string.Empty,
             EqualizerState.Waiting => "EQ: Waiting",
-            EqualizerState.Interrupted or EqualizerState.ReloadNeeded => "EQ: Interrupted — Reload needed",
+            // Interrupted recovers by itself (the controller keeps resuming); only ReloadNeeded needs a reload.
+            EqualizerState.Interrupted => "EQ: Interrupted — retrying",
+            EqualizerState.ReloadNeeded => "EQ: Reload needed",
             EqualizerState.ProtectedMedia => "EQ: Protected media",
             EqualizerState.NotApplied => "EQ: Not applied",
             _ => "EQ: Unavailable"

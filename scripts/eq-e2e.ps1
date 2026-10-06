@@ -38,7 +38,7 @@ foreach ($rate in $Rates) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','redirect-blocked-keeps-eq','element-replacement','navigation-new-world','superseded-timeout-ignored','indeterminate-apply-reload-needed')) {
+        'suspend-rejected-resume','rejected-resume-auto-recovers','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','redirect-blocked-keeps-eq','element-replacement','navigation-new-world','superseded-timeout-ignored','indeterminate-apply-reload-needed')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -305,15 +305,14 @@ function Run-Rate([int] $Rate) {
         Row "$Rate.stale-rollback" ($late.rev -eq $latest.rev -and $late.state -ceq 'active') @{latest=$latest;late=$late}
         [void](Hook 'eq-reject-resume')
         [void](Hook 'eq-suspend')
-        # Barrier: the controller's own automatic resume must consume the injected rejection before the
-        # recovery click, or the click itself could be the call that gets rejected.
-        $interrupted=Wait-For { $script:lastStatus = Hook 'eq-status'
-            $script:lastStatus.state -ceq 'interrupted' -and $script:lastStatus.rejectedResumeConsumed } 10
-        Row "$Rate.suspend-rejected-resume" $interrupted $script:lastStatus
-        if (-not $interrupted) { throw 'Automatic resume did not consume the injected rejection.' }
-        Click-Page
+        # Barrier: the controller's own automatic resume must consume the injected rejection first.
+        $consumed=Wait-For { $script:lastStatus = Hook 'eq-status'; $script:lastStatus.rejectedResumeConsumed } 10
+        Row "$Rate.suspend-rejected-resume" $consumed $script:lastStatus
+        if (-not $consumed) { throw 'Automatic resume did not consume the injected rejection.' }
+        # Owner report (6 Oct 2026, "EQ: Interrupted"): one failed resume used to leave the graph stuck (and the
+        # music silent) until a click inside the page, which Compact never delivers. It must retry by itself.
         $resumed=Status-Is 'active'
-        Row "$Rate.normal-resume" $resumed $script:lastStatus
+        Row "$Rate.rejected-resume-auto-recovers" ($resumed -and $script:lastStatus.contextState -ceq 'running') $script:lastStatus
         [void](Hook 'eq-suspend')
         $resumed=Status-Is 'active'
         Row "$Rate.suspend-normal-resume" $resumed $script:lastStatus

@@ -12,7 +12,7 @@
     let epoch = null, rev = 0, desired = null;
     let ctx = null, source = null, element = null, filters = [], preamp = null;
     let state = 'off', reason = '', encrypted = false, mediaKeys = false;
-    let working = false, pending = false, gestureListening = false, resumeInFlight = false;
+    let working = false, pending = false, gestureListening = false, resumeInFlight = null, lastResumeAt = 0;
     let reloadNeeded = false;
     let activationAttempted = false, parameterRevision = -1, attachmentAttempted = false;
 
@@ -34,14 +34,16 @@
         filters.forEach((filter, index) => ramp(filter.gain, dry ? 0 : desired.gains[index]));
         ramp(preamp.gain, dry ? 1 : Math.pow(10, desired.preampDb / 20));
     }
+    // One ctx.resume() at a time: a browser may leave it pending until a genuine gesture or until an
+    // interruption ends, so the caller waits at most 750 ms but a new attempt is not stacked on top.
     async function resume() {
-        if (resumeInFlight || ctx.state === 'running') return;
-        resumeInFlight = true;
-        try {
-            // A browser may leave resume pending until a genuine gesture. Bound our wait.
-            await Promise.race([ctx.resume().catch(() => {}), new Promise(resolve => setTimeout(resolve, 750))]);
-        } catch (_) { }
-        finally { resumeInFlight = false; }
+        if (ctx.state === 'running' || ctx.state === 'closed') return;
+        if (!resumeInFlight) {
+            lastResumeAt = Date.now();
+            resumeInFlight = Promise.resolve().then(() => ctx.resume()).catch(() => {})
+                .finally(() => { resumeInFlight = null; });
+        }
+        await Promise.race([resumeInFlight, new Promise(resolve => setTimeout(resolve, 750))]);
     }
     function listenForGesture() {
         if (gestureListening) return;
@@ -76,7 +78,14 @@
                 if (element.currentSrc && !element.currentSrc.startsWith('blob:https://music.youtube.com/')) {
                     setState('reloadNeeded', 'source'); return;
                 }
-                if (ctx.state !== 'running') { setState('interrupted', 'context'); listenForGesture(); return; }
+                // A suspended or interrupted context silences the element (its audio now flows only through
+                // this graph). Keep retrying, at most every 2 s: polls, playback and visibility drive this.
+                if (ctx.state === 'closed') { setState('reloadNeeded', 'closed'); return; }
+                if (ctx.state !== 'running' && Date.now() - lastResumeAt >= 2000) await resume();
+                if (ctx.state !== 'running') {
+                    setState('interrupted', ctx.state === 'interrupted' ? 'system' : 'context');
+                    listenForGesture(); return;
+                }
                 setState(!desired.enabled ? 'off' : desired.bypass ? 'bypassed' : 'active');
                 return;
             }
@@ -165,4 +174,7 @@
     }).observe(document, { childList: true, subtree: true });
     document.addEventListener('loadedmetadata', () => { if (desired) void reconcile(); }, true);
     document.addEventListener('emptied', () => { if (desired) void reconcile(); }, true);
+    // Recovery nudges for a non-running context: playback starting and the page becoming visible again.
+    document.addEventListener('playing', () => { if (desired && source && ctx && ctx.state !== 'running') void reconcile(); }, true);
+    document.addEventListener('visibilitychange', () => { if (desired && source && ctx && ctx.state !== 'running') void reconcile(); });
 })();

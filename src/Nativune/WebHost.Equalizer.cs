@@ -214,6 +214,9 @@ public sealed partial class WebHostWindow
         }
         if (_closing || _disposed || EqualizerStatus == status) return;
         var previousRate = EqualizerStatus.SampleRate;
+        // State and reason codes only (fixed ASCII tokens, validated on read): no URLs or titles.
+        if (status.State != EqualizerStatus.State || status.Reason != EqualizerStatus.Reason)
+            AppLog.Write("eq", $"{status.State} {status.Reason ?? "-"}{(status.Attached ? " attached" : "")}");
         EqualizerStatus = status;
         // Auto headroom depends on the context's real rate, known only after attachment; re-apply once it changes.
         // Saved state still owns the graph while Settings is open until a dialog preview replaces it.
