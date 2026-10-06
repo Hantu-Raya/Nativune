@@ -141,6 +141,8 @@ Row 1 'paired-track-checkpoint' {
     $mid = $null; [void](Wait-For { $script:mid = Inspect $paired; $script:mid.valid } 2); $mid = $script:mid
     # A website-side seek on the same song right before quit: only the shutdown read can see it.
     [void](Hook 'resume-fixture' @{ track = 'B'; position = 120.5 })
+    # Quit as soon as the page has finished that seek, before a periodic save can see it.
+    [void](Wait-For { [math]::Abs((State).position - 120.5) -le 1 } 3)
     Stop-App
     $cp = Inspect $paired
     @{ pass = $mid.valid -and $mid.isB -and [math]::Abs($mid.position - 73.625) -le 1 -and $cp.valid -and $cp.isB -and [math]::Abs($cp.position - 120.5) -le 1.5;
@@ -230,6 +232,9 @@ Row 4 'failure-ad-ended-and-cancellation' {
     # keep the site's whole-second t= position and pause.
     $root = New-Root 'shared-timeline'; Seed $root 'fixtureSngB' 73.625 400
     Start-App $root; $shared = Await-Done; Stop-App
+    # No ytmusic-player-bar at all (seen on the real site): the player's title link is the identity.
+    $root = New-Root 'no-bar'; Seed $root
+    Start-App $root @{ NATIVUNE_TEST_RESUME_NO_BAR = '1' }; $noBar = Await-Done; Stop-App
     # Windows sleep during a restore: the identity link appears only after 14 s, with a simulated suspend from
     # 2 s to 13 s. Sleep time must not count, so the restore completes instead of timing out at 10 s.
     $root = New-Root 'sleep'; Seed $root
@@ -276,6 +281,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         recovery = $recovered.restoreState -ceq 'Cancelled' -and -not $recovered.coreMuted -and -not $recovered.paused
         failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
         failedKeyPlay = $keyPlay.restoreState -ceq 'Cancelled' -and -not $keyPlay.paused -and -not $keyPlay.coreMuted -and -not $keyPlay.safetyMuted
+        noPlayerBar = $noBar.restoreState -ceq 'Done' -and $noBar.paused -and [math]::Abs($noBar.position - 73.625) -le 1 -and -not $noBar.coreMuted
         sleepNotCounted = $slept.restoreState -ceq 'Done' -and $slept.isB -and $slept.paused -and [math]::Abs($slept.position - 73.625) -le 1 -and -not $slept.coreMuted
         sharedTimeline = $shared.restoreState -ceq 'Done' -and $shared.isB -and $shared.paused -and $shared.seekCount -eq 0 -and [math]::Abs($shared.position - 73) -le 0.5 -and -not $shared.coreMuted
         migrations = @($migrations | Where-Object { -not $_.pass }).Count -eq 0
@@ -283,7 +289,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
-        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept; adKey = $adKey; adKeyPost = $adKeyPost;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept; noBar = $noBar; adKey = $adKey; adKeyPost = $adKeyPost;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; replacedAfterFailure = $replaced; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }
@@ -300,16 +306,18 @@ if ($Only -contains 5) { try {
     $blocked = $ready.Count -eq 0 -and @($samples | Where-Object { $_.networkFailed }).Count -gt 0
     $held = $ready.Count -ge 2 -and @($ready | Where-Object { -not $_.paused -or [math]::Abs($_.position - 60.625) -gt 1 }).Count -eq 0
     $guarded = @($samples | Where-Object { $_.restoreState -cne 'Done' -and -not $_.safetyMuted }).Count -eq 0
+    $dom = try { Hook 'resume-dom' } catch { $null }
     Stop-App
     $root = New-Root 'real-t' $true $false $true; Seed $root $VideoId 60.625 213
     $file = Join-Path $root 'data/settings.json'; $prefs = Get-Content -Raw $file | ConvertFrom-Json -AsHashtable; $prefs.OutputMuted = $true
     [IO.File]::WriteAllText($file, ($prefs | ConvertTo-Json -Depth 8))
     Start-App $root $realEnv; $urlOnly = Await-Done
+    $urlDom = try { Hook 'resume-dom' } catch { $null }
     # The site may rewrite the address after load, so t= is optional evidence; the first played position is the proof.
     $urlPass = $urlOnly.restoreState -ceq 'Done' -and ($null -eq $urlOnly.timeParameter -or $urlOnly.timeParameter -eq 60) -and $urlOnly.firstPlayingPosition -ge 59.625 -and $urlOnly.firstPlayingPosition -le 61.625
     $blocked = $blocked -or $urlOnly.networkFailed
     $pass = $held -and $guarded -and $urlPass
-    $rows.Add([ordered]@{ row = 5; name = 'signed-out-real-site'; blockAds = $true; status = $(if ($blocked) { 'BLOCKED' } elseif ($pass) { 'PASS' } else { 'FAIL' }); reason = $(if ($blocked) { 'Official Music network navigation/media failed.' } else { $null }); samples = $samples; urlOnly = $urlOnly; urlOnlyOutputMuted = $true })
+    $rows.Add([ordered]@{ row = 5; name = 'signed-out-real-site'; blockAds = $true; status = $(if ($blocked) { 'BLOCKED' } elseif ($pass) { 'PASS' } else { 'FAIL' }); reason = $(if ($blocked) { 'Official Music network navigation/media failed.' } else { $null }); samples = $samples; dom = $dom; urlOnly = $urlOnly; urlDom = $urlDom; urlOnlyOutputMuted = $true })
 } catch { $rows.Add([ordered]@{ row = 5; name = 'signed-out-real-site'; status = 'FAIL'; reason = $_.Exception.Message }) }
 finally { Stop-App } }
 $clock.Stop()

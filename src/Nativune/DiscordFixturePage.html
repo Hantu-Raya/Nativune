@@ -217,6 +217,8 @@
     if(home){identity();if(config.homeMedia)load(tracks.A,31);else render();return;}
     const t=query.get('t'), position=/^[0-9]+$/.test(t||'')?Number(t):0;
     load(track,isAd?0:position);
+    // Real-site layout seen in E2E: no bottom player bar at all; the player's title link remains.
+    if(config.noBar)setTimeout(()=>document.querySelector('ytmusic-player-bar')?.remove(),0);
     if(config.delay){link.remove();document.querySelector('.title').textContent='';setTimeout(()=>{player.append(link);identity();},config.delay);}
     return;
   }

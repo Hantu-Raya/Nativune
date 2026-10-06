@@ -4,12 +4,18 @@
   if (window !== window.top || location.origin !== 'https://music.youtube.com') return;
   const saved = request.checkpoint, generation = request.generation;
   if (!request.homeGuard && new URL(location.href).searchParams.get('v') !== saved.videoId) return;
+  // Act on at most one document (the startup one) and only shortly after startup: a registration the host
+  // could not remove must never pause or seek a later load of the saved song. sessionStorage is shared by
+  // the worlds of this tab and survives reloads.
+  if (Date.now() > request.notAfter) return;
+  try { if (sessionStorage.getItem(request.once)) return; sessionStorage.setItem(request.once, '1'); } catch { }
   let state = 'Armed', reason = '', media = null, sought = false, stableAt = 0;
   let baseline = null, timer = null, timeout = null;
   let initialPosition = null, completeAt = null, playingAt = null;
   // The public per-track clock ("1:10 / 3:05"), authoritative when media time is a shared timeline.
   const trackClock = () => {
-    const infos = document.querySelectorAll('ytmusic-player-bar span.time-info');
+    const found = Array.from(document.querySelectorAll('ytmusic-player-bar span.time-info'));
+    const infos = found.length === 1 ? found : found.filter(e => e.getClientRects().length > 0);
     if (infos.length !== 1) return null;
     const m = (infos[0].textContent || '').trim().match(/^(\d+(?::\d{1,2}){1,2})\s*\/\s*(\d+(?::\d{1,2}){1,2})$/);
     if (!m) return null;
@@ -54,9 +60,24 @@
   const no = code => { diag = code; return false; };
   const identity = () => {
     if (ad() || !media || media.seeking || !Number.isFinite(media.duration) || media.duration <= 0) { baseline = null; return no('media'); }
-    const url = new URL(location.href), bars = document.querySelectorAll('ytmusic-player-bar');
+    const url = new URL(location.href), all = document.querySelectorAll('ytmusic-player-bar');
     if (url.searchParams.getAll('v').length !== 1 || url.searchParams.get('v') !== saved.videoId) return no('url');
-    if (bars.length !== 1) return no('bar');
+    // The real site sometimes keeps a second, unrendered player bar: use the single rendered one.
+    if (all.length === 0) {
+      // Some real-site loads never render the bottom player bar (seen in E2E: player, title link and media present,
+      // zero ytmusic-player-bar). The player's own title link carrying the saved id is then the identity.
+      const only = document.querySelectorAll('ytmusic-player a.ytp-title-link');
+      if (only.length === 1) {
+        try {
+          const link = new URL(only[0].getAttribute('href'), location.origin);
+          if (link.origin === location.origin && link.pathname === '/watch'
+            && link.searchParams.getAll('v').length === 1 && link.searchParams.get('v') === saved.videoId) return true;
+        } catch { }
+      }
+      return no('bar0');
+    }
+    const bars = all.length === 1 ? Array.from(all) : Array.from(all).filter(b => b.getClientRects().length > 0);
+    if (bars.length !== 1) return no(all.length === 0 ? 'bar0' : 'bar' + Math.min(all.length, 9) + 'r' + Math.min(bars.length, 9));
     const titles = bars[0].querySelectorAll('.title');
     const title = titles.length === 1 ? titles[0].textContent.trim() : '';
     const artist = bars[0].querySelector('.byline')?.textContent.trim() || '';

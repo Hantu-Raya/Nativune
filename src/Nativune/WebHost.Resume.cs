@@ -70,8 +70,12 @@ public sealed partial class WebHostWindow
         using var stream = typeof(WebHostWindow).Assembly.GetManifestResourceStream("Nativune.ResumeStartup.js")
             ?? throw new InvalidOperationException("Resume startup resource missing.");
         using var reader = new StreamReader(stream);
+        // once + notAfter make the script act on at most one document, within 2 minutes of startup, so a leftover
+        // registration can never act on a later load of the saved song.
         var script = "const request = " + JsonSerializer.Serialize(new {
             generation, waitPaused, homeGuard = invalid,
+            once = "nativune-resume-" + Guid.NewGuid().ToString("N"),
+            notAfter = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds(),
             checkpoint = new { videoId = checkpoint?.VideoId ?? "",
                 positionSeconds = checkpoint?.PositionSeconds ?? 0, durationSeconds = checkpoint?.DurationSeconds ?? 0 }
         }) + ";\n" + await reader.ReadToEndAsync(_lifetime.Token);
@@ -147,8 +151,8 @@ public sealed partial class WebHostWindow
         _resumeCandidate = null;
         if (!ResumeInProgress && !_resumeSafetyMuted)
         {
-            // A finished restore never holds navigation; a leftover registration is removed in the background
-            // (its script only acts on the saved song's page).
+            // A finished restore never holds navigation. A leftover registration is removed in the background;
+            // its script cannot act again anyway (it runs at most once per launch, within 2 minutes).
             if (_resumeRegistration is not null || _resumeRegistrationAdd is not null) _ = RemoveResumeRegistrationAsync();
             return true;
         }
@@ -263,9 +267,8 @@ public sealed partial class WebHostWindow
             {
                 // The controller is terminal and has dropped its recovery handlers, so release the guard now;
                 // a registration that could not be removed is retried by the next navigation.
-                var removed = await RemoveResumeRegistrationAsync();
                 RestoreResumeMute();
-                if (!removed) AppLog.Write("resume", "cleanup-failed");
+                if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
                 if (state == "Cancelled")
                 {
                     ++_resumeGeneration;

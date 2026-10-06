@@ -72,6 +72,7 @@ public sealed partial class WebHostWindow
                 badLink = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_BAD_LINK") == "1",
                 stall = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_STALL") == "1",
                 homeMedia = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_HOME_MEDIA") == "1",
+                noBar = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_NO_BAR") == "1",
                 delay = int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_DELAY"), out var delay)
                     ? Math.Clamp(delay, 0, 16000) : 0
             });
@@ -615,6 +616,15 @@ public sealed partial class WebHostWindow
                     case "resume-show":
                         OnTrayCommand("show"); // The tray icon's Show path.
                         result = new { dispatched = true };
+                        break;
+                    case "resume-dom":
+                        // Element counts only (no text), to diagnose real-site layouts the restore cannot identify.
+                        result = JsonDocument.Parse(await host.Core.ExecuteScriptAsync(
+                            "(()=>{const c=s=>document.querySelectorAll(s).length;return {path:location.pathname," +
+                            "bars:c('ytmusic-player-bar'),renderedBars:Array.from(document.querySelectorAll('ytmusic-player-bar')).filter(b=>b.getClientRects().length>0).length," +
+                            "app:c('ytmusic-app'),player:c('ytmusic-player'),media:c('audio,video'),titles:c('ytmusic-player-bar .title')," +
+                            "timeInfo:c('ytmusic-player-bar span.time-info'),links:c('ytmusic-player a.ytp-title-link'),playerPage:c('ytmusic-player-page')," +
+                            "barLike:Array.from(new Set(Array.from(document.querySelectorAll('*')).map(e=>e.localName).filter(n=>/player-bar|playerbar/.test(n))))};})()")).RootElement.Clone();
                         break;
                     case "resume-page-play":
                         // key=true sends a trusted CDP key press first, then plays as the site's shortcut handler would;
