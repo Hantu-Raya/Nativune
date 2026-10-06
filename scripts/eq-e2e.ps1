@@ -2,11 +2,13 @@
 EQ Gates A+B: real hook app, production isolated-world attach path, synthetic non-silent stereo media.
 Regenerate exactly (all rows, both sample rates):
   pwsh -NoProfile -File scripts/eq-e2e.ps1 -OutputDirectory artifacts/eq-e2e
+Quick iteration (not a full gate): -Rates 48000 runs one sample rate.
 Never ship artifacts/eq-e2e/app. Profiles live only under .cache/eq-e2e; owner data is untouched.
 Reports retain statistics/response oracles, not PCM. Mutant rows pass ONLY when the audio oracle rejects them.
 #>
 [CmdletBinding()]
-param([string] $OutputDirectory = 'artifacts/eq-e2e', [switch] $SkipPublish, [switch] $KeepRoot)
+param([string] $OutputDirectory = 'artifacts/eq-e2e', [switch] $SkipPublish, [switch] $KeepRoot,
+    [ValidateSet(48000,44100)] [int[]] $Rates = @(48000,44100))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -31,7 +33,7 @@ $ClickRatioLimit = 0.01
 $ResponseToleranceDb = 0.5
 $NullLimitDb = -80
 $requiredRows = @('foreign-source.de-elevated','foreign-source-rejected-before-attach')
-foreach ($rate in @(48000,44100)) {
+foreach ($rate in $Rates) {
     $requiredRows += "rate-$rate.de-elevated"
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
@@ -420,7 +422,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Hook publish failed ($LASTEXITCODE)." }
     }
     if (-not (Test-Path -LiteralPath $exe)) { throw "Hook app not found: $exe" }
-    foreach ($rate in @(48000,44100)) {
+    foreach ($rate in $Rates) {
         try { Run-Rate $rate } catch { Row "$rate.run-completion" $false @{error=$_.Exception.Message}; Stop-Fixture }
         try { Run-InjectedBlock $rate } catch { Row "$rate.injected-block-completion" $false @{error=$_.Exception.Message}; Stop-Fixture }
     }

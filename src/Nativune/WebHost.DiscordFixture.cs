@@ -543,6 +543,9 @@ public sealed partial class WebHostWindow
                         if (settingsPage == "Equalizer") _settingsDialog?.SelectEqualizerPage();
                         result = new { open = _settingsDialogOpen, page = settingsPage };
                         break;
+                    case "eq-settings-open":
+                        result = new { open = _settingsDialogOpen };
+                        break;
                     case "eq-settings-file":
                         using (var persisted = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, "data", "settings.json"))))
                         {
@@ -645,14 +648,37 @@ public sealed partial class WebHostWindow
                             sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb,
                             newerState = newerState.ToString().ToLowerInvariant(), olderPendingAfterNewer };
                         break;
+                    case "eq-reload-document":
+                        var reloadGeneration = _equalizerGeneration;
+                        var reloadRevision = _equalizerRevision;
+                        var reloadCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        void OnEqReloadCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args) =>
+                            reloadCompleted.TrySetResult(args.IsSuccess);
+                        host.Core.NavigationCompleted += OnEqReloadCompleted;
+                        try
+                        {
+                            host.Core.Reload();
+                            if (!await reloadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), _lifetime.Token))
+                                throw new InvalidOperationException("eq-reload-navigation-failed");
+                            for (var attempt = 0; attempt < 100 &&
+                                (_equalizerGeneration <= reloadGeneration || _equalizerRevision <= reloadRevision); attempt++)
+                                await Task.Delay(25, _lifetime.Token);
+                            if (_equalizerGeneration <= reloadGeneration || _equalizerRevision <= reloadRevision)
+                                throw new InvalidOperationException("eq-reload-apply-timeout");
+                            result = new { generation = _equalizerGeneration, revision = _equalizerRevision };
+                        }
+                        finally { host.Core.NavigationCompleted -= OnEqReloadCompleted; }
+                        break;
                     case "eq-host-status":
                         result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
                             reason = EqualizerStatus.Reason, attached = EqualizerStatus.Attached,
-                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb };
+                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb,
+                            gains = _equalizerDesired?.GainsDb, generation = _equalizerGeneration, revision = _equalizerRevision };
                         break;
                     case "eq-applied-preamp":
                         result = await EqualizerHookEvaluateAsync("(()=>{const g=__nativuneEq.__graph();return " +
-                            "{sampleRate:g.ctx?.sampleRate??0,preampDb:g.preamp?20*Math.log10(g.preamp.gain.value):null}})()");
+                            "{sampleRate:g.ctx?.sampleRate??0,preampDb:g.preamp?20*Math.log10(g.preamp.gain.value):null," +
+                            "gains:g.filters.map(f=>f.gain.value)}})()");
                         break;
                     case "eq-apply":
                         var apply = new EqualizerApply(value.GetProperty("enabled").GetBoolean(),

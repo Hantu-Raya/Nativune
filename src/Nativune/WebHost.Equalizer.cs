@@ -51,8 +51,8 @@ public sealed partial class WebHostWindow
 
     private async Task OnEqualizerNavigationCompletedAsync(CoreWebView2NavigationCompletedEventArgs args)
     {
-        InvalidateEqualizer();
         if (!args.IsSuccess || !IsEqualizerMusicOrigin(_browserHost?.Core.Source)) return;
+        if (_settingsDialog?.ReapplyEqualizerDraft() == true) return;
         await ApplyEqualizerFromSettingsAsync();
     }
 
@@ -274,7 +274,8 @@ public sealed partial class WebHostWindow
         }
         try
         {
-            if (!_closing && !_disposed && IsCurrentEqualizerCore(core) && IsEqualizerMusicOrigin(core.Source))
+            if (!_closing && !_disposed && !_settings.Equalizer.Enabled &&
+                IsCurrentEqualizerCore(core) && IsEqualizerMusicOrigin(core.Source))
             {
                 core.Reload();
                 return true;

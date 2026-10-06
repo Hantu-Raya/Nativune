@@ -466,6 +466,12 @@ function Run-FirstPreviewRate {
         -not $persisted.equalizer.enabled -and (Same-Gains $persisted.equalizer.gainsDb @(0,0,0,0,0,0,0,0,0,0))) @{
             staged=$script:stagedPreview;host=$script:ratePreview;applied=$script:appliedPreview;
             fallbackDb=$fallback.effectivePreampDb;realDb=$real.effectivePreampDb;persisted=$persisted}
+    $expectedReadout='Effective preamp: '+([double]$real.effectivePreampDb).ToString('+0.#;-0.#;0')+' dB'
+    $readoutCorrect=Wait-For {
+        $script:rateReadout=(Control 'EqEffectivePreamp').Current.Name
+        $script:rateReadout -ceq $expectedReadout
+    } 5
+    Row 'readout-real-rate' $readoutCorrect @{actual=$script:rateReadout;expected=$expectedReadout;sampleRate=16000}
     Close-Settings
 }
 function Run-LowRate {
@@ -482,6 +488,52 @@ function Run-LowRate {
     Row 'low-rate-settings-curve' ($x.Count -gt 50 -and $maxX -le $nyquistX + 0.5 -and $null -ne (Find-Control 'EqEnabled')) @{points=$x.Count;maxX=$maxX;nyquistX=$nyquistX;width=$curve.width}
     Close-Settings
 }
+function Run-DraftDocumentReplacement {
+    Start-Fixture 'draft-document-replacement' 48000 (Seed $true)
+    Click-Page
+    if (-not (Status-Is 'active' 20)) { throw 'Document replacement fixture never attached.' }
+    Open-Settings
+    $savedBefore=Canonical (File-State)
+    Toggle 'EqAutoHeadroom' $false
+    Enter-Text 'EqBandBox1' '6'
+    $draft=Band-Gains
+    $staged=Wait-For {
+        $script:draftBeforeReload=Hook 'eq-host-status'
+        $script:draftBeforeReload.state -ceq 'active' -and (Same-Gains $script:draftBeforeReload.gains $draft)
+    } 10
+    if (-not $staged) { throw 'Document replacement draft never applied.' }
+    $replacement=Hook 'eq-reload-document'
+    $reapplied=Wait-For {
+        $script:draftAfterReload=Hook 'eq-host-status'
+        $script:draftAfterReload.generation -gt $script:draftBeforeReload.generation -and
+        $script:draftAfterReload.revision -gt $script:draftBeforeReload.revision -and
+        $script:draftAfterReload.state -cin @('waiting','active') -and (Same-Gains $script:draftAfterReload.gains $draft)
+    } 10
+    $graph=$null
+    $graphMatches=$true
+    if ($reapplied -and $script:draftAfterReload.attached) {
+        $graphMatches=Wait-For {
+            $script:replacementGraph=Hook 'eq-applied-preamp'
+            Same-Gains $script:replacementGraph.gains $draft
+        } 10
+        $graph=$script:replacementGraph
+    }
+    $dialogOpen=(Hook 'eq-settings-open').open
+    $displayMatches=Same-Gains (Band-Gains) $draft
+    $fileUnchanged=(Canonical (File-State)) -ceq $savedBefore
+    Close-Settings
+    $cancelRestored=Wait-For {
+        $script:draftAfterCancel=Hook 'eq-host-status'
+        Same-Gains $script:draftAfterCancel.gains @(0,0,0,0,0,0,0,0,0,0)
+    } 10
+    Row 'draft-survives-document-replacement' ($reapplied -and $graphMatches -and $dialogOpen -and
+        $displayMatches -and $fileUnchanged -and $cancelRestored) @{
+            before=$script:draftBeforeReload;replacement=$replacement;after=$script:draftAfterReload;
+            draft=$draft;graph=$graph;dialogOpen=$dialogOpen;displayMatches=$displayMatches;
+            fileUnchanged=$fileUnchanged;cancelRestored=$cancelRestored;afterCancel=$script:draftAfterCancel;
+            graphCheck=$(if($null -ne $graph){'applied gains checked'}else{'desired gains only; new document not attached without a gesture while Settings is modal'})}
+}
+
 function Run-Ui {
     Start-Fixture 'ui' 48000 (Seed)
     # Trusted fixture activation is performed before opening the native dialog.
@@ -665,8 +717,9 @@ $requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-c
     'paste-invalid-oversize','more-toggle-persists-status','volume-owned-session','volume-quarter-eq-active',
     'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated','low-rate.de-elevated','low-rate-attached-16k','low-rate-settings-curve','reload.de-elevated','reload-save-failure-keeps-state','reload-success-disables')
 foreach($i in 0..9){$requiredRows+="slider-$i-name-step"}
-$requiredRows+=@('first-preview-rate.de-elevated','first-preview-real-rate-auto-headroom')
+$requiredRows+=@('first-preview-rate.de-elevated','first-preview-real-rate-auto-headroom','readout-real-rate')
 $requiredRows+=@('saved-rate-settings-open.de-elevated','saved-eq-real-rate-with-settings-open')
+$requiredRows+=@('draft-document-replacement.de-elevated','draft-survives-document-replacement')
 $clipboardSaved=Get-Clipboard -Raw
 $failure=$null
 try {
@@ -681,6 +734,7 @@ try {
     try { Run-LowRate } catch { Row 'low-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-FirstPreviewRate } catch { Row 'first-preview-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-SavedRateWithSettingsOpen } catch { Row 'saved-rate-settings-open-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
+    try { Run-DraftDocumentReplacement } catch { Row 'draft-document-replacement-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-Reload } catch { Row 'reload-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
 } catch { $failure=$_.Exception.Message;Row 'harness-completion' $false @{error=$failure} }
 finally {

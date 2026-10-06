@@ -43,8 +43,9 @@ public sealed partial class WebHostWindow
             try
             {
                 _settings = _settings with { Equalizer = _settings.Equalizer with { Enabled = _equalizerMenuItem.IsChecked } };
+                var apply = ApplyEqualizerFromSettingsAsync();
                 var persisted = await SaveSettingsConfirmedAsync();
-                await ApplyEqualizerFromSettingsAsync();
+                await apply;
                 if (!persisted) SetStatus("Equalizer applies for this session only; the setting could not be saved.", isError: true);
             }
             catch (Exception) { if (!_closing && !_disposed) SetStatus("Equalizer could not be applied.", isError: true); }

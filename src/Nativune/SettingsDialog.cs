@@ -65,6 +65,8 @@ public sealed partial class SettingsDialog : Window
     private Func<EqualizerStatus>? _equalizerStatus;
     private Action? _unsubscribeEqualizer;
     private Func<Task<bool>>? _reloadWithoutEqualizer;
+    private Func<Task>? _restoreEqualizer;
+    private bool _eqRecovering;
     private readonly Slider[] _eqSliders = new Slider[EqualizerBands.Count];
     private readonly NumberBox[] _eqBoxes = new NumberBox[EqualizerBands.Count];
     private readonly DispatcherTimer _eqPreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
@@ -79,7 +81,8 @@ public sealed partial class SettingsDialog : Window
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
         Func<string>? statusText = null, string? installRoot = null,
         Func<EqualizerApply, Task>? previewEqualizer = null, Func<EqualizerStatus>? equalizerStatus = null,
-        Func<Action, Action>? subscribeEqualizerStatus = null, Func<Task<bool>>? reloadWithoutEqualizer = null)
+        Func<Action, Action>? subscribeEqualizerStatus = null, Func<Task<bool>>? reloadWithoutEqualizer = null,
+        Func<Task>? restoreEqualizer = null)
     {
         _isInstalledBuild = isInstalledBuild;
         _startupState = startupState;
@@ -120,6 +123,7 @@ public sealed partial class SettingsDialog : Window
         InitializeLyrics(initial);
         InitializeObs(initial);
         InitializeEqualizer(initial.Equalizer, previewEqualizer, equalizerStatus, subscribeEqualizerStatus, reloadWithoutEqualizer);
+        _restoreEqualizer = restoreEqualizer;
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -232,14 +236,20 @@ public sealed partial class SettingsDialog : Window
         EqBypass.Checked += (_, _) => QueueEqualizerPreview();
         EqBypass.Unchecked += (_, _) => QueueEqualizerPreview();
         EqReload.IsEnabled = reload is not null;
+        AutomationProperties.SetAutomationId(EqEffectivePreamp, "EqEffectivePreamp");
         EqReload.Click += async (_, _) =>
         {
-            if (_reloadWithoutEqualizer is null) return;
+            if (_reloadWithoutEqualizer is null || _eqRecovering) return;
+            _eqRecovering = true;
             _eqPreviewTimer.Stop();
+            // Edits are also ignored in code while recovering (keyboard focus can still reach a control).
+            SaveButton.IsEnabled = EqualizerPage.IsHitTestVisible = false;
             EqReload.IsEnabled = false;
             try
             {
-                if (!await _reloadWithoutEqualizer())
+                var reloaded = await _reloadWithoutEqualizer();
+                if (_closed) return;
+                if (!reloaded)
                 {
                     // Not persisted or not reloaded: the graph is unchanged, so the dialog must not show EQ off.
                     EqError.Text = "Reload without EQ could not be completed.";
@@ -250,8 +260,12 @@ public sealed partial class SettingsDialog : Window
                 _eqPreviewTimer.Stop();
                 RefreshEqualizerControls();
             }
-            catch (Exception) { EqError.Text = "Reload without EQ could not be completed."; }
-            finally { if (!_closed) EqReload.IsEnabled = true; }
+            catch (Exception) { if (!_closed) EqError.Text = "Reload without EQ could not be completed."; }
+            finally
+            {
+                _eqRecovering = false;
+                if (!_closed) SaveButton.IsEnabled = EqualizerPage.IsHitTestVisible = EqReload.IsEnabled = true;
+            }
         };
         EqCurveCanvas.SizeChanged += (_, _) => DrawEqualizerCurve();
         // NumberBox/Slider templates may handle wheel input; keep vertical page navigation available.
@@ -267,7 +281,7 @@ public sealed partial class SettingsDialog : Window
         _eqPreviewTimer.Tick += async (_, _) =>
         {
             _eqPreviewTimer.Stop();
-            if (_closed || _previewEqualizer is null) return;
+            if (_closed || _eqRecovering || _previewEqualizer is null) return;
             var sampleRate = ActiveEqualizerSampleRate();
             var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true, sampleRate);
             _eqPreviewSampleRate = sampleRate;
@@ -280,12 +294,20 @@ public sealed partial class SettingsDialog : Window
         {
             if (_closed) return;
             RefreshEqualizerStatus();
-            if (_eqPreviewSampleRate is double rate && _equalizer.AutoHeadroom && rate != ActiveEqualizerSampleRate())
+            if (!_eqRecovering && _eqPreviewSampleRate is double rate && _equalizer.AutoHeadroom && rate != ActiveEqualizerSampleRate())
             {
                 _eqPreviewTimer.Stop();
                 _eqPreviewTimer.Start();
             }
         });
+    }
+
+    internal bool ReapplyEqualizerDraft()
+    {
+        if (_closed || _eqRecovering || !_eqEdited || _previewEqualizer is null) return false;
+        _eqPreviewTimer.Stop();
+        _eqPreviewTimer.Start();
+        return true;
     }
 
     private void SetEqualizerBand(int index, double value)
@@ -304,7 +326,7 @@ public sealed partial class SettingsDialog : Window
 
     private void ChangeEqualizer(EqualizerSettings settings)
     {
-        if (_closed) return;
+        if (_closed || _eqRecovering) return;
         _equalizer = settings;
         EqError.Text = string.Empty;
         RefreshEqualizerControls();
@@ -313,7 +335,7 @@ public sealed partial class SettingsDialog : Window
 
     private void QueueEqualizerPreview()
     {
-        if (_eqUpdating || _closed) return;
+        if (_eqUpdating || _closed || _eqRecovering) return;
         _eqEdited = true;
         _eqPreviewTimer.Stop();
         _eqPreviewTimer.Start();
@@ -328,8 +350,7 @@ public sealed partial class SettingsDialog : Window
             EqAutoHeadroom.IsOn = _equalizer.AutoHeadroom;
             EqPreamp.Value = EqPreampBox.Value = _equalizer.ManualPreampDb;
             EqPreamp.IsEnabled = EqPreampBox.IsEnabled = !_equalizer.AutoHeadroom;
-            EqEffectivePreamp.Text = $"Effective preamp: {EqualizerMath.EffectivePreampDb(_equalizer):+0.#;-0.#;0} dB";
-            EqMayClip.Visibility = EqualizerMath.MayClip(_equalizer) ? Visibility.Visible : Visibility.Collapsed;
+            RefreshEqualizerReadouts();
             for (var i = 0; i < EqualizerBands.Count; i++)
             {
                 var gain = _equalizer.GainsDb[i];
@@ -510,6 +531,13 @@ public sealed partial class SettingsDialog : Window
         catch (Exception) { if (!_closed) EqError.Text = "The preset could not be pasted."; }
     }
 
+    private void RefreshEqualizerReadouts()
+    {
+        var sampleRate = ActiveEqualizerSampleRate();
+        EqEffectivePreamp.Text = $"Effective preamp: {EqualizerMath.EffectivePreampDb(_equalizer, sampleRate):+0.#;-0.#;0} dB";
+        EqMayClip.Visibility = EqualizerMath.MayClip(_equalizer, sampleRate) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void RefreshEqualizerStatus()
     {
         var status = _equalizerStatus?.Invoke();
@@ -528,6 +556,7 @@ public sealed partial class SettingsDialog : Window
         AutomationProperties.SetLiveSetting(EqStatus, AutomationLiveSetting.Polite);
         EqReload.Visibility = status?.State is EqualizerState.Interrupted or EqualizerState.ReloadNeeded or EqualizerState.ProtectedMedia
             ? Visibility.Visible : Visibility.Collapsed;
+        RefreshEqualizerReadouts();
         DrawEqualizerCurve();
     }
 
@@ -708,6 +737,7 @@ public sealed partial class SettingsDialog : Window
 
     private void Save()
     {
+        if (_closed || _eqRecovering) return;
         var bindings = new ShortcutBindings(_values[0], _values[1], _values[2], _values[3]);
         if (!bindings.Validate(out var validationError))
         {
@@ -1121,10 +1151,15 @@ public sealed partial class SettingsDialog : Window
         try
         {
             // The final host revision supersedes every dispatched preview, including one still in flight.
-            if ((_eqEdited || _eqRecoveryOff) && _previewEqualizer is not null)
+            if (_eqEdited || _eqRecoveryOff)
             {
-                var committed = _eqRecoveryOff ? _initial.Equalizer with { Enabled = false } : _initial.Equalizer;
-                await _previewEqualizer(EqualizerApply.From(_saved ? _equalizer : committed, bypass: false, ActiveEqualizerSampleRate()));
+                if (!_saved && _restoreEqualizer is not null)
+                    await _restoreEqualizer();
+                else if (_previewEqualizer is not null)
+                {
+                    var committed = _eqRecoveryOff ? _initial.Equalizer with { Enabled = false } : _initial.Equalizer;
+                    await _previewEqualizer(EqualizerApply.From(_saved ? _equalizer : committed, bypass: false, ActiveEqualizerSampleRate()));
+                }
             }
         }
         catch (Exception) { /* The host owns unavailable/interrupted status; closing must still finish. */ }
