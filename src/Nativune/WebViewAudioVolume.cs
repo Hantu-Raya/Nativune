@@ -148,6 +148,28 @@ internal sealed class WebViewAudioVolume : IDisposable
     // A complete owned-session inventory may coexist with inconsistent values; Available stays false.
     internal bool HasVerifiedOwnedSessions => _hasVerifiedOwnedSessions && !_disposed;
 
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    // Read-only inventory: no preference reconciliation, endpoint identity or process metadata.
+    internal object ReadEqualizerHookSessions(IReadOnlySet<int> processIds)
+    {
+        if (_disposed || !TryInitializeComMta(out var uninitializeCom))
+            throw new InvalidOperationException("session-com-unavailable");
+        try
+        {
+            if (!TryActivateOwnedProcesses(processIds) ||
+                !TryEnumerateOwnedSessions(_activeProcessIds, _processHandles, out var sessions))
+                throw new InvalidOperationException("session-inventory-unavailable");
+            try
+            {
+                return new { count = sessions.Count,
+                    sessions = sessions.Select(session => new { volume = session.Volume, muted = session.Muted }).ToArray() };
+            }
+            finally { ReleaseSessions(sessions); }
+        }
+        finally { if (uninitializeCom) CoUninitialize(); }
+    }
+#endif
+
     // Calls are serialized by the host and run on MTA jobs. Each method owns and releases every
     // Core Audio RCW before leaving its COM-initialized call, even when Task.Run changes threads.
     public void Refresh(IReadOnlySet<int> webViewProcessIds, Func<bool>? canApplyPreference = null)

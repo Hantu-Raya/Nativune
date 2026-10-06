@@ -138,6 +138,7 @@ public sealed partial class WebHostWindow
             await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", JsonSerializer.Serialize(new {
                 expression = "globalThis.__nativuneEqTestHooks = true;" +
                     "globalThis.__nativuneEqActivation = {blocked:false,resumeCalls:0,sourceCalls:0};" +
+                    (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_REAL_MUSIC") == "1" ? "" :
                     "globalThis.AudioContext = class extends AudioContext { constructor(options) {" +
                     " if(globalThis.__nativuneEqPreparedContext){const prepared=globalThis.__nativuneEqPreparedContext;" +
                     " delete globalThis.__nativuneEqPreparedContext;return prepared;}" +
@@ -151,7 +152,7 @@ public sealed partial class WebHostWindow
                     " document.addEventListener('pointerdown',release,true);document.addEventListener('keydown',release,true);});" +
                     " }} resume(){this.__eqHook.resumeCalls++;" +
                     " return this.__eqHook.blocked?Promise.all([this.__eqSuspended,this.__eqPermit]).then(()=>super.resume()):super.resume();}" +
-                    " createMediaElementSource(element){this.__eqHook.sourceCalls++;return super.createMediaElementSource(element);} };",
+                    " createMediaElementSource(element){this.__eqHook.sourceCalls++;return super.createMediaElementSource(element);} };"),
                 contextId = context, returnByValue = true
             })).AsTask().WaitAsync(EqualizerDeadline, _lifetime.Token);
         }

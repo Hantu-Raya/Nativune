@@ -158,7 +158,7 @@ public sealed partial class SettingsDialog : Window
         for (var i = 0; i < EqualizerBands.Count; i++)
         {
             var index = i;
-            var panel = new StackPanel { Spacing = 6, Width = 76 };
+            var panel = new StackPanel { Spacing = 6, Width = 56 };
             var slider = new Slider
             {
                 Orientation = Orientation.Vertical, Height = 160, HorizontalAlignment = HorizontalAlignment.Center,
@@ -167,7 +167,8 @@ public sealed partial class SettingsDialog : Window
             var box = new NumberBox
             {
                 Minimum = -12, Maximum = 12, SmallChange = 0.5, LargeChange = 3,
-                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact
+                MinWidth = 0, Width = 56, Padding = new Thickness(4), FontSize = 12,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden
             };
             AutomationProperties.SetAutomationId(slider, $"EqBand{i}");
             AutomationProperties.SetAutomationId(box, $"EqBandBox{i}");
@@ -194,11 +195,16 @@ public sealed partial class SettingsDialog : Window
         EqPreset.SelectionChanged += (_, _) =>
         {
             if (_eqUpdating || EqPreset.SelectedItem is not ComboBoxItem { Tag: EqualizerPreset preset }) return;
-            ChangeEqualizer(_equalizer with
+            _eqInPresetSelection = true;
+            try
             {
-                SelectedPresetId = preset.Id, GainsDb = preset.GainsDb.ToArray(),
-                ManualPreampDb = preset.PreampDb, AutoHeadroom = preset.AutoHeadroom
-            });
+                ChangeEqualizer(_equalizer with
+                {
+                    SelectedPresetId = preset.Id, GainsDb = preset.GainsDb.ToArray(),
+                    ManualPreampDb = preset.PreampDb, AutoHeadroom = preset.AutoHeadroom
+                });
+            }
+            finally { _eqInPresetSelection = false; }
         };
         EqResetBands.Click += (_, _) => ChangeEqualizer(_equalizer with { GainsDb = new double[10], SelectedPresetId = null });
         EqResetPreamp.Click += (_, _) => ChangeEqualizer(_equalizer with { ManualPreampDb = 0, SelectedPresetId = null });
@@ -238,6 +244,16 @@ public sealed partial class SettingsDialog : Window
             finally { if (!_closed) EqReload.IsEnabled = true; }
         };
         EqCurveCanvas.SizeChanged += (_, _) => DrawEqualizerCurve();
+        // NumberBox/Slider templates may handle wheel input; keep vertical page navigation available.
+        EqualizerPage.AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler((_, args) =>
+        {
+            var properties = args.GetCurrentPoint(EqualizerPage).Properties;
+            if (properties.IsHorizontalMouseWheel || properties.MouseWheelDelta == 0) return;
+            var offset = Math.Clamp(PageScroller.VerticalOffset - properties.MouseWheelDelta / 120.0 * 48,
+                0, PageScroller.ScrollableHeight);
+            PageScroller.ChangeView(null, offset, null, disableAnimation: true);
+            args.Handled = true;
+        }), handledEventsToo: true);
         _eqPreviewTimer.Tick += async (_, _) =>
         {
             _eqPreviewTimer.Stop();
@@ -300,22 +316,7 @@ public sealed partial class SettingsDialog : Window
                 var sign = gain > 0 ? "plus " : gain < 0 ? "minus " : "";
                 AutomationProperties.SetName(_eqSliders[i], $"{EqualizerBands.CentresHz[i]:0.#} hertz, {sign}{Math.Abs(gain):0.#} decibels");
             }
-            EqPreset.Items.Clear();
-            ComboBoxItem? selectedItem = null;
-            foreach (var preset in EqualizerPresets.BuiltIns.Concat(_equalizer.CustomPresets))
-            {
-                var item = new ComboBoxItem { Content = preset.Name, Tag = preset };
-                AutomationProperties.SetName(item, preset.Name);
-                EqPreset.Items.Add(item);
-                if (preset.Id == _equalizer.SelectedPresetId) selectedItem = item;
-            }
-            if (_equalizer.SelectedPresetId is null)
-            {
-                selectedItem = new ComboBoxItem { Content = "Unsaved custom" };
-                AutomationProperties.SetName(selectedItem, "Unsaved custom");
-                EqPreset.Items.Add(selectedItem);
-            }
-            EqPreset.SelectedItem = selectedItem;
+            SyncEqualizerPresetItems();
             var selected = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId);
             EqRename.IsEnabled = EqDelete.IsEnabled = selected is { BuiltIn: false };
             EqSaveNew.IsEnabled = selected?.BuiltIn != true && _equalizer.CustomPresets.Count < EqualizerBands.MaxCustomPresets;
@@ -325,19 +326,86 @@ public sealed partial class SettingsDialog : Window
         finally { _eqUpdating = false; }
     }
 
+    // Rebuilding a ComboBox's Items from inside its own SelectionChanged throws E_UNEXPECTED (0x8000FFFF,
+    // "Catastrophic failure") in WinUI. Only rebuild when the list itself changes, and then outside the
+    // selection event; a plain preset switch only moves the selection.
+    private string? _eqPresetSignature;
+    private bool _eqInPresetSelection;
+
+    private void SyncEqualizerPresetItems()
+    {
+        var presets = EqualizerPresets.BuiltIns.Concat(_equalizer.CustomPresets).ToArray();
+        var unsaved = _equalizer.SelectedPresetId is null;
+        var signature = string.Join('\u001f', presets.Select(preset => preset.Id + '\u001e' + preset.Name)) + (unsaved ? "\u001funsaved" : "");
+        if (signature == _eqPresetSignature)
+        {
+            var target = EqPreset.Items.OfType<ComboBoxItem>().FirstOrDefault(item =>
+                unsaved ? item.Tag is null : item.Tag is EqualizerPreset preset && preset.Id == _equalizer.SelectedPresetId);
+            if (!ReferenceEquals(EqPreset.SelectedItem, target)) EqPreset.SelectedItem = target;
+            return;
+        }
+        if (_eqInPresetSelection)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_closed) return;
+                _eqUpdating = true;
+                try { SyncEqualizerPresetItems(); }
+                finally { _eqUpdating = false; }
+            });
+            return;
+        }
+        _eqPresetSignature = signature;
+        EqPreset.Items.Clear();
+        ComboBoxItem? selectedItem = null;
+        foreach (var preset in presets)
+        {
+            var item = new ComboBoxItem { Content = preset.Name, Tag = preset };
+            AutomationProperties.SetName(item, preset.Name);
+            EqPreset.Items.Add(item);
+            if (preset.Id == _equalizer.SelectedPresetId) selectedItem = item;
+        }
+        if (unsaved)
+        {
+            selectedItem = new ComboBoxItem { Content = "Unsaved custom" };
+            AutomationProperties.SetName(selectedItem, "Unsaved custom");
+            EqPreset.Items.Add(selectedItem);
+        }
+        EqPreset.SelectedItem = selectedItem;
+    }
+
     private void DrawEqualizerCurve()
     {
         var width = EqCurveCanvas.ActualWidth;
-        if (width <= 0) return;
+        var height = EqCurveCanvas.ActualHeight;
+        if (width <= 0 || height <= 0) return;
         var frequencies = Enumerable.Range(0, 201).Select(i => 20 * Math.Pow(1000, i / 200.0)).ToArray();
         var sampleRate = _equalizerStatus?.Invoke().SampleRate ?? 48000;
         var response = EqualizerMath.ResponseDb(_equalizer.GainsDb, sampleRate, frequencies);
         var preamp = EqualizerMath.EffectivePreampDb(_equalizer, sampleRate);
         var points = new Microsoft.UI.Xaml.Media.PointCollection();
         for (var i = 0; i < response.Length; i++)
-            points.Add(new Windows.Foundation.Point(width * i / 200, 140 * (18 - Math.Clamp(response[i] + preamp, -36, 18)) / 54));
+        {
+            var x = width * Math.Log(frequencies[i] / 20) / Math.Log(1000);
+            var y = height / 2 - height * Math.Clamp(response[i] + preamp, -15, 15) / 30;
+            points.Add(new Windows.Foundation.Point(x, y));
+        }
+        EqCurve.Width = EqZeroLine.Width = width;
+        EqCurve.Height = EqZeroLine.Height = height;
+        EqZeroLine.X1 = 0;
+        EqZeroLine.X2 = width;
+        EqZeroLine.Y1 = EqZeroLine.Y2 = height / 2;
         EqCurve.Points = points;
     }
+
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    internal object EqualizerCurveHookSnapshot() => new
+    {
+        width = EqCurveCanvas.ActualWidth, height = EqCurveCanvas.ActualHeight,
+        points = EqCurve.Points.Select(point => new { x = point.X, y = point.Y }).ToArray()
+    };
+#endif
+
 
     private void BeginEqualizerName(string operation)
     {
@@ -426,6 +494,8 @@ public sealed partial class SettingsDialog : Window
             EqualizerState.ProtectedMedia => "Protected media",
             _ => "Unavailable"
         };
+        AutomationProperties.SetName(EqStatus, $"Equalizer status: {EqStatus.Text}");
+        AutomationProperties.SetLiveSetting(EqStatus, AutomationLiveSetting.Polite);
         EqReload.Visibility = status?.State is EqualizerState.Interrupted or EqualizerState.ReloadNeeded or EqualizerState.ProtectedMedia
             ? Visibility.Visible : Visibility.Collapsed;
         DrawEqualizerCurve();
