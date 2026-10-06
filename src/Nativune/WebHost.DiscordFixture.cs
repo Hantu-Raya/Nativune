@@ -61,6 +61,10 @@ public sealed partial class WebHostWindow
             s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
                 .Replace("<meta name=\"nativune-eq-fixture\" content=\"\">",
                     "<meta name=\"nativune-eq-fixture\" content=\"1\">", StringComparison.Ordinal));
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1" &&
+            Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_DEFER_MEDIA") == "1")
+            s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
+                .Replace("profile('tones-48000');", "// Media is loaded by the Settings-open attachment row.", StringComparison.Ordinal));
         StartDiscordBench();
         // Only http(s) is intercepted so chrome-extension:// (uBO Lite dashboard/resources) loads normally.
         core.AddWebResourceRequestedFilter("https://*", CoreWebView2WebResourceContext.All);
@@ -602,6 +606,36 @@ public sealed partial class WebHostWindow
                     case "eq-hang-next-apply":
                         result = await EqualizerHookEvaluateAsync("(()=>{const eq=__nativuneEq,apply=eq.apply;" +
                             "eq.apply=(value)=>{eq.apply=apply;apply(value);return new Promise(()=>{})};return {armed:true}})()");
+                        break;
+                    case "eq-overlap-apply":
+                        if (_equalizerDesired is not { } overlapApply || EqualizerStatus.State != EqualizerState.Active)
+                            throw new InvalidOperationException("overlap-not-active");
+                        await EqualizerHookEvaluateAsync("(()=>{const eq=__nativuneEq,apply=eq.apply;" +
+                            "globalThis.__nativuneEqOverlapEntered=false;" +
+                            "eq.apply=(value)=>{eq.apply=apply;globalThis.__nativuneEqOverlapEntered=true;" +
+                            "apply(value);return new Promise(()=>{})};return {armed:true}})()");
+                        var olderApply = ApplyEqualizerAsync(overlapApply with { PreampDb = -6 }, _lifetime.Token);
+                        // A must enter Runtime.evaluate before B supersedes it; do not rely on a scheduling delay.
+                        var overlapEntered = false;
+                        for (var attempt = 0; attempt < 20 && !overlapEntered && !olderApply.IsCompleted; attempt++)
+                        {
+                            var receipt = await EqualizerHookEvaluateAsync("({entered:globalThis.__nativuneEqOverlapEntered===true})");
+                            overlapEntered = receipt.GetProperty("entered").GetBoolean();
+                            if (!overlapEntered) await Task.Delay(25, _lifetime.Token);
+                        }
+                        if (!overlapEntered || olderApply.IsCompleted)
+                        {
+                            await olderApply;
+                            throw new InvalidOperationException("overlap-not-pending");
+                        }
+                        await ApplyEqualizerAsync(overlapApply, _lifetime.Token);
+                        var newerState = EqualizerStatus.State;
+                        var olderPendingAfterNewer = !olderApply.IsCompleted;
+                        await olderApply;
+                        result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                            reason = EqualizerStatus.Reason, attached = EqualizerStatus.Attached,
+                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb,
+                            newerState = newerState.ToString().ToLowerInvariant(), olderPendingAfterNewer };
                         break;
                     case "eq-host-status":
                         result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),

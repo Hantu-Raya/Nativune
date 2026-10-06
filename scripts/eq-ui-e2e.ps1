@@ -109,7 +109,7 @@ foreach($p in $s.env.PSObject.Properties){[Environment]::SetEnvironmentVariable(
 $p=Start-Process -FilePath $s.exe -ArgumentList @('web','--root',$s.root) -WorkingDirectory $s.app -PassThru
 [IO.File]::WriteAllText($s.pidFile,(@{processId=$p.Id}|ConvertTo-Json))
 '@)
-function Start-Fixture([string] $Name, [int] $Rate = 48000, $EqualizerSeed = $null) {
+function Start-Fixture([string] $Name, [int] $Rate = 48000, $EqualizerSeed = $null, [bool] $DeferMedia = $false) {
     $script:root = Join-Path $rootBase $Name
     [IO.Directory]::CreateDirectory((Join-Path $script:root 'data')) | Out-Null
     $ubolVersion = [regex]::Match((Get-Content -Raw (Join-Path $repo 'src/Nativune/BrowserPrivacy.cs')),'ExtensionVersion\s*=\s*"([^"]+)"').Groups[1].Value
@@ -126,6 +126,7 @@ function Start-Fixture([string] $Name, [int] $Rate = 48000, $EqualizerSeed = $nu
     $environment = @{ NATIVUNE_TEST_DISCORD_FIXTURE_PAGE='1'; NATIVUNE_TEST_EQ_FIXTURE='1';
         NATIVUNE_TEST_EQ_SAMPLE_RATE="$Rate"; NATIVUNE_TEST_DISCORD_CLIENT_ID='100000000000000001';
         NATIVUNE_TEST_DISCORD_PIPE_PREFIX=('nativune-test-'+[guid]::NewGuid().ToString('N')+'-discord-ipc-') }
+    $environment.NATIVUNE_TEST_EQ_DEFER_MEDIA = $(if ($DeferMedia) { '1' } else { '0' })
     $unset = @('NATIVUNE_TEST_DISCORD_BENCH_PROFILE','NATIVUNE_TEST_DISCORD_BENCH_STATE','WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS')
     if ($isElevated) {
         $pidFile = Join-Path $script:root 'launch.pid.json'; $spec = Join-Path $script:root 'launch.json'
@@ -149,8 +150,10 @@ function Start-Fixture([string] $Name, [int] $Rate = 48000, $EqualizerSeed = $nu
     $launches.Add(@{name=$Name;processId=$script:process.Id;viaRunas=$isElevated;adminEnabled=$admin;sampleRate=$Rate})
     Row "$Name.de-elevated" ($admin -eq $false) $launches[$launches.Count-1]
     if (-not (Wait-For { try { (Hook 'eq-media').fixture } catch { $false } } 60)) { throw 'Synthetic EQ page did not become ready.' }
-    [void](Hook 'eq-profile' "tones-$Rate")
-    if (-not (Wait-For { (Hook 'eq-media').readyState -ge 2 } 15)) { throw 'EQ WAV did not load.' }
+    if (-not $DeferMedia) {
+        [void](Hook 'eq-profile' "tones-$Rate")
+        if (-not (Wait-For { (Hook 'eq-media').readyState -ge 2 } 15)) { throw 'EQ WAV did not load.' }
+    }
 }
 function Stop-Fixture {
     if ($script:process -and -not $script:process.HasExited) {
@@ -395,6 +398,45 @@ function Run-Reload {
     $fileAfterReload=File-State
     Row 'reload-success-disables' ($reloadedOff -and -not $fileAfterReload.equalizer.enabled) @{status=$script:afterReload;fileEnabled=$fileAfterReload.equalizer.enabled}
 }
+function Run-SavedRateWithSettingsOpen {
+    $saved=Seed $true
+    $saved.gainsDb=@(0,0,0,0,0,0,0,0,0,12)
+    Start-Fixture 'saved-rate-settings-open' 16000 $saved $true
+    $fallback=Hook 'eq-math' @{gains=$saved.gainsDb;sampleRate=48000}
+    $real=Hook 'eq-math' @{gains=$saved.gainsDb;sampleRate=16000}
+    $staged=Wait-For {
+        $script:savedRateBefore=Hook 'eq-host-status'
+        -not $script:savedRateBefore.attached -and $null -eq $script:savedRateBefore.sampleRate -and
+        [math]::Abs($script:savedRateBefore.preampDb-$fallback.effectivePreampDb) -lt 0.001
+    } 10
+    # Settings disables its owner, so a page click cannot reach it while the dialog is open.
+    # Give the empty page a trusted gesture first, then load media only after opening Settings.
+    Click-Page
+    $trusted=Wait-For { (Hook 'eq-media').trustedClicks -gt 0 } 5
+    Open-Settings
+    $beforeMedia=Hook 'eq-host-status'
+    [void](Hook 'eq-profile' 'tones-16000')
+    $script:savedRateApplied=$null
+    $reapplied=Wait-For {
+        $script:savedRateHost=Hook 'eq-host-status'
+        if ($script:savedRateHost.state -cne 'active') { return $false }
+        $script:savedRateApplied=Hook 'eq-applied-preamp'
+        $script:savedRateHost.attached -and $script:savedRateHost.sampleRate -eq 16000 -and
+        [math]::Abs($script:savedRateHost.preampDb-$real.effectivePreampDb) -lt 0.001 -and
+        $script:savedRateApplied.sampleRate -eq 16000 -and
+        [math]::Abs($script:savedRateApplied.preampDb-$real.effectivePreampDb) -lt 0.01
+    } 20
+    $dialogStillOpen=$null -ne (Find-Control 'EqEnabled')
+    $persisted=File-State
+    Row 'saved-eq-real-rate-with-settings-open' ($staged -and $trusted -and -not $beforeMedia.attached -and
+        $reapplied -and $dialogStillOpen -and $persisted.equalizer.enabled -and
+        (Same-Gains $persisted.equalizer.gainsDb $saved.gainsDb) -and
+        [math]::Abs($fallback.effectivePreampDb-$real.effectivePreampDb) -gt 1) @{
+            staged=$script:savedRateBefore;beforeMedia=$beforeMedia;host=$script:savedRateHost;
+            applied=$script:savedRateApplied;dialogOpen=$dialogStillOpen;trustedClick=$trusted;
+            fallbackDb=$fallback.effectivePreampDb;realDb=$real.effectivePreampDb;persisted=$persisted}
+    Close-Settings
+}
 function Run-FirstPreviewRate {
     Start-Fixture 'first-preview-rate' 16000 (Seed)
     Click-Page
@@ -624,6 +666,7 @@ $requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-c
     'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated','low-rate.de-elevated','low-rate-attached-16k','low-rate-settings-curve','reload.de-elevated','reload-save-failure-keeps-state','reload-success-disables')
 foreach($i in 0..9){$requiredRows+="slider-$i-name-step"}
 $requiredRows+=@('first-preview-rate.de-elevated','first-preview-real-rate-auto-headroom')
+$requiredRows+=@('saved-rate-settings-open.de-elevated','saved-eq-real-rate-with-settings-open')
 $clipboardSaved=Get-Clipboard -Raw
 $failure=$null
 try {
@@ -637,6 +680,7 @@ try {
     try { Run-Limit } catch { Row 'limit-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-LowRate } catch { Row 'low-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-FirstPreviewRate } catch { Row 'first-preview-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
+    try { Run-SavedRateWithSettingsOpen } catch { Row 'saved-rate-settings-open-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-Reload } catch { Row 'reload-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
 } catch { $failure=$_.Exception.Message;Row 'harness-completion' $false @{error=$failure} }
 finally {
@@ -645,7 +689,7 @@ finally {
     try {
         if($null -eq $clipboardSaved){Set-Clipboard -Value ''}else{Set-Clipboard -Value $clipboardSaved}
     } catch { Row 'clipboard-restore' $false @{error='Could not restore original clipboard text.'} }
-    foreach($key in @('NATIVUNE_TEST_EQ_FIXTURE','NATIVUNE_TEST_EQ_SAMPLE_RATE','NATIVUNE_TEST_DISCORD_FIXTURE_PAGE',
+    foreach($key in @('NATIVUNE_TEST_EQ_FIXTURE','NATIVUNE_TEST_EQ_SAMPLE_RATE','NATIVUNE_TEST_EQ_DEFER_MEDIA','NATIVUNE_TEST_DISCORD_FIXTURE_PAGE',
         'NATIVUNE_TEST_DISCORD_PIPE_PREFIX','NATIVUNE_TEST_DISCORD_CLIENT_ID')){[Environment]::SetEnvironmentVariable($key,[NullString]::Value,'Process')}
     foreach($name in $requiredRows){
         if(-not @($rows|Where-Object{$_.name -ceq $name}).Count){

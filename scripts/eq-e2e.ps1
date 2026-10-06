@@ -36,7 +36,7 @@ foreach ($rate in @(48000,44100)) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world','indeterminate-apply-reload-needed')) {
+        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world','superseded-timeout-ignored','indeterminate-apply-reload-needed')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -347,6 +347,9 @@ function Run-Rate([int] $Rate) {
         Click-Page
         [void](Apply $series -12)
         if (-not (Status-Is 'active' 20)) { throw 'Indeterminate apply prerequisite was not Active.' }
+        $overlap=Hook 'eq-overlap-apply'
+        Row "$Rate.superseded-timeout-ignored" ($overlap.newerState -ceq 'active' -and
+            $overlap.olderPendingAfterNewer -and $overlap.state -ceq 'active' -and $overlap.attached) $overlap
         $beforeHang=Hook 'eq-host-status'
         [void](Hook 'eq-hang-next-apply')
         [void](Apply $series -6)

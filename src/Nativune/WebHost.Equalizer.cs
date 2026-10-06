@@ -107,7 +107,7 @@ public sealed partial class WebHostWindow
         }
         catch (Exception)
         {
-            if (EqualizerRequestCurrent(core, generation))
+            if (EqualizerRequestCurrent(core, generation) && revision == _equalizerRevision)
             {
                 _equalizerUnknownOutcome = true;
                 SetEqualizerStatus(new(EqualizerState.ReloadNeeded, "controller", null, null, EqualizerStatus.Attached));
@@ -215,9 +215,9 @@ public sealed partial class WebHostWindow
         if (_closing || _disposed || EqualizerStatus == status) return;
         var previousRate = EqualizerStatus.SampleRate;
         EqualizerStatus = status;
-        // Auto headroom depends on the context's real rate, known only after attachment; re-apply once it changes
-        // (unless the Settings preview owns the graph right now).
-        if (status.SampleRate is double rate && rate != (previousRate ?? 48000) && _settings.Equalizer.AutoHeadroom && _equalizerDesiredFromSettings && !_settingsDialogOpen)
+        // Auto headroom depends on the context's real rate, known only after attachment; re-apply once it changes.
+        // Saved state still owns the graph while Settings is open until a dialog preview replaces it.
+        if (status.SampleRate is double rate && rate != (previousRate ?? 48000) && _settings.Equalizer.AutoHeadroom && _equalizerDesiredFromSettings)
             _ = ApplyEqualizerFromSettingsAsync();
         EqualizerStatusChanged?.Invoke(this, EventArgs.Empty);
     }
