@@ -52,6 +52,8 @@ internal sealed class NativeTrayIcon : IDisposable
     private readonly Action<string> _onCommand;
     private nint _icon;
     private bool _visible;
+    // What the app wants; _visible is what the shell has accepted. They differ while the taskbar is restarting.
+    private bool _wanted;
     private bool _playbackEnabled;
     private string _tooltip = "Nativune";
     private bool _disposed;
@@ -69,10 +71,29 @@ internal sealed class NativeTrayIcon : IDisposable
         _onCommand = onCommand;
     }
     internal bool IsVisible => !_disposed && _visible;
+    internal bool IsWanted => !_disposed && _wanted;
+#if NATIVUNE_DISCORD_TEST_HOOKS
+    // Hook builds only: make the next N adds fail as if the shell were not ready, and ask the shell
+    // itself (not our flag) whether the icon exists: modify succeeds only for a registered icon.
+    internal static int TestFailAdds = int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_TEST_TRAY_FAIL_ADDS"), out var fails) ? fails : 0;
+    internal static int TestFailVersions;
+    internal bool TestShellHasIcon()
+    {
+        var data = CreateData(NifTip);
+        return Shell_NotifyIcon(NimModify, ref data);
+    }
+    // Simulates what an Explorer restart does to us: the shell forgets the icon, our flags do not change.
+    internal void TestDropFromShell()
+    {
+        var data = CreateData(NifMessage | NifIcon | NifTip);
+        Shell_NotifyIcon(NimDelete, ref data);
+    }
+#endif
 
     internal void SetVisible(bool visible)
     {
         ThrowIfDisposed();
+        _wanted = visible;
         if (visible == _visible)
             return;
 
@@ -118,13 +139,18 @@ internal sealed class NativeTrayIcon : IDisposable
     private static string Truncate(string value, int length)
         => value.Length <= length ? value : value[..length];
 
+    // Re-adds the icon after Explorer restarts (TaskbarCreated) or the theme changes. After a shell
+    // restart the old icon is already gone, so the delete result is ignored. Throws when the shell
+    // does not accept the icon yet; the icon stays wanted so the caller can retry.
     internal void Recreate()
     {
         ThrowIfDisposed();
-        if (!_visible)
+        if (!_wanted)
             return;
 
-        RemoveIcon(tolerateMissing: true);
+        var data = CreateData(NifMessage | NifIcon | NifTip);
+        Shell_NotifyIcon(NimDelete, ref data);
+        _visible = false;
         AddIcon();
     }
 
@@ -212,25 +238,38 @@ internal sealed class NativeTrayIcon : IDisposable
     {
         EnsureIcon();
         var data = CreateData(NifMessage | NifIcon | NifTip);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+        if (TestFailAdds > 0)
+        {
+            TestFailAdds--;
+            throw new Win32Exception(1460, "Windows rejected the native tray icon (test fault).");
+        }
+#endif
         if (!Shell_NotifyIcon(NimAdd, ref data))
-            throw LastWin32Failure("Windows rejected the native tray icon.");
-        _visible = true;
-
+        {
+            var addError = Marshal.GetLastWin32Error();
+            // A busy shell can time out and still add the icon; a successful modify proves it exists.
+            if (!Shell_NotifyIcon(NimModify, ref data))
+                throw addError == 0
+                    ? new InvalidOperationException("Windows rejected the native tray icon.")
+                    : new Win32Exception(addError, "Windows rejected the native tray icon.");
+        }
+        // Usable only once version 4 is set (HandleMessage relies on its packing); until then Close must not hide.
         data.uVersionOrTimeout = NotifyIconVersion4;
-        if (!Shell_NotifyIcon(NimSetVersion, ref data))
+        var versionAccepted = Shell_NotifyIcon(NimSetVersion, ref data);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+        if (TestFailVersions > 0) { TestFailVersions--; versionAccepted = false; }
+#endif
+        if (!versionAccepted)
         {
             var versionFailure = LastWin32Failure("Windows rejected the native tray icon protocol version.");
-            try
-            {
-                RemoveIcon(tolerateMissing: true);
-            }
-            catch (Exception cleanupFailure)
-            {
-                Console.Error.WriteLine(
-                    $"Tray icon rollback failed ({cleanupFailure.GetType().Name}).");
-            }
+            var rollback = CreateData(NifMessage | NifIcon | NifTip);
+            if (!Shell_NotifyIcon(NimDelete, ref rollback))
+                Console.Error.WriteLine($"Tray icon rollback failed: {Marshal.GetLastWin32Error()}.");
+            _visible = false;
             throw versionFailure;
         }
+        _visible = true;
     }
 
     private void RemoveIcon(bool tolerateMissing)
