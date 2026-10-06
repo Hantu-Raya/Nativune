@@ -56,7 +56,7 @@ public sealed partial class WebHostWindow
         _resumeState = "Armed";
         _resumeOwnedUri = checkpoint?.StartupUri ?? "https://music.youtube.com/";
         var waitPaused = invalid || checkpoint?.MustPause == true || _settings.ResumeLaunch == ResumeLaunch.WaitPaused;
-        _resumeDeadlineAt = Environment.TickCount64 + 10000;
+        _resumeDeadlineAt = long.MaxValue; // armed when the script first reports or the document completes
         if (waitPaused)
         {
             _resumePriorMute = core.IsMuted;
@@ -88,8 +88,9 @@ public sealed partial class WebHostWindow
             if (string.IsNullOrEmpty(_resumeRegistration)) throw new InvalidDataException("resume-registration");
             if (_settings.StartupDestination != StartupDestination.Continue)
             {
-                // Home or Library was saved while setup awaited: retire this restore before navigating.
-                await RemoveResumeRegistrationAsync();
+                // Home or Library was saved while setup awaited: retire this restore before navigating. If the
+                // registration cannot be removed, its script still ignores any page but the saved song's.
+                if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "late-cancel-remove-failed");
                 RestoreResumeMute();
                 ++_resumeGeneration;
                 _resumeState = "Cancelled";
@@ -97,7 +98,9 @@ public sealed partial class WebHostWindow
                 _resumeHomeGuard = false;
                 _resumeCaptureBlocked = false;
                 _resumeStartupMessage = null;
-                return _settings.StartupUri;
+                _resumeOwnedUri = _settings.StartupUri;
+                _resumeOwnedNavigation = true;
+                return _resumeOwnedUri;
             }
             _resumeOwnedNavigation = true;
             return _resumeOwnedUri;
@@ -158,6 +161,12 @@ public sealed partial class WebHostWindow
             : uri.AbsolutePath == "/watch" && values.Length == 1
                 && Uri.UnescapeDataString(values[0][2..]) == _startupCheckpoint?.VideoId;
         if (!same) _ = CancelResumeAsync("navigation");
+    }
+
+    // A slow first load must not fail the restore: the deadline starts at document completion at the latest.
+    private void ArmResumeDeadline()
+    {
+        if (_resumeState == "Armed" && _resumeDeadlineAt == long.MaxValue) _resumeDeadlineAt = Environment.TickCount64 + 10000;
     }
 
     private async Task FinalizeResumeOtherDocumentAsync()

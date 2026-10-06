@@ -188,6 +188,9 @@ Row 4 'failure-ad-ended-and-cancellation' {
     # The guarded Home load removes the unreadable file so it cannot fail every launch.
     $corruptRemoved = Wait-For { -not (State).checkpointExists } 3
     [void](Hook 'resume-compact' @{ command = 'next' }); Start-Sleep -Seconds 2; Stop-App; $repaired = Inspect $root
+    # Fresh profile: Home has no media at all. The guard must still finish (not time out) and remove the file.
+    $root = New-Root 'corrupt-nomedia'; [IO.File]::WriteAllBytes((Join-Path $root 'data/resume.dat'), [byte[]](1,2,3,4))
+    Start-App $root; $noMedia = Await-Done; $noMediaRemoved = Wait-For { -not (State).checkpointExists } 3; Stop-App
     $root = New-Root 'ad'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_AD = '1' }; Start-Sleep -Seconds 1; $ad = State
     [void](Hook 'resume-compact' @{ command = 'toggle' }); $adPlaying = State
@@ -228,6 +231,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
     $checks = @{
         corruptHome = $bad.home -and $bad.paused -and $bad.status -like '*Saved song could not be restored*'
         corruptRemoved = $corruptRemoved
+        corruptNoMedia = $noMedia.restoreState -ceq 'Done' -and $noMedia.home -and -not $noMedia.safetyMuted -and $noMediaRemoved
         corruptRecovery = $repaired.valid -and $repaired.isB -and $repaired.position -lt 5
         adPaused = $ad.isAd -and $ad.paused -and $ad.seekCount -eq 0 -and $ad.status -like '*Ad paused*'
         adPlay = -not $adPlaying.paused -and -not $adPlaying.coreMuted
@@ -243,7 +247,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         accountRedirect = $redirect.otherDocument -and $redirect.restoreState -ceq 'Cancelled' -and -not $redirect.coreMuted -and $afterRedirect.isC -and -not $afterRedirect.coreMuted -and $afterRedirect.position -lt 10 -and $afterRedirect.seekCount -eq 0
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
-        corrupt = $bad; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
+        corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }

@@ -1098,6 +1098,7 @@ public sealed partial class WebHostWindow : Window
             SetStatus(_resumeStartupMessage ?? "Navigation completed. Account and playback remain website-owned.",
                 isError: _resumeStartupMessage is not null);
             RefreshSharedReader();
+            ArmResumeDeadline();
             _ = FinalizeResumeOtherDocumentAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();

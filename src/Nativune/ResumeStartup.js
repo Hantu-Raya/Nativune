@@ -6,7 +6,7 @@
   if (!request.homeGuard && new URL(location.href).searchParams.get('v') !== saved.videoId) return;
   let state = 'Armed', reason = '', media = null, sought = false, stableAt = 0;
   let baseline = null, timer = null, timeout = null;
-  let initialPosition = null;
+  let initialPosition = null, completeAt = null;
   let ignoreSeek = false, recoveryAd = false;
   const waitPaused = request.waitPaused;
   const terminal = () => ['Done','Cancelled','Failed'].includes(state);
@@ -119,7 +119,11 @@
     const all=document.querySelectorAll('audio,video');
     if(all.length===1 && all[0] instanceof HTMLMediaElement)media=all[0];
     if(request.homeGuard) {
-      if(!media || media.readyState<1){state='AwaitMedia';wake();return;}
+      if(!media || media.readyState<1){
+        // Home often has no player at all (fresh profile): 3 s after the document completes, nothing can play.
+        if(document.readyState==='complete'){ completeAt ??= performance.now(); if(performance.now()-completeAt>=3000){stop('Done','invalid');return;} }
+        state='AwaitMedia';wake();return;
+      }
       media.pause();state='Verify';
       if(!stableAt)stableAt=performance.now();
       if(performance.now()-stableAt<500){wake();return;}
