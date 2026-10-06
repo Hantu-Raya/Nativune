@@ -262,7 +262,7 @@ public sealed partial class WebHostWindow
         }
         string? error = null;
         if (profile is not ("Playing" or "PlayingLong" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap"
-            or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback"))
+            or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback" or "TimelineCompact"))
             error = "invalid-profile";
         else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
         else if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
@@ -347,7 +347,7 @@ public sealed partial class WebHostWindow
             if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
             if (_discordBenchProfile is "Playing" or "PlayingLong" or "ArtGap" && paused != false) return;
             if (_discordBenchProfile is "Paused" or "SameTitle" or "ReaderGap" && paused != true) return;
-            if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback"
+            if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback" or "TimelineCompact"
                 && paused != false) return;
             if (_discordBenchProfile is "PausedSeek" && paused != true) return;
             _discordBenchPageReady = true;

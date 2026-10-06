@@ -46,6 +46,13 @@
   192   stop: media ended as at 120
   The fixture clock advances only by the media element's own currentTime progress.
 
+  TimelineCompact (Discord E2E Timeline only) dispatches the SAME steps in the SAME order at:
+    10 seek, 20 pause, 35 resume, 40-50 ad, 55 B, 67 repeat-one, 79 ended, 84 C,
+    96 art recovery, 106/111/116 unproven link variants, 121 link restore, 131 pause,
+    141 resume, 151 final ended. Only initial/seek and B/repeat holds shrink (10/10/12/12 s);
+    the 10 s ad, each 5 s link state and all later holds stay unchanged. No clock is accelerated.
+    The harness observes for the same 23 s after final ended (174 s instead of 215 s).
+
   Benchmark-only steady profiles (bench protocol v2, scripts/discord-rpc-bench.ps1). The native fixture fills
   the nativune-discord-bench-profile meta content only when NATIVUNE_TEST_DISCORD_BENCH_PROFILE is valid;
   with the empty default the timeline above runs unchanged.
@@ -308,6 +315,8 @@
   ];
 
   const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
+  // Keep the classic/default actions above intact for Reconnect, ProductionGate and OBS AdFallback.
+  const compactTimelineTimes = [10, 20, 35, 40, 50, 55, 67, 79, 84, 96, 106, 111, 116, 121, 131, 141, 151];
   if (profile === 'Playing' || profile === 'Paused' || profile === 'PlayingLong') {
     load(Object.assign({}, tracks.A, { duration: profile === 'PlayingLong' ? 14400 : 1800 }));
     // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
@@ -424,7 +433,9 @@
   media.src = silentWav();
   play();
   const started = performance.now();
-  for (const [at, step] of timeline)
+  const selectedTimeline = profile === 'TimelineCompact'
+    ? timeline.map(([, step], index) => [compactTimelineTimes[index], step]) : timeline;
+  for (const [at, step] of selectedTimeline)
     setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
   setInterval(tick, 250);
   }

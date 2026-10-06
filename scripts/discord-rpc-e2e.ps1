@@ -5,6 +5,7 @@ Discord client, account, discord-ipc-N pipe, YouTube or Google request is involv
 
   pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 -Scenario All -OutputDirectory artifacts/discord-rpc
   pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 -Scenario All -Parallel 1 -OutputDirectory artifacts/discord-rpc   # serial
+  pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 -Scenario Timeline,Disable -TimelineSchedule Classic -SkipPublish
 
 -Scenario takes one name, All, or a comma-separated list (Timeline,Disable). -Parallel N (default 4) publishes the
 hook build once, then runs scenario groups as child processes of this script, at most N at a time, longest
@@ -20,7 +21,7 @@ NATIVUNE_TEST_DISCORD_* variables. The owner's data/ and installed profile are n
 repository WebView2 runtime copied into the fresh root the app uses the registered Evergreen runtime;
 -CopyWebView2Runtime copies .tools/webview2 (about 800 MB) into the root instead.
 
-Fixture page timeline (src/Nativune/DiscordFixturePage.html), seconds after page load:
+Fixture page Classic/default timeline (src/Nativune/DiscordFixturePage.html), seconds after page load:
   0 track A playing (Fixture Song A / Fixture Artist, 210 s); 25 seek to 100 s; 45 pause; 60 resume;
   65-75 synthetic ad window; 80 track B (Fixture Song B / Second Artist, 185 s, SAME artwork URL as track A);
   100 repeat-one on (stays on); 120 stop (ended); 125 track C (Fixture Song C / Third Artist, 240 s) with
@@ -28,6 +29,12 @@ Fixture page timeline (src/Nativune/DiscordFixturePage.html), seconds after page
   (147 mismatched link text, 152 invalid candidate href, 157 link removed) while the route still names the
   song; 162 link restored; 172 pause with repeat-one on; 182 resume; 192 stop (ended). Every byline carries a
   unique album canary (AlbumCanaryQ7a/b/c, browse/MPREb_albumCanaryQ7*) that must never leave the app.
+Timeline alone defaults to -TimelineSchedule Compact: the same steps at 10 seek, 20 pause, 35 resume,
+  40-50 ad, 55 B, 67 repeat-one, 79 ended, 84 C, 96 art recovery, 106/111/116 unproven variants,
+  121 link restore, 131 pause, 141 resume, 151 final ended. -TimelineSchedule Classic keeps the times above.
+  Both keep the 10 s ad and each 5 s link state; reader/debounce/write/art clocks and tolerances are unchanged.
+  -TimelineSeconds defaults to final ended + 23 s (Compact 174, Classic 215); an explicit value overrides it.
+  Reconnect, ProductionGate and all other scenarios still use their existing profiles/default schedule.
 
 Failure modes caught:
 - presence off by default is ignored, or Disable still opens IPC connections;
@@ -93,13 +100,15 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
 param(
     # One name, All, or a comma-separated list; validated below (a comma list arrives as one string via -File).
     [string[]] $Scenario = @('All'),
-    # Qualified at 4 (two consecutive clean full runs, 282 s each); -Parallel 1 runs everything in this process.
+    # Compact qualified at 4 (20261006, two consecutive clean full suites); -Parallel 1 runs in this process.
     [int] $Parallel = 4,
     [string] $OutputDirectory = 'artifacts/discord-rpc',
     [switch] $SkipPublish,
     [switch] $CopyWebView2Runtime,
     [switch] $KeepRoot,
-    [int] $TimelineSeconds = 215
+    [ValidateSet('Compact', 'Classic')]
+    [string] $TimelineSchedule = 'Compact',
+    [int] $TimelineSeconds
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -111,6 +120,24 @@ foreach ($name in $Scenario) {
     if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
 }
 $selected = if ('All' -in $Scenario) { $allScenarios } else { @($allScenarios | Where-Object { $_ -in $Scenario }) }
+
+# Page-time expectations: same event order as the fixture's classic actions / TimelineCompact dispatch.
+$timelineSchedules = @{
+    Classic = [ordered]@{
+        seek = 25; seekPosition = 100; pause = 45; resume = 60; adStart = 65; adEnd = 75
+        trackB = 80; repeatOne = 100; ended = 120; trackC = 125; artRecovery = 137
+        unprovenText = 147; unprovenHref = 152; unprovenRemoved = 157; linkRestore = 162
+        pauseRepeat = 172; resumeRepeat = 182; finalEnded = 192
+    }
+    Compact = [ordered]@{
+        seek = 10; seekPosition = 100; pause = 20; resume = 35; adStart = 40; adEnd = 50
+        trackB = 55; repeatOne = 67; ended = 79; trackC = 84; artRecovery = 96
+        unprovenText = 106; unprovenHref = 111; unprovenRemoved = 116; linkRestore = 121
+        pauseRepeat = 131; resumeRepeat = 141; finalEnded = 151
+    }
+}
+$timelineTimes = $timelineSchedules[$TimelineSchedule]
+if (-not $PSBoundParameters.ContainsKey('TimelineSeconds')) { $TimelineSeconds = $timelineTimes.finalEnded + 23 }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $commandLine = 'pwsh -NoProfile -File scripts/discord-rpc-e2e.ps1 ' + (($PSBoundParameters.GetEnumerator() | ForEach-Object {
@@ -337,7 +364,10 @@ function Test-Timeline {
     $server = Start-FakeServer 'timeline'
     $app = $null; $closeUtc = $null
     try {
-        $app = Start-App $root
+        $override = if ($TimelineSchedule -eq 'Compact') {
+            @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'TimelineCompact'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        } else { @{} }
+        $app = Start-App $root $override
         Start-Sleep -Seconds $TimelineSeconds
         $alive = -not $app.HasExited
         $closeUtc = Stop-App $app $root
@@ -382,8 +412,9 @@ function Test-Timeline {
     Add-Check 'timeline.durationSpan210s' ($spans.Count -gt 0 -and -not ($spans | Where-Object { [Math]::Abs($_ - 210) -gt 2 }))
     $starts = @($aPlaying | ForEach-Object { [double] (Get-Prop (& $ts $_.Activity) 'start') })
     $seekShift = $false
-    # Fixture seeks at page time 25 s from ~25 s to 100 s, so start shifts by -(100-25) = -75 s.
-    for ($i = 1; $i -lt $starts.Count; $i++) { if ([Math]::Abs(($starts[$i] - $starts[0]) + 75) -le 4) { $seekShift = $true } }
+    # Seek displacement comes from page time and target position; the existing +/-4 s tolerance stays fixed.
+    $expectedSeekShift = $timelineTimes.seekPosition - $timelineTimes.seek
+    for ($i = 1; $i -lt $starts.Count; $i++) { if ([Math]::Abs(($starts[$i] - $starts[0]) + $expectedSeekShift) -le 4) { $seekShift = $true } }
     Add-Check 'timeline.seekReanchors' $seekShift
 
     $pauseIndex = [Array]::FindIndex([object[]] $sets, [Predicate[object]] { param($s) $null -ne $s.Activity -and (& $isA $s) -and (Get-Prop (& $assets $s.Activity) 'small_image') -eq 'pause' })
@@ -412,8 +443,8 @@ function Test-Timeline {
             ($image -notin @($null, 'pause', 'repeat-one')) -or ($null -eq $image -and $null -ne $text) }))
     Add-Check 'timeline.noSmallUrl' ($nonNull.Count -gt 0 -and -not ($nonNull | Where-Object { $null -ne (Get-Prop (& $assets $_.Activity) 'small_url') }))
     Add-Check 'timeline.noBadgeWhilePlainPlaying' ($aPlaying.Count -gt 0 -and -not ($aPlaying | Where-Object { $null -ne (Get-Prop (& $assets $_.Activity) 'small_image') }))
-    # Fixture ends at page time 120 s (repeat-one at 100 s): the first null after the repeat-one frame must
-    # arrive within 25 s of it, and no track-B pause-badge card may follow the repeat-one frame.
+    # The first null after the repeat-one frame must arrive within the existing 25 s bound.
+    # Ended/repeat-one page times are recorded in timelineTimes; no track-B pause card may follow repeat-one.
     $endedClear = $false
     if ($repeatIndex -ge 0) {
         $afterRepeat = @($sets | Select-Object -Skip ($repeatIndex + 1))
@@ -424,7 +455,7 @@ function Test-Timeline {
     }
     Add-Check 'timeline.endedClears' $endedClear
     # Only frames sent before the harness closed the app: the quit path's own clear must not stand in for the
-    # ended clear (page 192) that this check proves.
+    # final-ended clear that this check proves (timelineTimes.finalEnded).
     $preClose = @($sets | Where-Object { $null -ne $closeUtc -and $_.Utc -lt $closeUtc })
     Add-Check 'timeline.finalClear' ($preClose.Count -gt 0 -and $null -eq $preClose[-1].Activity)
 
@@ -440,20 +471,19 @@ function Test-Timeline {
     $fixtureHtml = Get-Content -LiteralPath (Join-Path $repo 'src/Nativune/DiscordFixturePage.html') -Raw
     $channelIds = @([regex]::Matches($fixtureHtml, 'channel/(UC[A-Za-z0-9_-]+)') | ForEach-Object { $_.Groups[1].Value })
     $readyUtc = if ($readyIndex -ge 0) { ConvertTo-UtcTime $frames[$readyIndex].utc } else { $null }
-    # The fixture timeline is in PAGE time (ad-showing 65-75 s after page load), but the page loads several
-    # seconds after READY. Estimate the READY->page offset from events with known page times: track B starts at
-    # page 80 s and track A resumes at page 60 s. Each observed send = pageTime + offset + debounce (1 s) + possible
-    # MIN_WRITE gate delay, so (send - pageTime - debounce) is an upper bound on the offset; take the smallest.
-    $debounceSeconds = 1; $adStart = 65; $adEnd = 75
+    # Page load follows READY. Estimate the READY->page offset from B and A's resume at their selected times.
+    # Each observed send = pageTime + offset + debounce (1 s) + possible MIN_WRITE gate delay, so
+    # (send - pageTime - debounce) is an upper bound on the offset; take the smallest.
+    $debounceSeconds = 1; $adStart = $timelineTimes.adStart; $adEnd = $timelineTimes.adEnd
     $offsetCandidates = @()
-    if ($readyUtc -and $firstB -ge 0) { $offsetCandidates += ($sets[$firstB].Utc - $readyUtc).TotalSeconds - 80 - $debounceSeconds }
+    if ($readyUtc -and $firstB -ge 0) { $offsetCandidates += ($sets[$firstB].Utc - $readyUtc).TotalSeconds - $timelineTimes.trackB - $debounceSeconds }
     if ($readyUtc -and $pauseIndex -ge 0) {
         $resumeSet = $sets | Select-Object -Skip ($pauseIndex + 1) | Where-Object {
             $null -ne $_.Activity -and (& $isA $_) -and $null -ne (& $ts $_.Activity) } | Select-Object -First 1
-        if ($resumeSet) { $offsetCandidates += ($resumeSet.Utc - $readyUtc).TotalSeconds - 60 - $debounceSeconds }
+        if ($resumeSet) { $offsetCandidates += ($resumeSet.Utc - $readyUtc).TotalSeconds - $timelineTimes.resume - $debounceSeconds }
     }
     $adOffset = if ($offsetCandidates.Count -gt 0) { ($offsetCandidates | Measure-Object -Minimum).Minimum } else { $null }
-    $inAdWindow = { param($s) $null -ne $adOffset -and $s.Utc -ge $readyUtc.AddSeconds(65 + $adOffset) -and $s.Utc -le $readyUtc.AddSeconds(75 + $adOffset) }
+    $inAdWindow = { param($s) $null -ne $adOffset -and $s.Utc -ge $readyUtc.AddSeconds($adStart + $adOffset) -and $s.Utc -le $readyUtc.AddSeconds($adEnd + $adOffset) }
     $hasTrackLinks = { param($s, [string] $Url)
         $btn = @(Get-Prop $s.Activity 'buttons' | Where-Object { $_ })
         (Get-Prop $s.Activity 'details_url') -eq $Url -and $btn.Count -eq 1 -and
@@ -485,7 +515,7 @@ function Test-Timeline {
     Add-Check 'timeline.trackBStateUrl' ($channelIds.Count -ge 2 -and $b.Count -gt 0 -and -not ($b | Where-Object {
         (Get-Prop $_.Activity 'state_url') -ne "https://music.youtube.com/channel/$($channelIds[1])" }))
 
-    # Track C (page 125-192): missing artwork -> 'nativune' fallback (same caption/repo link) -> recovery at 137.
+    # Track C: missing artwork -> 'nativune' fallback (same caption/repo link) -> art recovery.
     $isC = { param($s) (Get-Prop $s.Activity 'details') -eq 'Fixture Song C' }
     $c = @($nonNull | Where-Object { & $isC $_ }); $urlC = 'https://music.youtube.com/watch?v=fixtureSngC'
     $artB = 'https://lh3.googleusercontent.com/fixture-b=w544-h544'
@@ -496,18 +526,18 @@ function Test-Timeline {
     Add-Check 'timeline.missingArtFallbackPublished' ($fallbackC.Count -gt 0 -and -not ($fallbackC | Where-Object { -not (Test-CoverIdentity $_.Activity) }))
     Add-Check 'timeline.missingArtRecovers' ($fallbackC.Count -gt 0 -and [bool] ($c | Where-Object {
         $_.Mono -gt $fallbackC[0].Mono -and (Get-Prop (& $assets $_.Activity) 'large_image') -eq $artB -and (Test-CoverIdentity $_.Activity) }))
-    # Unproven title link (page 147-162, outside the ad window; route still /watch?v=fixtureSngC): title, artist link
+    # Unproven title link (selected unprovenText..linkRestore, outside ad; route still /watch?v=fixtureSngC): title, artist link
     # and cover identity stay, details_url and button are absent; song links only ever appear or vanish together.
     $cLinkless = @($c | Where-Object { & $linkless $_ })
     $unprovenOk = $false
     if ($null -ne $adOffset -and $cLinkless.Count -gt 0) {
-        $uStart = $readyUtc.AddSeconds(147 + $adOffset - 2); $uEnd = $readyUtc.AddSeconds(162 + $adOffset + $minWriteSeconds + $debounceSeconds + 3)
+        $uStart = $readyUtc.AddSeconds($timelineTimes.unprovenText + $adOffset - 2); $uEnd = $readyUtc.AddSeconds($timelineTimes.linkRestore + $adOffset + $minWriteSeconds + $debounceSeconds + 3)
         $unprovenOk = -not ($cLinkless | Where-Object { $_.Utc -lt $uStart -or $_.Utc -gt $uEnd -or -not (Test-CoverIdentity $_.Activity) })
     }
     Add-Check 'timeline.unprovenTitleNoSongLinks' $unprovenOk
     Add-Check 'timeline.songLinksTogether' ($c.Count -gt 0 -and -not ($c | Where-Object { -not (& $linkless $_) -and -not (& $hasTrackLinks $_ $urlC) }))
     Add-Check 'timeline.songLinksReturn' ($cLinkless.Count -gt 0 -and [bool] ($c | Where-Object { $_.Mono -gt $cLinkless[-1].Mono -and (& $hasTrackLinks $_ $urlC) }))
-    # Pause at page 172 while repeat-one is on: the pause badge wins; resume brings repeat-one back.
+    # Pause while repeat-one is on: the pause badge wins; resume brings repeat-one back.
     $cPause = @($c | Where-Object { (Get-Prop (& $assets $_.Activity) 'small_image') -eq 'pause' })
     Add-Check 'timeline.pauseOverRepeatOne' ($cPause.Count -gt 0 -and -not ($cPause | Where-Object {
         (Get-Prop (& $assets $_.Activity) 'small_text') -cne 'Paused' -or $null -ne (& $ts $_.Activity) }) -and [bool] ($c | Where-Object {
@@ -518,6 +548,8 @@ function Test-Timeline {
     Add-Check 'timeline.writeRate' ($minGapSeconds -ge ($minWriteSeconds - 0.5))
 
     $scenarioResults['Timeline'] = [ordered]@{
+        schedule = $TimelineSchedule; timelineTimes = $timelineTimes; observationSeconds = $TimelineSeconds
+        postFinalEndedSeconds = $TimelineSeconds - $timelineTimes.finalEnded
         appPid = $app.Id; connections = @($frames | Where-Object { $_.json -eq 'connected' }).Count
         setActivityCount = $sets.Count; nonNullCount = $nonNull.Count; clearCount = $sets.Count - $nonNull.Count
         minNonNullGapSeconds = if ([double]::IsInfinity($minGapSeconds)) { $null } else { [Math]::Round($minGapSeconds, 3) }
@@ -525,7 +557,7 @@ function Test-Timeline {
         trackCActivityCount = $c.Count; trackCFallbackCount = $fallbackC.Count; trackCUnprovenCount = $cLinkless.Count
         expectedCaption = Get-ExpectedCaption
         adWindowOffsetSeconds = if ($null -ne $adOffset) { [Math]::Round($adOffset, 3) } else { $null }
-        adWindowMethod = 'offset = min(firstTrackB - 80 s, firstResume - 60 s) - 1 s debounce (READY-relative); window = page 65-75 s + offset'
+        adWindowMethod = "offset = min(firstTrackB - $($timelineTimes.trackB) s, firstResume - $($timelineTimes.resume) s) - 1 s debounce (READY-relative); window = page $adStart-$adEnd s + offset"
         timestampUnitAssumption = 'unix seconds (contract ToDiscordWireTimestamp; real-client check pending)'
     }
     $root
@@ -1228,8 +1260,9 @@ function Test-HiddenAndCompact {
 }
 
 # -Parallel: groups run as child processes of this script (own prefix, server and roots), longest first.
-# Order and grouping come from measured serial times (run 20260927T085304Z): Timeline+Disable ~260 s,
-# ProductionGate ~150, PauseExpiry ~95, Reconnect ~90, HiddenAndCompact ~85, then the short ones.
+# Measured Compact qualification (20261006, artifacts/discord-rpc/compact-timeline): Timeline+Disable
+# 211.7-211.8 s versus the previous Classic ~253 s (41.2-41.3 s saved); ProductionGate ~146 s,
+# PauseExpiry ~84-88 s, Reconnect ~86 s, HiddenAndCompact ~82 s, then the shorter groups.
 $parallelGroups = @(@('Timeline', 'Disable'), @('ProductionGate'), @('PauseExpiry'), @('Reconnect'), @('HiddenAndCompact'),
     @('ArtGap'), @('ReaderGap'), @('RejectedClear'), @('SameTitle'), @('ButtonOff'), @('RejectedReplace'), @('Locale'), @('Migration'), @('Absent'),
     @('LiveToggle'), @('TrueQuit'))
@@ -1252,7 +1285,7 @@ function Invoke-ParallelGroups {
             $out = Join-Path $partsRoot ($label.ToLowerInvariant())
             [IO.Directory]::CreateDirectory($out) | Out-Null
             $arguments = @('-NoProfile', '-File', $PSCommandPath, '-Scenario', ($names -join ','), '-SkipPublish', '-OutputDirectory', $out,
-                '-TimelineSeconds', "$TimelineSeconds", '-Parallel', '1')
+                '-TimelineSeconds', "$TimelineSeconds", '-TimelineSchedule', $TimelineSchedule, '-Parallel', '1')
             if ($CopyWebView2Runtime) { $arguments += '-CopyWebView2Runtime' }
             if ($KeepRoot) { $arguments += '-KeepRoot' }
             $process = Start-Process -FilePath pwsh -ArgumentList $arguments -PassThru -WindowStyle Hidden `
