@@ -108,7 +108,11 @@ public sealed partial class SettingsDialog : Window
         AutoCheckUpdatesCheckBox.IsChecked = initial.AutoCheckUpdates;
         BlockAdsCheckBox.IsChecked = initial.BlockAds;
         TrayEnabledCheckBox.IsChecked = initial.TrayEnabled;
-        RestoreSectionCheckBox.IsChecked = initial.RestoreSection;
+        StartupDestinationComboBox.SelectedIndex = (int)initial.StartupDestination;
+        ResumeLaunchComboBox.SelectedIndex = (int)initial.ResumeLaunch;
+        ResumeLaunchComboBox.IsEnabled = initial.StartupDestination == StartupDestination.Continue;
+        StartupDestinationComboBox.SelectionChanged += (_, _) =>
+            ResumeLaunchComboBox.IsEnabled = StartupDestinationComboBox.SelectedIndex == (int)StartupDestination.Continue;
         VersionText.Text = AppVersion.DisplayName;
         AutomationProperties.SetName(VersionText, $"Application version {AppVersion.Number}");
         InstallKindText.Text = isInstalledBuild
@@ -452,6 +456,23 @@ public sealed partial class SettingsDialog : Window
         width = EqCurveCanvas.ActualWidth, height = EqCurveCanvas.ActualHeight,
         points = EqCurve.Points.Select(point => new { x = point.X, y = point.Y }).ToArray()
     };
+    internal object ResumeHookSnapshot(int? destination = null, int? launch = null)
+    {
+        Nav.SelectedItem = StartupNavItem;
+        if (destination is { } d) StartupDestinationComboBox.SelectedIndex = d;
+        if (launch is { } l) ResumeLaunchComboBox.SelectedIndex = l;
+        var snapshot = new {
+            destination = StartupDestinationComboBox.SelectedIndex,
+            launch = ResumeLaunchComboBox.SelectedIndex,
+            launchEnabled = ResumeLaunchComboBox.IsEnabled,
+            accessible = AutomationProperties.GetName(StartupDestinationComboBox) == "Startup destination"
+                && AutomationProperties.GetName(ResumeLaunchComboBox) == "When continuing"
+                && AutomationProperties.GetHelpText(StartupDestinationComboBox).Length > 0,
+            shown = StartupPage.Visibility == Visibility.Visible
+        };
+        if (destination is not null || launch is not null) Save();
+        return snapshot;
+    }
 #endif
 
 
@@ -771,7 +792,9 @@ public sealed partial class SettingsDialog : Window
             AutoCheckUpdates = AutoCheckUpdatesCheckBox.IsChecked == true,
             BlockAds = BlockAdsCheckBox.IsChecked == true,
             TrayEnabled = TrayEnabledCheckBox.IsChecked == true,
-            RestoreSection = RestoreSectionCheckBox.IsChecked == true,
+            StartupDestination = StartupDestinationComboBox.SelectedIndex is >= 0 and <= 2
+                ? (StartupDestination)StartupDestinationComboBox.SelectedIndex : StartupDestination.Continue,
+            ResumeLaunch = ResumeLaunchComboBox.SelectedIndex == 1 ? ResumeLaunch.StartPlaying : ResumeLaunch.WaitPaused,
             AutostartMode = SelectedAutostartMode(),
             Discord = new DiscordPresenceOptions(DiscordPresenceCheckBox.IsChecked == true,
                 SelectedDiscordStatusLine(), DiscordOpenButtonCheckBox.IsChecked == true,

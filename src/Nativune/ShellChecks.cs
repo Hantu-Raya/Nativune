@@ -20,8 +20,7 @@ internal static class ShellChecks
         var settings = new ShellSettings(4000, -2000, 1000, 700, 96, true, 1.25)
         {
             TrayEnabled = true,
-            RestoreSection = true,
-            LastSection = "library",
+            StartupDestination = StartupDestination.Library,
             SleepInBackground = false,
             StartCompact = true,
             AutoCheckUpdates = false,
@@ -49,8 +48,8 @@ internal static class ShellChecks
             && savedSettingsText.Contains("\"AutoCheckUpdates\": false", StringComparison.Ordinal),
             "Current settings schema did not persist compact startup and automatic update preferences.");
         Require(loaded.StartupUri == "https://music.youtube.com/library"
-            && (loaded with { RestoreSection = false }).StartupUri == "https://music.youtube.com/",
-            "Section restoration ignored its opt-in boundary.");
+            && (loaded with { StartupDestination = StartupDestination.Home }).StartupUri == "https://music.youtube.com/",
+            "Startup destination was not respected.");
         Require(ShellSettings.SectionFromUri(new Uri("https://music.youtube.com/library?private=value")) == "library"
             && ShellSettings.SectionFromUri(new Uri("https://music.youtube.com/playlist?list=private")) is null
             && ShellSettings.SectionFromUri(new Uri("https://music.youtube.com.evil.example/library")) is null
@@ -68,14 +67,15 @@ internal static class ShellChecks
             && !WebHostWindow.ShouldResumeStartupCompactAfterAccount(true, true, true, false),
             "Startup Compact resumed without a preserved opt-in, account return, and ready owned Music view.");
 
-        ShellSettings.SaveAsync(root, settings with { LastSection = "https://evil.example/private" },
+        ShellSettings.SaveAsync(root, settings with { StartupDestination = (StartupDestination)int.MaxValue },
             CancellationToken.None).GetAwaiter().GetResult();
-        Require(ShellSettings.Load(root, out _).LastSection == "home", "Unrecognized section was retained.");
+        Require(ShellSettings.Load(root, out _).StartupDestination == StartupDestination.Continue,
+            "Unrecognized startup destination was retained.");
         File.WriteAllText(file,
             "{\"Version\":1,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1}");
         var previous = ShellSettings.Load(root, out warning);
         Require(warning is null && previous.Width == 1234 && !previous.TrayEnabled
-            && !previous.RestoreSection && previous.Zoom == 1 && previous.SleepInBackground
+            && previous.StartupDestination == StartupDestination.Continue && previous.Zoom == 1 && previous.SleepInBackground
             && !previous.StartCompact,
             "Existing P1 settings changed optional behavior during upgrade.");
         File.WriteAllText(file,

@@ -26,6 +26,10 @@ public sealed partial class WebHostWindow
     // which audible YouTube Music playback never hits. Unmuted autoplay needs this policy; fixture runs only.
     private static void DiscordFixtureBrowserArguments(ref string browserArguments)
     {
+        // Resume probe (hook builds only): run the real site under an explicit Chromium autoplay policy.
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_AUTOPLAY_POLICY") is { } policy
+            && policy is "document-user-activation-required" or "no-user-gesture-required" or "user-gesture-required")
+            browserArguments = (browserArguments + " --autoplay-policy=" + policy).Trim();
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_FIXTURE_PAGE") != "1") return;
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") != "1")
             browserArguments = string.IsNullOrWhiteSpace(browserArguments)
@@ -61,6 +65,21 @@ public sealed partial class WebHostWindow
             s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
                 .Replace("<meta name=\"nativune-eq-fixture\" content=\"\">",
                     "<meta name=\"nativune-eq-fixture\" content=\"1\">", StringComparison.Ordinal));
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_FIXTURE") == "1")
+        {
+            var resumeFixture = JsonSerializer.Serialize(new {
+                ad = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_AD") == "1",
+                badLink = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_BAD_LINK") == "1",
+                stall = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_STALL") == "1",
+                homeMedia = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_HOME_MEDIA") == "1",
+                noBar = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_NO_BAR") == "1",
+                delay = int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_DELAY"), out var delay)
+                    ? Math.Clamp(delay, 0, 16000) : 0
+            });
+            s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
+                .Replace("<meta name=\"nativune-resume-fixture\" content=\"\">",
+                    "<meta name=\"nativune-resume-fixture\" content='" + resumeFixture + "'>", StringComparison.Ordinal));
+        }
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1" &&
             Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_DEFER_MEDIA") == "1")
             s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
@@ -78,6 +97,22 @@ public sealed partial class WebHostWindow
         if (uri is not null && uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
             return;
         var https = uri is not null && uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && uri.UserInfo.Length == 0;
+        if (https && Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_REDIRECT") == "1"
+            && args.ResourceContext == CoreWebView2WebResourceContext.Document)
+        {
+            if (uri!.Host == "accounts.google.com")
+            {
+                args.Response = DiscordFixtureResponse(sender, Encoding.UTF8.GetBytes("<html lang='en'><body>Fixture account document</body></html>"),
+                    200, "OK", "text/html; charset=utf-8");
+                return;
+            }
+            if (uri!.Host == "music.youtube.com" && uri.Query.Contains("fixtureSngB", StringComparison.Ordinal))
+            {
+                args.Response = sender.Environment.CreateWebResourceResponse(null, 302, "Found",
+                    "Cache-Control: no-store\r\nLocation: https://accounts.google.com/ServiceLogin");
+                return;
+            }
+        }
         if (https && uri!.Host == "eq-fixture.invalid" && uri.AbsolutePath == "/tone.wav" &&
             Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
         {
@@ -210,6 +245,7 @@ public sealed partial class WebHostWindow
     //   command-discord-off / -on       ApplyDiscordOptions with Enabled false/true (Settings Save path)
     //   command-power-suspend / -resume the WM_POWERBROADCAST suspend / resume-suspend handling (HandlePowerEvent)
     //   command-compact / command-full  SetCompact(true) + RequestActivation / SetCompact(false)
+    //   command-locale-fr / -en         set the fixture page's <html lang> (the page reader accepts only English)
     // Commands are honoured in every fixture run with a valid test prefix, not only bench state runs.
     private const string DiscordBenchProfileMeta = "<meta name=\"nativune-discord-bench-profile\" content=\"\">";
     private static readonly TimeSpan DiscordBenchSetupTimeout = TimeSpan.FromSeconds(50);
@@ -261,7 +297,7 @@ public sealed partial class WebHostWindow
         }
         string? error = null;
         if (profile is not ("Playing" or "PlayingLong" or "Paused" or "Empty" or "ArtGap" or "SameTitle" or "ReaderGap"
-            or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback"))
+            or "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "PausedSeek" or "AdFallback" or "TimelineCompact"))
             error = "invalid-profile";
         else if (state is not ("Full" or "Hidden" or "Compact")) error = "invalid-state";
         else if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
@@ -346,7 +382,7 @@ public sealed partial class WebHostWindow
             if (!root.TryGetProperty("ready", out var r) || r.GetString() != "complete") return;
             if (_discordBenchProfile is "Playing" or "PlayingLong" or "ArtGap" && paused != false) return;
             if (_discordBenchProfile is "Paused" or "SameTitle" or "ReaderGap" && paused != true) return;
-            if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback"
+            if (_discordBenchProfile is "ShortGap" or "IdOnly" or "Text" or "ArtSwap" or "DomGap" or "AdFallback" or "TimelineCompact"
                 && paused != false) return;
             if (_discordBenchProfile is "PausedSeek" && paused != true) return;
             _discordBenchPageReady = true;
@@ -462,6 +498,10 @@ public sealed partial class WebHostWindow
         if (TakeDiscordBenchCommand("command-power-resume")) HandlePowerEvent(PbtApmresumesuspend);
         if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
             await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
+        if (TakeDiscordBenchCommand("command-locale-fr") && _browserHost is { } frHost)
+            await frHost.Core.ExecuteScriptAsync("document.documentElement.lang = 'fr'");
+        if (TakeDiscordBenchCommand("command-locale-en") && _browserHost is { } enHost)
+            await enHost.Core.ExecuteScriptAsync("document.documentElement.lang = 'en'");
         await ProcessObsBenchCommandsAsync();
         await ProcessEqualizerBenchCommandsAsync();
         if (_closing || _disposed) return;
@@ -516,6 +556,102 @@ public sealed partial class WebHostWindow
                 var value = root.TryGetProperty("value", out var v) ? v : default;
                 switch (command)
                 {
+                    case "resume-state":
+                        var resumeRaw = await host.Core.ExecuteScriptAsync("(()=>{const v=document.querySelector('video,audio'),q=new URL(location.href).searchParams;return {" +
+                            "isB:q.get('v')==='fixtureSngB',isC:q.get('v')==='fixtureSngC',home:location.pathname==='/'," +
+                            "paused:v?.paused??true,position:v?.currentTime??0,duration:Number.isFinite(v?.duration)?v.duration:0," +
+                            "timeParameter:/^[0-9]+$/.test(q.get('t')||'')?Number(q.get('t')):null,mediaNetworkFailed:v?.error?.code===2," +
+                            "readyState:v?.readyState??0,...globalThis.__nativuneFixture?.resumeState?.()}})()");
+                        using (var resumeJson = JsonDocument.Parse(resumeRaw))
+                            result = new { ready = _playerControls?.IsAvailable == true, restoreState = _resumeState, diag = _resumeDiag,
+                                status = _statusDetailsText, networkFailed = _navigationFailed || resumeJson.RootElement.GetProperty("mediaNetworkFailed").GetBoolean(),
+                                otherDocument = !IsEqualizerMusicOrigin(host.Core.Source), compact = _compact,
+                                visible = _appWindow?.IsVisible == true, tray = _tray?.IsVisible == true,
+                                destination = (int)_settings.StartupDestination, launch = (int)_settings.ResumeLaunch,
+                                safetyMuted = _resumeSafetyMuted, coreMuted = host.Core.IsMuted,
+                                checkpointExists = File.Exists(Path.Combine(_root, "data", "resume.dat")),
+                                isB = resumeJson.RootElement.GetProperty("isB").GetBoolean(),
+                                isC = resumeJson.RootElement.GetProperty("isC").GetBoolean(),
+                                home = resumeJson.RootElement.GetProperty("home").GetBoolean(),
+                                paused = resumeJson.RootElement.GetProperty("paused").GetBoolean(),
+                                position = resumeJson.RootElement.GetProperty("position").GetDouble(),
+                                duration = resumeJson.RootElement.GetProperty("duration").GetDouble(),
+                                timeParameter = resumeJson.RootElement.GetProperty("timeParameter").Clone(),
+                                stallApplied = resumeJson.RootElement.TryGetProperty("stallApplied", out var stall) && stall.GetBoolean(),
+                                isAd = resumeJson.RootElement.TryGetProperty("isAd", out var ad) && ad.GetBoolean(),
+                                seekCount = resumeJson.RootElement.TryGetProperty("seekCount", out var seeks) ? seeks.GetInt32() : 0,
+                                firstPlayingPosition = resumeJson.RootElement.TryGetProperty("firstPlayingPosition", out var first)
+                                    ? (object)first.Clone() : _resumeInitialPosition };
+                        break;
+                    case "resume-visit":
+                        await NavigateAfterResumeAsync(() => host.Core.Navigate("https://music.youtube.com/watch?v=fixtureSngC"));
+                        result = new { requested = true };
+                        break;
+                    case "resume-settings":
+                        ShowSettings();
+                        var destination = value.ValueKind == JsonValueKind.Object ? value.GetProperty("destination").GetInt32() : (int?)null;
+                        var launch = value.ValueKind == JsonValueKind.Object ? value.GetProperty("launch").GetInt32() : (int?)null;
+                        if (destination is < 0 or > 2 || launch is < 0 or > 1) throw new InvalidDataException("resume-setting");
+                        result = _settingsDialog?.ResumeHookSnapshot(destination, launch)
+                            ?? throw new InvalidOperationException("settings-not-open");
+                        if (destination is not null)
+                            for (var attempt = 0; attempt < 100 && _settingsDialogOpen; attempt++) await Task.Delay(25);
+                        break;
+                    case "resume-fixture":
+                        if (value.ValueKind != JsonValueKind.Object) throw new InvalidDataException("resume-value");
+                        result = await host.Core.ExecuteScriptAsync($"globalThis.__nativuneFixture.resumeSet({value.GetRawText()})");
+                        break;
+                    case "resume-compact":
+                        SetCompact(true);
+                        for (var attempt = 0; attempt < 30 && !CompactActive; attempt++) await Task.Delay(50);
+                        _lastCompactReadAt = 0;
+                        await ReadPlaybackStateAsync();
+                        var resumeCommand = value.GetProperty("command").GetString();
+                        if (resumeCommand is not ("toggle" or "next" or "previous" or "seek"))
+                            throw new InvalidDataException("resume-command");
+                        await ExecuteCompactCommandAsync(resumeCommand,
+                            value.TryGetProperty("value", out var resumeValue) ? resumeValue.GetDouble() : null);
+                        result = new { dispatched = true };
+                        break;
+                    case "resume-show":
+                        OnTrayCommand("show"); // The tray icon's Show path.
+                        result = new { dispatched = true };
+                        break;
+                    case "resume-reload":
+                        host.Core.Reload(); // a new document of the same song
+                        result = new { dispatched = true };
+                        break;
+                    case "resume-dom":
+                        // Element counts only (no text), to diagnose real-site layouts the restore cannot identify.
+                        result = JsonDocument.Parse(await host.Core.ExecuteScriptAsync(
+                            "(()=>{const c=s=>document.querySelectorAll(s).length;return {path:location.pathname," +
+                            "bars:c('ytmusic-player-bar'),renderedBars:Array.from(document.querySelectorAll('ytmusic-player-bar')).filter(b=>b.getClientRects().length>0).length," +
+                            "app:c('ytmusic-app'),player:c('ytmusic-player'),media:c('audio,video'),titles:c('ytmusic-player-bar .title')," +
+                            "timeInfo:c('ytmusic-player-bar span.time-info'),links:c('ytmusic-player a.ytp-title-link'),playerPage:c('ytmusic-player-page')," +
+                            "barLike:Array.from(new Set(Array.from(document.querySelectorAll('*')).map(e=>e.localName).filter(n=>/player-bar|playerbar/.test(n))))};})()")).RootElement.Clone();
+                        break;
+                    case "resume-page-play":
+                        // key=true sends a trusted CDP key press first, then plays as the site's shortcut handler would;
+                        // false is a late site autoplay with no input.
+                        var key = value.ValueKind == JsonValueKind.Object && value.TryGetProperty("key", out var k) && k.GetBoolean();
+                        if (key)
+                            foreach (var type in new[] { "keyDown", "keyUp" })
+                                await host.Core.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", JsonSerializer.Serialize(new {
+                                    type, key = "k", code = "KeyK", windowsVirtualKeyCode = 75, nativeVirtualKeyCode = 75 }));
+                        await host.Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", JsonSerializer.Serialize(new {
+                            expression = "document.querySelector('audio,video')?.play().catch(()=>{}); true" }));
+                        result = new { dispatched = true, key };
+                        break;
+                    case "resume-audio":
+                        var resumeProcesses = CaptureOutputAudioProcesses();
+                        var resumeExecutable = _outputAudioExecutablePath;
+                        if (!_outputAudioPathVerified || resumeExecutable is null)
+                            throw new InvalidOperationException("session-path-unverified");
+                        result = await Task.Run(() => {
+                            using var reader = new WebViewAudioVolume(resumeExecutable);
+                            return reader.ReadEqualizerHookSessions(resumeProcesses, measurePeak: true);
+                        });
+                        break;
                     case "eq-block-activation":
                         if (_equalizerContext is null)
                         {
@@ -703,6 +839,23 @@ public sealed partial class WebHostWindow
                         var mediaRaw = await host.Core.ExecuteScriptAsync("(()=>{const v=document.querySelector('video');return {paused:v.paused,currentTime:v.currentTime,currentSrc:v.currentSrc,readyState:v.readyState,fixture:!!globalThis.__nativuneFixture?.eqProfile,trustedClicks:globalThis.__nativuneFixture?.eqTrustedClicks??0}})()");
                         using (var mediaJson = JsonDocument.Parse(mediaRaw)) result = mediaJson.RootElement.Clone();
                         break;
+                    case "tray-state":
+                        result = new { exists = _tray is not null, wanted = _tray?.IsWanted, visible = _tray?.IsVisible,
+                            shellHasIcon = _tray?.TestShellHasIcon(), retryAttempt = _trayRetryAttempt };
+                        break;
+                    case "tray-fail-version":
+                        NativeTrayIcon.TestFailVersions = 1;
+                        result = new { armed = true };
+                        break;
+                    case "tray-shell-restart":
+                        // Explorer restart as the app sees it: the icon vanishes from the shell, then the registered
+                        // TaskbarCreated message arrives through the real window procedure. value = adds to fail first.
+                        NativeTrayIcon.TestFailAdds = value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 0;
+                        _tray?.TestDropFromShell();
+                        if (!TrayHookPostMessage(NativeHandle, (uint)TaskbarCreated, 0, 0))
+                            throw new InvalidOperationException("post-failed");
+                        result = new { posted = true };
+                        break;
                     case "eq-response":
                         var gains = value.GetProperty("gains").EnumerateArray().Select(x => x.GetDouble()).ToArray();
                         var frequencies = value.GetProperty("frequencies").EnumerateArray().Select(x => x.GetDouble()).ToArray();
@@ -843,6 +996,10 @@ public sealed partial class WebHostWindow
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "PostMessageW", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool TrayHookPostMessage(nint window, uint message, nint wParam, nint lParam);
 }
 
 // Pre-serialised JSON value for DiscordBenchJson (nested objects such as the OBS overlay bench state).

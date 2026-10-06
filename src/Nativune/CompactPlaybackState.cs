@@ -9,4 +9,4 @@ internal sealed record CompactPlaybackState(
     bool ClockConfirmed = false, double? MediaDuration = null, bool WebsiteClock = false,
     double? MediaPosition = null, string? Artist = null, string? ArtistUrl = null,
     string? TrackUrl = null, bool Ended = false, bool Seeking = false,
-    double? PlaybackRate = null, bool IsAd = false);
+    double? PlaybackRate = null, bool IsAd = false, bool TrackLinkPresent = false, string? ListId = null);

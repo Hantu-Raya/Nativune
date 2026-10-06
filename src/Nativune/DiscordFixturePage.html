@@ -5,6 +5,7 @@
 <meta name="nativune-discord-fixture" content="1">
 <meta name="nativune-discord-bench-profile" content="">
 <meta name="nativune-eq-fixture" content="">
+<meta name="nativune-resume-fixture" content="">
 <title>YouTube Music</title>
 <!--
   Synthetic YouTube Music page for scripts/discord-rpc-e2e.ps1 (test-hook builds only; served by
@@ -45,6 +46,13 @@
   182   resume (repeat-one badge again)
   192   stop: media ended as at 120
   The fixture clock advances only by the media element's own currentTime progress.
+
+  TimelineCompact (Discord E2E Timeline only) dispatches the SAME steps in the SAME order at:
+    10 seek, 20 pause, 35 resume, 40-50 ad, 55 B, 67 repeat-one, 79 ended, 84 C,
+    96 art recovery, 106/111/116 unproven link variants, 121 link restore, 131 pause,
+    141 resume, 151 final ended. Only initial/seek and B/repeat holds shrink (10/10/12/12 s);
+    the 10 s ad, each 5 s link state and all later holds stay unchanged. No clock is accelerated.
+    The harness observes for the same 23 s after final ended (174 s instead of 215 s).
 
   Benchmark-only steady profiles (bench protocol v2, scripts/discord-rpc-bench.ps1). The native fixture fills
   the nativune-discord-bench-profile meta content only when NATIVUNE_TEST_DISCORD_BENCH_PROFILE is valid;
@@ -132,6 +140,88 @@
 </ytmusic-app>
 <script>
 (() => {
+  if (document.querySelector('meta[name="nativune-resume-fixture"]').content) {
+    const config = JSON.parse(document.querySelector('meta[name="nativune-resume-fixture"]').content);
+    const media = document.querySelector('video'), bar = document.querySelector('ytmusic-player-bar');
+    const link = document.querySelector('.ytp-title-link'), player = document.querySelector('.html5-video-player');
+    const tracks = { A:{id:'fixtureSngA',duration:210}, B:{id:'fixtureSngB',duration:185}, C:{id:'fixtureSngC',duration:240} };
+    const query = new URL(location.href).searchParams;
+    let track = Object.values(tracks).find(t => t.id === query.get('v')) || tracks.A;
+    let isAd = !!config.ad, seekCount = 0, firstPlayingPosition = null, starting = true;
+    const time = s => Math.floor(s/60) + ':' + String(Math.floor(s)%60).padStart(2,'0');
+    const render = () => {
+      const p = media.currentTime || 0, d = Number.isFinite(media.duration) ? media.duration : track.duration;
+      const slider = document.querySelector('#progress-bar');
+      slider.setAttribute('aria-valuemax',String(d)); slider.setAttribute('aria-valuenow',String(Math.floor(p)));
+      document.querySelector('.time-info').textContent = time(p) + ' / ' + time(d);
+      document.querySelector('#play-pause-button').setAttribute('aria-label',media.paused?'Play':'Pause');
+    };
+    const identity = () => {
+      document.querySelector('.title').textContent = 'Fixture Song ' + Object.keys(tracks).find(k => tracks[k] === track);
+      document.querySelector('.byline').innerHTML = '<a href="channel/UCfixtureArtist000000001">Fixture Artist</a>';
+      link.textContent = isAd ? 'Advertisement' : document.querySelector('.title').textContent;
+      link.href = '/watch?v=' + (isAd ? 'fixtureAd00' : track.id);
+      if(config.badLink)link.textContent='Different item';
+      document.querySelector('#bar-art').src = document.querySelector('#large-art').src = 'https://lh3.googleusercontent.com/fixture-a=w544-h544';
+      player.classList.toggle('ad-showing',isAd);
+    };
+    const source = seconds => {
+      const rate=8000, n=rate*seconds, bytes=new Uint8Array(44+n*2), v=new DataView(bytes.buffer);
+      const text=(o,s)=>[...s].forEach((c,i)=>bytes[o+i]=c.charCodeAt(0));
+      text(0,'RIFF');v.setUint32(4,bytes.length-8,true);text(8,'WAVE');text(12,'fmt ');
+      v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+      v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);
+      text(36,'data');v.setUint32(40,n*2,true);
+      for(let i=0;i<n;i++)v.setInt16(44+i*2,Math.round(3000*Math.sin(2*Math.PI*440*i/rate)),true);
+      return URL.createObjectURL(new Blob([bytes],{type:'audio/wav'}));
+    };
+    let blob = null;
+    const load = (next, p=0, autoplay=true) => {
+      starting=true; media.pause(); track=next; identity();
+      if(blob)URL.revokeObjectURL(blob);blob=source(isAd?30:track.duration);
+      media.removeAttribute('muted');media.muted=false;media.loop=false;media.src=blob;
+      media.addEventListener('loadedmetadata',()=>{
+        if(p>0){
+          media.currentTime=p;
+          media.addEventListener('seeked',()=>{starting=false;render();if(autoplay)media.play().catch(()=>{});},{once:true});
+        }else{starting=false;render();if(autoplay)media.play().catch(()=>{});}
+      },{once:true});
+      media.load();
+    };
+    for(const name of ['timeupdate','pause','play','seeked','ended'])media.addEventListener(name,render);
+    media.addEventListener('seeking',()=>{if(!starting)seekCount++;});
+    media.addEventListener('play',()=>{if(firstPlayingPosition===null&&!isAd)firstPlayingPosition=media.currentTime;});
+    let stallApplied=false;
+    media.addEventListener('playing',()=>{
+      if(config.stall && !stallApplied){media.playbackRate=0;stallApplied=media.playbackRate===0;setTimeout(()=>media.playbackRate=1,2500);}
+    });
+    const change = key => {
+      isAd=false; history.pushState(null,'','/watch?v='+tracks[key].id); load(tracks[key]);
+    };
+    document.querySelector('[aria-label="Next"]').onclick=()=>change(track===tracks.A?'B':'C');
+    document.querySelector('[aria-label="Previous"]').onclick=()=>change('A');
+    document.querySelector('#play-pause-button').onclick=()=>{if(media.paused)media.play().catch(()=>{});else media.pause();};
+    document.querySelector('#sliderBar').addEventListener('click',e=>{
+      const r=e.currentTarget.getBoundingClientRect();media.currentTime=Math.max(0,Math.min(media.duration,(e.clientX-r.left)/r.width*media.duration));
+    });
+    document.querySelector('#progress-bar').addEventListener('change',e=>{media.currentTime=e.currentTarget.value;});
+    window.__nativuneFixture = {
+      resumeSet(v) {
+        if(v.endAd){isAd=false;load(track,v.ignoreT?0:position);return true;}
+        if(v.track && tracks[v.track]){history.pushState(null,'','/watch?v='+tracks[v.track].id);load(tracks[v.track],v.position||0);}
+        return true;
+      },
+      resumeState:()=>({seekCount,firstPlayingPosition,isAd,stallApplied})
+    };
+    const home=location.pathname!=='/watch';
+    if(home){identity();if(config.homeMedia)load(tracks.A,31);else render();return;}
+    const t=query.get('t'), position=/^[0-9]+$/.test(t||'')?Number(t):0;
+    load(track,isAd?0:position);
+    // Real-site layout seen in E2E: no bottom player bar at all; the player's title link remains.
+    if(config.noBar)setTimeout(()=>document.querySelector('ytmusic-player-bar')?.remove(),0);
+    if(config.delay){link.remove();document.querySelector('.title').textContent='';setTimeout(()=>{player.append(link);identity();},config.delay);}
+    return;
+  }
   // EQ is a separate early-return profile: none of the Discord clocks/timelines change.
   if (document.querySelector('meta[name="nativune-eq-fixture"]').content === '1') {
     const centres = [31.5,63,125,250,500,1000,2000,4000,8000,16000];
@@ -308,6 +398,8 @@
   ];
 
   const profile = ($('meta[name="nativune-discord-bench-profile"]') || {}).content || '';
+  // Keep the classic/default actions above intact for Reconnect, ProductionGate and OBS AdFallback.
+  const compactTimelineTimes = [10, 20, 35, 40, 50, 55, 67, 79, 84, 96, 106, 111, 116, 121, 131, 141, 151];
   if (profile === 'Playing' || profile === 'Paused' || profile === 'PlayingLong') {
     load(Object.assign({}, tracks.A, { duration: profile === 'PlayingLong' ? 14400 : 1800 }));
     // Unmuted on purpose: Chromium pauses muted media while the page is hidden (tray), which real,
@@ -424,7 +516,9 @@
   media.src = silentWav();
   play();
   const started = performance.now();
-  for (const [at, step] of timeline)
+  const selectedTimeline = profile === 'TimelineCompact'
+    ? timeline.map(([, step], index) => [compactTimelineTimes[index], step]) : timeline;
+  for (const [at, step] of selectedTimeline)
     setTimeout(() => { step(); tick(); }, Math.max(0, at * 1000 - (performance.now() - started)));
   setInterval(tick, 250);
   }

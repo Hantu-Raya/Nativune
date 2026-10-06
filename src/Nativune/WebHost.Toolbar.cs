@@ -25,7 +25,7 @@ public sealed partial class WebHostWindow
     private MenuFlyoutItemBase[] CreateToolbarOverflowItems()
     {
         _forwardOverflowItem = CreateMenuItem("Forward", "forward",
-            () => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _browserHost.Core.GoForward(); });
+            () => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoForward()); });
         _volumeOverflowItem = CreateMenuItem("App volume…", "volume", () => DispatcherQueue.TryEnqueue(() =>
         {
             if (!_disposed) { _outputFlyoutCloseTimer?.Stop(); ShowOutputFlyout(fromHover: false, anchor: MoreButton); }
@@ -33,7 +33,7 @@ public sealed partial class WebHostWindow
         _setTimerOverflowItem = CreateMenuItem("Set pause timer", "quit-timer", SetPauseTimer);
         _cancelTimerOverflowItem = CreateMenuItem("Cancel pause timer", "cancel-timer", CancelPauseTimer);
         _updateOverflowItem = CreateMenuItem("Check for Nativune updates", "update", OnUpdateButtonClick);
-        _homeOverflowItem = CreateMenuItem("Open Music Home", "home", () => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); });
+        _homeOverflowItem = CreateMenuItem("Open Music Home", "home", () => { if (CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.Navigate(_initialUri)); });
         _equalizerMenuItem = new ToggleMenuFlyoutItem { Text = "Equalizer", IsChecked = _settings.Equalizer.Enabled };
         AutomationProperties.SetName(_equalizerMenuItem, "Equalizer");
         _equalizerMenuItem.Click += async (_, _) =>

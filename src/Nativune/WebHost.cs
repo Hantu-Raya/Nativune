@@ -216,6 +216,8 @@ public sealed partial class WebHostWindow : Window
     private int _activationPending;
     private readonly UiDispatcherQueueTimer _gcOnHideTimer;
     private readonly UiDispatcherQueueTimer _trimOnHideTimer;
+    private readonly UiDispatcherQueueTimer _trayRetryTimer;
+    private int _trayRetryAttempt;
     private bool? _windowWasVisible;
     private Rectangle _fullBounds;
     private Rectangle _windowBounds;
@@ -263,7 +265,12 @@ public sealed partial class WebHostWindow : Window
         _initialUri = initialUri;
         _initializeBrowser = initializeBrowser;
         _settings = ShellSettings.Load(_root, out _settingsWarning);
-        _autostartMode = autostart && ReleaseUpdater.IsInstalledBuild(_root) ? _settings.AutostartMode : null;
+        var installed = autostart && ReleaseUpdater.IsInstalledBuild(_root);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+        // Hook builds only: let resume-e2e start a disposable root in its saved autostart mode.
+        installed |= autostart && Environment.GetEnvironmentVariable("NATIVUNE_TEST_AUTOSTART_MODE") == "1";
+#endif
+        _autostartMode = installed ? _settings.AutostartMode : null;
         InitializeComponent();
 
         _dispatcherQueue = UiDispatcherQueue.GetForCurrentThread()
@@ -294,6 +301,9 @@ public sealed partial class WebHostWindow : Window
                 Console.Error.WriteLine($"Hidden host working-set trim failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
             TrimWebViewTree();
         };
+        _trayRetryTimer = _dispatcherQueue.CreateTimer();
+        _trayRetryTimer.IsRepeating = false;
+        _trayRetryTimer.Tick += (_, _) => RestoreTray("retry");
         BenchInitialize();
 
         TryInitializeNativeWindow();
@@ -539,9 +549,9 @@ public sealed partial class WebHostWindow : Window
 
     private void WireSurface()
     {
-        BackButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoBack == true) _browserHost.Core.GoBack(); };
-        ForwardButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _browserHost.Core.GoForward(); };
-        HomeButton.Click += (_, _) => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); };
+        BackButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoBack == true) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoBack()); };
+        ForwardButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoForward()); };
+        HomeButton.Click += (_, _) => { if (CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.Navigate(_initialUri)); };
         DiscordButton.Click += (_, _) => SetDiscordEnabled(!_settings.Discord.Enabled);
         DiscordSettingsContextItem.Click += (_, _) => ShowSettings(discordPage: true);
         ObsButton.Click += (_, _) => SetObsOverlayEnabled(!_settings.ObsOverlay);
@@ -570,8 +580,7 @@ public sealed partial class WebHostWindow : Window
         SetButtonIcons();
         SetMenuIcons();
         _taskbarControls?.UpdateAppearance(CurrentDpi(), ToDrawingColor(ShellTheme.ForegroundColor));
-        try { _tray?.Recreate(); }
-        catch (Exception) { SetStatus("Tray icon could not be refreshed for the current theme.", isError: true); }
+        RestoreTray("theme");
     }
 
     private void SetButtonIcons()
@@ -774,7 +783,9 @@ public sealed partial class WebHostWindow : Window
 
     private async Task ExecutePlayerCommandAsync(string command)
     {
-        if (_closing || _disposed) return;
+        if (_closing || _disposed || _resumeShutdownStarted) return;
+        if (command is "toggle" or "play") { if (!await CancelResumeAsync("play")) return; }
+        else if (command is "previous" or "next") { if (!await CancelResumeAsync(command)) return; }
         var controls = _playerControls;
         if (controls is null || !controls.IsAvailable || _playerSuspended)
         {
@@ -876,7 +887,7 @@ public sealed partial class WebHostWindow : Window
             StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
-            core.SourceChanged += (_, _) => ObserveSection();
+            core.SourceChanged += (_, _) => ObserveResumeSource();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
             core.ContentLoading += (_, _) => InvalidateEqualizer();
@@ -946,6 +957,12 @@ public sealed partial class WebHostWindow : Window
                 return;
             var startupUri = _settings.StartupUri;
             BenchStartUri(ref startupUri);
+#if NATIVUNE_DISCORD_TEST_HOOKS
+            if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_START_URI") is { } testStart
+                && testStart.StartsWith("https://music.youtube.com/watch?", StringComparison.Ordinal))
+                startupUri = testStart;
+#endif
+            startupUri = await PrepareResumeStartupAsync(core, startupUri);
             core.Navigate(startupUri);
             UpdateNavigation();
         }
@@ -1024,6 +1041,7 @@ public sealed partial class WebHostWindow : Window
             args.Cancel = true;
             return;
         }
+        if (!_configuringPrivacy && !ObserveResumeNavigation(args)) { args.Cancel = true; return; }
         InvalidateCompactState();
         // A main-frame navigation replaces the document (account pages included).
         InvalidateDiscord();
@@ -1054,8 +1072,6 @@ public sealed partial class WebHostWindow : Window
                 if (preserveStartupIntent) _compactResumeAfterAccount = true;
                 SetCompact(false, preserveStartupIntent);
             }
-            _settings = _settings with { LastSection = "home" };
-            CaptureSettings();
         }
     }
 
@@ -1073,11 +1089,19 @@ public sealed partial class WebHostWindow : Window
         _navigationFailed = !args.IsSuccess;
         UpdateNavigation();
         if (!args.IsSuccess)
+        {
             SetStatus($"Page navigation failed: {args.WebErrorStatus}. Use Retry.", isError: true);
+            _ = RetireResumeDocumentAsync();
+        }
         else
         {
-            SetStatus("Navigation completed. Account and playback remain website-owned.");
-            ObserveSection();
+            SetStatus(_resumeStartupMessage ?? "Navigation completed. Account and playback remain website-owned.",
+                isError: _resumeStartupMessage is not null);
+            if (!ResumeInProgress) _resumeStartupMessage = null; // a finished restore's message is shown once
+            RefreshSharedReader();
+            ArmResumeDeadline();
+            _ = FinalizeResumeOtherDocumentAsync();
+            _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
             _ = OnEqualizerNavigationCompletedAsync(args);
@@ -1158,6 +1182,7 @@ public sealed partial class WebHostWindow : Window
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
                 InvalidateCompactState();
+                _ = RetireResumeDocumentAsync();
                 InvalidateDiscord();
                 InvalidateOverlay();
                 if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
@@ -1179,17 +1204,6 @@ public sealed partial class WebHostWindow : Window
 
     private long _lastRendererReloadAt = -60_000;
 
-    private void ObserveSection()
-    {
-        if (_closing || !CanNavigate || !_settings.RestoreSection || _browserHost is null
-            || !Uri.TryCreate(_browserHost.Core.Source, UriKind.Absolute, out var uri)) return;
-        var section = ShellSettings.SectionFromUri(uri);
-        if (section is not null && section != _settings.LastSection)
-        {
-            _settings = _settings with { LastSection = section };
-            CaptureSettings();
-        }
-    }
 
     private void RetryNavigation()
     {
@@ -1493,7 +1507,8 @@ public sealed partial class WebHostWindow : Window
             {
                 var sleepSettingChanged = _settings.SleepInBackground != dialog.Result.SleepInBackground;
                 var adSettingChanged = _settings.BlockAds != dialog.Result.BlockAds;
-                var restoreChanged = _settings.RestoreSection != dialog.Result.RestoreSection;
+                var restoreChanged = _settings.StartupDestination != dialog.Result.StartupDestination
+                    || _settings.ResumeLaunch != dialog.Result.ResumeLaunch;
                 var trayChanged = _settings.TrayEnabled != dialog.Result.TrayEnabled;
                 var lyricsChanged = _settings.BetterLyricsEnabled != dialog.Result.BetterLyricsEnabled;
                 _settings = _settings with
@@ -1505,20 +1520,20 @@ public sealed partial class WebHostWindow : Window
                     AutoCheckUpdates = dialog.Result.AutoCheckUpdates,
                     BlockAds = dialog.Result.BlockAds,
                     AutostartMode = dialog.Result.AutostartMode,
-                    RestoreSection = dialog.Result.RestoreSection,
+                    StartupDestination = dialog.Result.StartupDestination,
+                    ResumeLaunch = dialog.Result.ResumeLaunch,
                     Discord = dialog.Result.Discord,
                     ObsOverlay = dialog.Result.ObsOverlay,
                     Equalizer = dialog.Result.Equalizer,
                     ObsHidePaused = dialog.Result.ObsHidePaused
                 };
+                var resumeError = await ApplyResumePreferencesAsync();
                 await ApplyEqualizerFromSettingsAsync();
                 ApplyDiscordOptions(_settings.Discord);
                 RefreshDiscordSurfaces();
                 ApplyObsHidePaused(_settings.ObsHidePaused);
                 ApplyObsReduceMotion(_settings.ReduceMotion);
                 await ReconcileObsOverlayAsync();
-                if (restoreChanged)
-                    _settings = _settings with { LastSection = "home" };
                 if (trayChanged)
                     SetTrayEnabled(dialog.Result.TrayEnabled);
                 if (lyricsChanged)
@@ -1557,6 +1572,8 @@ public sealed partial class WebHostWindow : Window
                 var persisted = await SaveSettingsConfirmedAsync();
                 if (!persisted)
                     SetStatus("Settings apply for this session only; they could not be saved.", isError: true);
+                else if (resumeError is not null)
+                    SetStatus(resumeError, isError: true);
                 else if (startupError is not null)
                     SetStatus(startupError, isError: true);
                 else if (lyricsChanged && !_settings.BetterLyricsEnabled && LyricsOffSaveFailed)
@@ -1564,9 +1581,7 @@ public sealed partial class WebHostWindow : Window
                 else if (lyricsChanged && _settings.BetterLyricsEnabled)
                     SetStatus("Settings saved. Lyrics turn on after you restart Nativune.");
                 else if (restoreChanged)
-                    SetStatus(_settings.RestoreSection
-                        ? "Settings saved. Remembering Home or Library only. The website still owns account, queue and autoplay behavior."
-                        : "Settings saved. Section restore disabled. Startup returns to Home.");
+                    SetStatus("Settings saved. The startup destination and continuing playback choice apply next launch.");
                 else
                     SetStatus(sleepSettingChanged || adSettingChanged
                         ? "Settings saved. Restart Nativune to apply the background sleeping or ad-blocking change."
@@ -1681,7 +1696,6 @@ public sealed partial class WebHostWindow : Window
                 _tray = new NativeTrayIcon(NativeHandle, _iconCache, OnTrayCommand);
                 SetDesiredTrayTooltip(_releaseUpdateButtonState,
                     _availableReleaseUpdate?.Version, null);
-                _tray.SetVisible(true);
                 _tray.SetPlaybackEnabled(PlayerAvailable);
             }
             catch (Exception ex) when (ex is Win32Exception or ArgumentException or ExternalException or InvalidOperationException)
@@ -1691,11 +1705,63 @@ public sealed partial class WebHostWindow : Window
                 enabled = false;
                 SetStatus("Tray icon could not be created. The window remains available.", isError: true);
             }
+            // The shell may not be ready yet (for example right after sign-in): keep the icon wanted and retry.
+            // Close only hides to the tray once the icon is really there.
+            if (_tray is not null)
+            {
+                _trayRetryAttempt = 0;
+                try { _tray.SetVisible(true); }
+                catch (Exception ex) when (ex is Win32Exception or ExternalException or InvalidOperationException)
+                {
+                    TrayAddFailed(ex, "start");
+                }
+            }
         }
+        if (!enabled) { _trayRetryTimer.Stop(); _trayRetryAttempt = 0; }
         _settings = _settings with { TrayEnabled = enabled };
-        if (enabled)
+        if (enabled && _tray?.IsVisible == true)
             SetStatus("Tray enabled. Close hides to the tray and keeps playback running; use Quit to exit.");
         UpdateNavigation();
+    }
+
+    private static readonly int[] TrayRetrySeconds = [1, 2, 4, 8, 16, 30];
+
+    // Re-adds a wanted tray icon (shell restart, theme change, retry tick). A failure keeps it wanted and
+    // schedules another attempt, so a slow or restarting Explorer cannot leave the icon missing for good.
+    private void RestoreTray(string reason)
+    {
+        if (_tray is not { IsWanted: true } tray || _closing || _disposed)
+        {
+            _trayRetryTimer.Stop();
+            return;
+        }
+        try
+        {
+            tray.Recreate();
+            _trayRetryTimer.Stop();
+            if (_trayRetryAttempt > 0)
+            {
+                AppLog.Write("tray", $"restored after {_trayRetryAttempt} retries");
+                SetStatus("Tray icon restored.");
+            }
+            _trayRetryAttempt = 0;
+        }
+        catch (Exception ex) when (ex is Win32Exception or ExternalException or InvalidOperationException)
+        {
+            TrayAddFailed(ex, reason);
+        }
+    }
+
+    private void TrayAddFailed(Exception failure, string reason)
+    {
+        if (_trayRetryAttempt == 0)
+        {
+            AppLog.Write("tray", $"add-failed {reason} {(failure as Win32Exception)?.NativeErrorCode ?? 0}");
+            SetStatus("Tray icon is not available yet; retrying. Close quits until it returns.", isError: true);
+        }
+        _trayRetryTimer.Interval = TimeSpan.FromSeconds(TrayRetrySeconds[Math.Min(_trayRetryAttempt, TrayRetrySeconds.Length - 1)]);
+        _trayRetryAttempt++;
+        _trayRetryTimer.Start();
     }
 
     private void OnTrayCommand(string command)
@@ -2055,6 +2121,7 @@ public sealed partial class WebHostWindow : Window
         if (powerEvent == PbtApmsuspend)
         {
             _playerSuspended = true;
+            HoldResumeForSleep();
             InvalidateDiscord(keepItem: true);
             InvalidateOverlay();
         }
@@ -2062,6 +2129,7 @@ public sealed partial class WebHostWindow : Window
         {
             _playerSuspended = false;
             _sleep?.CheckOnResume();
+            RearmResumeAfterSleep();
             // The check timer doesn't count sleep time; run a check that came due while asleep.
             ConfigureAutomaticReleaseUpdateChecks();
         }
@@ -2133,14 +2201,8 @@ public sealed partial class WebHostWindow : Window
         if (TaskbarCreated != 0 && message == TaskbarCreated && !_closing && !_disposed)
         {
             _taskbarControls?.Recreate();
-            try
-            {
-                _tray?.Recreate();
-            }
-            catch (Exception)
-            {
-                SetStatus("Tray icon could not be recreated after a shell restart.", isError: true);
-            }
+            _trayRetryAttempt = 0;
+            RestoreTray("shell-restart");
             _taskbarControls?.UpdateAppearance(CurrentDpi(), ToDrawingColor(ShellTheme.ForegroundColor));
             UpdatePlayerControls();
             if (_appWindow?.IsVisible == false) RequestActivation();
@@ -2231,8 +2293,8 @@ public sealed partial class WebHostWindow : Window
         if (key == VirtualKey.F6) { CycleFocus(shift); return; }
         if (key == VirtualKey.F10 || alt && key == VirtualKey.M) { _moreFlyout.ShowAt(MoreButton); return; }
         if (key == VirtualKey.F11 || key == VirtualKey.Escape && _fullscreen) { ToggleFullscreen(); return; }
-        if (alt && key == VirtualKey.Left && CanNavigate) _browserHost?.Core.GoBack();
-        else if (alt && key == VirtualKey.Right && CanNavigate) _browserHost?.Core.GoForward();
+        if (alt && key == VirtualKey.Left && CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoBack());
+        else if (alt && key == VirtualKey.Right && CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoForward());
     }
 
     private void CycleFocus(bool reverse)
@@ -2282,6 +2344,10 @@ public sealed partial class WebHostWindow : Window
     private async Task ShutdownCoreAsync()
     {
         if (_disposed) return;
+        _resumeShutdownStarted = true;
+        _playbackReadTimer?.Stop();
+        await CaptureFinalResumeAsync();
+        await RemoveResumeRegistrationAsync();
         CloseOutputVolumeFlyout();
         _closing = true;
         Exception? firstFailure = null;
