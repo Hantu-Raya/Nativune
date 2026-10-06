@@ -60,10 +60,25 @@ public sealed partial class SettingsDialog : Window
     private DiscordPresenceStatus _discordStatus = DiscordPresenceStatus.Off;
     private ObsOverlayStatus _obsStatus = ObsOverlayStatus.Off;
     private int _obsStreams;
+    private EqualizerSettings _equalizer = EqualizerSettings.Default;
+    private Func<EqualizerApply, Task>? _previewEqualizer;
+    private Func<EqualizerStatus>? _equalizerStatus;
+    private Action? _unsubscribeEqualizer;
+    private Func<Task>? _reloadWithoutEqualizer;
+    private readonly Slider[] _eqSliders = new Slider[EqualizerBands.Count];
+    private readonly NumberBox[] _eqBoxes = new NumberBox[EqualizerBands.Count];
+    private readonly DispatcherTimer _eqPreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
+    private bool _eqUpdating;
+    private bool _eqEdited;
+    private bool _eqRecoveryOff;
+    private string? _eqNameOperation;
+
 
     internal SettingsDialog(ShellSettings initial, Func<ShortcutBindings, string?> applyBindings,
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
-        Func<string>? statusText = null, string? installRoot = null)
+        Func<string>? statusText = null, string? installRoot = null,
+        Func<EqualizerApply, Task>? previewEqualizer = null, Func<EqualizerStatus>? equalizerStatus = null,
+        Func<Action, Action>? subscribeEqualizerStatus = null, Func<Task>? reloadWithoutEqualizer = null)
     {
         _isInstalledBuild = isInstalledBuild;
         _startupState = startupState;
@@ -103,6 +118,7 @@ public sealed partial class SettingsDialog : Window
         InitializeDiscord(initial);
         InitializeLyrics(initial);
         InitializeObs(initial);
+        InitializeEqualizer(initial.Equalizer, previewEqualizer, equalizerStatus, subscribeEqualizerStatus, reloadWithoutEqualizer);
 
         for (var i = 0; i < _bindingFields.Length; i++)
         {
@@ -128,6 +144,291 @@ public sealed partial class SettingsDialog : Window
         Root.Loaded += OnRootLoaded;
         Root.KeyDown += OnRootKeyDown;
         Closed += OnDialogClosed;
+    }
+
+    internal void SelectEqualizerPage() => Nav.SelectedItem = EqualizerNavItem;
+
+    private void InitializeEqualizer(EqualizerSettings settings, Func<EqualizerApply, Task>? preview,
+        Func<EqualizerStatus>? status, Func<Action, Action>? subscribe, Func<Task>? reload)
+    {
+        _equalizer = settings;
+        _previewEqualizer = preview;
+        _equalizerStatus = status;
+        _reloadWithoutEqualizer = reload;
+        for (var i = 0; i < EqualizerBands.Count; i++)
+        {
+            var index = i;
+            var panel = new StackPanel { Spacing = 6, Width = 76 };
+            var slider = new Slider
+            {
+                Orientation = Orientation.Vertical, Height = 160, HorizontalAlignment = HorizontalAlignment.Center,
+                Minimum = -12, Maximum = 12, StepFrequency = 0.5, SmallChange = 0.5, LargeChange = 3
+            };
+            var box = new NumberBox
+            {
+                Minimum = -12, Maximum = 12, SmallChange = 0.5, LargeChange = 3,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact
+            };
+            AutomationProperties.SetAutomationId(slider, $"EqBand{i}");
+            AutomationProperties.SetAutomationId(box, $"EqBandBox{i}");
+            AutomationProperties.SetName(box, $"{EqualizerBands.CentresHz[i]:0.#} hertz gain in decibels");
+            panel.Children.Add(new TextBlock { Text = EqualizerBands.Labels[i], HorizontalAlignment = HorizontalAlignment.Center });
+            panel.Children.Add(slider);
+            panel.Children.Add(box);
+            EqBandsPanel.Children.Add(panel);
+            _eqSliders[i] = slider;
+            _eqBoxes[i] = box;
+            slider.ValueChanged += (_, args) => SetEqualizerBand(index, args.NewValue);
+            box.ValueChanged += (_, args) => SetEqualizerBand(index, args.NewValue);
+        }
+        EqEnabled.Toggled += (_, _) =>
+        {
+            if (!_eqUpdating) ChangeEqualizer(_equalizer with { Enabled = EqEnabled.IsOn });
+        };
+        EqAutoHeadroom.Toggled += (_, _) =>
+        {
+            if (!_eqUpdating) ChangeEqualizer(_equalizer with { AutoHeadroom = EqAutoHeadroom.IsOn, SelectedPresetId = null });
+        };
+        EqPreamp.ValueChanged += (_, args) => SetEqualizerPreamp(args.NewValue);
+        EqPreampBox.ValueChanged += (_, args) => SetEqualizerPreamp(args.NewValue);
+        EqPreset.SelectionChanged += (_, _) =>
+        {
+            if (_eqUpdating || EqPreset.SelectedItem is not ComboBoxItem { Tag: EqualizerPreset preset }) return;
+            ChangeEqualizer(_equalizer with
+            {
+                SelectedPresetId = preset.Id, GainsDb = preset.GainsDb.ToArray(),
+                ManualPreampDb = preset.PreampDb, AutoHeadroom = preset.AutoHeadroom
+            });
+        };
+        EqResetBands.Click += (_, _) => ChangeEqualizer(_equalizer with { GainsDb = new double[10], SelectedPresetId = null });
+        EqResetPreamp.Click += (_, _) => ChangeEqualizer(_equalizer with { ManualPreampDb = 0, SelectedPresetId = null });
+        EqSaveNew.Click += (_, _) => BeginEqualizerName("new");
+        EqRename.Click += (_, _) => BeginEqualizerName("rename");
+        EqDuplicate.Click += (_, _) => BeginEqualizerName("duplicate");
+        EqDelete.Click += (_, _) =>
+        {
+            var selected = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId);
+            if (selected is null || selected.BuiltIn) return;
+            ChangeEqualizer(_equalizer with
+            {
+                SelectedPresetId = null, CustomPresets = _equalizer.CustomPresets.Where(p => p.Id != selected.Id).ToArray()
+            });
+        };
+        EqNameConfirm.Click += (_, _) => KeepEqualizerPreset();
+        EqNameCancel.Click += (_, _) => { _eqNameOperation = null; EqNameEditor.Visibility = Visibility.Collapsed; };
+        EqCopy.Click += (_, _) => CopyEqualizerPreset();
+        EqPaste.Click += async (_, _) => await PasteEqualizerPresetAsync();
+        EqBypass.Checked += (_, _) => QueueEqualizerPreview();
+        EqBypass.Unchecked += (_, _) => QueueEqualizerPreview();
+        EqReload.IsEnabled = reload is not null;
+        EqReload.Click += async (_, _) =>
+        {
+            if (_reloadWithoutEqualizer is null) return;
+            _eqPreviewTimer.Stop();
+            EqReload.IsEnabled = false;
+            try
+            {
+                await _reloadWithoutEqualizer();
+                _eqRecoveryOff = true;
+                _equalizer = _equalizer with { Enabled = false };
+                _eqPreviewTimer.Stop();
+                RefreshEqualizerControls();
+            }
+            catch (Exception) { EqError.Text = "Reload without EQ could not be completed."; }
+            finally { if (!_closed) EqReload.IsEnabled = true; }
+        };
+        EqCurveCanvas.SizeChanged += (_, _) => DrawEqualizerCurve();
+        _eqPreviewTimer.Tick += async (_, _) =>
+        {
+            _eqPreviewTimer.Stop();
+            if (_closed || _previewEqualizer is null) return;
+            var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true);
+            try { await _previewEqualizer(apply); }
+            catch (Exception) { if (!_closed) EqError.Text = "Equalizer preview is unavailable."; }
+        };
+        RefreshEqualizerControls();
+        RefreshEqualizerStatus();
+        _unsubscribeEqualizer = subscribe?.Invoke(() => { if (!_closed) RefreshEqualizerStatus(); });
+    }
+
+    private void SetEqualizerBand(int index, double value)
+    {
+        if (_eqUpdating || !double.IsFinite(value)) return;
+        var gains = _equalizer.GainsDb.ToArray();
+        gains[index] = EqualizerBands.QuantizeGain(value);
+        ChangeEqualizer(_equalizer with { GainsDb = gains, SelectedPresetId = null });
+    }
+
+    private void SetEqualizerPreamp(double value)
+    {
+        if (_eqUpdating || !double.IsFinite(value)) return;
+        ChangeEqualizer(_equalizer with { ManualPreampDb = EqualizerBands.QuantizePreamp(value), SelectedPresetId = null });
+    }
+
+    private void ChangeEqualizer(EqualizerSettings settings)
+    {
+        if (_closed) return;
+        _equalizer = settings;
+        EqError.Text = string.Empty;
+        RefreshEqualizerControls();
+        QueueEqualizerPreview();
+    }
+
+    private void QueueEqualizerPreview()
+    {
+        if (_eqUpdating || _closed) return;
+        _eqEdited = true;
+        _eqPreviewTimer.Stop();
+        _eqPreviewTimer.Start();
+    }
+
+    private void RefreshEqualizerControls()
+    {
+        _eqUpdating = true;
+        try
+        {
+            EqEnabled.IsOn = _equalizer.Enabled;
+            EqAutoHeadroom.IsOn = _equalizer.AutoHeadroom;
+            EqPreamp.Value = EqPreampBox.Value = _equalizer.ManualPreampDb;
+            EqPreamp.IsEnabled = EqPreampBox.IsEnabled = !_equalizer.AutoHeadroom;
+            EqEffectivePreamp.Text = $"Effective preamp: {EqualizerMath.EffectivePreampDb(_equalizer):+0.#;-0.#;0} dB";
+            EqMayClip.Visibility = EqualizerMath.MayClip(_equalizer) ? Visibility.Visible : Visibility.Collapsed;
+            for (var i = 0; i < EqualizerBands.Count; i++)
+            {
+                var gain = _equalizer.GainsDb[i];
+                _eqSliders[i].Value = _eqBoxes[i].Value = gain;
+                var sign = gain > 0 ? "plus " : gain < 0 ? "minus " : "";
+                AutomationProperties.SetName(_eqSliders[i], $"{EqualizerBands.CentresHz[i]:0.#} hertz, {sign}{Math.Abs(gain):0.#} decibels");
+            }
+            EqPreset.Items.Clear();
+            ComboBoxItem? selectedItem = null;
+            foreach (var preset in EqualizerPresets.BuiltIns.Concat(_equalizer.CustomPresets))
+            {
+                var item = new ComboBoxItem { Content = preset.Name, Tag = preset };
+                AutomationProperties.SetName(item, preset.Name);
+                EqPreset.Items.Add(item);
+                if (preset.Id == _equalizer.SelectedPresetId) selectedItem = item;
+            }
+            if (_equalizer.SelectedPresetId is null)
+            {
+                selectedItem = new ComboBoxItem { Content = "Unsaved custom" };
+                AutomationProperties.SetName(selectedItem, "Unsaved custom");
+                EqPreset.Items.Add(selectedItem);
+            }
+            EqPreset.SelectedItem = selectedItem;
+            var selected = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId);
+            EqRename.IsEnabled = EqDelete.IsEnabled = selected is { BuiltIn: false };
+            EqSaveNew.IsEnabled = selected?.BuiltIn != true && _equalizer.CustomPresets.Count < EqualizerBands.MaxCustomPresets;
+            EqDuplicate.IsEnabled = _equalizer.CustomPresets.Count < EqualizerBands.MaxCustomPresets;
+            DrawEqualizerCurve();
+        }
+        finally { _eqUpdating = false; }
+    }
+
+    private void DrawEqualizerCurve()
+    {
+        var width = EqCurveCanvas.ActualWidth;
+        if (width <= 0) return;
+        var frequencies = Enumerable.Range(0, 201).Select(i => 20 * Math.Pow(1000, i / 200.0)).ToArray();
+        var sampleRate = _equalizerStatus?.Invoke().SampleRate ?? 48000;
+        var response = EqualizerMath.ResponseDb(_equalizer.GainsDb, sampleRate, frequencies);
+        var preamp = EqualizerMath.EffectivePreampDb(_equalizer, sampleRate);
+        var points = new Microsoft.UI.Xaml.Media.PointCollection();
+        for (var i = 0; i < response.Length; i++)
+            points.Add(new Windows.Foundation.Point(width * i / 200, 140 * (18 - Math.Clamp(response[i] + preamp, -36, 18)) / 54));
+        EqCurve.Points = points;
+    }
+
+    private void BeginEqualizerName(string operation)
+    {
+        _eqNameOperation = operation;
+        var selected = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId);
+        EqName.Text = operation == "rename" ? selected?.Name ?? "" : "";
+        EqError.Text = string.Empty;
+        EqNameEditor.Visibility = Visibility.Visible;
+        EqName.Focus(FocusState.Programmatic);
+    }
+
+    private void KeepEqualizerPreset()
+    {
+        if (_eqNameOperation is null) return;
+        if (!EqualizerPresets.TryValidateName(EqName.Text, out var name, out var error))
+        {
+            EqError.Text = error;
+            return;
+        }
+        var selected = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId);
+        var renaming = _eqNameOperation == "rename";
+        if (renaming && selected is not { BuiltIn: false }) return;
+        if (EqualizerPresets.BuiltIns.Concat(_equalizer.CustomPresets).Any(p =>
+            string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase) && (!renaming || p.Id != selected!.Id)))
+        {
+            EqError.Text = "A preset with that name already exists. Choose another name.";
+            return;
+        }
+        if (!renaming && _equalizer.CustomPresets.Count >= EqualizerBands.MaxCustomPresets)
+        {
+            EqError.Text = "You can keep at most 20 custom presets. Delete one first.";
+            return;
+        }
+        var preset = renaming ? selected! with { Name = name } : new EqualizerPreset(
+            "c-" + Guid.NewGuid().ToString("N")[..8], name, _equalizer.GainsDb.ToArray(),
+            _equalizer.ManualPreampDb, _equalizer.AutoHeadroom, false);
+        var custom = renaming ? _equalizer.CustomPresets.Select(p => p.Id == preset.Id ? preset : p).ToArray()
+            : _equalizer.CustomPresets.Append(preset).ToArray();
+        _eqNameOperation = null;
+        EqNameEditor.Visibility = Visibility.Collapsed;
+        ChangeEqualizer(_equalizer with { SelectedPresetId = preset.Id, CustomPresets = custom });
+    }
+
+    private void CopyEqualizerPreset()
+    {
+        try
+        {
+            var name = EqualizerPresets.Find(_equalizer, _equalizer.SelectedPresetId)?.Name ?? "Unsaved custom";
+            var package = new DataPackage();
+            package.SetText(EqualizerSharing.Export(new EqualizerPreset("unsaved", name, _equalizer.GainsDb,
+                _equalizer.ManualPreampDb, _equalizer.AutoHeadroom, false)));
+            Clipboard.SetContent(package);
+        }
+        catch (Exception) { EqError.Text = "The preset could not be copied."; }
+    }
+
+    private async Task PasteEqualizerPresetAsync()
+    {
+        try
+        {
+            var content = Clipboard.GetContent();
+            if (!content.Contains(StandardDataFormats.Text)) { EqError.Text = "The clipboard does not contain a preset."; return; }
+            var text = await content.GetTextAsync();
+            if (_closed) return;
+            if (!EqualizerSharing.TryImport(text, out var preset, out var error)) { EqError.Text = error; return; }
+            ChangeEqualizer(_equalizer with
+            {
+                SelectedPresetId = null, GainsDb = preset!.GainsDb.ToArray(),
+                ManualPreampDb = preset.PreampDb, AutoHeadroom = preset.AutoHeadroom
+            });
+        }
+        catch (Exception) { if (!_closed) EqError.Text = "The preset could not be pasted."; }
+    }
+
+    private void RefreshEqualizerStatus()
+    {
+        var status = _equalizerStatus?.Invoke();
+        EqStatus.Text = status?.State switch
+        {
+            EqualizerState.Off => "Off",
+            EqualizerState.Waiting => "Waiting for a click on the page",
+            EqualizerState.NotApplied => "Not applied",
+            EqualizerState.Active => "Active",
+            EqualizerState.Bypassed => "Bypassed",
+            EqualizerState.Interrupted or EqualizerState.ReloadNeeded => "Interrupted — Reload needed",
+            EqualizerState.ProtectedMedia => "Protected media",
+            _ => "Unavailable"
+        };
+        EqReload.Visibility = status?.State is EqualizerState.Interrupted or EqualizerState.ReloadNeeded or EqualizerState.ProtectedMedia
+            ? Visibility.Visible : Visibility.Collapsed;
+        DrawEqualizerCurve();
     }
 
     internal ShellSettings Result { get; private set; }
@@ -203,7 +504,10 @@ public sealed partial class SettingsDialog : Window
     {
         Root.Loaded -= OnRootLoaded;
         if (_focusedBinding < 0)
-            TrayEnabledCheckBox.Focus(FocusState.Programmatic);
+        {
+            if (ReferenceEquals(Nav.SelectedItem, EqualizerNavItem)) EqEnabled.Focus(FocusState.Programmatic);
+            else TrayEnabledCheckBox.Focus(FocusState.Programmatic);
+        }
     }
 
     private void OnRootKeyDown(object sender, KeyRoutedEventArgs args)
@@ -215,7 +519,7 @@ public sealed partial class SettingsDialog : Window
             return;
         }
         if (args.Key == VirtualKey.Enter
-            && args.OriginalSource is not (Button or HyperlinkButton or ComboBox or ComboBoxItem or NavigationViewItem))
+            && args.OriginalSource is not (Button or HyperlinkButton or ComboBox or ComboBoxItem or NavigationViewItem or TextBox or NumberBox or Slider))
         {
             args.Handled = true;
             Save();
@@ -342,6 +646,7 @@ public sealed partial class SettingsDialog : Window
             BetterLyricsEnabled = LyricsEnabledCheckBox.IsChecked == true,
             ObsOverlay = ObsOverlayCheckBox.IsChecked == true,
             ObsHidePaused = ObsHidePausedCheckBox.IsChecked == true,
+            Equalizer = _equalizer,
             Shortcuts = bindings
         };
         (StartWithWindows, StartupChange) = ResolveStartupChange();
@@ -636,6 +941,7 @@ public sealed partial class SettingsDialog : Window
         DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
         ObsPage.Visibility = tag == "Obs" ? Visibility.Visible : Visibility.Collapsed;
         LyricsPage.Visibility = tag == "Lyrics" ? Visibility.Visible : Visibility.Collapsed;
+        EqualizerPage.Visibility = tag == "Equalizer" ? Visibility.Visible : Visibility.Collapsed;
         AboutPage.Visibility = tag == "About" ? Visibility.Visible : Visibility.Collapsed;
         RestoreButton.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PageScroller.ChangeView(null, 0, null, disableAnimation: true);
@@ -705,11 +1011,23 @@ public sealed partial class SettingsDialog : Window
         CloseWithoutSaving();
     }
 
-    private void OnDialogClosed(object sender, WindowEventArgs args)
+    private async void OnDialogClosed(object sender, WindowEventArgs args)
     {
         if (_closed)
             return;
         _closed = true;
+        _eqPreviewTimer.Stop();
+        _unsubscribeEqualizer?.Invoke();
+        try
+        {
+            // The final host revision supersedes every dispatched preview, including one still in flight.
+            if ((_eqEdited || _eqRecoveryOff) && _previewEqualizer is not null)
+            {
+                var committed = _eqRecoveryOff ? _initial.Equalizer with { Enabled = false } : _initial.Equalizer;
+                await _previewEqualizer(EqualizerApply.From(_saved ? _equalizer : committed, bypass: false));
+            }
+        }
+        catch (Exception) { /* The host owns unavailable/interrupted status; closing must still finish. */ }
         CleanupModal();
         _completion?.TrySetResult(_saved);
     }

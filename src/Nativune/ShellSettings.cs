@@ -34,6 +34,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public bool ObsOverlay { get; init; }
     // Hide the pill while paused (plan D15). On by default; missing loads on.
     public bool ObsHidePaused { get; init; } = true;
+    public EqualizerSettings Equalizer { get; init; } = EqualizerSettings.Default;
 
     internal static string? SectionFromUri(Uri uri)
     {
@@ -46,7 +47,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 7;
+    private const int CurrentVersion = 8;
+    private const int DiscordIntroducedVersion = 7;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
     private const int MinDpi = 48;
@@ -68,7 +70,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         PropertyNamingPolicy = null,
         WriteIndented = true,
         AllowTrailingCommas = false,
-        ReadCommentHandling = JsonCommentHandling.Disallow
+        ReadCommentHandling = JsonCommentHandling.Disallow,
+        Converters = { new CompactEqualizerJsonConverter() }
     };
 
     internal static ShellSettings Default => Defaults;
@@ -90,7 +93,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version is not (1 or 2 or 3 or 4 or 5 or 6 or CurrentVersion) || !IsCoreValid(persisted))
+            if (persisted is null || persisted.Version is < 1 or > CurrentVersion || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;
@@ -99,7 +102,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             // Earlier versions migrate with background sleeping enabled because that matches
             // Chromium's existing default behavior. Nullable/defaulted fields retain the
             // existing window and preference values after partial writes.
-            return Normalize(persisted.ToSettings());
+            var settings = persisted.ToSettings();
+            if (persisted.Equalizer.ValueKind != JsonValueKind.Undefined)
+            {
+                if (EqualizerSharing.TryReadSettings(persisted.Equalizer, out var equalizer))
+                    settings = settings with { Equalizer = equalizer };
+                else
+                    warning = "Saved equalizer settings are invalid; the equalizer has been disabled.";
+            }
+            return Normalize(settings);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -134,10 +145,13 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         try
         {
             var persisted = PersistedSettings.FromSettings(Normalize(settings));
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(persisted, JsonOptions);
+            if (bytes.Length > MaxBytes)
+                throw new IOException("Settings exceed the 16 KiB size limit.");
             await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write,
                 FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await JsonSerializer.SerializeAsync(stream, persisted, JsonOptions, token).ConfigureAwait(false);
+                await stream.WriteAsync(bytes, token).ConfigureAwait(false);
                 await stream.FlushAsync(token).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
@@ -226,7 +240,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             },
             BetterLyricsEnabled = settings.BetterLyricsEnabled,
             ObsOverlay = settings.ObsOverlay,
-            ObsHidePaused = settings.ObsHidePaused
+            ObsHidePaused = settings.ObsHidePaused,
+            Equalizer = settings.Equalizer
         };
     }
 
@@ -282,6 +297,19 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         return (int)Math.Round(scaled, MidpointRounding.AwayFromZero);
     }
 
+    // Keep the bounded preset payload compact even though the surrounding window settings are indented.
+    private sealed class CompactEqualizerJsonConverter : System.Text.Json.Serialization.JsonConverter<JsonElement>
+    {
+        public override JsonElement Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            using var document = JsonDocument.ParseValue(ref reader);
+            return document.RootElement.Clone();
+        }
+
+        public override void Write(Utf8JsonWriter writer, JsonElement value, JsonSerializerOptions options)
+            => writer.WriteRawValue(value.GetRawText());
+    }
+
     private sealed record PersistedSettings(int Version, int X, int Y, int Width, int Height, int Dpi, bool Maximized,
         double Zoom, bool TrayEnabled = false, bool RestoreSection = false, string LastSection = "home",
         bool ReduceMotion = false, ShortcutBindings? Shortcuts = null, int CompactX = 100, int CompactY = 100,
@@ -290,7 +318,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
         AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
         bool DiscordOpenButton = true, bool DiscordShowAuthor = true, bool BetterLyricsEnabled = true,
-        bool ObsOverlay = false, bool ObsHidePaused = true)
+        bool ObsOverlay = false, bool ObsHidePaused = true, JsonElement Equalizer = default)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
@@ -313,7 +341,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             // Versions before 6 (and partial writes) get the Q1 default: tray when the tray icon is on.
             AutostartMode = AutostartMode ?? DefaultAutostartMode(TrayEnabled),
             // Discord sharing is opt-in: anything written before version 7 loads off.
-            Discord = new DiscordPresenceOptions(Version >= CurrentVersion && DiscordPresence,
+            Discord = new DiscordPresenceOptions(Version >= DiscordIntroducedVersion && DiscordPresence,
                 Enum.IsDefined((Nativune.DiscordStatusLine)DiscordStatusLine)
                     ? (Nativune.DiscordStatusLine)DiscordStatusLine : Nativune.DiscordStatusLine.Artist,
                 DiscordOpenButton, DiscordShowAuthor),
@@ -331,6 +359,6 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
                 settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
                 settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton,
                 settings.Discord.ShowAuthor, settings.BetterLyricsEnabled, settings.ObsOverlay,
-                settings.ObsHidePaused);
+                settings.ObsHidePaused, EqualizerSharing.WriteSettings(settings.Equalizer));
     }
 }

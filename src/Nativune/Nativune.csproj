@@ -65,12 +65,14 @@
   <ItemGroup>
     <EmbeddedResource Include="ObsOverlayPage.html" LogicalName="Nativune.ObsOverlayPage.html" />
     <EmbeddedResource Include="ObsOverlayPage.js" LogicalName="Nativune.ObsOverlayPage.js" />
+    <EmbeddedResource Include="EqualizerController.js" LogicalName="Nativune.EqualizerController.js" />
   </ItemGroup>
 
   <!-- Synthetic Music page for scripts/discord-rpc-e2e.ps1 and the OBS overlay hook fragment; embedded only in test-hook builds. -->
   <ItemGroup Condition="'$(DiscordPresenceTestHooks)' == 'true'">
     <EmbeddedResource Include="DiscordFixturePage.html" LogicalName="Nativune.DiscordFixturePage.html" />
     <EmbeddedResource Include="ObsOverlayPage.hooks.js" LogicalName="Nativune.ObsOverlayPage.hooks.js" />
+    <EmbeddedResource Include="EqualizerCollector.js" LogicalName="Nativune.EqualizerCollector.js" />
   </ItemGroup>
 
   <ItemGroup>
