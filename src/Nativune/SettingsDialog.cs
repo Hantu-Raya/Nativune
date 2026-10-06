@@ -368,52 +368,49 @@ public sealed partial class SettingsDialog : Window
         finally { _eqUpdating = false; }
     }
 
-    // Rebuilding a ComboBox's Items from inside its own SelectionChanged throws E_UNEXPECTED (0x8000FFFF,
-    // "Catastrophic failure") in WinUI. Only rebuild when the list itself changes, and then outside the
-    // selection event; a plain preset switch only moves the selection.
+    // Rebuilding a ComboBox's Items while its selection is changing or its drop-down is open/closing throws
+    // E_UNEXPECTED (0x8000FFFF, "Catastrophic failure") in WinUI, and a deferred rebuild can still land while the
+    // drop-down closes. So the item list changes only when the preset list itself changes (Save as new, rename,
+    // duplicate, delete, paste: buttons outside the drop-down). "Unsaved custom" is a permanent item that is only
+    // shown or hidden; switching between presets and unsaved edits only moves the selection.
     private string? _eqPresetSignature;
     private bool _eqInPresetSelection;
+    private ComboBoxItem? _eqUnsavedItem;
 
     private void SyncEqualizerPresetItems()
     {
         var presets = EqualizerPresets.BuiltIns.Concat(_equalizer.CustomPresets).ToArray();
         var unsaved = _equalizer.SelectedPresetId is null;
-        var signature = string.Join('\u001f', presets.Select(preset => preset.Id + '\u001e' + preset.Name)) + (unsaved ? "\u001funsaved" : "");
-        if (signature == _eqPresetSignature)
+        var signature = string.Join('\u001f', presets.Select(preset => preset.Id + '\u001e' + preset.Name));
+        if (signature != _eqPresetSignature)
         {
-            var target = EqPreset.Items.OfType<ComboBoxItem>().FirstOrDefault(item =>
-                unsaved ? item.Tag is null : item.Tag is EqualizerPreset preset && preset.Id == _equalizer.SelectedPresetId);
-            if (!ReferenceEquals(EqPreset.SelectedItem, target)) EqPreset.SelectedItem = target;
-            return;
-        }
-        if (_eqInPresetSelection)
-        {
-            DispatcherQueue.TryEnqueue(() =>
+            if (_eqInPresetSelection || EqPreset.IsDropDownOpen)
             {
-                if (_closed) return;
-                _eqUpdating = true;
-                try { SyncEqualizerPresetItems(); }
-                finally { _eqUpdating = false; }
-            });
-            return;
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+                {
+                    if (_closed) return;
+                    _eqUpdating = true;
+                    try { SyncEqualizerPresetItems(); }
+                    finally { _eqUpdating = false; }
+                });
+                return;
+            }
+            _eqPresetSignature = signature;
+            EqPreset.Items.Clear();
+            foreach (var preset in presets)
+            {
+                var item = new ComboBoxItem { Content = preset.Name, Tag = preset };
+                AutomationProperties.SetName(item, preset.Name);
+                EqPreset.Items.Add(item);
+            }
+            _eqUnsavedItem = new ComboBoxItem { Content = "Unsaved custom" };
+            AutomationProperties.SetName(_eqUnsavedItem, "Unsaved custom");
+            EqPreset.Items.Add(_eqUnsavedItem);
         }
-        _eqPresetSignature = signature;
-        EqPreset.Items.Clear();
-        ComboBoxItem? selectedItem = null;
-        foreach (var preset in presets)
-        {
-            var item = new ComboBoxItem { Content = preset.Name, Tag = preset };
-            AutomationProperties.SetName(item, preset.Name);
-            EqPreset.Items.Add(item);
-            if (preset.Id == _equalizer.SelectedPresetId) selectedItem = item;
-        }
-        if (unsaved)
-        {
-            selectedItem = new ComboBoxItem { Content = "Unsaved custom" };
-            AutomationProperties.SetName(selectedItem, "Unsaved custom");
-            EqPreset.Items.Add(selectedItem);
-        }
-        EqPreset.SelectedItem = selectedItem;
+        _eqUnsavedItem!.Visibility = unsaved ? Visibility.Visible : Visibility.Collapsed;
+        var target = unsaved ? _eqUnsavedItem : EqPreset.Items.OfType<ComboBoxItem>().FirstOrDefault(item =>
+            item.Tag is EqualizerPreset preset && preset.Id == _equalizer.SelectedPresetId);
+        if (!ReferenceEquals(EqPreset.SelectedItem, target)) EqPreset.SelectedItem = target;
     }
 
     // Auto headroom must use the AudioContext's real rate: bands at or above its Nyquist are unity.
@@ -632,6 +629,11 @@ public sealed partial class SettingsDialog : Window
     private void OnRootLoaded(object sender, RoutedEventArgs args)
     {
         Root.Loaded -= OnRootLoaded;
+        if (_discordSectionRequested)
+        {
+            QueueDiscordSectionFocus();
+            return;
+        }
         if (_focusedBinding < 0)
         {
             if (ReferenceEquals(Nav.SelectedItem, EqualizerNavItem)) EqEnabled.Focus(FocusState.Programmatic);
@@ -900,7 +902,26 @@ public sealed partial class SettingsDialog : Window
         DiscordPresenceCheckBox.Unchecked += (_, _) => UpdateDiscordControls(announce: true);
     }
 
-    internal void SelectDiscordPage() => Nav.SelectedItem = DiscordNavItem;
+    private bool _discordSectionRequested;
+
+    internal void SelectDiscordPage()
+    {
+        _discordSectionRequested = true;
+        Nav.SelectedItem = PrivacyNavItem;
+        if (Root.IsLoaded) QueueDiscordSectionFocus();
+    }
+
+    private void QueueDiscordSectionFocus()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_closed || !_discordSectionRequested || !ReferenceEquals(Nav.SelectedItem, PrivacyNavItem)) return;
+            _discordSectionRequested = false;
+            Root.UpdateLayout();
+            DiscordPresenceCheckBox.Focus(FocusState.Programmatic);
+            DiscordSectionHeading.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
+        });
+    }
 
     internal event EventHandler? OpenLyricsSettingsRequested;
 
@@ -1068,7 +1089,6 @@ public sealed partial class SettingsDialog : Window
         StartupPage.Visibility = tag == "Startup" ? Visibility.Visible : Visibility.Collapsed;
         ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
-        DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
         ObsPage.Visibility = tag == "Obs" ? Visibility.Visible : Visibility.Collapsed;
         LyricsPage.Visibility = tag == "Lyrics" ? Visibility.Visible : Visibility.Collapsed;
         EqualizerPage.Visibility = tag == "Equalizer" ? Visibility.Visible : Visibility.Collapsed;

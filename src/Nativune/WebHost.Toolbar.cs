@@ -53,12 +53,7 @@ public sealed partial class WebHostWindow
         };
         var equalizerSettingsItem = new MenuFlyoutItem { Text = "Equalizer settings…" };
         AutomationProperties.SetName(equalizerSettingsItem, "Equalizer settings");
-        equalizerSettingsItem.Click += (_, _) =>
-        {
-            if (_closing || _disposed || _settingsDialogOpen) return;
-            _openEqualizerSettings = true;
-            ShowSettings();
-        };
+        equalizerSettingsItem.Click += (_, _) => OpenEqualizerSettings();
         EqualizerStatusChanged += (_, _) => CompactView.SetEqualizerStatus(EqualizerStatus);
         CompactView.SetEqualizerStatus(EqualizerStatus);
         _moreFlyout.Opening += (_, _) => RefreshToolbarOverflowItems();
@@ -67,6 +62,14 @@ public sealed partial class WebHostWindow
         RefreshToolbarOverflowItems();
         return [_homeOverflowItem, _forwardOverflowItem, _volumeOverflowItem, _setTimerOverflowItem, _cancelTimerOverflowItem, _updateOverflowItem,
             _equalizerMenuItem, equalizerSettingsItem];
+    }
+
+    private void OpenEqualizerSettings()
+    {
+        if (_closing || _disposed || _settingsDialogOpen) return;
+        CloseOutputVolumeFlyout();
+        _openEqualizerSettings = true;
+        ShowSettings();
     }
 
     private void SetToolbarOverflowIcons()

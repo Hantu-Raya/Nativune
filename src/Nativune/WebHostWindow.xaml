@@ -151,7 +151,7 @@
           <Button x:Name="OutputMuteButton"
                   Style="{StaticResource ToolbarButtonStyle}"
                   AutomationProperties.Name="Mute WebView audio"
-                  AutomationProperties.HelpText="Click to mute or unmute app output. Hover, right-click, or press Down for the volume slider."
+                  AutomationProperties.HelpText="Click to mute or unmute app output. Hover, right-click, or press Down for volume and Equalizer settings."
                   IsEnabled="False"
                   Content="Mute">
             <Button.ContextFlyout>
@@ -165,11 +165,12 @@
                   </Style>
                 </Flyout.FlyoutPresenterStyle>
                 <Grid x:Name="OutputVolumeFlyoutSurface"
-                      Width="240" Height="48" ColumnSpacing="8"
+                      Width="280" Height="48" ColumnSpacing="8"
                       AutomationProperties.Name="WebView output volume control">
                   <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="180" />
                     <ColumnDefinition Width="52" />
+                    <ColumnDefinition Width="32" />
                   </Grid.ColumnDefinitions>
                   <local:CompactVolumeSlider x:Name="OutputVolumeSlider"
                                              Grid.Column="0" Width="180" Height="40"
@@ -182,6 +183,12 @@
                              Grid.Column="1" Width="52" Height="32"
                              Text="100.0%" TextAlignment="Right" VerticalAlignment="Center"
                              Foreground="{ThemeResource PrimaryTextBrush}" />
+                  <Button x:Name="OutputEqualizerButton" Grid.Column="2"
+                          Width="32" Height="32" Padding="0" VerticalAlignment="Center"
+                          Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                          AutomationProperties.Name="Equalizer settings"
+                          AutomationProperties.HelpText="Open Settings on the Equalizer page."
+                          ToolTipService.ToolTip="Equalizer settings" />
                 </Grid>
               </Flyout>
             </Button.ContextFlyout>

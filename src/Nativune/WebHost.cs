@@ -577,6 +577,7 @@ public sealed partial class WebHostWindow : Window
     private void SetButtonIcons()
     {
         BackButton.Content = _iconCache.CreateElement("back", 20);
+        OutputEqualizerButton.Content = _iconCache.CreateElement("equalizer", 20);
         DiscordButton.Content = _iconCache.CreateElement("discord", 20);
         ForwardButton.Content = _iconCache.CreateElement("forward", 20);
         HomeButton.Content = _iconCache.CreateElement("home", 20);

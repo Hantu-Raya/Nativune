@@ -29,6 +29,7 @@
     "dislike",
     "dislike-filled",
     "donate",
+    "equalizer",
     "error",
     "exit-fullscreen",
     "forward",
@@ -130,6 +131,13 @@
       "width": 16,
       "height": 16,
       "sha256": "c0a4e2a070720ba9baadf512cd23e31d8e81435f3bcfa30a8d5062eecdd8a6eb"
+    },
+    {
+      "path": "16/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.16.equalizer.png",
+      "width": 16,
+      "height": 16,
+      "sha256": "b196e90e2102246a263b4826b10b9b73ea3e1cf2248a9452d7ecd53325dd187a"
     },
     {
       "path": "16/error.png",
@@ -454,6 +462,13 @@
       "sha256": "008c82fadf3f61080d2c490b6fae8f862f22876b8ded1db273327e6594b24d8a"
     },
     {
+      "path": "20/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.20.equalizer.png",
+      "width": 20,
+      "height": 20,
+      "sha256": "a4f8253713a05c6614cd893921688fbb0db7762d80219058aa8c1c7103812ac7"
+    },
+    {
       "path": "20/error.png",
       "logicalName": "Nativune.NativeIcons.20.error.png",
       "width": 20,
@@ -774,6 +789,13 @@
       "width": 24,
       "height": 24,
       "sha256": "a27df7b49e770eb971d7a52a025fbad3b32777b05aa5a0692951e4faf05fe358"
+    },
+    {
+      "path": "24/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.24.equalizer.png",
+      "width": 24,
+      "height": 24,
+      "sha256": "375aae9ab9943968644d92c749fcb92f68b09d939cb1f23ff156c8ce625308c1"
     },
     {
       "path": "24/error.png",
@@ -1098,6 +1120,13 @@
       "sha256": "939526a6ff3ff880673d7543667eb542c48f7e8a98ab1836d45fdd2194b871eb"
     },
     {
+      "path": "25/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.25.equalizer.png",
+      "width": 25,
+      "height": 25,
+      "sha256": "4583ed231b167fdadb9a777468977806f4e95f63c37889c10f49be8186e426fc"
+    },
+    {
       "path": "25/error.png",
       "logicalName": "Nativune.NativeIcons.25.error.png",
       "width": 25,
@@ -1418,6 +1447,13 @@
       "width": 30,
       "height": 30,
       "sha256": "6927b6fc1d159ca3253dc0a6903365ce69bd65d8d6a2bc3296de750478f349a9"
+    },
+    {
+      "path": "30/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.30.equalizer.png",
+      "width": 30,
+      "height": 30,
+      "sha256": "4d2cd07786585b649f3994c82d6581fe9d0f9245b898ff794514e668d10efaa8"
     },
     {
       "path": "30/error.png",
@@ -1742,6 +1778,13 @@
       "sha256": "ff7091a7f1cafbb8fcadf4f4a21324ed1fad3c822d0b48dd07cc8d844eb555ca"
     },
     {
+      "path": "32/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.32.equalizer.png",
+      "width": 32,
+      "height": 32,
+      "sha256": "7f959dffe04a9a96389623d48d5e9a71c9730350059d24150b21cce497ba1f6e"
+    },
+    {
       "path": "32/error.png",
       "logicalName": "Nativune.NativeIcons.32.error.png",
       "width": 32,
@@ -2062,6 +2105,13 @@
       "width": 40,
       "height": 40,
       "sha256": "c92d878c502cc487af87b109acf15af4ba297877f2f1c29561119c0fce57e182"
+    },
+    {
+      "path": "40/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.40.equalizer.png",
+      "width": 40,
+      "height": 40,
+      "sha256": "fe719a20b6b3f619bdc23104fc3d764418d8bde1ba86d4bf748a55c41dbbd4ae"
     },
     {
       "path": "40/error.png",
@@ -2386,6 +2436,13 @@
       "sha256": "865f3812b6f4dc12ecf5d46309f2b2aef9722155028fae726f1c7d4ac4b5ae58"
     },
     {
+      "path": "48/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.48.equalizer.png",
+      "width": 48,
+      "height": 48,
+      "sha256": "fd2ad1ade38fcb43f32b595fd3c1d8a7d25e7524836a8783b10e63d024e11dc3"
+    },
+    {
       "path": "48/error.png",
       "logicalName": "Nativune.NativeIcons.48.error.png",
       "width": 48,
@@ -2706,6 +2763,13 @@
       "width": 64,
       "height": 64,
       "sha256": "465755658573204c69232e0855a5082a46fd50d5a0750bb95e6312e4703980d5"
+    },
+    {
+      "path": "64/equalizer.png",
+      "logicalName": "Nativune.NativeIcons.64.equalizer.png",
+      "width": 64,
+      "height": 64,
+      "sha256": "8cce768151f4a302c0644e57a57c6bc12c4c64781ed6c139bf9450b59fdea2e9"
     },
     {
       "path": "64/error.png",

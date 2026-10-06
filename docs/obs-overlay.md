@@ -18,7 +18,7 @@ These screenshots were taken from a fresh OBS Studio 32.2.2 with an empty scene,
 
 2. Select the **OBS** tab.
 
-   ![Nativune Settings with the tabs General, Startup, Shortcuts, Privacy, Discord, OBS, Lyrics and About](images/obs-overlay/setup/02-settings.png)
+   ![Nativune Settings with the tabs General, Startup, Shortcuts, Privacy, OBS, Lyrics, Equalizer and About](images/obs-overlay/setup/02-settings.png)
 
 3. Read what the overlay shares (see [Privacy](#privacy)), then tick **Enable OBS overlay**.
 

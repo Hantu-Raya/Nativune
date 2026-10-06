@@ -2,11 +2,11 @@ param(
     [string] $App = '.cache/build/pub-feature/Nativune.exe',
     [string] $OutputDirectory = 'artifacts/discord-rpc/settings'
 )
-# PR evidence for the Discord toolbar toggle and Settings > Discord. Runs a disposable root (never data/),
+# PR evidence for the Discord toolbar toggle and Settings > Privacy > Discord status. Runs a disposable root (never data/),
 # drives the app through UI Automation only (no mouse/keyboard), captures windows with PrintWindow and records
 # the accessibility properties of the Discord controls. Toolbar: the top-right Discord button toggles the saved
 # setting (checked in settings.json) and announces on/off; More > "Discord settings…" opens Settings directly on
-# the Discord page. Turning the toggle on uses the real Discord pipe of this machine for a few seconds with no
+# the Discord status section in Privacy. Turning the toggle on uses the real Discord pipe of this machine for a few seconds with no
 # song playing (signed-out Home page), so no activity card is shown. Exit 1 when an expected control is missing.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -151,7 +151,7 @@ function Describe($El) {
     }
 }
 
-$ids = 'DiscordNavItem', 'DiscordPresenceCheckBox', 'DiscordStatusLineComboBox', 'DiscordOpenButtonCheckBox', 'DiscordDisclosureText', 'DiscordStatusText'
+$ids = 'PrivacyNavItem', 'DiscordPresenceCheckBox', 'DiscordStatusLineComboBox', 'DiscordOpenButtonCheckBox', 'DiscordDisclosureText', 'DiscordStatusText'
 $report = [ordered]@{ command = $commandLine; runId = $runId; app = $appExe; appVersion = (Get-Item -LiteralPath $appExe).VersionInfo.ProductVersion }
 $missing = New-Object System.Collections.Generic.List[string]
 $shots = [ordered]@{}
@@ -189,7 +189,7 @@ try {
     $report['toolbar'] = $toolbar
     [void][DShot]::SetWindowPos($mainHwnd, $HWND_NOTOPMOST, 0, 0, 0, 0, $SWP)
 
-    # More menu: the Discord toggle item and "Discord settings…", which opens Settings on the Discord page.
+    # More menu: the Discord toggle item and "Discord settings…", which opens Privacy at Discord status.
     $more = Find-Element $main 'AutomationId' 'MoreButton' 30
     if (-not $more) { $more = Find-Element $main 'Name' 'More commands and settings' 5 }
     if (-not $more) { $missing.Add('MoreButton'); throw 'More button not found.' }
@@ -204,10 +204,11 @@ try {
     [void][DShot]::SetWindowPos($settingsHwnd, $HWND_TOPMOST, 0, 0, 0, 0, $SWP)
     $dlg = $AE::FromHandle($settingsHwnd)
 
-    # Opened from "Discord settings…": the Discord page must already be selected.
-    $nav = Find-Element $dlg 'AutomationId' 'DiscordNavItem'
-    if (-not $nav) { $missing.Add('DiscordNavItem'); throw 'Discord nav item not found.' }
-    $report['openedOnDiscordPage'] = (Get-Pattern $nav ([System.Windows.Automation.SelectionItemPattern])).Current.IsSelected
+    # Opened from "Discord settings…": Privacy must already be selected, without a separate Discord page.
+    $nav = Find-Element $dlg 'AutomationId' 'PrivacyNavItem'
+    if (-not $nav) { $missing.Add('PrivacyNavItem'); throw 'Privacy nav item not found.' }
+    $report['openedOnPrivacyPage'] = (Get-Pattern $nav ([System.Windows.Automation.SelectionItemPattern])).Current.IsSelected
+    $report['separateDiscordNavAbsent'] = -not [bool](Find-Element $dlg 'AutomationId' 'DiscordNavItem' 1)
     Start-Sleep -Milliseconds 1200
 
     $els = [ordered]@{}
@@ -236,7 +237,8 @@ try {
         openButtonEnabledWhenOn = [bool] $on['DiscordOpenButtonCheckBox'].IsEnabled
         unsavedStatusMentionsSave = [string] $on['statusText'] -like '*Turns on after Save*'
     }
-    if (-not $report['openedOnDiscordPage']) { $missing.Add('openedOnDiscordPage') }
+    if (-not $report['openedOnPrivacyPage']) { $missing.Add('openedOnPrivacyPage') }
+    if (-not $report['separateDiscordNavAbsent']) { $missing.Add('separateDiscordNavAbsent') }
     if ($report['moreToggleItem'].toggleState -ne 'Off') { $missing.Add('moreToggleItemOff') }
 
     $cancel = Find-Element $dlg 'AutomationId' 'CancelButton' 5
