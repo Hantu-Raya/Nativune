@@ -545,7 +545,8 @@ public sealed partial class SettingsDialog : Window
             EqualizerState.NotApplied => "Not applied",
             EqualizerState.Active => "Active",
             EqualizerState.Bypassed => "Bypassed",
-            EqualizerState.Interrupted or EqualizerState.ReloadNeeded => "Interrupted — Reload needed",
+            EqualizerState.Interrupted => "Interrupted — retrying",
+            EqualizerState.ReloadNeeded => "Reload needed",
             EqualizerState.ProtectedMedia => "Protected media",
             _ => "Unavailable"
         };
