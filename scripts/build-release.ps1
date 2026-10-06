@@ -447,7 +447,7 @@ try {
     $dotnetRoot = Resolve-RepositoryPath '.tools/dotnet'
     $nativuneLicense = Resolve-RepositoryPath 'LICENSE'
     $repositoryNotice = Resolve-RepositoryPath 'THIRD-PARTY-NOTICES.txt'
-    $appSdkLicense = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.windowsappsdk/2.5.1/license.txt'
+    $appSdkLicense = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.windowsappsdk.runtime/2.5.1/license.txt'
     $dotnetLicense = Resolve-RepositoryPath '.tools/dotnet/LICENSE.txt'
     $dotnetNotice = Resolve-RepositoryPath '.tools/dotnet/ThirdPartyNotices.txt'
     $webView2License = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/LICENSE.txt'
