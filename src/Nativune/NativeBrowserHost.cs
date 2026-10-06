@@ -175,16 +175,16 @@ internal sealed class NativeBrowserHost : IDisposable
         }
     }
 
-    internal void Focus()
-    {
-        ThrowIfDisposed();
-        _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
-    }
+    // Focus is best effort: WebView2 rejects MoveFocus (E_INVALIDARG / element not found) while the parent
+    // window is disabled, e.g. when a modal Settings window opens as XAML focus returns to the browser slot.
+    internal void Focus() => MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
 
     internal void MoveFocus(CoreWebView2MoveFocusReason reason)
     {
         ThrowIfDisposed();
-        _controller.MoveFocus(reason);
+        try { _controller.MoveFocus(reason); }
+        catch (ArgumentException) { }
+        catch (COMException) { }
     }
 
     internal void NotifyParentWindowPositionChanged()

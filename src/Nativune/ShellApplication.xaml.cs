@@ -13,7 +13,8 @@ public partial class ShellApplication : Application
         _onLaunched = onLaunched;
         InitializeComponent();
         // Logged only; WinUI's default handling (terminate) is unchanged.
-        UnhandledException += (_, e) => AppLog.Write("crash", e.Exception?.ToString() ?? e.Message);
+        // e.Message can carry WinRT origin text that the exception's own stack lacks.
+        UnhandledException += (_, e) => AppLog.Write("crash", (e.Exception?.ToString() ?? "") + Environment.NewLine + "    xaml: " + e.Message);
     }
 
     internal static void Run(Action onLaunched)
