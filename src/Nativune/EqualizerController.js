@@ -12,7 +12,7 @@
     let epoch = null, rev = 0, desired = null;
     let ctx = null, source = null, element = null, filters = [], preamp = null;
     let state = 'off', reason = '', encrypted = false, mediaKeys = false;
-    let working = false, pending = false, gestureListening = false, resumeInFlight = null, lastResumeAt = 0;
+    let working = false, pending = false, gestureListening = false, resumeInFlight = null, lastResumeAt = -Infinity;
     let reloadNeeded = false;
     let activationAttempted = false, parameterRevision = -1, attachmentAttempted = false;
 
@@ -39,7 +39,7 @@
     async function resume() {
         if (ctx.state === 'running' || ctx.state === 'closed') return;
         if (!resumeInFlight) {
-            lastResumeAt = Date.now();
+            lastResumeAt = performance.now();
             resumeInFlight = Promise.resolve().then(() => ctx.resume()).catch(() => {})
                 .finally(() => { resumeInFlight = null; });
         }
@@ -81,7 +81,7 @@
                 // A suspended or interrupted context silences the element (its audio now flows only through
                 // this graph). Keep retrying, at most every 2 s: polls, playback and visibility drive this.
                 if (ctx.state === 'closed') { setState('reloadNeeded', 'closed'); return; }
-                if (ctx.state !== 'running' && Date.now() - lastResumeAt >= 2000) await resume();
+                if (ctx.state !== 'running' && performance.now() - lastResumeAt >= 2000) await resume();
                 if (ctx.state !== 'running') {
                     setState('interrupted', ctx.state === 'interrupted' ? 'system' : 'context');
                     listenForGesture(); return;
