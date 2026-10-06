@@ -627,7 +627,7 @@ public sealed partial class WebHostWindow
                         break;
                     case "eq-profile":
                         var profile = value.GetString();
-                        if (profile is not ("tones-48000" or "tones-44100" or "transient-48000" or
+                        if (profile is not ("tones-48000" or "tones-44100" or "tones-16000" or "transient-48000" or
                             "transient-44100" or "click-48000" or "click-44100" or "foreign-source"))
                             throw new InvalidDataException("profile");
                         result = await host.Core.ExecuteScriptAsync($"globalThis.__nativuneFixture.eqProfile({JsonSerializer.Serialize(profile)})");

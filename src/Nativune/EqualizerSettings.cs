@@ -76,11 +76,14 @@ internal static class EqualizerPresets
 
 internal static class EqualizerMath
 {
+    public const double MinimumSampleRate = 8000;
+
     public static double[] ResponseDb(IReadOnlyList<double> gainsDb, double sampleRate, IReadOnlyList<double> frequenciesHz)
     {
         if (gainsDb.Count != EqualizerBands.Count || gainsDb.Any(gain => !double.IsFinite(gain)))
             throw new ArgumentException("Exactly ten finite equalizer gains are required.", nameof(gainsDb));
-        if (!double.IsFinite(sampleRate) || sampleRate <= 2 * EqualizerBands.CentresHz[^1])
+        // Output devices can run the AudioContext below 40 kHz (e.g. 16 kHz Bluetooth hands-free).
+        if (!double.IsFinite(sampleRate) || sampleRate < MinimumSampleRate)
             throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (frequenciesHz.Any(frequency => !double.IsFinite(frequency) || frequency < 0 || frequency > sampleRate / 2))
             throw new ArgumentOutOfRangeException(nameof(frequenciesHz));
@@ -89,6 +92,10 @@ internal static class EqualizerMath
         {
             if (gainsDb[band] == 0)
                 continue; // Flat remains exactly unity, without floating-point residue.
+            // Web Audio clamps a BiquadFilter's frequency to Nyquist, where a peaking filter is unity
+            // (sin(pi) = 0 makes alpha 0), so a band at or above Nyquist does not shape the output.
+            if (EqualizerBands.CentresHz[band] >= sampleRate / 2)
+                continue;
             var amplitude = Math.Pow(10, gainsDb[band] / 40);
             var omega = 2 * Math.PI * EqualizerBands.CentresHz[band] / sampleRate;
             var alpha = Math.Sin(omega) / (2 * EqualizerBands.Q);
@@ -121,10 +128,11 @@ internal static class EqualizerMath
     {
         const int points = 4096;
         var upper = Math.Min(20000, 0.45 * sampleRate);
-        var frequencies = new double[points + EqualizerBands.Count];
+        var centres = EqualizerBands.CentresHz.Where(centre => centre < sampleRate / 2).ToArray();
+        var frequencies = new double[points + centres.Length];
         for (var index = 0; index < points; index++)
             frequencies[index] = 20 * Math.Pow(upper / 20, (double)index / (points - 1));
-        Array.Copy(EqualizerBands.CentresHz, 0, frequencies, points, EqualizerBands.Count);
+        Array.Copy(centres, 0, frequencies, points, centres.Length);
         return ResponseDb(gainsDb, sampleRate, frequencies).Max();
     }
 

@@ -164,7 +164,7 @@
       return URL.createObjectURL(new Blob([bytes],{type:'audio/wav'}));
     };
     const profile = name => {
-      if(!/^(tones|transient|click)-(48000|44100)$/.test(name) && name!=='foreign-source') return false;
+      if(!/^(tones|transient|click)-(48000|44100|16000)$/.test(name) && name!=='foreign-source') return false;
       media.pause(); media.removeAttribute('muted'); media.muted=false; media.volume=1; media.loop=true;
       if(blob) URL.revokeObjectURL(blob);
       const [variant,rate]=name.split('-');

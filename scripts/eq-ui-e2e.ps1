@@ -373,6 +373,42 @@ function Seed([bool] $Enabled = $false, [int] $CustomCount = 0) {
     return @{enabled=$Enabled;selectedPresetId='flat';gainsDb=@(0,0,0,0,0,0,0,0,0,0);
         manualPreampDb=0;autoHeadroom=$true;customPresets=$custom}
 }
+function Run-Reload {
+    # Codex review: when the disabled setting cannot be saved, Reload without EQ must not reload or show EQ off.
+    Start-Fixture 'reload' 48000 (Seed $true)
+    Click-Page
+    if (-not (Status-Is 'active' 20)) { throw 'Reload fixture never attached.' }
+    [void](Hook 'eq-profile' 'foreign-source')
+    if (-not (Status-Is 'reloadNeeded' 10)) { throw 'Reload fixture never reached Reload needed.' }
+    Open-Settings
+    $settingsFile=Join-Path $script:root 'data/settings.json'
+    (Get-Item -LiteralPath $settingsFile).IsReadOnly=$true
+    try { Invoke 'EqReload'; Start-Sleep -Milliseconds 1500 }
+    finally { (Get-Item -LiteralPath $settingsFile).IsReadOnly=$false }
+    $errorText=(Control 'EqError').Current.Name
+    $toggleOn=(Pattern (Control 'EqEnabled') ([Windows.Automation.TogglePattern])).Current.ToggleState -eq [Windows.Automation.ToggleState]::On
+    $stillAttached=Hook 'eq-status'; $fileAfterFailure=File-State
+    Row 'reload-save-failure-keeps-state' ($errorText -like '*could not be completed*' -and $toggleOn -and $stillAttached.attached -and
+        $stillAttached.state -ceq 'reloadNeeded' -and $fileAfterFailure.equalizer.enabled) @{error=$errorText;toggleOn=$toggleOn;status=$stillAttached;fileEnabled=$fileAfterFailure.equalizer.enabled}
+    Invoke 'EqReload'
+    $reloadedOff=Wait-For { try { $script:afterReload=Hook 'eq-status'; $script:afterReload.state -ceq 'off' -and -not $script:afterReload.attached } catch { $false } } 30
+    $fileAfterReload=File-State
+    Row 'reload-success-disables' ($reloadedOff -and -not $fileAfterReload.equalizer.enabled) @{status=$script:afterReload;fileEnabled=$fileAfterReload.equalizer.enabled}
+}
+function Run-LowRate {
+    # Codex review: a 16 kHz output (e.g. Bluetooth hands-free) must not stop Settings or the curve.
+    Start-Fixture 'low-rate' 16000 (Seed $true)
+    Click-Page
+    $active=Wait-For { $script:lowStatus=Hook 'eq-status'; $script:lowStatus.state -ceq 'active' -and $script:lowStatus.sampleRate -eq 16000 } 20
+    Row 'low-rate-attached-16k' $active $script:lowStatus
+    Open-Settings
+    $curve=Hook 'eq-ui-curve'
+    $x=@($curve.points|ForEach-Object{$_.x})
+    $nyquistX=$curve.width*[Math]::Log(8000/20)/[Math]::Log(1000)
+    $maxX=if($x.Count){($x|Measure-Object -Maximum).Maximum}else{-1}
+    Row 'low-rate-settings-curve' ($x.Count -gt 50 -and $maxX -le $nyquistX + 0.5 -and $null -ne (Find-Control 'EqEnabled')) @{points=$x.Count;maxX=$maxX;nyquistX=$nyquistX;width=$curve.width}
+    Close-Settings
+}
 function Run-Ui {
     Start-Fixture 'ui' 48000 (Seed)
     # Trusted fixture activation is performed before opening the native dialog.
@@ -554,7 +590,7 @@ $requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-c
     'tab-order','duplicate-name-rejected','rename-preset','duplicate-builtin-immutable','delete-active-retains-curve',
     'copy-preset-schema','paste-valid-staged-only','paste-invalid-version','paste-invalid-nine','paste-invalid-nan',
     'paste-invalid-oversize','more-toggle-persists-status','volume-owned-session','volume-quarter-eq-active',
-    'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated')
+    'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated','low-rate.de-elevated','low-rate-attached-16k','low-rate-settings-curve','reload.de-elevated','reload-save-failure-keeps-state','reload-success-disables')
 foreach($i in 0..9){$requiredRows+="slider-$i-name-step"}
 $clipboardSaved=Get-Clipboard -Raw
 $failure=$null
@@ -567,6 +603,8 @@ try {
     if(-not(Test-Path -LiteralPath $exe)){throw "Hook app missing: $exe"}
     try { Run-Ui } catch { Row 'ui-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-Limit } catch { Row 'limit-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
+    try { Run-LowRate } catch { Row 'low-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
+    try { Run-Reload } catch { Row 'reload-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
 } catch { $failure=$_.Exception.Message;Row 'harness-completion' $false @{error=$failure} }
 finally {
     Stop-Fixture

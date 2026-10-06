@@ -64,7 +64,7 @@ public sealed partial class SettingsDialog : Window
     private Func<EqualizerApply, Task>? _previewEqualizer;
     private Func<EqualizerStatus>? _equalizerStatus;
     private Action? _unsubscribeEqualizer;
-    private Func<Task>? _reloadWithoutEqualizer;
+    private Func<Task<bool>>? _reloadWithoutEqualizer;
     private readonly Slider[] _eqSliders = new Slider[EqualizerBands.Count];
     private readonly NumberBox[] _eqBoxes = new NumberBox[EqualizerBands.Count];
     private readonly DispatcherTimer _eqPreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
@@ -78,7 +78,7 @@ public sealed partial class SettingsDialog : Window
         bool isInstalledBuild = false, StartupEntryState startupState = StartupEntryState.Off,
         Func<string>? statusText = null, string? installRoot = null,
         Func<EqualizerApply, Task>? previewEqualizer = null, Func<EqualizerStatus>? equalizerStatus = null,
-        Func<Action, Action>? subscribeEqualizerStatus = null, Func<Task>? reloadWithoutEqualizer = null)
+        Func<Action, Action>? subscribeEqualizerStatus = null, Func<Task<bool>>? reloadWithoutEqualizer = null)
     {
         _isInstalledBuild = isInstalledBuild;
         _startupState = startupState;
@@ -149,7 +149,7 @@ public sealed partial class SettingsDialog : Window
     internal void SelectEqualizerPage() => Nav.SelectedItem = EqualizerNavItem;
 
     private void InitializeEqualizer(EqualizerSettings settings, Func<EqualizerApply, Task>? preview,
-        Func<EqualizerStatus>? status, Func<Action, Action>? subscribe, Func<Task>? reload)
+        Func<EqualizerStatus>? status, Func<Action, Action>? subscribe, Func<Task<bool>>? reload)
     {
         _equalizer = settings;
         _previewEqualizer = preview;
@@ -238,7 +238,12 @@ public sealed partial class SettingsDialog : Window
             EqReload.IsEnabled = false;
             try
             {
-                await _reloadWithoutEqualizer();
+                if (!await _reloadWithoutEqualizer())
+                {
+                    // Not persisted or not reloaded: the graph is unchanged, so the dialog must not show EQ off.
+                    EqError.Text = "Reload without EQ could not be completed.";
+                    return;
+                }
                 _eqRecoveryOff = true;
                 _equalizer = _equalizer with { Enabled = false };
                 _eqPreviewTimer.Stop();
@@ -383,8 +388,11 @@ public sealed partial class SettingsDialog : Window
         var width = EqCurveCanvas.ActualWidth;
         var height = EqCurveCanvas.ActualHeight;
         if (width <= 0 || height <= 0) return;
-        var frequencies = Enumerable.Range(0, 201).Select(i => 20 * Math.Pow(1000, i / 200.0)).ToArray();
-        var sampleRate = _equalizerStatus?.Invoke().SampleRate ?? 48000;
+        var reported = _equalizerStatus?.Invoke().SampleRate;
+        var sampleRate = reported is double rate && double.IsFinite(rate) && rate >= EqualizerMath.MinimumSampleRate ? rate : 48000;
+        // The x axis stays 20 Hz to 20 kHz; at low output rates (e.g. 16 kHz hands-free) the curve stops at Nyquist.
+        var frequencies = Enumerable.Range(0, 201).Select(i => 20 * Math.Pow(1000, i / 200.0))
+            .Where(frequency => frequency < sampleRate / 2).ToArray();
         var response = EqualizerMath.ResponseDb(_equalizer.GainsDb, sampleRate, frequencies);
         var preamp = EqualizerMath.EffectivePreampDb(_equalizer, sampleRate);
         var points = new Microsoft.UI.Xaml.Media.PointCollection();

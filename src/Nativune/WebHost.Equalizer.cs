@@ -134,7 +134,7 @@ public sealed partial class WebHostWindow
 #if NATIVUNE_DISCORD_TEST_HOOKS
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
         {
-            var rate = Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_SAMPLE_RATE") == "44100" ? 44100 : 48000;
+            var rate = Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_SAMPLE_RATE") switch { "44100" => 44100, "16000" => 16000, _ => 48000 };
             await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", JsonSerializer.Serialize(new {
                 expression = "globalThis.__nativuneEqTestHooks = true;" +
                     "globalThis.__nativuneEqActivation = {blocked:false,resumeCalls:0,sourceCalls:0};" +
@@ -245,16 +245,22 @@ public sealed partial class WebHostWindow
         finally { _equalizerPolling = false; UpdateEqualizerPolling(); }
     }
 
-    internal async Task ReloadWithoutEqualizerAsync()
+    // Returns true only when the disabled setting was persisted and the Music reload was issued.
+    internal async Task<bool> ReloadWithoutEqualizerAsync()
     {
-        if (_closing || _disposed || _browserHost?.Core is not { } core || !IsEqualizerMusicOrigin(core.Source)) return;
-        _settings = _settings with { Equalizer = _settings.Equalizer with { Enabled = false } };
+        if (_closing || _disposed || _browserHost?.Core is not { } core || !IsEqualizerMusicOrigin(core.Source)) return false;
+        var previous = _settings.Equalizer;
+        _settings = _settings with { Equalizer = previous with { Enabled = false } };
         if (!await SaveSettingsConfirmedAsync())
         {
+            // Nothing was reloaded and the graph is unchanged, so keep the in-memory setting truthful.
+            _settings = _settings with { Equalizer = previous };
             SetStatus("Equalizer setting could not be saved. Reload cancelled.", isError: true);
-            return;
+            return false;
         }
-        if (!_closing && !_disposed && IsCurrentEqualizerCore(core) && IsEqualizerMusicOrigin(core.Source)) core.Reload();
+        if (_closing || _disposed || !IsCurrentEqualizerCore(core) || !IsEqualizerMusicOrigin(core.Source)) return false;
+        core.Reload();
+        return true;
     }
 
     private void DisposeEqualizer()

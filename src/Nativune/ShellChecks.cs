@@ -268,6 +268,20 @@ internal static class ShellChecks
                 + EqualizerMath.EstimatedPeakDb(bass.GainsDb, rate) + 1) < 1e-10,
                 $"Bass boost auto headroom did not subtract the peak plus 1 dB at {rate} Hz.");
         }
+        // Low device rates (Codex review): 16 kHz hands-free and 22.05 kHz must not throw; bands at or above
+        // Nyquist are unity because Web Audio clamps their frequency to Nyquist.
+        foreach (var rate in new[] { 16000.0, 22050.0 })
+        {
+            var trebleOnly = new double[10];
+            trebleOnly[8] = 6; trebleOnly[9] = 6;
+            var belowNyquist = Enumerable.Range(0, 50).Select(i => 20 * Math.Pow((rate / 2 - 1) / 20, i / 49.0)).ToArray();
+            var treble = EqualizerMath.ResponseDb(trebleOnly, rate, belowNyquist);
+            Require(rate == 16000 ? treble.All(value => value == 0) : treble.Max() > 0.5,
+                $"Bands at or above Nyquist were not unity (or a band below it was ignored) at {rate} Hz.");
+            var low = EqualizerSettings.Default with { GainsDb = bass.GainsDb };
+            Require(double.IsFinite(EqualizerMath.EffectivePreampDb(low, rate)) && EqualizerMath.EffectivePreampDb(low, rate) < 0,
+                $"Auto headroom failed at a {rate} Hz output rate.");
+        }
         ShellSettings.SaveAsync(root, original, CancellationToken.None).GetAwaiter().GetResult();
     }
 
