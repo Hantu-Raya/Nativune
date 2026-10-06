@@ -1450,7 +1450,8 @@ public sealed partial class WebHostWindow : Window
                 EqualizerStatusChanged += handler;
                 return () => EqualizerStatusChanged -= handler;
             },
-            reloadWithoutEqualizer: ReloadWithoutEqualizerAsync);
+            reloadWithoutEqualizer: ReloadWithoutEqualizerAsync,
+            restoreEqualizer: ApplyEqualizerFromSettingsAsync);
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
         dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
         dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
