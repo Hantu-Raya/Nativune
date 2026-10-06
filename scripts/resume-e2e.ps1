@@ -235,6 +235,11 @@ Row 4 'failure-ad-ended-and-cancellation' {
     # No ytmusic-player-bar at all (seen on the real site): the player's title link is the identity.
     $root = New-Root 'no-bar'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_NO_BAR = '1' }; $noBar = Await-Done; Stop-App
+    # A registration CDP cannot remove: after the restore finished, reloading the same song must not be paused
+    # or seeked again (the script acts on one document per launch).
+    $root = New-Root 'stale-script'; Seed $root
+    Start-App $root @{ NATIVUNE_TEST_RESUME_KEEP_REGISTRATION = '1' }; $staleFirst = Await-Done
+    [void](Hook 'resume-reload'); [void](Wait-For { $s = State; $s.ready -and -not $s.paused } 8); Start-Sleep -Seconds 2; $staleReload = State; Stop-App
     # Windows sleep during a restore: the identity link appears only after 14 s, with a simulated suspend from
     # 2 s to 13 s. Sleep time must not count, so the restore completes instead of timing out at 10 s.
     $root = New-Root 'sleep'; Seed $root
@@ -282,6 +287,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
         failedKeyPlay = $keyPlay.restoreState -ceq 'Cancelled' -and -not $keyPlay.paused -and -not $keyPlay.coreMuted -and -not $keyPlay.safetyMuted
         noPlayerBar = $noBar.restoreState -ceq 'Done' -and $noBar.paused -and [math]::Abs($noBar.position - 73.625) -le 1 -and -not $noBar.coreMuted
+        staleScriptOnce = $staleFirst.restoreState -ceq 'Done' -and $staleFirst.paused -and -not $staleReload.paused -and $staleReload.seekCount -eq 0 -and -not $staleReload.coreMuted
         sleepNotCounted = $slept.restoreState -ceq 'Done' -and $slept.isB -and $slept.paused -and [math]::Abs($slept.position - 73.625) -le 1 -and -not $slept.coreMuted
         sharedTimeline = $shared.restoreState -ceq 'Done' -and $shared.isB -and $shared.paused -and $shared.seekCount -eq 0 -and [math]::Abs($shared.position - 73) -le 0.5 -and -not $shared.coreMuted
         migrations = @($migrations | Where-Object { -not $_.pass }).Count -eq 0
@@ -289,7 +295,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
-        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept; noBar = $noBar; adKey = $adKey; adKeyPost = $adKeyPost;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept; noBar = $noBar; staleFirst = $staleFirst; staleReload = $staleReload; adKey = $adKey; adKeyPost = $adKeyPost;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; replacedAfterFailure = $replaced; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }

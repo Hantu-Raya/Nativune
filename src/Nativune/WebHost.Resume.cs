@@ -20,6 +20,7 @@ public sealed partial class WebHostWindow
     private int _resumeGeneration;
     private string _resumeState = "Absent";
     private string _resumeDiag = "";
+    private string? _resumeOnce;
     private bool _resumeSafetyMuted, _resumePriorMute, _resumePolling, _resumeOwnedNavigation;
     private bool _resumeCaptureBlocked, _resumeHomeGuard;
     private CompactPlaybackState? _resumeCandidate, _resumeLastSaved;
@@ -70,12 +71,10 @@ public sealed partial class WebHostWindow
         using var stream = typeof(WebHostWindow).Assembly.GetManifestResourceStream("Nativune.ResumeStartup.js")
             ?? throw new InvalidOperationException("Resume startup resource missing.");
         using var reader = new StreamReader(stream);
-        // once + notAfter make the script act on at most one document, within 2 minutes of startup, so a leftover
-        // registration can never act on a later load of the saved song.
+        // once makes the script act on at most one document; the host tombstones it when the restore retires.
+        _resumeOnce = "nativune-resume-" + Guid.NewGuid().ToString("N");
         var script = "const request = " + JsonSerializer.Serialize(new {
-            generation, waitPaused, homeGuard = invalid,
-            once = "nativune-resume-" + Guid.NewGuid().ToString("N"),
-            notAfter = DateTimeOffset.UtcNow.AddMinutes(2).ToUnixTimeMilliseconds(),
+            generation, waitPaused, homeGuard = invalid, once = _resumeOnce,
             checkpoint = new { videoId = checkpoint?.VideoId ?? "",
                 positionSeconds = checkpoint?.PositionSeconds ?? 0, durationSeconds = checkpoint?.DurationSeconds ?? 0 }
         }) + ";\n" + await reader.ReadToEndAsync(_lifetime.Token);
@@ -268,6 +267,7 @@ public sealed partial class WebHostWindow
                 // The controller is terminal and has dropped its recovery handlers, so release the guard now;
                 // a registration that could not be removed is retried by the next navigation.
                 RestoreResumeMute();
+                _ = TombstoneResumeScriptAsync();
                 if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
                 if (state == "Cancelled")
                 {
@@ -325,7 +325,11 @@ public sealed partial class WebHostWindow
         _ = RemoveResumeRegistrationAsync();
         // A final (unmuted) failure must not leave the page script pausing later plays, e.g. a Wait paused
         // restore whose ad was already recovered.
-        if (!_resumeSafetyMuted) _ = CallResumeScriptAsync("globalThis.__nativuneResume?.cancel()");
+        if (!_resumeSafetyMuted)
+        {
+            _ = CallResumeScriptAsync("globalThis.__nativuneResume?.cancel()");
+            _ = TombstoneResumeScriptAsync();
+        }
     }
 
     // Sleep time is not restore time. At suspend the script's timeout is held (so an overdue timer cannot fail
@@ -349,6 +353,16 @@ public sealed partial class WebHostWindow
         catch (Exception) { AppLog.Write("resume", "script-call-failed"); }
     }
 
+    // Writes the launch's once-marker into this tab's Music sessionStorage, so no later document can run a
+    // leftover startup script. Called when a restore retires and after each Music page load once it has.
+    private async Task TombstoneResumeScriptAsync()
+    {
+        if (_resumeOnce is not { } once || ResumeInProgress || _browserHost is not { } host
+            || !IsEqualizerMusicOrigin(host.Core.Source)) return;
+        try { await host.Core.ExecuteScriptAsync("try{sessionStorage.setItem(" + JsonSerializer.Serialize(once) + ",'1')}catch(e){}").AsTask().WaitAsync(ResumeCallDeadline); }
+        catch (Exception) { AppLog.Write("resume", "tombstone-failed"); }
+    }
+
     private async Task<bool> CancelResumeAsync(string reason)
     {
         if (!ResumeInProgress && !_resumeSafetyMuted)
@@ -356,20 +370,26 @@ public sealed partial class WebHostWindow
             if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
             _resumeCaptureBlocked = false;
             _resumeStartupMessage = null;
+            await TombstoneResumeScriptAsync();
             return true;
         }
         var generation = _resumeGeneration;
         var adRecovery = false;
         // After a setup failure the fallback Home has no controller even if a late registration created the
-        // named world (the script returns early there), so retire without waiting for a receipt.
-        if ((_resumeSetupFailed && _playerControls?.IsAvailable == true) || _resumeOtherDocumentConfirmed)
+        // named world (the script returns early there). Before the startup document has created the script's
+        // world (still Armed, no context) there is no controller yet either. Both retire without a receipt.
+        if ((_resumeSetupFailed && _playerControls?.IsAvailable == true) || _resumeOtherDocumentConfirmed
+            || _resumeState == "Armed" && _resumeContext is null)
         {
             if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
+            // The startup document may have created its controller while removal was awaited: cancel it too.
+            if (_resumeContext is not null) await CallResumeScriptAsync("globalThis.__nativuneResume?.cancel()");
             ++_resumeGeneration;
             _resumeState = "Cancelled";
             RestoreResumeMute();
             _resumeCaptureBlocked = false;
             _resumeStartupMessage = null;
+            await TombstoneResumeScriptAsync();
             return true;
         }
         try
@@ -402,6 +422,7 @@ public sealed partial class WebHostWindow
         _resumeStartupMessage = null;
         ++_resumeGeneration;
         _resumeState = "Cancelled";
+        await TombstoneResumeScriptAsync();
         return true;
     }
 
@@ -414,6 +435,11 @@ public sealed partial class WebHostWindow
 
     private async Task<bool> RemoveResumeRegistrationAsync()
     {
+#if NATIVUNE_DISCORD_TEST_HOOKS
+        // Hook builds only: simulate a registration CDP cannot remove, to prove the script still acts only once.
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_KEEP_REGISTRATION") == "1"
+            && (_resumeRegistration is not null || _resumeRegistrationAdd is not null)) return false;
+#endif
         // A rejected or empty registration never existed; only a pending or ambiguous one must be confirmed.
         if (_resumeRegistration is { Length: 0 }) _resumeRegistration = null;
         if (_resumeRegistration is null && _resumeRegistrationAdd is { IsFaulted: true } or { IsCanceled: true })

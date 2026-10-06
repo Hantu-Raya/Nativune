@@ -617,6 +617,10 @@ public sealed partial class WebHostWindow
                         OnTrayCommand("show"); // The tray icon's Show path.
                         result = new { dispatched = true };
                         break;
+                    case "resume-reload":
+                        host.Core.Reload(); // a new document of the same song
+                        result = new { dispatched = true };
+                        break;
                     case "resume-dom":
                         // Element counts only (no text), to diagnose real-site layouts the restore cannot identify.
                         result = JsonDocument.Parse(await host.Core.ExecuteScriptAsync(

@@ -1101,6 +1101,7 @@ public sealed partial class WebHostWindow : Window
             RefreshSharedReader();
             ArmResumeDeadline();
             _ = FinalizeResumeOtherDocumentAsync();
+            _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
             _ = OnEqualizerNavigationCompletedAsync(args);

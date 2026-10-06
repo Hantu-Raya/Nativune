@@ -4,10 +4,9 @@
   if (window !== window.top || location.origin !== 'https://music.youtube.com') return;
   const saved = request.checkpoint, generation = request.generation;
   if (!request.homeGuard && new URL(location.href).searchParams.get('v') !== saved.videoId) return;
-  // Act on at most one document (the startup one) and only shortly after startup: a registration the host
-  // could not remove must never pause or seek a later load of the saved song. sessionStorage is shared by
-  // the worlds of this tab and survives reloads.
-  if (Date.now() > request.notAfter) return;
+  // Act on at most one document per launch. The host also writes this marker (a tombstone) whenever the
+  // restore is retired, so a registration it could not remove never pauses or seeks a later load of the
+  // saved song. sessionStorage is shared by the worlds of this tab and survives reloads.
   try { if (sessionStorage.getItem(request.once)) return; sessionStorage.setItem(request.once, '1'); } catch { }
   let state = 'Armed', reason = '', media = null, sought = false, stableAt = 0;
   let baseline = null, timer = null, timeout = null;
