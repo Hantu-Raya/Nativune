@@ -38,7 +38,9 @@ public sealed partial class WebHostWindow
     {
         if (_settings.StartupDestination != StartupDestination.Continue)
         {
-            await ResumeStore.DeleteAsync(_lifetime.Token);
+            // Cleanup only; a locked or read-only checkpoint must never stop Home or Library from loading.
+            try { await ResumeStore.DeleteAsync(_lifetime.Token); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { AppLog.Write("resume", "delete-failed"); }
             return fallback;
         }
         _startupCheckpoint = ResumeStore.Load(out var invalid);
@@ -326,13 +328,22 @@ public sealed partial class WebHostWindow
         catch (Exception) { AppLog.Write("resume", "remove-failed"); return false; }
     }
 
+    // Position is the authoritative per-track clock (signed-in playback can put several items on one
+    // media timeline). Media time adds sub-second precision only when it agrees with that track clock.
+    private static double ResumePosition(CompactPlaybackState state)
+        => state.MediaPosition is { } media && state.MediaDuration is { } duration
+            && Math.Abs(duration - state.Duration) <= 2 && Math.Abs(media - state.Position) <= 1.5
+            ? media : state.Position;
+
     private void ObserveResumeSnapshot(CompactPlaybackState? state, int generation, long capturedAt, bool final = false)
     {
         if (generation != _resumeGeneration || _settings.StartupDestination != StartupDestination.Continue
             || ResumeInProgress || _resumeCaptureBlocked) return;
         if (state is null || state.IsAd || state.Seeking || !state.ClockConfirmed || state.ClockMismatch
-            || !ResumeCheckpoint.ValidId(state.VideoId) || state.MediaPosition is not { } position
-            || state.MediaDuration is not > 0 || position > state.Duration)
+            || !ResumeCheckpoint.ValidId(state.VideoId) || state.MediaDuration is not > 0)
+        { _resumeCandidate = null; return; }
+        var position = ResumePosition(state);
+        if (!double.IsFinite(position) || position < 0 || position > state.Duration)
         { _resumeCandidate = null; return; }
         if (state.TrackLinkPresent && state.TrackUrl != "https://music.youtube.com/watch?v=" + state.VideoId)
         { _resumeCandidate = null; return; }
@@ -344,7 +355,7 @@ public sealed partial class WebHostWindow
             && Math.Abs(position - _resumeCompletedSeekTarget) <= 1;
         var same = prior is not null && prior.VideoId == state.VideoId && prior.Title == state.Title
             && prior.Artist == state.Artist && Math.Abs(prior.Duration - state.Duration) <= 1
-            && Math.Abs(position - (prior.MediaPosition ?? prior.Position)
+            && Math.Abs(position - ResumePosition(prior)
                 - (prior.Paused ? 0 : elapsed * (prior.PlaybackRate ?? 1))) <= 1.5;
         var minimum = state.TrackLinkPresent ? 1d : 2d;
         if (!same && !completedSeek || !state.TrackLinkPresent && string.IsNullOrWhiteSpace(state.Artist))
@@ -352,9 +363,9 @@ public sealed partial class WebHostWindow
         if (!completedSeek && elapsed < minimum && !(final && state.TrackLinkPresent && state.Paused && prior?.Paused == true)) return;
         var old = _resumeLastSaved;
         var changed = old?.VideoId != state.VideoId;
-        var paused = state.Paused && (old?.Paused != true || Math.Abs((old.MediaPosition ?? old.Position) - position) > 0.1);
+        var paused = state.Paused && (old?.Paused != true || Math.Abs(ResumePosition(old) - position) > 0.1);
         var seek = old is not null && old.VideoId == state.VideoId
-            && Math.Abs(position - (old.MediaPosition ?? old.Position)
+            && Math.Abs(position - ResumePosition(old)
                 - (old.Paused ? 0 : (capturedAt - _resumeSavedAt) / 1000d * (old.PlaybackRate ?? 1))) > 2;
         if (!final && !completedSeek && !changed && !paused && !seek && (state.Paused || capturedAt - _resumeSavedAt < 5000)) return;
         var checkpoint = new ResumeCheckpoint(1, state.VideoId!, ResumeCheckpoint.SafeList(state.ListId),
