@@ -616,6 +616,18 @@ public sealed partial class WebHostWindow
                         OnTrayCommand("show"); // The tray icon's Show path.
                         result = new { dispatched = true };
                         break;
+                    case "resume-page-play":
+                        // key=true sends a trusted CDP key press first, then plays as the site's shortcut handler would;
+                        // false is a late site autoplay with no input.
+                        var key = value.ValueKind == JsonValueKind.Object && value.TryGetProperty("key", out var k) && k.GetBoolean();
+                        if (key)
+                            foreach (var type in new[] { "keyDown", "keyUp" })
+                                await host.Core.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", JsonSerializer.Serialize(new {
+                                    type, key = "k", code = "KeyK", windowsVirtualKeyCode = 75, nativeVirtualKeyCode = 75 }));
+                        await host.Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", JsonSerializer.Serialize(new {
+                            expression = "document.querySelector('audio,video')?.play().catch(()=>{}); true" }));
+                        result = new { dispatched = true, key };
+                        break;
                     case "resume-audio":
                         var resumeProcesses = CaptureOutputAudioProcesses();
                         var resumeExecutable = _outputAudioExecutablePath;

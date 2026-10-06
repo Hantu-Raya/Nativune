@@ -22,6 +22,9 @@
     if(state !== 'Failed') {
       document.removeEventListener('click',onClick,true);
       document.removeEventListener('keydown',onKey,true);
+      document.removeEventListener('play',onFailedPlay,true);
+      document.removeEventListener('keydown',onInput,true);
+      document.removeEventListener('pointerdown',onInput,true);
     }
   };
   const stop = (next, why = '') => { state = next; reason = why; clean(); };
@@ -31,6 +34,9 @@
     document.removeEventListener('seeking', onSeek, true);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('keydown',onKey,true);
+    document.removeEventListener('play',onFailedPlay,true);
+    document.removeEventListener('keydown',onInput,true);
+    document.removeEventListener('pointerdown',onInput,true);
     return {cancelled:true,generation};
   };
   const identity = () => {
@@ -111,6 +117,16 @@
     if(event.isTrusted && slider && (slider.id==='progress-bar' || /^seek\b/i.test(slider.getAttribute('aria-label')||''))
       && ['ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'].includes(event.key)) cancel();
   }
+  // After a failed Wait paused restore the view stays muted. A play right after trusted in-page input (a key
+  // shortcut or click) is the user's choice: release the guard. Anything else, such as a late site autoplay,
+  // stays paused. userActivation is not used: the host's ExecuteScript reads can grant it.
+  let lastInputAt = -1e9;
+  function onInput(event) { if(event.isTrusted) lastInputAt = performance.now(); }
+  function onFailedPlay(event) {
+    if(state!=='Failed' || !waitPaused || !(event.target instanceof HTMLMediaElement)) return;
+    if(performance.now()-lastInputAt < 1500){ cancel(); return; }
+    event.target.pause();
+  }
   function recoverAd() {
     recoveryAd=true; state='AwaitMusic'; reason=''; clearTimeout(timeout); wake();
   }
@@ -173,6 +189,9 @@
   document.addEventListener('seeking',onSeek,true);
   document.addEventListener('click',onClick,true);
   document.addEventListener('keydown',onKey,true);
+  document.addEventListener('play',onFailedPlay,true);
+  document.addEventListener('keydown',onInput,true);
+  document.addEventListener('pointerdown',onInput,true);
   document.addEventListener('visibilitychange',onVisibility,true);
   for(const event of wakeEvents)document.addEventListener(event,wake,true);
   globalThis.__nativuneResume={

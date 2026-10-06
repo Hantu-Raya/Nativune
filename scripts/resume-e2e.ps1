@@ -209,6 +209,13 @@ Row 4 'failure-ad-ended-and-cancellation' {
     $root = New-Root 'timeout'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_BAD_LINK = '1' }; $failed = Await-Done
     [void](Hook 'resume-compact' @{ command = 'toggle' }); Start-Sleep -Seconds 1; $recovered = State; Stop-App
+    # After a failed Wait paused restore: a late site autoplay stays paused and muted; an in-page play with
+    # trusted in-page input (key shortcut) releases the guard and plays.
+    $root = New-Root 'failed-keyplay'; Seed $root
+    Start-App $root @{ NATIVUNE_TEST_RESUME_BAD_LINK = '1' }; $failed2 = Await-Done
+    [void](Hook 'resume-page-play' @{ key = $false }); Start-Sleep -Seconds 1; $lateAutoplay = State
+    [void](Hook 'resume-page-play' @{ key = $true }); [void](Wait-For { (State).restoreState -ceq 'Cancelled' } 4); Start-Sleep -Seconds 1; $keyPlay = State
+    Stop-App
     $root = New-Root 'account-redirect'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_REDIRECT = '1' }; Start-Sleep -Seconds 1; $redirect = State
     [void](Hook 'resume-visit'); [void](Wait-For { (State).isC } 5); Start-Sleep -Seconds 1; $afterRedirect = State; Stop-App
@@ -243,11 +250,14 @@ Row 4 'failure-ad-ended-and-cancellation' {
         wrongPosition = $wrongStart.restoreState -ceq 'Failed' -and -not $wrongStart.paused -and $wrongStart.seekCount -eq 0 -and $wrongStart.status -like '*saved position*'
         timeout = $failed.restoreState -ceq 'Failed' -and $failed.safetyMuted -and $failed.status -like '*Playback is muted*'
         recovery = $recovered.restoreState -ceq 'Cancelled' -and -not $recovered.coreMuted -and -not $recovered.paused
+        failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
+        failedKeyPlay = $keyPlay.restoreState -ceq 'Cancelled' -and -not $keyPlay.paused -and -not $keyPlay.coreMuted -and -not $keyPlay.safetyMuted
         migrations = @($migrations | Where-Object { -not $_.pass }).Count -eq 0
         accountRedirect = $redirect.otherDocument -and $redirect.restoreState -ceq 'Cancelled' -and -not $redirect.coreMuted -and $afterRedirect.isC -and -not $afterRedirect.coreMuted -and $afterRedirect.position -lt 10 -and $afterRedirect.seekCount -eq 0
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }
