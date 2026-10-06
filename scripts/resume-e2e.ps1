@@ -185,6 +185,8 @@ Row 3 'start-playing-with-eq' {
 Row 4 'failure-ad-ended-and-cancellation' {
     $root = New-Root 'corrupt'; [IO.File]::WriteAllBytes((Join-Path $root 'data/resume.dat'), [byte[]](1,2,3,4))
     Start-App $root @{ NATIVUNE_TEST_RESUME_HOME_MEDIA = '1' }; $bad = Await-Done
+    # The guarded Home load removes the unreadable file so it cannot fail every launch.
+    $corruptRemoved = Wait-For { -not (State).checkpointExists } 3
     [void](Hook 'resume-compact' @{ command = 'next' }); Start-Sleep -Seconds 2; Stop-App; $repaired = Inspect $root
     $root = New-Root 'ad'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_AD = '1' }; Start-Sleep -Seconds 1; $ad = State
@@ -225,6 +227,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
     }
     $checks = @{
         corruptHome = $bad.home -and $bad.paused -and $bad.status -like '*Saved song could not be restored*'
+        corruptRemoved = $corruptRemoved
         corruptRecovery = $repaired.valid -and $repaired.isB -and $repaired.position -lt 5
         adPaused = $ad.isAd -and $ad.paused -and $ad.seekCount -eq 0 -and $ad.status -like '*Ad paused*'
         adPlay = -not $adPlaying.paused -and -not $adPlaying.coreMuted

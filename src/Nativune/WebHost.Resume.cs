@@ -240,9 +240,22 @@ public sealed partial class WebHostWindow
                     _resumeCandidate = null;
                 }
                 else if (!_resumeHomeGuard) _resumeCaptureBlocked = false;
-                if (state == "Done") SetStatus(_resumeStartupMessage ?? (status.GetProperty("reason").GetString() == "paused"
-                    ? "Saved song is paused. Press Play to start." : "Continued where you left off."),
-                    isError: _resumeStartupMessage is not null);
+                if (_resumeHomeGuard)
+                {
+                    // The guarded Home load is over: drop the unreadable file so it cannot fail every launch,
+                    // then follow the user's own listening again (Home has no song to capture).
+                    _resumeHomeGuard = false;
+                    try { await ResumeStore.DeleteAsync(_lifetime.Token); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { AppLog.Write("resume", "delete-failed"); }
+                    _resumeCaptureBlocked = false;
+                }
+                if (state == "Done")
+                {
+                    SetStatus(_resumeStartupMessage ?? (status.GetProperty("reason").GetString() == "paused"
+                        ? "Saved song is paused. Press Play to start." : "Continued where you left off."),
+                        isError: _resumeStartupMessage is not null);
+                    _resumeStartupMessage = null; // shown once; later navigations report normally
+                }
             }
             else if (state == "AdPaused" && changed)
                 SetStatus("Ad paused. Press Play; your song position will resume after the ad.");
