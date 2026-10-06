@@ -36,7 +36,7 @@ foreach ($rate in @(48000,44100)) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','element-replacement','navigation-new-world')) {
+        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','element-replacement','navigation-new-world')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -289,6 +289,13 @@ function Run-Rate([int] $Rate) {
         [void](Hook 'eq-suspend')
         $resumed=Status-Is 'active'
         Row "$Rate.suspend-normal-resume" $resumed $script:lastStatus
+        # Same element, unsupported source after attachment: must be reported (Codex P2), then recover on a blob.
+        [void](Hook 'eq-profile' 'foreign-source')
+        $sourceFlagged=(Status-Is 'reloadNeeded') -and $script:lastStatus.reason -ceq 'source' -and $script:lastStatus.attached
+        Row "$Rate.source-change-after-attach" $sourceFlagged $script:lastStatus
+        [void](Hook 'eq-profile' "tones-$Rate")
+        $sourceRecovered=Status-Is 'active'
+        Row "$Rate.source-restored-after-attach" $sourceRecovered $script:lastStatus
         [void](Hook 'eq-replace-element')
         $replaced=Status-Is 'reloadNeeded'
         Row "$Rate.element-replacement" $replaced $script:lastStatus

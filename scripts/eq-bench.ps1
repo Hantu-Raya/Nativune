@@ -246,12 +246,12 @@ function Measure-Tree {
         while (($clock.Elapsed.TotalSeconds-$start) -lt $windowSeconds)
         $elapsed=$clock.Elapsed.TotalSeconds-$start
         $cpu=0.0
-        foreach ($e in $ledger.Values) { $cpu += [Math]::Max(0,$e.last-$e.baseline) }
+        foreach ($e in $ledger.Values) { $cpu += [Math]::Max(0.0,$e.last-$e.baseline) }
         @{startUtc=$startUtc.ToString('o');endUtc=[DateTime]::UtcNow.ToString('o');seconds=$elapsed;samples=$samples;
             cpuSeconds=$cpu;cpuOneCorePp=100*$cpu/$elapsed;cpuMachinePp=100*$cpu/$elapsed/$logicalProcessors;
             privateWorkingSetMiB=$endMemory.privateWorkingSetMiB;privateBytesMiB=$endMemory.privateBytesMiB;
             endProcessCount=$endMemory.liveProcesses;processes=@($ledger.Values | ForEach-Object {
-                @{pid=$_.pid;createdUtc=$_.createdUtc;cpuSeconds=[Math]::Max(0,$_.last-$_.baseline);exited=$_.exited}})}
+                @{pid=$_.pid;createdUtc=$_.createdUtc;cpuSeconds=[Math]::Max(0.0,$_.last-$_.baseline);exited=$_.exited}})}
     } finally { foreach ($e in $ledger.Values) { $e.process.Dispose() } }
 }
 $report=[ordered]@{

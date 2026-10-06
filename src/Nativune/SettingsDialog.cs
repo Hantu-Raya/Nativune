@@ -158,7 +158,11 @@ public sealed partial class SettingsDialog : Window
         for (var i = 0; i < EqualizerBands.Count; i++)
         {
             var index = i;
-            var panel = new StackPanel { Spacing = 6, Width = 56 };
+            // Ten equal star columns: the row shrinks to the dialog's 640-DIP minimum (about 54 DIP per band)
+            // instead of clipping the high bands, and stops growing at the panel's MaxWidth.
+            EqBandsPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var panel = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Stretch };
+            Grid.SetColumn(panel, i);
             var slider = new Slider
             {
                 Orientation = Orientation.Vertical, Height = 160, HorizontalAlignment = HorizontalAlignment.Center,
@@ -167,13 +171,13 @@ public sealed partial class SettingsDialog : Window
             var box = new NumberBox
             {
                 Minimum = -12, Maximum = 12, SmallChange = 0.5, LargeChange = 3,
-                MinWidth = 0, Width = 56, Padding = new Thickness(4), FontSize = 12,
+                MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(4), FontSize = 12,
                 SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Hidden
             };
             AutomationProperties.SetAutomationId(slider, $"EqBand{i}");
             AutomationProperties.SetAutomationId(box, $"EqBandBox{i}");
             AutomationProperties.SetName(box, $"{EqualizerBands.CentresHz[i]:0.#} hertz gain in decibels");
-            panel.Children.Add(new TextBlock { Text = EqualizerBands.Labels[i], HorizontalAlignment = HorizontalAlignment.Center });
+            panel.Children.Add(new TextBlock { Text = EqualizerBands.Labels[i], HorizontalAlignment = HorizontalAlignment.Center, FontSize = 12 });
             panel.Children.Add(slider);
             panel.Children.Add(box);
             EqBandsPanel.Children.Add(panel);

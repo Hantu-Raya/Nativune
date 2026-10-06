@@ -46,7 +46,7 @@
             <TextBlock Text="Changes preview immediately; Save keeps them, Cancel restores them." TextWrapping="Wrap" Foreground="{ThemeResource SecondaryTextBrush}" />
             <ToggleSwitch x:Name="EqEnabled" Header="Enabled" AutomationProperties.Name="Equalizer enabled" />
             <ComboBox x:Name="EqPreset" Header="Preset" MinWidth="240" AutomationProperties.Name="Equalizer preset" />
-            <StackPanel x:Name="EqBandsPanel" Orientation="Horizontal" Spacing="4" />
+            <Grid x:Name="EqBandsPanel" ColumnSpacing="4" MaxWidth="620" HorizontalAlignment="Stretch" />
             <Button x:Name="EqResetBands" Content="Reset bands" AutomationProperties.Name="Reset equalizer bands" />
             <ToggleSwitch x:Name="EqAutoHeadroom" Header="Auto headroom — reduces clipping risk" AutomationProperties.Name="Auto headroom — reduces clipping risk" />
             <TextBlock x:Name="EqEffectivePreamp" Foreground="{ThemeResource SecondaryTextBrush}" />

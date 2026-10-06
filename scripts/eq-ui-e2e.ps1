@@ -380,6 +380,21 @@ function Run-Ui {
     Open-Settings
     $before=File-State
     Row 'equalizer-navigation' ($null -ne (Find-Control 'EqualizerNavItem')) @{present=($null -ne (Find-Control 'EqualizerNavItem'))}
+    # Codex P2: at the dialog's 640-DIP minimum width every band and its numeric box must stay inside the window.
+    $settingsWindow=@(Windows | Where-Object { $_.Current.Name -eq 'Settings' })[0]
+    $transform=Pattern $settingsWindow ([Windows.Automation.TransformPattern])
+    if (-not ('EqUiDpi' -as [type])) { Add-Type -Namespace '' -Name 'EqUiDpi' -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetDpiForWindow(System.IntPtr hwnd);' }
+    $scale=[EqUiDpi]::GetDpiForWindow([IntPtr]$settingsWindow.Current.NativeWindowHandle)/96.0
+    # 640 DIPs of content (the dialog's declared minimum) plus the window frame.
+    $transform.Resize([Math]::Ceiling(640*$scale)+16, [Math]::Ceiling(700*$scale)); Start-Sleep -Milliseconds 800
+    $windowRect=$settingsWindow.Current.BoundingRectangle
+    $bandRects=@(0..9 | ForEach-Object {
+        $slider=(Control "EqBand$_").Current.BoundingRectangle; $box=(Control "EqBandBox$_").Current.BoundingRectangle
+        [ordered]@{band=$_;sliderRight=$slider.Right;sliderWidth=$slider.Width;boxRight=$box.Right;boxWidth=$box.Width
+            fits=($slider.Width -gt 0 -and $box.Width -ge 30 -and $box.Right -le $windowRect.Right -and $slider.Right -le $windowRect.Right)} })
+    $fit=@($bandRects | ForEach-Object { $_.fits })
+    Row 'bands-fit-min-width' (@($fit | Where-Object { -not $_ }).Count -eq 0) @{bands=$bandRects;dpiScale=$scale;windowWidth=$windowRect.Width;band9Right=(Control 'EqBandBox9').Current.BoundingRectangle.Right;windowRight=$windowRect.Right}
+    $transform.Resize(900, 760); Start-Sleep -Milliseconds 500
     $curve=Hook 'eq-ui-curve'
     $x=@($curve.points|ForEach-Object{$_.x});$y=@($curve.points|ForEach-Object{$_.y})
     $span=($x|Measure-Object -Maximum).Maximum-($x|Measure-Object -Minimum).Minimum
@@ -534,7 +549,7 @@ function Run-Limit {
     Row 'twenty-first-preset-refused' ($refused -and $countCorrect) @{
         saveNewDisabled=$saveDisabled;duplicateDisabled=$duplicateDisabled;file=$script:lastFile}
 }
-$requiredRows=@('flat-curve-geometry','status-accessible-current-state','slider-minus-name','equalizer-navigation','slider-unsaved','numberbox-sync','auto-headroom-math','may-clip-absent-with-auto-headroom','may-clip',
+$requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-current-state','slider-minus-name','equalizer-navigation','slider-unsaved','numberbox-sync','auto-headroom-math','may-clip-absent-with-auto-headroom','may-clip',
     'live-preview','bypass-flat','cancel-restores','bypass-cleared-close','save-persists-v8','save-new-preset',
     'tab-order','duplicate-name-rejected','rename-preset','duplicate-builtin-immutable','delete-active-retains-curve',
     'copy-preset-schema','paste-valid-staged-only','paste-invalid-version','paste-invalid-nine','paste-invalid-nan',

@@ -67,6 +67,11 @@
                 updateParameters();
                 if (encrypted || mediaKeys) { setState('protectedMedia', 'protected'); return; }
                 if (reloadNeeded) { setState('reloadNeeded', 'elementChanged'); return; }
+                // The allowlist must keep holding after attachment: a non-Music or non-blob source on the same
+                // element would be CORS-silenced inside the graph. Report it (until the source is supported again).
+                if (element.currentSrc && !element.currentSrc.startsWith('blob:https://music.youtube.com/')) {
+                    setState('reloadNeeded', 'source'); return;
+                }
                 if (ctx.state !== 'running') { setState('interrupted', 'context'); listenForGesture(); return; }
                 setState(!desired.enabled ? 'off' : desired.bypass ? 'bypassed' : 'active');
                 return;
