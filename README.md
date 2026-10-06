@@ -146,7 +146,7 @@ Nativune has three parts:
 
 Because controls go through the public website interface, they can stop working when YouTube Music changes its page. This is not a documented Google API.
 
-The installer (`Nativune-Setup.exe`) is a self-contained .NET program. It installs per user, checks for the shared runtimes listed under [Requirements](#requirements), and asks before installing any that are missing. Release installers are built by this repository's GitHub Actions workflow.
+The installer (`Nativune-Setup.exe`) is a self-contained native program, compiled ahead of time with .NET Native AOT. It installs per user, checks for the shared runtimes listed under [Requirements](#requirements), and asks before installing any that are missing. Release installers are built by this repository's GitHub Actions workflow.
 
 ## Security and privacy model
 
@@ -196,7 +196,7 @@ Each condition ran one to five times, with phases of about 20 seconds; long sess
 
 **Hidden-window trim (26 September 2026, v0.1.28).** Also trimming the WebView2 browser and GPU processes lowered the median private working set while hidden to the tray from 148 MiB to 124 MiB (same PC, three runs). CPU, startup time and the time to show the window from the tray (about 51 ms) did not change beyond noise.
 
-**Download size.** The v0.1.10 `Nativune-Setup.exe` is about 177 MB (177,072,567 bytes). This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
+**Download size.** A local build of the next release's `Nativune-Setup.exe` is about 39 MB (39,187,901 bytes), down from about 183 MB for v0.1.34. The installer is now compiled with Native AOT, and the unused Windows App SDK AI and machine-learning components are no longer shipped. This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
 
 ## Comparison with other approaches
 

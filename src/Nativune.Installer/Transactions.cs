@@ -1,5 +1,5 @@
 using Microsoft.Win32;
-using System.Reflection;
+using System.Runtime.InteropServices.Marshalling;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
@@ -539,7 +539,7 @@ internal static class StartupEntryCleanup
     }
 }
 
-internal static class ShellManager
+internal static partial class ShellManager
 {
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Nativune";
     private static readonly string StartMenuShortcutPath = Path.Combine(
@@ -710,51 +710,120 @@ internal static class ShellManager
         try { Restore(state); } catch { }
     }
 
-    private static bool IsShortcutForRoot(string shortcutPath, string root)
+    internal static unsafe bool IsShortcutForRoot(string shortcutPath, string root)
     {
-        object? shell = null;
-        object? shortcut = null;
+        using var apartment = new ComApartment();
+        var shortcut = OpenShortcut(shortcutPath);
+        var target = ReadTarget(shortcut);
+        var appPath = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
+        return !string.IsNullOrWhiteSpace(target) && string.Equals(Normalize(target), Normalize(appPath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static void CreateShortcut(string shortcutPath, string root)
+    {
+        using var apartment = new ComApartment();
+        var shortcut = NewShortcut();
+        var appPath = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
+        shortcut.SetPath(appPath);
+        shortcut.SetArguments($"web --root {ArgumentQuoter.Quote(root)}");
+        shortcut.SetWorkingDirectory(root);
+        shortcut.SetDescription(Program.ProductName);
+        shortcut.SetIconLocation(appPath, 0);
+        ((IPersistFile)shortcut).Save(shortcutPath, true);
+    }
+
+    private static readonly StrategyBasedComWrappers ShortcutWrappers = new();
+
+    private static IShellLinkW NewShortcut()
+    {
+        var classId = new Guid("00021401-0000-0000-C000-000000000046");
+        var interfaceId = new Guid("000214F9-0000-0000-C000-000000000046");
+        Marshal.ThrowExceptionForHR(CoCreateInstance(in classId, 0, 1, in interfaceId, out var pointer));
         try
         {
-            var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new COMException("WScript.Shell is unavailable.");
-            shell = Activator.CreateInstance(shellType);
-            shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
-            var target = shortcut?.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, shortcut, null) as string;
-            var appPath = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
-            return !string.IsNullOrWhiteSpace(target) && string.Equals(Normalize(target), Normalize(appPath), StringComparison.OrdinalIgnoreCase);
+            return (IShellLinkW)ShortcutWrappers.GetOrCreateObjectForComInstance(pointer, CreateObjectFlags.None);
         }
         finally
         {
-            if (shortcut is not null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
-            if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+            Marshal.Release(pointer);
         }
     }
 
-    private static void CreateShortcut(string shortcutPath, string root)
+    private static IShellLinkW OpenShortcut(string path)
     {
-        object? shell = null;
-        object? shortcut = null;
-        try
+        var shortcut = NewShortcut();
+        ((IPersistFile)shortcut).Load(path, 0); // STGM_READ
+        return shortcut;
+    }
+
+    private const int ShortcutBufferLength = 32768;
+
+    private static unsafe string ReadTarget(IShellLinkW shortcut)
+    {
+        var buffer = new char[ShortcutBufferLength];
+        fixed (char* pointer = buffer)
         {
-            var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new COMException("WScript.Shell is unavailable.");
-            shell = Activator.CreateInstance(shellType);
-            shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
-            if (shortcut is null) throw new COMException("Could not create the Nativune shortcut.");
-            var type = shortcut.GetType();
-            var appPath = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
-            type.InvokeMember("TargetPath", BindingFlags.SetProperty, null, shortcut, new object[] { appPath });
-            type.InvokeMember("Arguments", BindingFlags.SetProperty, null, shortcut, new object[] { $"web --root {ArgumentQuoter.Quote(root)}" });
-            type.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, shortcut, new object[] { root });
-            type.InvokeMember("Description", BindingFlags.SetProperty, null, shortcut, new object[] { Program.ProductName });
-            type.InvokeMember("IconLocation", BindingFlags.SetProperty, null, shortcut, new object[] { $"{appPath},0" });
-            type.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
-        }
-        finally
-        {
-            if (shortcut is not null && Marshal.IsComObject(shortcut)) Marshal.FinalReleaseComObject(shortcut);
-            if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+            shortcut.GetPath(pointer, buffer.Length, 0, 0);
+            return new string(pointer);
         }
     }
+
+#if INSTALLER_TEST_HOOKS
+    internal sealed record ShortcutProperties(string TargetPath, string Arguments, string WorkingDirectory, string Description, string IconLocation, int IconIndex);
+
+    internal static unsafe ShortcutProperties ReadShortcut(string path)
+    {
+        using var apartment = new ComApartment();
+        var shortcut = OpenShortcut(path);
+        var buffer = new char[ShortcutBufferLength];
+        fixed (char* pointer = buffer)
+        {
+            shortcut.GetArguments(pointer, buffer.Length);
+            var arguments = new string(pointer);
+            Array.Clear(buffer);
+            shortcut.GetWorkingDirectory(pointer, buffer.Length);
+            var workingDirectory = new string(pointer);
+            Array.Clear(buffer);
+            shortcut.GetDescription(pointer, buffer.Length);
+            var description = new string(pointer);
+            Array.Clear(buffer);
+            shortcut.GetIconLocation(pointer, buffer.Length, out var iconIndex);
+            return new ShortcutProperties(ReadTarget(shortcut), arguments, workingDirectory, description, new string(pointer), iconIndex);
+        }
+    }
+#endif
+
+    private sealed class ComApartment : IDisposable
+    {
+        private const int ChangedMode = unchecked((int)0x80010106); // RPC_E_CHANGED_MODE
+        private readonly bool _initialized;
+
+        internal ComApartment()
+        {
+            // Shortcut work runs on Task.Run worker threads, which may already be in the MTA; ShellLink
+            // works in either apartment, so only balance an initialization this call actually made.
+            var result = CoInitializeEx(0, 2); // COINIT_APARTMENTTHREADED
+            if (result == ChangedMode)
+                return;
+            Marshal.ThrowExceptionForHR(result);
+            _initialized = true;
+        }
+
+        public void Dispose()
+        {
+            if (_initialized)
+                CoUninitialize();
+        }
+    }
+
+    [LibraryImport("ole32.dll")]
+    private static partial int CoCreateInstance(in Guid classId, nint outer, uint context, in Guid interfaceId, out nint instance);
+
+    [LibraryImport("ole32.dll")]
+    private static partial int CoInitializeEx(nint reserved, uint flags);
+
+    [LibraryImport("ole32.dll")]
+    private static partial void CoUninitialize();
 
     private static string Normalize(string? path)
     {
@@ -762,4 +831,41 @@ internal static class ShellManager
         try { return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
         catch { return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
     }
+}
+
+[GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
+[Guid("000214F9-0000-0000-C000-000000000046")]
+internal unsafe partial interface IShellLinkW
+{
+    void GetPath(char* path, int count, nint findData, uint flags);
+    void GetIDList(out nint itemIdList);
+    void SetIDList(nint itemIdList);
+    void GetDescription(char* description, int count);
+    void SetDescription(string description);
+    void GetWorkingDirectory(char* directory, int count);
+    void SetWorkingDirectory(string directory);
+    void GetArguments(char* arguments, int count);
+    void SetArguments(string arguments);
+    void GetHotkey(out ushort hotkey);
+    void SetHotkey(ushort hotkey);
+    void GetShowCmd(out int command);
+    void SetShowCmd(int command);
+    void GetIconLocation(char* iconPath, int count, out int iconIndex);
+    void SetIconLocation(string iconPath, int iconIndex);
+    void SetRelativePath(string path, uint reserved);
+    void Resolve(nint window, uint flags);
+    void SetPath(string path);
+}
+
+[GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
+[Guid("0000010B-0000-0000-C000-000000000046")]
+internal partial interface IPersistFile
+{
+    void GetClassID(out Guid classId);
+    [PreserveSig]
+    int IsDirty();
+    void Load(string fileName, uint mode);
+    void Save(string fileName, [MarshalAs(UnmanagedType.Bool)] bool remember);
+    void SaveCompleted(string fileName);
+    void GetCurFile(out nint fileName);
 }

@@ -447,7 +447,7 @@ try {
     $dotnetRoot = Resolve-RepositoryPath '.tools/dotnet'
     $nativuneLicense = Resolve-RepositoryPath 'LICENSE'
     $repositoryNotice = Resolve-RepositoryPath 'THIRD-PARTY-NOTICES.txt'
-    $appSdkLicense = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.windowsappsdk/2.5.1/license.txt'
+    $appSdkLicense = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.windowsappsdk.runtime/2.5.1/license.txt'
     $dotnetLicense = Resolve-RepositoryPath '.tools/dotnet/LICENSE.txt'
     $dotnetNotice = Resolve-RepositoryPath '.tools/dotnet/ThirdPartyNotices.txt'
     $webView2License = Resolve-RepositoryPath '.cache/nuget/packages/microsoft.web.webview2/1.0.4191.47/LICENSE.txt'
@@ -523,7 +523,7 @@ try {
     Assert-RegularFile $webView2License 'The WebView2 license'
     Assert-RegularFile $webView2Notice 'The WebView2 notice'
     # The installer keeps its own version; its publish must not depend on the app version.
-    $installerPublishOptions = @('-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true', '--no-restore', '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true', '-p:DebugType=none', '-p:DebugSymbols=false', '-p:InstallerTestHooks=false')
+    $installerPublishOptions = @('-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true', '--no-restore', '-p:PublishAot=true', '-p:PublishTrimmed=true', '-p:PublishSingleFile=false', '-p:DebugType=none', '-p:DebugSymbols=false', '-p:InstallerTestHooks=false')
     $installerSourceSha256 = Get-InstallerSourceFingerprint $dotnetVersion.Trim() $installerPublishOptions
     [IO.Directory]::CreateDirectory($setupPublishRoot) | Out-Null
     $stubReused = $false
@@ -559,7 +559,7 @@ try {
     # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/DiscordPresenceTestHooks/InstallerTestHooks=false above).
     $seamChecks = @(
         @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_', 'NATIVUNE_TEST_DISCORD', 'nativune-discord-fixture') },
-        @{ Path = $stubPath; Markers = @('--test-prerequisites') }
+        @{ Path = $stubPath; Markers = @('--test-prerequisites', '--test-shortcut-roundtrip', '--test-detector-dump') }
     )
     foreach ($check in $seamChecks) {
         $bytes = [IO.File]::ReadAllBytes($check.Path)
