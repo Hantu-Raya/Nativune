@@ -25,7 +25,7 @@ YouTube and YouTube Music are trademarks of Google LLC. Discord and the Discord 
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.34](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.34) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.35](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.35) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -100,7 +100,7 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 
   - **More options in Settings › Privacy › Discord status.** Right-click the Discord button and choose **Discord settings…**, or use **More › Discord settings…**, to open Settings directly at the Discord status section in Privacy. There you choose the status line (Artist, Song title or App only), whether to add an **Open in YouTube Music** button, and whether the line under the artist includes the author.
 
-    ![Settings › Privacy: Block ads, then the Discord status section with Show what I'm playing on Discord, the disclosure of what is shared, the Status line shows menu set to Artist, and the Open in YouTube Music button option](assets/screenshots/discord/settings-discord.png)
+    ![Settings › Privacy: Block ads, then the Discord status section with Show what I'm playing on Discord (on), the disclosure of what is shared, the Status line shows menu set to Artist, and the Open in YouTube Music button option](assets/screenshots/discord/settings-discord.png)
 
   - **What the card shows:** song title, artist, album art, a time bar while playing, a pause badge while paused (cleared after 10 minutes paused) and a repeat-one badge. Clicking the song title opens that song on YouTube Music, and the optional button does the same; both appear only when Nativune can confirm the playing song's link. Under the artist, a line shows "Nativune <version> · by Hantu-Raya" (or just "Nativune <version>" if you turn the author off in Settings › Privacy › Discord status). The same text appears when hovering the art, and clicking the art opens this repository.
   - The status keeps working while Nativune is hidden in the tray or in Compact, and clears when playback ends, when you turn it off and when you quit.
@@ -137,7 +137,11 @@ Nativune takes a narrower approach. It puts the official website in a native Win
   - **Presets:** eight built-ins (Flat, Bass boost, Bass reducer, Treble boost, Treble reducer, Vocal, Loudness, Spoken word) and up to 20 of your own. You can save, rename, duplicate and delete them, and copy or paste them as text.
   - **Editing:** moving a slider plays the change right away; **Save** keeps it and **Cancel** restores the saved state. A response curve shows the shape, and **Bypass (compare)** lets you hear the difference.
   - **Auto headroom**, on by default, lowers the overall level by the largest boost to reduce the risk of clipping. It cannot guarantee that nothing clips.
-  - **Turn it on or off** from the More menu.
+  - **Turn it on or off** from the More menu. **Equalizer settings** is also one click away: hover the toolbar's volume button (or Compact's) and click the equalizer icon next to the volume slider.
+
+    ![The volume pop-up: app volume slider, percentage and the Equalizer settings icon](assets/screenshots/equalizer/volume-flyout.png)
+
+    ![Settings › Equalizer: Enabled, Preset (Bass reducer) and the ten band sliders](assets/screenshots/equalizer/settings-equalizer.png)
   - **How it works:** Nativune runs the filters inside YouTube Music's own player, in a separate script context the website cannot see. Nothing is downloaded, extracted or sent anywhere, and no system-wide audio setting changes.
   - **Status:** if the equalizer is waiting, interrupted or not applied, Settings and Compact say so. **Reload without EQ** turns it off and reloads the page.
   - **Limitations:** it depends on YouTube Music using a single media element, which a site change could break. Protected (DRM) media is detected but untested.
@@ -204,7 +208,7 @@ Each condition ran one to five times, with phases of about 20 seconds; long sess
 
 **Hidden-window trim (26 September 2026, v0.1.28).** Also trimming the WebView2 browser and GPU processes lowered the median private working set while hidden to the tray from 148 MiB to 124 MiB (same PC, three runs). CPU, startup time and the time to show the window from the tray (about 51 ms) did not change beyond noise.
 
-**Download size.** A local build of the next release's `Nativune-Setup.exe` is about 39 MB (39,187,901 bytes), down from about 183 MB for v0.1.34. The installer is now compiled with Native AOT, and the unused Windows App SDK AI and machine-learning components are no longer shipped. This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
+**Download size.** Since v0.1.35, `Nativune-Setup.exe` is about 39 MB (39,187,901 bytes), down from about 183 MB for v0.1.34. The installer is now compiled with Native AOT, and the unused Windows App SDK AI and machine-learning components are no longer shipped. This excludes the shared runtimes it relies on (the WebView2 Runtime, .NET 10 and Windows App SDK). Those are installed once per machine and shared with other apps.
 
 ## Comparison with other approaches
 
