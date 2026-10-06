@@ -42,10 +42,11 @@ public sealed partial class WebHostWindow
 
     // Which consumer needs the shared playback reader (sets cadence and delivery; every demand runs
     // the same full read). Compact takes precedence and also feeds presence and the overlay: one read per tick.
-    private enum ReaderDemand { None, Presence, Overlay, Compact }
+    private enum ReaderDemand { None, Presence, Overlay, Resume, Compact }
 
     private ReaderDemand CurrentReaderDemand => CompactActive ? ReaderDemand.Compact
-        : OverlayReadActive ? ReaderDemand.Overlay : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
+        : OverlayReadActive ? ReaderDemand.Overlay : ResumeReadActive ? ReaderDemand.Resume
+        : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
 
     private static long ReadIntervalMs(ReaderDemand demand)
         => demand == ReaderDemand.Presence ? PresenceReadIntervalMs : 1000;
@@ -54,10 +55,11 @@ public sealed partial class WebHostWindow
     {
         ReaderDemand.Compact => ReadReason.Compact,
         ReaderDemand.Overlay => ReadReason.Overlay,
+        ReaderDemand.Resume => ReadReason.Resume,
         _ => ReadReason.Presence
     };
 
-    // Starts/stops the shared read timer: 1 s for Compact or the overlay, else 5 s for presence.
+    // Starts/stops the shared reader: 1 s for Compact, overlay or resume, else 5 s for presence.
     private void RefreshSharedReader()
     {
         if (_playbackReadTimer is null) return;
@@ -85,7 +87,7 @@ public sealed partial class WebHostWindow
         {
             if (_playbackReadTimer.Interval != interval) _playbackReadTimer.Interval = interval;
             _playbackReadTimer.Start();
-            if (demand is ReaderDemand.Presence or ReaderDemand.Overlay) _ = ReadPlaybackStateAsync();
+            if (demand is ReaderDemand.Presence or ReaderDemand.Overlay or ReaderDemand.Resume) _ = ReadPlaybackStateAsync();
         }
         else if (_playbackReadTimer.Interval != interval)
         {
@@ -255,8 +257,10 @@ public sealed partial class WebHostWindow
     // reaches Compact UI; presence and the overlay take it when their own gates still hold.
     private async Task ReadPlaybackStateAsync()
     {
+        if (_resumeShutdownStarted) return;
         var demand = CurrentReaderDemand;
         if (demand == ReaderDemand.None) return;
+        await PollResumeAsync();
         var compact = demand == ReaderDemand.Compact;
         // A user command owns the page; the next tick reads its result.
         if (_playbackReadPending || _playerBusy
@@ -275,6 +279,7 @@ public sealed partial class WebHostWindow
         var presenceGeneration = _presenceGeneration;
         var presenceEpoch = _discord?.ConnectionEpoch ?? 0;
         var overlayGeneration = _overlayGeneration;
+        var resumeGeneration = _resumeGeneration;
         try
         {
             CompactPlaybackState? state;
@@ -291,6 +296,7 @@ public sealed partial class WebHostWindow
                 unsupportedLocale = null;
             }
             var capturedAt = Environment.TickCount64;
+            ObserveResumeSnapshot(state, resumeGeneration, capturedAt);
 #if NATIVUNE_DISCORD_TEST_HOOKS
             if (_obsReadHold is { } hold) await hold.Task;   // command-obs-hold-read barrier; _playbackReadPending stays true
 #endif
@@ -423,6 +429,7 @@ public sealed partial class WebHostWindow
                 RestoreOutputVolumePreference(volume);
             return;
         }
+        if (command == "seek" && !await CancelResumeAsync("seek")) return;
         if (!CompactActive) return;
         if (command == "output-mute")
         {
@@ -461,6 +468,12 @@ public sealed partial class WebHostWindow
         catch (Exception) { }
         finally { _playerBusy = false; }
         if (_closing || _disposed) return;
+        if (command == "seek" && result.Outcome == PlayerCommandOutcome.Sent && value is { } target)
+        {
+            _resumeCompletedSeekSignature = CompactPlayback.ComputeSignature(shown);
+            _resumeCompletedSeekTarget = target;
+            _resumeCompletedSeekAt = Environment.TickCount64;
+        }
         _lastCompactReadAt = 0;
         CompactView.CommandFinished(command, result.Outcome);
         ReportPlayerResult(result);
@@ -488,6 +501,7 @@ public sealed partial class WebHostWindow
     // playlist, so library contents stay out of the error log; the view's notice shows the name.
     private async Task PlayCompactPlaylistAsync(int index, string title)
     {
+        if (!await CancelResumeAsync("navigation")) return;
         if (!CompactActive) return;
         var controls = _playerControls;
         if (_playerBusy || controls?.IsAvailable != true)

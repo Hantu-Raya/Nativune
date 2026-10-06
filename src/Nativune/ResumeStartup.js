@@ -1,0 +1,180 @@
+(() => {
+  'use strict';
+  // request is supplied by the host before its owned navigation, in a named isolated world.
+  if (window !== window.top || location.origin !== 'https://music.youtube.com') return;
+  const saved = request.checkpoint, generation = request.generation;
+  if (!request.homeGuard && new URL(location.href).searchParams.get('v') !== saved.videoId) return;
+  let state = 'Armed', reason = '', media = null, sought = false, stableAt = 0;
+  let baseline = null, timer = null, timeout = null;
+  let initialPosition = null;
+  let ignoreSeek = false, recoveryAd = false;
+  const waitPaused = request.waitPaused;
+  const terminal = () => ['Done','Cancelled','Failed'].includes(state);
+  const ad = () => !!document.querySelector('ytmusic-player :is(#movie_player,.html5-video-player):is(.ad-showing,.ad-interrupting)');
+  const wakeEvents = ['loadedmetadata','durationchange','canplay','seeked','pause','timeupdate'];
+  const clean = () => {
+    clearTimeout(timer); clearTimeout(timeout); observer.disconnect();
+    for(const event of wakeEvents)document.removeEventListener(event,wake,true);
+    document.removeEventListener('play',onPlay,true);
+    document.removeEventListener('playing',onPlay,true);
+    document.removeEventListener('seeking',onSeek,true);
+    document.removeEventListener('visibilitychange',onVisibility,true);
+    if(state !== 'Failed') {
+      document.removeEventListener('click',onClick,true);
+      document.removeEventListener('keydown',onKey,true);
+    }
+  };
+  const stop = (next, why = '') => { state = next; reason = why; clean(); };
+  const cancel = () => {
+    stop('Cancelled');
+    document.removeEventListener('play', onPlay, true);
+    document.removeEventListener('seeking', onSeek, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('keydown',onKey,true);
+    return {cancelled:true,generation};
+  };
+  const identity = () => {
+    if (ad() || !media || media.seeking || !Number.isFinite(media.duration) || media.duration <= 0) { baseline = null; return false; }
+    const url = new URL(location.href), bars = document.querySelectorAll('ytmusic-player-bar');
+    if (url.searchParams.getAll('v').length !== 1 || url.searchParams.get('v') !== saved.videoId || bars.length !== 1) return false;
+    const titles = bars[0].querySelectorAll('.title');
+    const title = titles.length === 1 ? titles[0].textContent.trim() : '';
+    const artist = bars[0].querySelector('.byline')?.textContent.trim() || '';
+    if (!title || title.length > 512) return false;
+    const links = document.querySelectorAll('ytmusic-player a.ytp-title-link');
+    // A present bad/mismatching link vetoes the fallback, including an outgoing title during a track switch.
+    if (links.length) {
+      if (links.length !== 1 || links[0].textContent.trim() !== title) return false;
+      try {
+        const link = new URL(links[0].getAttribute('href'), location.origin);
+        return link.origin === location.origin && link.pathname === '/watch'
+          && link.searchParams.getAll('v').length === 1 && link.searchParams.get('v') === saved.videoId;
+      } catch { return false; }
+    }
+    if (!artist || artist.length > 512) return false;
+    const now = performance.now(), p = media.currentTime;
+    if (!baseline || baseline.title !== title || baseline.artist !== artist || baseline.duration !== media.duration
+      || Math.abs(p - baseline.position - (media.paused ? 0 : (now-baseline.at)/1000*media.playbackRate)) > 1) {
+      baseline = { title, artist, duration:media.duration, position:p, at:now }; return false;
+    }
+    return now - baseline.at >= 2000;
+  };
+  const seekable = p => {
+    for (let i=0;i<media.seekable.length;i++) if(p>=media.seekable.start(i)&&p<=media.seekable.end(i)) return true;
+    return false;
+  };
+  const wake = () => { if(!terminal()){ clearTimeout(timer); timer=setTimeout(step,50); } };
+  const armTimeout = () => {
+    clearTimeout(timeout);
+    // Chromium defers media loading until a hidden page (tray autostart) is first shown; only visible time counts.
+    if(document.visibilityState==='hidden')return;
+    timeout=setTimeout(()=>{if(!terminal() && state!=='AdPaused' && !(recoveryAd && ad())) stop('Failed','timeout');},10000);
+  };
+  function onVisibility() {
+    if(!terminal() && state!=='AdPaused' && state!=='AwaitMusic') armTimeout();
+    wake();
+  }
+  function onPlay(event) {
+    if (!(event.target instanceof HTMLMediaElement)) return;
+    media = event.target;
+    if (terminal()) return;
+    if (recoveryAd && ad()) { wake(); return; }
+    if (ad()) {
+      initialPosition=null;
+      if(waitPaused){media.pause();state='AdPaused';}else state='AwaitMusic';
+      clearTimeout(timeout);wake();return;
+    }
+    if(!waitPaused && event.type==='playing' && initialPosition===null)initialPosition=media.currentTime;
+    // Only an explicit Play control cancels. Site autoplay or metadata retries must not release the safety guard.
+    if (waitPaused && !terminal()) media.pause();
+    wake();
+  }
+  function onSeek(event) {
+    if(event.target === media && !ignoreSeek && sought && !terminal()) cancel();
+    wake();
+  }
+  function onClick(event) {
+    if (!event.isTrusted || terminal() && state !== 'Failed') return;
+    const anchor=event.target.closest?.('a[href]');
+    if(anchor) {
+      try { if(new URL(anchor.href).href.split('#')[0]!==location.href.split('#')[0]){cancel();return;} } catch { }
+    }
+    const button=event.target.closest?.('button,ytmusic-play-button-renderer,[role="button"],tp-yt-paper-slider');
+    const name=button?.getAttribute('aria-label') || '';
+    if (/^(Next|Previous|Seek)/i.test(name) || button?.id==='progress-bar') { cancel(); return; }
+    if (/^Play(?:$|\b)/i.test(name)) {
+      if(state==='AdPaused') recoverAd(); else cancel();
+    }
+  }
+  function onKey(event) {
+    const slider=event.target.closest?.('tp-yt-paper-slider,[role="slider"]');
+    if(event.isTrusted && slider && (slider.id==='progress-bar' || /^seek\b/i.test(slider.getAttribute('aria-label')||''))
+      && ['ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'].includes(event.key)) cancel();
+  }
+  function recoverAd() {
+    recoveryAd=true; state='AwaitMusic'; reason=''; clearTimeout(timeout); wake();
+  }
+  function step() {
+    if(terminal())return;
+    const all=document.querySelectorAll('audio,video');
+    if(all.length===1 && all[0] instanceof HTMLMediaElement)media=all[0];
+    if(request.homeGuard) {
+      if(!media || media.readyState<1){state='AwaitMedia';wake();return;}
+      media.pause();state='Verify';
+      if(!stableAt)stableAt=performance.now();
+      if(performance.now()-stableAt<500){wake();return;}
+      stop('Done','invalid');return;
+    }
+    const error = Array.from(document.querySelectorAll('yt-playability-error-supported-renderers,ytmusic-player #error-screen'))
+      .some(e=>e.getClientRects().length>0 && getComputedStyle(e).visibility!=='hidden'
+        && /unavailable|not available|error occurred/i.test(e.textContent || ''));
+    if(error) {
+      if(waitPaused)media?.pause();stop('Failed','track');return;
+    }
+    if(!media){state='AwaitMedia';wake();return;}
+    if(ad()) {
+      if(waitPaused && !recoveryAd){media.pause();state='AdPaused';}
+      else state='AwaitMusic';
+      clearTimeout(timeout);
+      return; // A paused ad waits for media/DOM events, not a perpetual readiness poll.
+    }
+    if(state==='AdPaused'||state==='AwaitMusic') { state='AwaitMedia';recoveryAd=false;armTimeout(); }
+    if(!identity() || media.readyState<1){state='AwaitMedia';wake();return;}
+    if(saved.positionSeconds > media.duration + 1){if(waitPaused)media.pause();stop('Failed','track');return;}
+    const target=Math.min(saved.positionSeconds,media.duration);
+    if(waitPaused) {
+      if(!sought) {
+        if(!seekable(target)){state='AwaitMedia';wake();return;}
+        state='Pause/Seek';media.pause();ignoreSeek=true;sought=true;media.currentTime=target;
+        media.addEventListener('seeked',()=>{ignoreSeek=false;wake();},{once:true});
+      }
+      state='Verify';
+      if(media.seeking || !media.paused || Math.abs(media.currentTime-target)>1){stableAt=0;wake();return;}
+      if(!stableAt)stableAt=performance.now();
+      if(performance.now()-stableAt<500){wake();return;}
+    } else {
+      // URL t= is the entire StartPlaying mechanism: observe only, never seek or retry play.
+      state='Verify';
+      if(media.readyState<2){wake();return;}
+      if(!media.paused && initialPosition===null){wake();return;}
+      if(Math.abs((initialPosition ?? media.currentTime)-saved.positionSeconds)>1){stop('Failed','position');return;}
+      if(media.paused)reason='paused';
+    }
+    stop('Done',reason);
+  }
+  const observer=new MutationObserver(wake);
+  observer.observe(document,{childList:true,subtree:true,attributes:true,attributeFilter:['class','href']});
+  document.addEventListener('play',onPlay,true);
+  document.addEventListener('playing',onPlay,true);
+  document.addEventListener('seeking',onSeek,true);
+  document.addEventListener('click',onClick,true);
+  document.addEventListener('keydown',onKey,true);
+  document.addEventListener('visibilitychange',onVisibility,true);
+  for(const event of wakeEvents)document.addEventListener(event,wake,true);
+  globalThis.__nativuneResume={
+    status:()=>({generation,state,reason,recoveryAd,initialPosition,hidden:document.visibilityState==='hidden'}),
+    cancel,
+    recover:()=>{if(state==='AdPaused'){recoverAd();return {adRecovery:true,generation};}return cancel();}
+  };
+  state='AwaitMedia';armTimeout();wake();
+})();

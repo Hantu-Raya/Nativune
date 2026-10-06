@@ -150,7 +150,7 @@ internal sealed class WebViewAudioVolume : IDisposable
 
 #if NATIVUNE_DISCORD_TEST_HOOKS
     // Read-only inventory: no preference reconciliation, endpoint identity or process metadata.
-    internal object ReadEqualizerHookSessions(IReadOnlySet<int> processIds)
+    internal object ReadEqualizerHookSessions(IReadOnlySet<int> processIds, bool measurePeak = false)
     {
         if (_disposed || !TryInitializeComMta(out var uninitializeCom))
             throw new InvalidOperationException("session-com-unavailable");
@@ -161,12 +161,31 @@ internal sealed class WebViewAudioVolume : IDisposable
                 throw new InvalidOperationException("session-inventory-unavailable");
             try
             {
-                return new { count = sessions.Count,
+                float peak = 0;
+                for (var sample = 0; measurePeak && sample < 10; sample++)
+                {
+                    foreach (var session in sessions)
+                    {
+                        if (session.Control is IAudioMeterInformation meter && meter.GetPeakValue(out var value) == S_OK)
+                            peak = Math.Max(peak, value);
+                    }
+                    Thread.Sleep(50);
+                }
+                return new { count = sessions.Count, peak,
                     sessions = sessions.Select(session => new { volume = session.Volume, muted = session.Muted }).ToArray() };
             }
             finally { ReleaseSessions(sessions); }
         }
         finally { if (uninitializeCom) CoUninitialize(); }
+    }
+
+    [ComImport]
+    [Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioMeterInformation
+    {
+        [PreserveSig]
+        int GetPeakValue(out float peak);
     }
 #endif
 

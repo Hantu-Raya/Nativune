@@ -48,7 +48,7 @@ internal static class ShortcutChecks
             File.WriteAllText(file,
                 "{\"Version\":1,\"X\":4000,\"Y\":-2000,\"Width\":1000,\"Height\":700,\"Dpi\":96,\"Maximized\":true,\"Zoom\":1.25,\"TrayEnabled\":true,\"RestoreSection\":true,\"LastSection\":\"library\"}");
             var migrated = ShellSettings.Load(root, out var warning);
-            Require(warning is null && migrated.TrayEnabled && migrated.RestoreSection
+            Require(warning is null && migrated.TrayEnabled && migrated.StartupDestination == StartupDestination.Library
                 && migrated.Shortcuts == ShortcutBindings.Default && !migrated.ReduceMotion
                 && migrated.CompactWidth == 800 && migrated.CompactHeight == 180,
                 "Version 1 settings did not migrate without enabling new preferences.");

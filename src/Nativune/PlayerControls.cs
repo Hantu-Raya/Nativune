@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace Nativune;
 
 // Why a shared playback read runs; labels test-hook diagnostics only (every reason runs the same full read).
-internal enum ReadReason { Compact, Presence, Overlay }
+internal enum ReadReason { Compact, Presence, Overlay, Resume }
 
 internal sealed class PlayerControls : IDisposable
 {

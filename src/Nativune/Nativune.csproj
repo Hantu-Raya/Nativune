@@ -66,6 +66,7 @@
     <EmbeddedResource Include="ObsOverlayPage.html" LogicalName="Nativune.ObsOverlayPage.html" />
     <EmbeddedResource Include="ObsOverlayPage.js" LogicalName="Nativune.ObsOverlayPage.js" />
     <EmbeddedResource Include="EqualizerController.js" LogicalName="Nativune.EqualizerController.js" />
+    <EmbeddedResource Include="ResumeStartup.js" LogicalName="Nativune.ResumeStartup.js" />
   </ItemGroup>
 
   <!-- Synthetic Music page for scripts/discord-rpc-e2e.ps1 and the OBS overlay hook fragment; embedded only in test-hook builds. -->

@@ -187,12 +187,19 @@
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Start in Compact"
                       AutomationProperties.HelpText="Applies when you open Nativune yourself." />
-            <CheckBox x:Name="RestoreSectionCheckBox"
-                      Content="Remember last Home or Library section"
-                      MinHeight="36"
-                      Foreground="{ThemeResource PrimaryTextBrush}"
-                      AutomationProperties.Name="Remember last Home or Library section"
-                      AutomationProperties.HelpText="Only Home or Library is remembered. The website still owns account, queue and autoplay." />
+            <ComboBox x:Name="StartupDestinationComboBox" Header="Startup"
+                      HorizontalAlignment="Stretch" AutomationProperties.Name="Startup destination"
+                      AutomationProperties.HelpText="Open Home, Library, or continue the saved song at its exact position. Only the song and position are saved, not the queue. Saved listening state is protected for this Windows account and machine.">
+              <ComboBoxItem Content="Home" />
+              <ComboBoxItem Content="Library" />
+              <ComboBoxItem Content="Continue where you left off" />
+            </ComboBox>
+            <ComboBox x:Name="ResumeLaunchComboBox" Header="When continuing"
+                      HorizontalAlignment="Stretch" AutomationProperties.Name="When continuing"
+                      AutomationProperties.HelpText="Wait paused by default, or let the website start playing. Ended or nearly ended songs always reopen paused.">
+              <ComboBoxItem Content="Wait paused" />
+              <ComboBoxItem Content="Start playing" />
+            </ComboBox>
           </StackPanel>
 
           <StackPanel x:Name="ShortcutsPage" Spacing="14" Visibility="Collapsed">

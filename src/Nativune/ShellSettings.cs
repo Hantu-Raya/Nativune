@@ -3,11 +3,14 @@ using System.Text.Json;
 
 namespace Nativune;
 
+internal enum StartupDestination { Home, Library, Continue }
+internal enum ResumeLaunch { WaitPaused, StartPlaying }
+
 internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dpi, bool Maximized, double Zoom)
 {
     public bool TrayEnabled { get; init; }
-    public bool RestoreSection { get; init; }
-    public string LastSection { get; init; } = "home";
+    public StartupDestination StartupDestination { get; init; } = StartupDestination.Continue;
+    public ResumeLaunch ResumeLaunch { get; init; } = ResumeLaunch.WaitPaused;
     public bool ReduceMotion { get; init; }
     public ShortcutBindings Shortcuts { get; init; } = ShortcutBindings.Default;
     public bool SleepInBackground { get; init; } = true;
@@ -44,7 +47,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         return uri.AbsolutePath switch { "/" => "home", "/library" or "/library/" => "library", _ => null };
     }
 
-    internal string StartupUri => RestoreSection && LastSection == "library"
+    internal string StartupUri => StartupDestination == StartupDestination.Library
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
     // The equalizer section is optional and older builds ignore unknown properties, so the wire version stays 7:
@@ -216,8 +219,8 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             double.IsFinite(settings.Zoom) && settings.Zoom is >= MinZoom and <= MaxZoom ? settings.Zoom : Defaults.Zoom)
         {
             TrayEnabled = settings.TrayEnabled,
-            RestoreSection = settings.RestoreSection,
-            LastSection = settings.RestoreSection && settings.LastSection == "library" ? "library" : "home",
+            StartupDestination = Enum.IsDefined(settings.StartupDestination) ? settings.StartupDestination : StartupDestination.Continue,
+            ResumeLaunch = Enum.IsDefined(settings.ResumeLaunch) ? settings.ResumeLaunch : ResumeLaunch.WaitPaused,
             ReduceMotion = settings.ReduceMotion,
             Shortcuts = shortcuts,
             SleepInBackground = settings.SleepInBackground,
@@ -321,13 +324,16 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         double OutputVolume = 1, bool? OutputMuted = null, bool BlockAds = false,
         AutostartMode? AutostartMode = null, bool DiscordPresence = false, int DiscordStatusLine = 0,
         bool DiscordOpenButton = true, bool DiscordShowAuthor = true, bool BetterLyricsEnabled = true,
-        bool ObsOverlay = false, bool ObsHidePaused = true, JsonElement Equalizer = default)
+        bool ObsOverlay = false, bool ObsHidePaused = true, JsonElement Equalizer = default,
+        StartupDestination? StartupDestination = null, ResumeLaunch? ResumeLaunch = null)
     {
         public ShellSettings ToSettings() => new(X, Y, Width, Height, Dpi, Maximized, Zoom)
         {
             TrayEnabled = TrayEnabled,
-            RestoreSection = RestoreSection,
-            LastSection = LastSection,
+            StartupDestination = StartupDestination ?? (RestoreSection
+                ? LastSection == "library" ? Nativune.StartupDestination.Library : Nativune.StartupDestination.Home
+                : Nativune.StartupDestination.Continue),
+            ResumeLaunch = ResumeLaunch ?? Nativune.ResumeLaunch.WaitPaused,
             ReduceMotion = ReduceMotion,
             Shortcuts = Shortcuts ?? ShortcutBindings.Default,
             SleepInBackground = SleepInBackground,
@@ -355,13 +361,15 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
 
         public static PersistedSettings FromSettings(ShellSettings settings)
             => new(CurrentVersion, settings.X, settings.Y, settings.Width, settings.Height,
-                settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, settings.RestoreSection,
-                settings.LastSection, settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
+                settings.Dpi, settings.Maximized, settings.Zoom, settings.TrayEnabled, false,
+                settings.StartupDestination == Nativune.StartupDestination.Library ? "library" : "home",
+                settings.ReduceMotion, settings.Shortcuts, settings.CompactX,
                 settings.CompactY, settings.CompactWidth, settings.CompactHeight, settings.CompactDpi,
                 settings.SleepInBackground, settings.StartCompact, settings.AutoCheckUpdates,
                 settings.OutputVolume, settings.OutputMuted, settings.BlockAds, settings.AutostartMode,
                 settings.Discord.Enabled, (int)settings.Discord.StatusLine, settings.Discord.ShowOpenButton,
                 settings.Discord.ShowAuthor, settings.BetterLyricsEnabled, settings.ObsOverlay,
-                settings.ObsHidePaused, EqualizerSharing.WriteSettings(settings.Equalizer));
+                settings.ObsHidePaused, EqualizerSharing.WriteSettings(settings.Equalizer),
+                settings.StartupDestination, settings.ResumeLaunch);
     }
 }
