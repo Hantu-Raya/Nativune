@@ -492,7 +492,11 @@ public sealed partial class WebHostWindow
             try
             {
                 if (new FileInfo(path).Length > 8192) throw new InvalidDataException("request-size");
-                var text = File.ReadAllText(path);
+                string text;
+                // A just-renamed request can be briefly locked (e.g. by a scanner). Reading is idempotent, so leave it
+                // for the next tick on a sharing/lock violation; the harness's own deadline bounds the wait.
+                try { text = File.ReadAllText(path); }
+                catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { continue; }
                 File.Delete(path);
                 using var request = JsonDocument.Parse(text);
                 var root = request.RootElement;
@@ -610,10 +614,11 @@ public sealed partial class WebHostWindow
                             ? JsonSerializer.SerializeToElement(new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
                                 attached = EqualizerStatus.Attached, ctx = false, generation = _equalizerGeneration })
                             : await EqualizerHookEvaluateAsync("({...__nativuneEq.status(),ctx:!!__nativuneEq.__graph().ctx," +
-                                "contextState:__nativuneEq.__graph().ctx?.state??null,activation:{...__nativuneEqActivation}})");
+                                "contextState:__nativuneEq.__graph().ctx?.state??null,activation:{...__nativuneEqActivation}," +
+                                "rejectedResumeConsumed:globalThis.__nativuneEqRejectedResumeConsumed===true})");
                         break;
                     case "eq-media":
-                        var mediaRaw = await host.Core.ExecuteScriptAsync("(()=>{const v=document.querySelector('video');return {paused:v.paused,currentTime:v.currentTime,currentSrc:v.currentSrc,readyState:v.readyState,fixture:!!globalThis.__nativuneFixture?.eqProfile}})()");
+                        var mediaRaw = await host.Core.ExecuteScriptAsync("(()=>{const v=document.querySelector('video');return {paused:v.paused,currentTime:v.currentTime,currentSrc:v.currentSrc,readyState:v.readyState,fixture:!!globalThis.__nativuneFixture?.eqProfile,trustedClicks:globalThis.__nativuneFixture?.eqTrustedClicks??0}})()");
                         using (var mediaJson = JsonDocument.Parse(mediaRaw)) result = mediaJson.RootElement.Clone();
                         break;
                     case "eq-response":
@@ -643,7 +648,8 @@ public sealed partial class WebHostWindow
                         result = await EqualizerHookEvaluateAsync("(async()=>{await __nativuneEq.__graph().ctx.suspend();return __nativuneEq.status()})()");
                         break;
                     case "eq-reject-resume":
-                        result = await EqualizerHookEvaluateAsync("(()=>{const c=__nativuneEq.__graph().ctx;const r=c.resume.bind(c);c.resume=()=>{c.resume=r;return Promise.resolve()};return {armed:true}})()");
+                        result = await EqualizerHookEvaluateAsync("(()=>{const c=__nativuneEq.__graph().ctx;const r=c.resume.bind(c);globalThis.__nativuneEqRejectedResumeConsumed=false;" +
+                            "c.resume=()=>{c.resume=r;globalThis.__nativuneEqRejectedResumeConsumed=true;return Promise.resolve()};return {armed:true}})()");
                         break;
                     case "eq-collect-reset":
                         await InstallEqualizerCollectorAsync();
@@ -681,7 +687,7 @@ public sealed partial class WebHostWindow
             {
                 File.Delete(path);
                 DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory, "eq-" + label + ".json"),
-                    JsonSerializer.Serialize(new { ok = false, error = ex.GetType().Name }));
+                    JsonSerializer.Serialize(new { ok = false, error = ex.GetType().Name, hresult = ex.HResult, detail = ex.Message }));
             }
         }
     }

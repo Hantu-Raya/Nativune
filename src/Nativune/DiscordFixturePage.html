@@ -141,7 +141,9 @@
     button.textContent = 'Activate EQ fixture';
     button.style.cssText = 'position:fixed;left:40px;top:40px;z-index:10000;padding:24px';
     document.body.append(button);
-    button.addEventListener('click', () => { media.play().catch(() => {}); });
+    // Trusted-click receipt lets the harness distinguish lost/late input from EQ recovery failures.
+    let trustedClicks = 0;
+    button.addEventListener('click', event => { if (event.isTrusted) trustedClicks++; media.play().catch(() => {}); });
     const wav = (rate, variant) => {
       const frames = rate * 8, bytes = new Uint8Array(44 + frames * 4), view = new DataView(bytes.buffer);
       const ascii = (offset,text) => [...text].forEach((c,i) => bytes[offset+i]=c.charCodeAt(0));
@@ -175,6 +177,7 @@
     };
     window.__nativuneFixture = {
       eqProfile:profile,
+      get eqTrustedClicks() { return trustedClicks; },
       eqReplaceElement() {
         const old=media, next=old.cloneNode(false);
         old.pause(); old.replaceWith(next); media=next; media.play().catch(() => {});

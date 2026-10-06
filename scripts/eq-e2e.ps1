@@ -110,9 +110,15 @@ function Click-Page {
     } 20
     if (-not $found) { throw 'Visible Activate EQ fixture UIA button not found.' }
     $window = $script:clickWindow; $button = $script:clickButton
+    # Wait for the page's own trusted-click receipt: SendInput only queues input, so a click can be lost (focus)
+    # or land after the next hook. Send exactly once (a re-send could arrive late and act as an extra gesture).
+    $before = (Hook 'eq-media').trustedClicks
     [void][EqE2EInput]::SetForegroundWindow([IntPtr]$window.Current.NativeWindowHandle)
     $bounds = $button.Current.BoundingRectangle
     [EqE2EInput]::Click([int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2))
+    if (-not (Wait-For { (Hook 'eq-media').trustedClicks -gt $before } 5)) {
+        throw 'The fixture never received the trusted click (input not delivered).'
+    }
 }
 $launchHelper = Join-Path $rootBase 'launch-helper.ps1'
 [IO.File]::WriteAllText($launchHelper, @'
@@ -281,8 +287,12 @@ function Run-Rate([int] $Rate) {
         Row "$Rate.stale-rollback" ($late.rev -eq $latest.rev -and $late.state -ceq 'active') @{latest=$latest;late=$late}
         [void](Hook 'eq-reject-resume')
         [void](Hook 'eq-suspend')
-        $interrupted=Status-Is 'interrupted'
+        # Barrier: the controller's own automatic resume must consume the injected rejection before the
+        # recovery click, or the click itself could be the call that gets rejected.
+        $interrupted=Wait-For { $script:lastStatus = Hook 'eq-status'
+            $script:lastStatus.state -ceq 'interrupted' -and $script:lastStatus.rejectedResumeConsumed } 10
         Row "$Rate.suspend-rejected-resume" $interrupted $script:lastStatus
+        if (-not $interrupted) { throw 'Automatic resume did not consume the injected rejection.' }
         Click-Page
         $resumed=Status-Is 'active'
         Row "$Rate.normal-resume" $resumed $script:lastStatus
