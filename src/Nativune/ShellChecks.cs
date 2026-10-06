@@ -43,7 +43,7 @@ internal static class ShellChecks
 
         var file = Path.Combine(root, "data", "settings.json");
         var savedSettingsText = File.ReadAllText(file);
-        Require(savedSettingsText.Contains("\"Version\": 8", StringComparison.Ordinal)
+        Require(savedSettingsText.Contains("\"Version\": 7", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"AutostartMode\": 2", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"StartCompact\": true", StringComparison.Ordinal)
             && savedSettingsText.Contains("\"AutoCheckUpdates\": false", StringComparison.Ordinal),
@@ -173,6 +173,13 @@ internal static class ShellChecks
         var upgraded = ShellSettings.Load(root, out var warning);
         Require(warning is null && upgraded.Discord.Enabled,
             "Version 7 Discord opt-in was lost during the version 8 upgrade.");
+        // Files written by the first equalizer builds say Version 8; they must still load in full.
+        File.WriteAllText(file,
+            "{\"Version\":8,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"DiscordPresence\":true," +
+            "\"Equalizer\":{\"enabled\":true,\"selectedPresetId\":null,\"gainsDb\":[1,0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[]}}");
+        var fromV8 = ShellSettings.Load(root, out warning);
+        Require(warning is null && fromV8.Width == 1234 && fromV8.Discord.Enabled && fromV8.Equalizer.Enabled && fromV8.Equalizer.GainsDb[0] == 1,
+            "A version 8 settings file did not load in full.");
 
         var bass = EqualizerPresets.Find(EqualizerSettings.Default, "bass-boost")!;
         var customs = new[]

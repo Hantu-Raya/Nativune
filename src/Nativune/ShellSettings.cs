@@ -47,7 +47,10 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     internal string StartupUri => RestoreSection && LastSection == "library"
         ? "https://music.youtube.com/library" : "https://music.youtube.com/";
 
-    private const int CurrentVersion = 8;
+    // The equalizer section is optional and older builds ignore unknown properties, so the wire version stays 7:
+    // a v8 number would make the previous build reject the whole file (Codex review). Version 8 is still read.
+    private const int CurrentVersion = 7;
+    private const int MaxReadableVersion = 8; // files from the first equalizer builds
     private const int DiscordIntroducedVersion = 7;
     private const int MaxBytes = 16 * 1024;
     private const int DefaultDpi = 96;
@@ -93,7 +96,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
             }
 
             var persisted = JsonSerializer.Deserialize<PersistedSettings>(bytes, JsonOptions);
-            if (persisted is null || persisted.Version is < 1 or > CurrentVersion || !IsCoreValid(persisted))
+            if (persisted is null || persisted.Version is < 1 or > MaxReadableVersion || !IsCoreValid(persisted))
             {
                 warning = "Saved window settings are invalid; defaults are being used.";
                 return Defaults;

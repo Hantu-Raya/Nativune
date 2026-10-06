@@ -267,7 +267,7 @@ public sealed partial class SettingsDialog : Window
         {
             _eqPreviewTimer.Stop();
             if (_closed || _previewEqualizer is null) return;
-            var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true);
+            var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true, ActiveEqualizerSampleRate());
             try { await _previewEqualizer(apply); }
             catch (Exception) { if (!_closed) EqError.Text = "Equalizer preview is unavailable."; }
         };
@@ -383,13 +383,19 @@ public sealed partial class SettingsDialog : Window
         EqPreset.SelectedItem = selectedItem;
     }
 
+    // Auto headroom must use the AudioContext's real rate: bands at or above its Nyquist are unity.
+    private double ActiveEqualizerSampleRate()
+    {
+        var reported = _equalizerStatus?.Invoke().SampleRate;
+        return reported is double rate && double.IsFinite(rate) && rate >= EqualizerMath.MinimumSampleRate ? rate : 48000;
+    }
+
     private void DrawEqualizerCurve()
     {
         var width = EqCurveCanvas.ActualWidth;
         var height = EqCurveCanvas.ActualHeight;
         if (width <= 0 || height <= 0) return;
-        var reported = _equalizerStatus?.Invoke().SampleRate;
-        var sampleRate = reported is double rate && double.IsFinite(rate) && rate >= EqualizerMath.MinimumSampleRate ? rate : 48000;
+        var sampleRate = ActiveEqualizerSampleRate();
         // The x axis stays 20 Hz to 20 kHz; at low output rates (e.g. 16 kHz hands-free) the curve stops at Nyquist.
         var frequencies = Enumerable.Range(0, 201).Select(i => 20 * Math.Pow(1000, i / 200.0))
             .Where(frequency => frequency < sampleRate / 2).ToArray();
@@ -1106,7 +1112,7 @@ public sealed partial class SettingsDialog : Window
             if ((_eqEdited || _eqRecoveryOff) && _previewEqualizer is not null)
             {
                 var committed = _eqRecoveryOff ? _initial.Equalizer with { Enabled = false } : _initial.Equalizer;
-                await _previewEqualizer(EqualizerApply.From(_saved ? _equalizer : committed, bypass: false));
+                await _previewEqualizer(EqualizerApply.From(_saved ? _equalizer : committed, bypass: false, ActiveEqualizerSampleRate()));
             }
         }
         catch (Exception) { /* The host owns unavailable/interrupted status; closing must still finish. */ }

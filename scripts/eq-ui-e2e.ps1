@@ -496,7 +496,7 @@ function Run-Ui {
     Enter-Text 'EqBandBox1' '3.5'
     $savedGains=Band-Gains
     Close-Settings 'SaveButton'
-    $persisted=Assert-File {param($s) $s.version -eq 8 -and $s.equalizer.enabled -and (Same-Gains $s.equalizer.gainsDb $savedGains)}
+    $persisted=Assert-File {param($s) $s.version -eq 7 -and $s.equalizer.enabled -and (Same-Gains $s.equalizer.gainsDb $savedGains)}
     Row 'save-persists-v8' $persisted $script:lastFile
     Open-Settings
     Keep-Preset 'EqSaveNew' 'My EQ'

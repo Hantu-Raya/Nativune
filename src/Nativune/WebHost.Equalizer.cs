@@ -20,6 +20,7 @@ public sealed partial class WebHostWindow
     private bool _equalizerPolling;
     private bool _equalizerEnabledInDocument;
     private bool _equalizerUnknownOutcome;
+    private bool _equalizerApplyingSettings, _equalizerDesiredFromSettings;
 
     internal EqualizerStatus EqualizerStatus { get; private set; } = new(EqualizerState.Off, null, null, null, false);
     internal event EventHandler? EqualizerStatusChanged;
@@ -55,10 +56,14 @@ public sealed partial class WebHostWindow
         await ApplyEqualizerFromSettingsAsync();
     }
 
+    private double ActiveEqualizerSampleRate() =>
+        EqualizerStatus.SampleRate is double rate && double.IsFinite(rate) && rate >= EqualizerMath.MinimumSampleRate ? rate : 48000;
+
     internal async Task ApplyEqualizerFromSettingsAsync()
     {
         if (_closing || _disposed) return;
-        await ApplyEqualizerAsync(EqualizerApply.From(_settings.Equalizer, bypass: false), _lifetime.Token);
+        _equalizerApplyingSettings = true;
+        await ApplyEqualizerAsync(EqualizerApply.From(_settings.Equalizer, bypass: false, ActiveEqualizerSampleRate()), _lifetime.Token);
     }
 
     internal async Task<EqualizerStatus> ApplyEqualizerAsync(EqualizerApply apply, CancellationToken token)
@@ -68,6 +73,10 @@ public sealed partial class WebHostWindow
             !double.IsFinite(apply.PreampDb) || apply.PreampDb < -24 || apply.PreampDb > 6)
             throw new ArgumentOutOfRangeException(nameof(apply));
         apply = apply with { GainsDb = (double[])apply.GainsDb.Clone() };
+        // Only an apply built from the saved settings may later be recomputed for the real sample rate;
+        // a Settings preview or test apply must never be replaced by the saved state.
+        _equalizerDesiredFromSettings = _equalizerApplyingSettings;
+        _equalizerApplyingSettings = false;
         _equalizerDesired = apply;
         var revision = ++_equalizerRevision;
         var generation = _equalizerGeneration;
@@ -204,7 +213,12 @@ public sealed partial class WebHostWindow
             return;
         }
         if (_closing || _disposed || EqualizerStatus == status) return;
+        var previousRate = EqualizerStatus.SampleRate;
         EqualizerStatus = status;
+        // Auto headroom depends on the context's real rate, known only after attachment; re-apply once it changes
+        // (unless the Settings preview owns the graph right now).
+        if (status.SampleRate is double rate && rate != (previousRate ?? 48000) && _settings.Equalizer.AutoHeadroom && _equalizerDesiredFromSettings && !_settingsDialogOpen)
+            _ = ApplyEqualizerFromSettingsAsync();
         EqualizerStatusChanged?.Invoke(this, EventArgs.Empty);
     }
 

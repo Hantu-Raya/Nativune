@@ -5,6 +5,10 @@
     const installedDocument = document;
     const centres = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
     const sources = new WeakMap();
+    // 'encrypted' does not bubble, but a capture listener on the document sees it for every media element,
+    // including events that fire before the site's asynchronous setMediaKeys completes.
+    const encryptedElements = new WeakSet();
+    document.addEventListener('encrypted', event => { encryptedElements.add(event.target); if (event.target === element) encrypted = true; }, true);
     let epoch = null, rev = 0, desired = null;
     let ctx = null, source = null, element = null, filters = [], preamp = null;
     let state = 'off', reason = '', encrypted = false, mediaKeys = false;
@@ -82,7 +86,7 @@
             if (elements.length !== 1) { setState('notApplied', 'ambiguous'); return; }
             const candidate = elements[0];
             mediaKeys = candidate.mediaKeys !== null;
-            if (mediaKeys) { setState('unsupported', 'protected'); return; }
+            if (mediaKeys || encryptedElements.has(candidate)) { setState('unsupported', 'protected'); return; }
             if (!candidate.currentSrc) { setState('waiting', 'loading'); return; }
             if (!candidate.currentSrc.startsWith('blob:https://music.youtube.com/')) { setState('notApplied', 'source'); return; }
             if (!ctx) {
@@ -101,7 +105,7 @@
             if (ctx.state !== 'running') { setState('waiting', 'gesture'); listenForGesture(); return; }
             // Recheck after the asynchronous activation: never attach an obsolete or unsafe element.
             if (!desired.enabled || !candidate.isConnected || document.querySelectorAll('video,audio').length !== 1 ||
-                candidate.mediaKeys !== null || !candidate.currentSrc.startsWith('blob:https://music.youtube.com/')) {
+                candidate.mediaKeys !== null || encryptedElements.has(candidate) || !candidate.currentSrc.startsWith('blob:https://music.youtube.com/')) {
                 pending = true; return;
             }
             if (attachmentAttempted) { setState('reloadNeeded', 'audioGraph'); return; }
