@@ -3,7 +3,8 @@
    Report + exact command: artifacts/resume-e2e/<UTC>/. Audio is measured at owned Core Audio sessions, not inferred from play(). #>
 [CmdletBinding()]
 param([switch] $SkipPublish, [string] $App = 'artifacts/resume-e2e/app',
-    [ValidatePattern('^[A-Za-z0-9_-]{11}$')] [string] $VideoId = 'dQw4w9WgXcQ', [switch] $AllowOtherInstances)
+    [ValidatePattern('^[A-Za-z0-9_-]{11}$')] [string] $VideoId = 'dQw4w9WgXcQ', [switch] $AllowOtherInstances,
+    [ValidateRange(1, 5)] [int[]] $Only = @(1, 2, 3, 4, 5))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -14,7 +15,7 @@ $out = Join-Path $repo "artifacts/resume-e2e/$id"
 $base = Join-Path $repo ".cache/resume-e2e/$id"
 [void][IO.Directory]::CreateDirectory($out)
 [void][IO.Directory]::CreateDirectory($base)
-$command = "pwsh -NoProfile -File scripts/resume-e2e.ps1$(if ($SkipPublish) { ' -SkipPublish' }) -App $App -VideoId $VideoId$(if ($AllowOtherInstances) { ' -AllowOtherInstances' })"
+$command = "pwsh -NoProfile -File scripts/resume-e2e.ps1$(if ($SkipPublish) { ' -SkipPublish' }) -App $App -VideoId $VideoId$(if ($AllowOtherInstances) { ' -AllowOtherInstances' })$(if ($Only.Count -lt 5) { ' -Only ' + ($Only -join ',') })"
 [IO.File]::WriteAllText((Join-Path $out 'command.txt'), $command + "`n")
 if (-not $SkipPublish) {
     & pwsh -NoProfile -File (Join-Path $repo 'scripts/dotnet.ps1') publish (Join-Path $repo 'src/Nativune/Nativune.csproj') --runtime win-x64 --self-contained false -p:DiscordPresenceTestHooks=true -o $appPath | Out-Null
@@ -120,6 +121,7 @@ function Await-Done {
 }
 function Audio { Hook 'resume-audio' }
 function Row([int] $Number, [string] $Name, [scriptblock] $Test) {
+    if ($Only -notcontains $Number) { return }
     try { $e = & $Test; $rows.Add([ordered]@{ row = $Number; name = $Name; status = $(if ($e.pass) { 'PASS' } else { 'FAIL' }); evidence = $e }) }
     catch { $rows.Add([ordered]@{ row = $Number; name = $Name; status = 'FAIL'; reason = $_.Exception.Message }) }
     finally { Stop-App }
@@ -223,6 +225,14 @@ Row 4 'failure-ad-ended-and-cancellation' {
     # keep the site's whole-second t= position and pause.
     $root = New-Root 'shared-timeline'; Seed $root 'fixtureSngB' 73.625 400
     Start-App $root; $shared = Await-Done; Stop-App
+    # Windows sleep during a restore: the identity link appears only after 14 s, with a simulated suspend from
+    # 2 s to 13 s. Sleep time must not count, so the restore completes instead of timing out at 10 s.
+    $root = New-Root 'sleep'; Seed $root
+    Start-App $root @{ NATIVUNE_TEST_RESUME_DELAY = '14000' }; Start-Sleep -Seconds 2
+    $bench = Join-Path $root 'data/discord-bench'; [void][IO.Directory]::CreateDirectory($bench)
+    [IO.File]::WriteAllText((Join-Path $bench 'command-power-suspend'), ''); Start-Sleep -Seconds 11
+    [IO.File]::WriteAllText((Join-Path $bench 'command-power-resume'), '')
+    [void](Wait-For { (State).restoreState -cin @('Done','Failed','Cancelled') } 12); $slept = State; Stop-App
     $root = New-Root 'account-redirect'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_REDIRECT = '1' }; Start-Sleep -Seconds 1; $redirect = State
     [void](Hook 'resume-visit'); [void](Wait-For { (State).isC } 5); Start-Sleep -Seconds 1; $afterRedirect = State; Stop-App
@@ -260,18 +270,19 @@ Row 4 'failure-ad-ended-and-cancellation' {
         recovery = $recovered.restoreState -ceq 'Cancelled' -and -not $recovered.coreMuted -and -not $recovered.paused
         failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
         failedKeyPlay = $keyPlay.restoreState -ceq 'Cancelled' -and -not $keyPlay.paused -and -not $keyPlay.coreMuted -and -not $keyPlay.safetyMuted
+        sleepNotCounted = $slept.restoreState -ceq 'Done' -and $slept.isB -and $slept.paused -and [math]::Abs($slept.position - 73.625) -le 1 -and -not $slept.coreMuted
         sharedTimeline = $shared.restoreState -ceq 'Done' -and $shared.isB -and $shared.paused -and $shared.seekCount -eq 0 -and [math]::Abs($shared.position - 73) -le 0.5 -and -not $shared.coreMuted
         migrations = @($migrations | Where-Object { -not $_.pass }).Count -eq 0
         accountRedirect = $redirect.otherDocument -and $redirect.restoreState -ceq 'Cancelled' -and -not $redirect.coreMuted -and $afterRedirect.isC -and -not $afterRedirect.coreMuted -and $afterRedirect.position -lt 10 -and $afterRedirect.seekCount -eq 0
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
-        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; replacedAfterFailure = $replaced; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }
 }
-try {
+if ($Only -contains 5) { try {
     # Match the existing real-site probe's explicit disposable-profile ad-filter opt-in; production default remains off.
     $root = New-Root 'real' $false $false $true; Seed $root $VideoId 60.625 213
     $realEnv = @{ NATIVUNE_TEST_DISCORD_FIXTURE_PAGE = '0'; NATIVUNE_TEST_RESUME_FIXTURE = '0'; NATIVUNE_TEST_EQ_REAL_MUSIC = '1' }
@@ -294,9 +305,9 @@ try {
     $pass = $held -and $guarded -and $urlPass
     $rows.Add([ordered]@{ row = 5; name = 'signed-out-real-site'; blockAds = $true; status = $(if ($blocked) { 'BLOCKED' } elseif ($pass) { 'PASS' } else { 'FAIL' }); reason = $(if ($blocked) { 'Official Music network navigation/media failed.' } else { $null }); samples = $samples; urlOnly = $urlOnly; urlOnlyOutputMuted = $true })
 } catch { $rows.Add([ordered]@{ row = 5; name = 'signed-out-real-site'; status = 'FAIL'; reason = $_.Exception.Message }) }
-finally { Stop-App }
+finally { Stop-App } }
 $clock.Stop()
-$passed = @($rows | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0 -and $rows.Count -eq 5
+$passed = @($rows | Where-Object { $_.status -eq 'FAIL' }).Count -eq 0 -and $rows.Count -eq $Only.Count
 $report = [ordered]@{ generatedUtc = [DateTime]::UtcNow.ToString('o'); passed = $passed; runtimeSeconds = [math]::Round($clock.Elapsed.TotalSeconds, 2); command = $command; signedIn = $false; blockAds = $false; rows = $rows }
 [IO.File]::WriteAllText((Join-Path $out 'report.json'), ($report | ConvertTo-Json -Depth 16))
 $rows | ForEach-Object { Write-Host "$($_.status) row $($_.row): $($_.name)" }

@@ -217,7 +217,7 @@
     if(home){identity();if(config.homeMedia)load(tracks.A,31);else render();return;}
     const t=query.get('t'), position=/^[0-9]+$/.test(t||'')?Number(t):0;
     load(track,isAd?0:position);
-    if(config.delay){link.remove();setTimeout(()=>{player.append(link);identity();},config.delay);}
+    if(config.delay){link.remove();document.querySelector('.title').textContent='';setTimeout(()=>{player.append(link);identity();},config.delay);}
     return;
   }
   // EQ is a separate early-return profile: none of the Discord clocks/timelines change.

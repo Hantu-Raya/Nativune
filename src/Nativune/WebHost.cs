@@ -2120,6 +2120,7 @@ public sealed partial class WebHostWindow : Window
         if (powerEvent == PbtApmsuspend)
         {
             _playerSuspended = true;
+            HoldResumeForSleep();
             InvalidateDiscord(keepItem: true);
             InvalidateOverlay();
         }
@@ -2127,6 +2128,7 @@ public sealed partial class WebHostWindow : Window
         {
             _playerSuspended = false;
             _sleep?.CheckOnResume();
+            RearmResumeAfterSleep();
             // The check timer doesn't count sleep time; run a check that came due while asleep.
             ConfigureAutomaticReleaseUpdateChecks();
         }

@@ -19,6 +19,7 @@ public sealed partial class WebHostWindow
     private double? _resumeInitialPosition;
     private int _resumeGeneration;
     private string _resumeState = "Absent";
+    private string _resumeDiag = "";
     private bool _resumeSafetyMuted, _resumePriorMute, _resumePolling, _resumeOwnedNavigation;
     private bool _resumeCaptureBlocked, _resumeHomeGuard;
     private CompactPlaybackState? _resumeCandidate, _resumeLastSaved;
@@ -219,6 +220,9 @@ public sealed partial class WebHostWindow
         if (_resumePolling || !ResumeInProgress || _browserHost is null || _configuringPrivacy) return;
         _resumePolling = true;
         var generation = _resumeGeneration;
+        // A never-shown or hidden window (tray autostart, minimized) has no media yet, so its time does not count,
+        // whatever the status read returns. Visible Compact hides only the WebView and counts normally.
+        if (!WindowIsVisible && _resumeDeadlineAt != long.MaxValue) _resumeDeadlineAt = Environment.TickCount64 + 10000;
         try
         {
             var result = await EvaluateResumeAsync("globalThis.__nativuneResume?.status()");
@@ -230,6 +234,9 @@ public sealed partial class WebHostWindow
                 return;
             }
             var state = status.GetProperty("state").GetString();
+            // Fixed identity codes only (no titles or ids); kept for the failure log line.
+            if (status.TryGetProperty("diag", out var diag) && diag.ValueKind == JsonValueKind.String && diag.GetString() is { Length: <= 16 } code)
+                _resumeDiag = code;
             if (state is not ("Armed" or "AwaitMedia" or "Pause/Seek" or "Verify" or "Done" or "AdPaused" or "AwaitMusic" or "Failed" or "Cancelled")) return;
             if (status.TryGetProperty("initialPosition", out var initial) && initial.ValueKind == JsonValueKind.Number
                 && initial.TryGetDouble(out var first) && double.IsFinite(first)
@@ -240,10 +247,7 @@ public sealed partial class WebHostWindow
                 _resumeDeadlineAt = Environment.TickCount64 + 10000;
             // The script's own 10 s starts in the new document; page load time before it does not count.
             if (changed && _resumeState == "Armed") _resumeDeadlineAt = Environment.TickCount64 + 10000;
-            // A never-shown or hidden window (tray autostart, minimized) has no media yet, so its time does not
-            // count. Visible Compact hides only the WebView: the host enforces the deadline the script suspends.
-            if (status.TryGetProperty("hidden", out var hidden) && hidden.ValueKind == JsonValueKind.True && !WindowIsVisible)
-                _resumeDeadlineAt = Environment.TickCount64 + 10000;
+            if (!WindowIsVisible && _resumeDeadlineAt != long.MaxValue) _resumeDeadlineAt = Environment.TickCount64 + 10000;
             if (state is "Armed" or "AwaitMedia" or "Pause/Seek" or "Verify" && Environment.TickCount64 >= _resumeDeadlineAt)
             {
                 await EvaluateResumeAsync("globalThis.__nativuneResume?.fail()");
@@ -301,6 +305,7 @@ public sealed partial class WebHostWindow
 
     private void FailResume(string? reason)
     {
+        AppLog.Write("resume", $"failed {reason ?? "unknown"} {_resumeDiag}".Trim());
         _resumeState = "Failed";
         // Without the safety mute nothing is held back: whatever plays next replaces the bad checkpoint.
         _resumeCaptureBlocked = _resumeSafetyMuted;
@@ -313,13 +318,28 @@ public sealed partial class WebHostWindow
         _ = RemoveResumeRegistrationAsync();
         // A final (unmuted) failure must not leave the page script pausing later plays, e.g. a Wait paused
         // restore whose ad was already recovered.
-        if (!_resumeSafetyMuted) _ = RetireResumeControllerAsync();
+        if (!_resumeSafetyMuted) _ = CallResumeScriptAsync("globalThis.__nativuneResume?.cancel()");
     }
 
-    private async Task RetireResumeControllerAsync()
+    // Sleep time is not restore time. At suspend the script's timeout is held (so an overdue timer cannot fail
+    // the restore on waking); at resume the host deadline and the script's timeout restart. The script decides
+    // from its own state; the host's last sample may be stale.
+    private void HoldResumeForSleep()
     {
-        try { await EvaluateResumeAsync("globalThis.__nativuneResume?.cancel()"); }
-        catch (Exception) { AppLog.Write("resume", "controller-retire-failed"); }
+        if (ResumeInProgress && _resumeState != "Failed") _ = CallResumeScriptAsync("globalThis.__nativuneResume?.hold()");
+    }
+
+    private void RearmResumeAfterSleep()
+    {
+        if (!ResumeInProgress || _resumeState == "Failed") return;
+        if (_resumeDeadlineAt != long.MaxValue) _resumeDeadlineAt = Environment.TickCount64 + 10000;
+        _ = CallResumeScriptAsync("globalThis.__nativuneResume?.rearm()");
+    }
+
+    private async Task CallResumeScriptAsync(string expression)
+    {
+        try { await EvaluateResumeAsync(expression); }
+        catch (Exception) { AppLog.Write("resume", "script-call-failed"); }
     }
 
     private async Task<bool> CancelResumeAsync(string reason)

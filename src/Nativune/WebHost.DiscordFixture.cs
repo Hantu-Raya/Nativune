@@ -73,7 +73,7 @@ public sealed partial class WebHostWindow
                 stall = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_STALL") == "1",
                 homeMedia = Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_HOME_MEDIA") == "1",
                 delay = int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_TEST_RESUME_DELAY"), out var delay)
-                    ? Math.Clamp(delay, 0, 8000) : 0
+                    ? Math.Clamp(delay, 0, 16000) : 0
             });
             s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
                 .Replace("<meta name=\"nativune-resume-fixture\" content=\"\">",
@@ -562,7 +562,7 @@ public sealed partial class WebHostWindow
                             "timeParameter:/^[0-9]+$/.test(q.get('t')||'')?Number(q.get('t')):null,mediaNetworkFailed:v?.error?.code===2," +
                             "readyState:v?.readyState??0,...globalThis.__nativuneFixture?.resumeState?.()}})()");
                         using (var resumeJson = JsonDocument.Parse(resumeRaw))
-                            result = new { ready = _playerControls?.IsAvailable == true, restoreState = _resumeState,
+                            result = new { ready = _playerControls?.IsAvailable == true, restoreState = _resumeState, diag = _resumeDiag,
                                 status = _statusDetailsText, networkFailed = _navigationFailed || resumeJson.RootElement.GetProperty("mediaNetworkFailed").GetBoolean(),
                                 otherDocument = !IsEqualizerMusicOrigin(host.Core.Source), compact = _compact,
                                 visible = _appWindow?.IsVisible == true, tray = _tray?.IsVisible == true,

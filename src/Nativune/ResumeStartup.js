@@ -49,31 +49,37 @@
     document.removeEventListener('pointerdown',onInput,true);
     return {cancelled:true,generation};
   };
+  // diag: the last reason identity failed, as a fixed code (no titles or ids), for status and the host log.
+  let diag = '';
+  const no = code => { diag = code; return false; };
   const identity = () => {
-    if (ad() || !media || media.seeking || !Number.isFinite(media.duration) || media.duration <= 0) { baseline = null; return false; }
+    if (ad() || !media || media.seeking || !Number.isFinite(media.duration) || media.duration <= 0) { baseline = null; return no('media'); }
     const url = new URL(location.href), bars = document.querySelectorAll('ytmusic-player-bar');
-    if (url.searchParams.getAll('v').length !== 1 || url.searchParams.get('v') !== saved.videoId || bars.length !== 1) return false;
+    if (url.searchParams.getAll('v').length !== 1 || url.searchParams.get('v') !== saved.videoId) return no('url');
+    if (bars.length !== 1) return no('bar');
     const titles = bars[0].querySelectorAll('.title');
     const title = titles.length === 1 ? titles[0].textContent.trim() : '';
     const artist = bars[0].querySelector('.byline')?.textContent.trim() || '';
-    if (!title || title.length > 512) return false;
+    if (!title || title.length > 512) return no('title');
     const links = document.querySelectorAll('ytmusic-player a.ytp-title-link');
     // A present bad/mismatching link vetoes the fallback, including an outgoing title during a track switch.
     if (links.length) {
-      if (links.length !== 1 || links[0].textContent.trim() !== title) return false;
+      if (links.length !== 1) return no('links');
+      if (links[0].textContent.trim() !== title) return no('link-text');
       try {
         const link = new URL(links[0].getAttribute('href'), location.origin);
-        return link.origin === location.origin && link.pathname === '/watch'
-          && link.searchParams.getAll('v').length === 1 && link.searchParams.get('v') === saved.videoId;
-      } catch { return false; }
+        if (link.origin !== location.origin || link.pathname !== '/watch') return no('link-origin');
+        if (link.searchParams.getAll('v').length !== 1 || link.searchParams.get('v') !== saved.videoId) return no('link-id');
+        return true;
+      } catch { return no('link-parse'); }
     }
-    if (!artist || artist.length > 512) return false;
+    if (!artist || artist.length > 512) return no('artist');
     const now = performance.now(), p = media.currentTime;
     if (!baseline || baseline.title !== title || baseline.artist !== artist || baseline.duration !== media.duration
       || Math.abs(p - baseline.position - (media.paused ? 0 : (now-baseline.at)/1000*media.playbackRate)) > 1) {
-      baseline = { title, artist, duration:media.duration, position:p, at:now }; return false;
+      baseline = { title, artist, duration:media.duration, position:p, at:now }; return no('baseline');
     }
-    return now - baseline.at >= 2000;
+    return now - baseline.at >= 2000 || no('settling');
   };
   const seekable = p => {
     for (let i=0;i<media.seekable.length;i++) if(p>=media.seekable.start(i)&&p<=media.seekable.end(i)) return true;
@@ -169,7 +175,9 @@
       return; // A paused ad waits for media/DOM events, not a perpetual readiness poll.
     }
     if(state==='AdPaused'||state==='AwaitMusic') { state='AwaitMedia';recoveryAd=false;armTimeout(); }
-    if(!identity() || media.readyState<1){state='AwaitMedia';wake();return;}
+    if(!identity()){state='AwaitMedia';wake();return;}
+    if(media.readyState<1){diag='ready';state='AwaitMedia';wake();return;}
+    diag='';
     if(saved.positionSeconds > media.duration + 1){if(waitPaused)media.pause();stop('Failed','track');return;}
     const target=Math.min(saved.positionSeconds,media.duration);
     // Signed-in playback can put several items on one media timeline. Media time equals the saved per-track
@@ -220,9 +228,11 @@
   document.addEventListener('visibilitychange',onVisibility,true);
   for(const event of wakeEvents)document.addEventListener(event,wake,true);
   globalThis.__nativuneResume={
-    status:()=>({generation,state,reason,recoveryAd,initialPosition,hidden:document.visibilityState==='hidden'}),
+    status:()=>({generation,state,reason,recoveryAd,initialPosition,diag,hidden:document.visibilityState==='hidden'}),
     cancel,
     fail:()=>{if(!terminal()&&state!=='AdPaused'&&state!=='AwaitMusic')stop('Failed','timeout');return {generation,state};},
+    hold:()=>{clearTimeout(timeout);return true;},
+    rearm:()=>{if(!terminal()&&state!=='AdPaused'&&state!=='AwaitMusic')armTimeout();return true;},
     recover:()=>{if(state==='AdPaused'){recoverAd();return {adRecovery:true,generation};}return cancel();}
   };
   state='AwaitMedia';armTimeout();wake();
