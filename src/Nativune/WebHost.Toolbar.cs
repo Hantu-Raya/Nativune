@@ -19,6 +19,8 @@ public sealed partial class WebHostWindow
     private MenuFlyoutItem _cancelTimerOverflowItem = null!;
     private MenuFlyoutItem _updateOverflowItem = null!;
     private MenuFlyoutItem _homeOverflowItem = null!;
+    private ToggleMenuFlyoutItem _equalizerMenuItem = null!;
+    private bool _openEqualizerSettings;
 
     private MenuFlyoutItemBase[] CreateToolbarOverflowItems()
     {
@@ -32,11 +34,39 @@ public sealed partial class WebHostWindow
         _cancelTimerOverflowItem = CreateMenuItem("Cancel pause timer", "cancel-timer", CancelPauseTimer);
         _updateOverflowItem = CreateMenuItem("Check for Nativune updates", "update", OnUpdateButtonClick);
         _homeOverflowItem = CreateMenuItem("Open Music Home", "home", () => { if (CanNavigate) _browserHost?.Core.Navigate(_initialUri); });
+        _equalizerMenuItem = new ToggleMenuFlyoutItem { Text = "Equalizer", IsChecked = _settings.Equalizer.Enabled };
+        AutomationProperties.SetName(_equalizerMenuItem, "Equalizer");
+        _equalizerMenuItem.Click += async (_, _) =>
+        {
+            if (_closing || _disposed) return;
+            _equalizerMenuItem.IsEnabled = false;
+            try
+            {
+                _settings = _settings with { Equalizer = _settings.Equalizer with { Enabled = _equalizerMenuItem.IsChecked } };
+                var apply = ApplyEqualizerFromSettingsAsync();
+                var persisted = await SaveSettingsConfirmedAsync();
+                await apply;
+                if (!persisted) SetStatus("Equalizer applies for this session only; the setting could not be saved.", isError: true);
+            }
+            catch (Exception) { if (!_closing && !_disposed) SetStatus("Equalizer could not be applied.", isError: true); }
+            finally { _equalizerMenuItem.IsEnabled = !_closing && !_disposed; }
+        };
+        var equalizerSettingsItem = new MenuFlyoutItem { Text = "Equalizer settings…" };
+        AutomationProperties.SetName(equalizerSettingsItem, "Equalizer settings");
+        equalizerSettingsItem.Click += (_, _) =>
+        {
+            if (_closing || _disposed || _settingsDialogOpen) return;
+            _openEqualizerSettings = true;
+            ShowSettings();
+        };
+        EqualizerStatusChanged += (_, _) => CompactView.SetEqualizerStatus(EqualizerStatus);
+        CompactView.SetEqualizerStatus(EqualizerStatus);
         _moreFlyout.Opening += (_, _) => RefreshToolbarOverflowItems();
         // The host, not the Grid: an overfull Grid keeps its desired width, so its own size never shrinks.
         ToolbarHost.SizeChanged += (_, _) => UpdateToolbarOverflow();
         RefreshToolbarOverflowItems();
-        return [_homeOverflowItem, _forwardOverflowItem, _volumeOverflowItem, _setTimerOverflowItem, _cancelTimerOverflowItem, _updateOverflowItem];
+        return [_homeOverflowItem, _forwardOverflowItem, _volumeOverflowItem, _setTimerOverflowItem, _cancelTimerOverflowItem, _updateOverflowItem,
+            _equalizerMenuItem, equalizerSettingsItem];
     }
 
     private void SetToolbarOverflowIcons()
@@ -106,6 +136,7 @@ public sealed partial class WebHostWindow
     // More shows an item only while its toolbar button is collapsed, with the button's current state.
     private void RefreshToolbarOverflowItems()
     {
+        _equalizerMenuItem.IsChecked = _settings.Equalizer.Enabled;
         _homeOverflowItem.Visibility = HomeButton.Visibility == Visibility.Collapsed ? Visibility.Visible : Visibility.Collapsed;
         _homeOverflowItem.IsEnabled = HomeButton.IsEnabled;
         _forwardOverflowItem.Visibility = ForwardButton.Visibility == Visibility.Collapsed ? Visibility.Visible : Visibility.Collapsed;

@@ -31,6 +31,7 @@
         <NavigationViewItem x:Name="DiscordNavItem" Content="Discord" Tag="Discord" AutomationProperties.Name="Discord" />
         <NavigationViewItem x:Name="ObsNavItem" Content="OBS" Tag="Obs" AutomationProperties.Name="OBS" />
         <NavigationViewItem x:Name="LyricsNavItem" Content="Lyrics" Tag="Lyrics" AutomationProperties.Name="Lyrics" />
+        <NavigationViewItem x:Name="EqualizerNavItem" Content="Equalizer" Tag="Equalizer" AutomationProperties.Name="Equalizer" />
         <NavigationViewItem x:Name="AboutNavItem" Content="About" Tag="About" AutomationProperties.Name="About" />
       </NavigationView.MenuItems>
       <ScrollViewer x:Name="PageScroller"
@@ -40,6 +41,49 @@
                     VerticalScrollMode="Auto"
                     Padding="24,20,24,20">
         <Grid>
+          <StackPanel x:Name="EqualizerPage" Spacing="10" Visibility="Collapsed">
+            <TextBlock Text="Equalizer" FontSize="20" FontWeight="SemiBold" Foreground="{ThemeResource PrimaryTextBrush}" AutomationProperties.HeadingLevel="Level1" />
+            <TextBlock Text="Changes preview immediately; Save keeps them, Cancel restores them." TextWrapping="Wrap" Foreground="{ThemeResource SecondaryTextBrush}" />
+            <ToggleSwitch x:Name="EqEnabled" Header="Enabled" AutomationProperties.Name="Equalizer enabled" />
+            <ComboBox x:Name="EqPreset" Header="Preset" MinWidth="240" AutomationProperties.Name="Equalizer preset" />
+            <Grid x:Name="EqBandsPanel" ColumnSpacing="4" MaxWidth="620" HorizontalAlignment="Stretch" />
+            <Button x:Name="EqResetBands" Content="Reset bands" AutomationProperties.Name="Reset equalizer bands" />
+            <ToggleSwitch x:Name="EqAutoHeadroom" Header="Auto headroom — reduces clipping risk" AutomationProperties.Name="Auto headroom — reduces clipping risk" />
+            <TextBlock x:Name="EqEffectivePreamp" Foreground="{ThemeResource SecondaryTextBrush}" />
+            <Slider x:Name="EqPreamp" Header="Preamp (dB)" Minimum="-24" Maximum="6" StepFrequency="0.5" SmallChange="0.5" LargeChange="3" MaxWidth="360" HorizontalAlignment="Stretch" AutomationProperties.Name="Equalizer preamp" AutomationProperties.AutomationId="EqPreamp" />
+            <NumberBox x:Name="EqPreampBox" Header="Preamp (dB)" Minimum="-24" Maximum="6" SmallChange="0.5" LargeChange="3" MaxWidth="360" HorizontalAlignment="Stretch" SpinButtonPlacementMode="Inline" AutomationProperties.Name="Equalizer preamp numeric entry" AutomationProperties.AutomationId="EqPreampBox" />
+            <Button x:Name="EqResetPreamp" Content="Reset preamp" AutomationProperties.Name="Reset equalizer preamp" />
+            <TextBlock x:Name="EqMayClip" Text="May clip" Visibility="Collapsed" Foreground="{ThemeResource PrimaryTextBrush}" AutomationProperties.LiveSetting="Polite" />
+            <Border BorderBrush="{ThemeResource SeparatorBrush}" BorderThickness="1" Background="{ThemeResource SurfaceBrush}">
+              <Canvas x:Name="EqCurveCanvas" Height="140" AutomationProperties.Name="Equalizer response curve, 20 hertz to 20 kilohertz">
+                <Line x:Name="EqZeroLine" Stroke="{ThemeResource SeparatorBrush}" StrokeThickness="1" Stretch="None" />
+                <Polyline x:Name="EqCurve" Stroke="{ThemeResource PrimaryTextBrush}" StrokeThickness="2" Stretch="None" />
+              </Canvas>
+            </Border>
+            <TextBlock Text="20 Hz → 20 kHz · logarithmic frequency · −15 to +15 dB; centre line is 0 dB" Foreground="{ThemeResource SecondaryTextBrush}" FontSize="12" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="EqSaveNew" Content="Save as new" AutomationProperties.Name="Save equalizer as new preset" />
+              <Button x:Name="EqRename" Content="Rename" AutomationProperties.Name="Rename equalizer preset" />
+              <Button x:Name="EqDuplicate" Content="Duplicate" AutomationProperties.Name="Duplicate equalizer preset" />
+              <Button x:Name="EqDelete" Content="Delete" AutomationProperties.Name="Delete equalizer preset" />
+            </StackPanel>
+            <StackPanel x:Name="EqNameEditor" Visibility="Collapsed" Spacing="6">
+              <TextBox x:Name="EqName" Header="Preset name" MaxLength="40" AutomationProperties.Name="Equalizer preset name" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="EqNameConfirm" Content="Keep preset" AutomationProperties.Name="Confirm equalizer preset name" />
+                <Button x:Name="EqNameCancel" Content="Cancel name" AutomationProperties.Name="Cancel equalizer preset name" />
+              </StackPanel>
+            </StackPanel>
+            <TextBlock x:Name="EqError" TextWrapping="Wrap" Foreground="{ThemeResource PrimaryTextBrush}" AutomationProperties.LiveSetting="Polite" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="EqCopy" Content="Copy preset" AutomationProperties.Name="Copy equalizer preset" />
+              <Button x:Name="EqPaste" Content="Paste preset" AutomationProperties.Name="Paste equalizer preset" />
+              <ToggleButton x:Name="EqBypass" Content="Bypass (compare)" AutomationProperties.Name="Bypass equalizer for comparison" />
+            </StackPanel>
+            <TextBlock x:Name="EqStatus" TextWrapping="Wrap" Foreground="{ThemeResource SecondaryTextBrush}" AutomationProperties.Name="Equalizer status" AutomationProperties.LiveSetting="Polite" />
+            <Button x:Name="EqReload" Content="Reload without EQ (interrupts playback)" Visibility="Collapsed" AutomationProperties.Name="Reload without equalizer; interrupts playback" />
+          </StackPanel>
+
           <StackPanel x:Name="GeneralPage" Spacing="10">
             <TextBlock Text="General"
                        FontSize="20"

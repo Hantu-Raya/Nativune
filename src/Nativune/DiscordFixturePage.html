@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="nativune-discord-fixture" content="1">
 <meta name="nativune-discord-bench-profile" content="">
+<meta name="nativune-eq-fixture" content="">
 <title>YouTube Music</title>
 <!--
   Synthetic YouTube Music page for scripts/discord-rpc-e2e.ps1 (test-hook builds only; served by
@@ -131,6 +132,61 @@
 </ytmusic-app>
 <script>
 (() => {
+  // EQ is a separate early-return profile: none of the Discord clocks/timelines change.
+  if (document.querySelector('meta[name="nativune-eq-fixture"]').content === '1') {
+    const centres = [31.5,63,125,250,500,1000,2000,4000,8000,16000];
+    const frequencies = [...centres,45,90,180,375,750,1500,3000,6000,12000];
+    let media = document.querySelector('video'), blob = null;
+    const button = document.createElement('button');
+    button.textContent = 'Activate EQ fixture';
+    button.style.cssText = 'position:fixed;left:40px;top:40px;z-index:10000;padding:24px';
+    document.body.append(button);
+    // Trusted-click receipt lets the harness distinguish lost/late input from EQ recovery failures.
+    let trustedClicks = 0;
+    button.addEventListener('click', event => { if (event.isTrusted) trustedClicks++; media.play().catch(() => {}); });
+    const wav = (rate, variant) => {
+      const frames = rate * 8, bytes = new Uint8Array(44 + frames * 4), view = new DataView(bytes.buffer);
+      const ascii = (offset,text) => [...text].forEach((c,i) => bytes[offset+i]=c.charCodeAt(0));
+      ascii(0,'RIFF'); view.setUint32(4,bytes.length-8,true); ascii(8,'WAVE'); ascii(12,'fmt ');
+      view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,2,true);
+      view.setUint32(24,rate,true); view.setUint32(28,rate*4,true); view.setUint16(32,4,true);
+      view.setUint16(34,16,true); ascii(36,'data'); view.setUint32(40,frames*4,true);
+      for(let i=0;i<frames;i++) for(let ch=0;ch<2;ch++) {
+        const t=i/rate;
+        let sample=0;
+        if(variant==='click') sample=0.2*Math.sin(2*Math.PI*63*t + ch*0.7);
+        else for(let k=0;k<frequencies.length;k++)
+          sample+=(ch ? 0.65+0.25*Math.sin(k+1) : 1)*0.008*Math.sin(2*Math.PI*frequencies[k]*t+ch*(k+1)*0.37);
+        if(variant==='transient') {
+          const burst=t%1<0.015 ? 0.08*Math.sin(2*Math.PI*(ch?3000:750)*t) : 0;
+          sample=sample*(t%2<1?1:0.4)+burst;
+        }
+        view.setInt16(44+i*4+ch*2,Math.round(sample*32767),true);
+      }
+      return URL.createObjectURL(new Blob([bytes],{type:'audio/wav'}));
+    };
+    const profile = name => {
+      if(!/^(tones|transient|click)-(48000|44100|16000)$/.test(name) && name!=='foreign-source') return false;
+      media.pause(); media.removeAttribute('muted'); media.muted=false; media.volume=1; media.loop=true;
+      if(blob) URL.revokeObjectURL(blob);
+      const [variant,rate]=name.split('-');
+      blob=name==='foreign-source'?null:wav(Number(rate),variant);
+      media.src=blob || 'https://eq-fixture.invalid/tone.wav';
+      media.load(); media.play().catch(() => {});
+      return {profile:name,frequencies,source:media.src};
+    };
+    window.__nativuneFixture = {
+      eqProfile:profile,
+      get eqTrustedClicks() { return trustedClicks; },
+      eqReplaceElement() {
+        const old=media, next=old.cloneNode(false);
+        old.pause(); old.replaceWith(next); media=next; media.play().catch(() => {});
+        return {replaced:true};
+      }
+    };
+    profile('tones-48000');
+    return;
+  }
   const tracks = {
     A: { id: 'fixtureSngA', title: 'Fixture Song A', duration: 210,
       artwork: 'https://lh3.googleusercontent.com/fixture-a=w544-h544',

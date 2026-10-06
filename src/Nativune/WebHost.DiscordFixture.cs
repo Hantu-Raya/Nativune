@@ -27,9 +27,10 @@ public sealed partial class WebHostWindow
     private static void DiscordFixtureBrowserArguments(ref string browserArguments)
     {
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_FIXTURE_PAGE") != "1") return;
-        browserArguments = string.IsNullOrWhiteSpace(browserArguments)
-            ? "--autoplay-policy=no-user-gesture-required"
-            : browserArguments + " --autoplay-policy=no-user-gesture-required";
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") != "1")
+            browserArguments = string.IsNullOrWhiteSpace(browserArguments)
+                ? "--autoplay-policy=no-user-gesture-required"
+                : browserArguments + " --autoplay-policy=no-user-gesture-required";
         // Bench-only startup stabilisation, not a product CPU fix: run Chromium's DX12 info collection at startup
         // instead of 120 s later, so its short-lived GPU process cannot exit inside a Designer bench window.
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_OVERLAY_EAGER_GPU_INFO") == "1")
@@ -41,6 +42,13 @@ public sealed partial class WebHostWindow
 
     private void InstallDiscordFixturePage(CoreWebView2 core)
     {
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_REAL_MUSIC") == "1")
+        {
+            if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1" &&
+                IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
+                StartDiscordBench(commandOnly: true);
+            return; // Command-only: no synthetic page or request interception.
+        }
         if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_FIXTURE_PAGE") != "1") return;
         using (var stream = typeof(WebHostWindow).Assembly.GetManifestResourceStream(DiscordFixtureResourceName)
             ?? throw new InvalidOperationException("The Discord fixture page resource is missing."))
@@ -49,6 +57,14 @@ public sealed partial class WebHostWindow
             stream.CopyTo(buffer);
             s_discordFixturePage = buffer.ToArray();
         }
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
+            s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
+                .Replace("<meta name=\"nativune-eq-fixture\" content=\"\">",
+                    "<meta name=\"nativune-eq-fixture\" content=\"1\">", StringComparison.Ordinal));
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1" &&
+            Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_DEFER_MEDIA") == "1")
+            s_discordFixturePage = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(s_discordFixturePage)
+                .Replace("profile('tones-48000');", "// Media is loaded by the Settings-open attachment row.", StringComparison.Ordinal));
         StartDiscordBench();
         // Only http(s) is intercepted so chrome-extension:// (uBO Lite dashboard/resources) loads normally.
         core.AddWebResourceRequestedFilter("https://*", CoreWebView2WebResourceContext.All);
@@ -62,8 +78,24 @@ public sealed partial class WebHostWindow
         if (uri is not null && uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
             return;
         var https = uri is not null && uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && uri.UserInfo.Length == 0;
+        if (https && uri!.Host == "eq-fixture.invalid" && uri.AbsolutePath == "/tone.wav" &&
+            Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
+        {
+            // Same-origin restrictions are deliberately NOT relaxed: the original element can play
+            // this cross-origin WAV, but the production source guard must reject it before attachment.
+            args.Response = DiscordFixtureResponse(sender, EqualizerForeignWav(), 200, "OK", "audio/wav");
+            return;
+        }
         if (https && uri!.Host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase))
         {
+            if (args.ResourceContext == CoreWebView2WebResourceContext.Document &&
+                uri.AbsolutePath == "/__nativune_eq_redirect" &&
+                Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") == "1")
+            {
+                args.Response = sender.Environment.CreateWebResourceResponse(null, 302, "Found",
+                    "Cache-Control: no-store\r\nLocation: https://example.com/");
+                return;
+            }
             args.Response = args.ResourceContext == CoreWebView2WebResourceContext.Document
                 ? DiscordFixtureResponse(sender, s_discordFixturePage!, 200, "OK", "text/html; charset=utf-8")
                 : DiscordFixtureResponse(sender, null, 204, "No Content", null);
@@ -198,13 +230,13 @@ public sealed partial class WebHostWindow
     private int _discordBenchProbes;
     private bool _discordBenchBusy, _discordBenchPageReady, _discordBenchStateRequested, _discordBenchDone;
 
-    private void StartDiscordBench()
+    private void StartDiscordBench(bool commandOnly = false)
     {
-        var profile = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_PROFILE");
-        var state = Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_STATE");
+        var profile = commandOnly ? null : Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_PROFILE");
+        var state = commandOnly ? null : Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_BENCH_STATE");
         if (profile is null && state is null)
         {
-            // Command-only mode: fixture page + valid prefix, no bench state setup.
+            // Command-only mode: validated hook launch, no fixture profile or bench state setup.
             if (!IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")))
                 return;
             _discordBenchDirectory = Path.Combine(_root, "data", "discord-bench");
@@ -431,11 +463,347 @@ public sealed partial class WebHostWindow
         if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
             await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
         await ProcessObsBenchCommandsAsync();
+        await ProcessEqualizerBenchCommandsAsync();
         if (_closing || _disposed) return;
         if (!TakeDiscordBenchCommand("command-quit")) return;
         DiscordPresenceDiagnostics.WriteSnapshot(Path.Combine(directory, "diagnostics-quit.json"), "quit");
         _discordBenchTimer?.Stop();
         _ = ShutdownAsync();
+    }
+
+    private static byte[] EqualizerForeignWav()
+    {
+        const int rate = 48000, frames = rate * 4;
+        var bytes = new byte[44 + frames * 4];
+        using var writer = new BinaryWriter(new MemoryStream(bytes));
+        writer.Write(Encoding.ASCII.GetBytes("RIFF")); writer.Write(bytes.Length - 8);
+        writer.Write(Encoding.ASCII.GetBytes("WAVEfmt ")); writer.Write(16);
+        writer.Write((short)1); writer.Write((short)2); writer.Write(rate); writer.Write(rate * 4);
+        writer.Write((short)4); writer.Write((short)16);
+        writer.Write(Encoding.ASCII.GetBytes("data")); writer.Write(frames * 4);
+        for (var i = 0; i < frames; i++)
+        {
+            writer.Write((short)(2000 * Math.Sin(2 * Math.PI * 250 * i / rate)));
+            writer.Write((short)(1500 * Math.Sin(2 * Math.PI * 500 * i / rate)));
+        }
+        return bytes;
+    }
+
+    // A labelled, bounded request is consumed once; results always land under the disposable root.
+    // Only EQ fixture mode + the existing validated test prefix can reach this command surface.
+    private async Task ProcessEqualizerBenchCommandsAsync()
+    {
+        if (Environment.GetEnvironmentVariable("NATIVUNE_TEST_EQ_FIXTURE") != "1" ||
+            !IsDiscordBenchTestPrefix(Environment.GetEnvironmentVariable("NATIVUNE_TEST_DISCORD_PIPE_PREFIX")) ||
+            _discordBenchDirectory is null || _browserHost is not { } host) return;
+        foreach (var path in Directory.GetFiles(_discordBenchDirectory, "command-eq-*.json"))
+        {
+            var label = Path.GetFileName(path)["command-eq-".Length..^5];
+            if (!IsDiscordBenchLabel(label)) { File.Delete(path); continue; }
+            object result;
+            try
+            {
+                if (new FileInfo(path).Length > 8192) throw new InvalidDataException("request-size");
+                string text;
+                // A just-renamed request can be briefly locked (e.g. by a scanner). Reading is idempotent, so leave it
+                // for the next tick on a sharing/lock violation; the harness's own deadline bounds the wait.
+                try { text = File.ReadAllText(path); }
+                catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33) { continue; }
+                File.Delete(path);
+                using var request = JsonDocument.Parse(text);
+                var root = request.RootElement;
+                var command = root.GetProperty("command").GetString();
+                var value = root.TryGetProperty("value", out var v) ? v : default;
+                switch (command)
+                {
+                    case "eq-block-activation":
+                        if (_equalizerContext is null)
+                        {
+                            _equalizerInstall ??= InstallEqualizerAsync(host.Core, _equalizerGeneration);
+                            await _equalizerInstall.WaitAsync(EqualizerDeadline, _lifetime.Token);
+                        }
+                        // Await the REAL suspend before the production synchronous constructor path
+                        // can inspect state; its next new AudioContext receives this prepared instance.
+                        result = await EqualizerHookEvaluateAsync("(async()=>{if(__nativuneEq.__graph().ctx||globalThis.__nativuneEqPreparedContext)throw new Error('already created');" +
+                            "__nativuneEqActivation.blocked=true;const c=new AudioContext({latencyHint:'playback'});" +
+                            "await c.__eqSuspended;globalThis.__nativuneEqPreparedContext=c;return {blocked:true,contextState:c.state}})()");
+                        break;
+                    case "eq-synthetic-event":
+                        result = await host.Core.ExecuteScriptAsync("(()=>{document.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));return {dispatched:true,trusted:false}})()");
+                        break;
+                    case "eq-ui-curve":
+                        result = _settingsDialog?.EqualizerCurveHookSnapshot()
+                            ?? throw new InvalidOperationException("settings-not-open");
+                        break;
+                    case "eq-open-settings":
+                        var settingsPage = value.GetString();
+                        if (settingsPage is not ("General" or "Discord" or "OBS" or "Equalizer"))
+                            throw new InvalidDataException("settings-page");
+                        ShowSettings(discordPage: settingsPage == "Discord", obsPage: settingsPage == "OBS");
+                        if (settingsPage == "Equalizer") _settingsDialog?.SelectEqualizerPage();
+                        result = new { open = _settingsDialogOpen, page = settingsPage };
+                        break;
+                    case "eq-settings-open":
+                        result = new { open = _settingsDialogOpen };
+                        break;
+                    case "eq-settings-file":
+                        using (var persisted = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, "data", "settings.json"))))
+                        {
+                            result = new { version = persisted.RootElement.GetProperty("Version").GetInt32(),
+                                equalizer = persisted.RootElement.TryGetProperty("Equalizer", out var eqFile)
+                                    ? eqFile.Clone() : EqualizerSharing.WriteSettings(EqualizerSettings.Default) };
+                        }
+                        break;
+                    case "eq-math":
+                        var mathGains = value.GetProperty("gains").EnumerateArray().Select(x => x.GetDouble()).ToArray();
+                        if (mathGains.Length != EqualizerBands.Count ||
+                            mathGains.Any(x => !double.IsFinite(x) || x < -12 || x > 12))
+                            throw new InvalidDataException("math-gains");
+                        var mathSettings = EqualizerSettings.Default with { GainsDb = mathGains,
+                            ManualPreampDb = value.TryGetProperty("preampDb", out var mathPreamp) ? mathPreamp.GetDouble() : 0,
+                            AutoHeadroom = !value.TryGetProperty("autoHeadroom", out var mathAuto) || mathAuto.GetBoolean() };
+                        if (!double.IsFinite(mathSettings.ManualPreampDb) || mathSettings.ManualPreampDb is < -24 or > 6)
+                            throw new InvalidDataException("math-preamp");
+                        result = new { effectivePreampDb = EqualizerMath.EffectivePreampDb(mathSettings,
+                                value.TryGetProperty("sampleRate", out var mathRate) ? mathRate.GetDouble() : 48000),
+                            mayClip = EqualizerMath.MayClip(mathSettings) };
+                        break;
+                    case "eq-session":
+                        var sessionProcesses = CaptureOutputAudioProcesses();
+                        var sessionExecutable = _outputAudioExecutablePath;
+                        if (!_outputAudioPathVerified || sessionExecutable is null)
+                            throw new InvalidOperationException("session-path-unverified");
+                        result = await Task.Run(() =>
+                        {
+                            using var reader = new WebViewAudioVolume(sessionExecutable);
+                            return reader.ReadEqualizerHookSessions(sessionProcesses);
+                        });
+                        break;
+                    case "eq-set-volume":
+                        var outputVolume = value.GetDouble();
+                        if (!double.IsFinite(outputVolume) || outputVolume is < 0 or > 1)
+                            throw new InvalidDataException("output-volume");
+                        SetOutputVolume(outputVolume);
+                        result = new { requested = outputVolume };
+                        break;
+                    case "eq-set-mute":
+                        var outputMute = value.GetBoolean();
+                        var currentOutputMute = _outputAudioState.Available && DateTime.UtcNow >= _pendingOutputMuteDisplayUntil
+                            ? _outputAudioState.Muted : _desiredOutputMute ?? false;
+                        if (currentOutputMute != outputMute) ToggleOutputMute();
+                        result = new { requested = outputMute };
+                        break;
+                    case "eq-playback":
+                        await host.Core.ExecuteScriptAsync(
+                            "globalThis.__nativuneEqPlaybackResult=null;(async()=>{try{const v=document.querySelector('video');" +
+                            (value.GetBoolean() ? "await v.play();" : "v.pause();") +
+                            "globalThis.__nativuneEqPlaybackResult={paused:v.paused,currentTime:v.currentTime,readyState:v.readyState," +
+                            "fixture:!!globalThis.__nativuneFixture?.eqProfile,loop:v.loop};" +
+                            "}catch{globalThis.__nativuneEqPlaybackResult={error:'playback-rejected'}}})()");
+                        var playbackRaw = "null";
+                        for (var attempt = 0; attempt < 100 && playbackRaw == "null"; attempt++)
+                        {
+                            playbackRaw = await host.Core.ExecuteScriptAsync("globalThis.__nativuneEqPlaybackResult");
+                            if (playbackRaw == "null") await Task.Delay(50, _lifetime.Token);
+                        }
+                        using (var playbackJson = JsonDocument.Parse(playbackRaw))
+                        {
+                            if (playbackJson.RootElement.ValueKind != JsonValueKind.Object ||
+                                playbackJson.RootElement.TryGetProperty("error", out _))
+                                throw new InvalidOperationException("playback-rejected");
+                            result = playbackJson.RootElement.Clone();
+                        }
+                        break;
+                    case "eq-hang-next-apply":
+                        result = await EqualizerHookEvaluateAsync("(()=>{const eq=__nativuneEq,apply=eq.apply;" +
+                            "eq.apply=(value)=>{eq.apply=apply;apply(value);return new Promise(()=>{})};return {armed:true}})()");
+                        break;
+                    case "eq-overlap-apply":
+                        if (_equalizerDesired is not { } overlapApply || EqualizerStatus.State != EqualizerState.Active)
+                            throw new InvalidOperationException("overlap-not-active");
+                        await EqualizerHookEvaluateAsync("(()=>{const eq=__nativuneEq,apply=eq.apply;" +
+                            "globalThis.__nativuneEqOverlapEntered=false;" +
+                            "eq.apply=(value)=>{eq.apply=apply;globalThis.__nativuneEqOverlapEntered=true;" +
+                            "apply(value);return new Promise(()=>{})};return {armed:true}})()");
+                        var olderApply = ApplyEqualizerAsync(overlapApply with { PreampDb = -6 }, _lifetime.Token);
+                        // A must enter Runtime.evaluate before B supersedes it; do not rely on a scheduling delay.
+                        var overlapEntered = false;
+                        for (var attempt = 0; attempt < 20 && !overlapEntered && !olderApply.IsCompleted; attempt++)
+                        {
+                            var receipt = await EqualizerHookEvaluateAsync("({entered:globalThis.__nativuneEqOverlapEntered===true})");
+                            overlapEntered = receipt.GetProperty("entered").GetBoolean();
+                            if (!overlapEntered) await Task.Delay(25, _lifetime.Token);
+                        }
+                        if (!overlapEntered || olderApply.IsCompleted)
+                        {
+                            await olderApply;
+                            throw new InvalidOperationException("overlap-not-pending");
+                        }
+                        await ApplyEqualizerAsync(overlapApply, _lifetime.Token);
+                        var newerState = EqualizerStatus.State;
+                        var olderPendingAfterNewer = !olderApply.IsCompleted;
+                        await olderApply;
+                        result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                            reason = EqualizerStatus.Reason, attached = EqualizerStatus.Attached,
+                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb,
+                            newerState = newerState.ToString().ToLowerInvariant(), olderPendingAfterNewer };
+                        break;
+                    case "eq-reload-document":
+                        var reloadGeneration = _equalizerGeneration;
+                        var reloadRevision = _equalizerRevision;
+                        var reloadCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        void OnEqReloadCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args) =>
+                            reloadCompleted.TrySetResult(args.IsSuccess);
+                        host.Core.NavigationCompleted += OnEqReloadCompleted;
+                        try
+                        {
+                            host.Core.Reload();
+                            if (!await reloadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10), _lifetime.Token))
+                                throw new InvalidOperationException("eq-reload-navigation-failed");
+                            for (var attempt = 0; attempt < 100 &&
+                                (_equalizerGeneration <= reloadGeneration || _equalizerRevision <= reloadRevision); attempt++)
+                                await Task.Delay(25, _lifetime.Token);
+                            if (_equalizerGeneration <= reloadGeneration || _equalizerRevision <= reloadRevision)
+                                throw new InvalidOperationException("eq-reload-apply-timeout");
+                            result = new { generation = _equalizerGeneration, revision = _equalizerRevision };
+                        }
+                        finally { host.Core.NavigationCompleted -= OnEqReloadCompleted; }
+                        break;
+                    case "eq-host-status":
+                        result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                            reason = EqualizerStatus.Reason, attached = EqualizerStatus.Attached,
+                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb,
+                            gains = _equalizerDesired?.GainsDb, generation = _equalizerGeneration, revision = _equalizerRevision };
+                        break;
+                    case "eq-applied-preamp":
+                        result = await EqualizerHookEvaluateAsync("(()=>{const g=__nativuneEq.__graph();return " +
+                            "{sampleRate:g.ctx?.sampleRate??0,preampDb:g.preamp?20*Math.log10(g.preamp.gain.value):null," +
+                            "gains:g.filters.map(f=>f.gain.value)}})()");
+                        break;
+                    case "eq-apply":
+                        var apply = new EqualizerApply(value.GetProperty("enabled").GetBoolean(),
+                            value.GetProperty("gains").EnumerateArray().Select(x => x.GetDouble()).ToArray(),
+                            value.GetProperty("preampDb").GetDouble(), value.GetProperty("bypass").GetBoolean());
+                        await ApplyEqualizerAsync(apply, _lifetime.Token);
+                        result = _equalizerContext is null
+                            ? JsonSerializer.SerializeToElement(new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                                attached = EqualizerStatus.Attached, ctx = false })
+                            : await EqualizerHookEvaluateAsync("({...__nativuneEq.status(), ctx:!!__nativuneEq.__graph().ctx," +
+                                "contextState:__nativuneEq.__graph().ctx?.state??null,activation:{...__nativuneEqActivation}})");
+                        break;
+                    case "eq-status":
+                        result = _equalizerContext is null
+                            ? JsonSerializer.SerializeToElement(new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                                attached = EqualizerStatus.Attached, ctx = false, generation = _equalizerGeneration })
+                            : await EqualizerHookEvaluateAsync("({...__nativuneEq.status(),ctx:!!__nativuneEq.__graph().ctx," +
+                                "contextState:__nativuneEq.__graph().ctx?.state??null,activation:{...__nativuneEqActivation}," +
+                                "rejectedResumeConsumed:globalThis.__nativuneEqRejectedResumeConsumed===true})");
+                        break;
+                    case "eq-media":
+                        var mediaRaw = await host.Core.ExecuteScriptAsync("(()=>{const v=document.querySelector('video');return {paused:v.paused,currentTime:v.currentTime,currentSrc:v.currentSrc,readyState:v.readyState,fixture:!!globalThis.__nativuneFixture?.eqProfile,trustedClicks:globalThis.__nativuneFixture?.eqTrustedClicks??0}})()");
+                        using (var mediaJson = JsonDocument.Parse(mediaRaw)) result = mediaJson.RootElement.Clone();
+                        break;
+                    case "eq-response":
+                        var gains = value.GetProperty("gains").EnumerateArray().Select(x => x.GetDouble()).ToArray();
+                        var frequencies = value.GetProperty("frequencies").EnumerateArray().Select(x => x.GetDouble()).ToArray();
+                        var sampleRate = value.GetProperty("sampleRate").GetDouble();
+                        if (gains.Length != 10 || gains.Any(x => !double.IsFinite(x) || Math.Abs(x) > 12) ||
+                            frequencies.Length is < 1 or > 64 || frequencies.Any(x => !double.IsFinite(x) || x <= 0 || x >= sampleRate / 2) ||
+                            sampleRate is not (44100 or 48000)) throw new InvalidDataException("response-values");
+                        result = new { responseDb = EqualizerMath.ResponseDb(gains, sampleRate, frequencies) };
+                        break;
+                    case "eq-profile":
+                        var profile = value.GetString();
+                        if (profile is not ("tones-48000" or "tones-44100" or "tones-16000" or "transient-48000" or
+                            "transient-44100" or "click-48000" or "click-44100" or "foreign-source"))
+                            throw new InvalidDataException("profile");
+                        result = await host.Core.ExecuteScriptAsync($"globalThis.__nativuneFixture.eqProfile({JsonSerializer.Serialize(profile)})");
+                        break;
+                    case "eq-blocked-navigate":
+                    case "eq-redirect-navigate":
+                        var blockedNavigationBefore = _blockedNavigation;
+                        await host.Core.ExecuteScriptAsync(command == "eq-redirect-navigate"
+                            ? "location.href='https://music.youtube.com/__nativune_eq_redirect'"
+                            : "location.href='https://example.com/'");
+                        for (var attempt = 0; attempt < 100 && _blockedNavigation == blockedNavigationBefore; attempt++)
+                            await Task.Delay(50, _lifetime.Token);
+                        if (_blockedNavigation == blockedNavigationBefore)
+                            throw new InvalidOperationException("Blocked navigation was not observed.");
+                        result = new { blocked = true };
+                        break;
+                    case "eq-replace-element":
+                        result = await host.Core.ExecuteScriptAsync("globalThis.__nativuneFixture.eqReplaceElement()");
+                        break;
+                    case "eq-navigate":
+                        host.Core.Navigate("https://music.youtube.com/?eq=1&world=" + Guid.NewGuid().ToString("N"));
+                        result = new { navigating = true };
+                        break;
+                    case "eq-suspend":
+                        result = await EqualizerHookEvaluateAsync("(async()=>{await __nativuneEq.__graph().ctx.suspend();return __nativuneEq.status()})()");
+                        break;
+                    case "eq-reject-resume":
+                        result = await EqualizerHookEvaluateAsync("(()=>{const c=__nativuneEq.__graph().ctx;const r=c.resume.bind(c);globalThis.__nativuneEqRejectedResumeConsumed=false;" +
+                            "c.resume=()=>{c.resume=r;globalThis.__nativuneEqRejectedResumeConsumed=true;return Promise.resolve()};return {armed:true}})()");
+                        break;
+                    case "eq-collect-reset":
+                        await InstallEqualizerCollectorAsync();
+                        result = await EqualizerHookEvaluateAsync($"__nativuneEqCollect.reset({(value.ValueKind == JsonValueKind.Object ? value.GetRawText() : "{}")})");
+                        break;
+                    case "eq-collect-read":
+                        result = await EqualizerHookEvaluateAsync("__nativuneEqCollect.read()");
+                        break;
+                    case "eq-rms":
+                        // Real Music's CSP can block the AudioWorklet module, so the real-site smoke uses a
+                        // temporary AnalyserNode on the post-preamp output: RMS numbers only, no samples kept.
+                        result = await EqualizerHookEvaluateAsync("(async()=>{const g=__nativuneEq.__graph();if(!g.ctx||!g.preamp)return {ok:false};" +
+                            "const a=g.ctx.createAnalyser();a.fftSize=2048;g.preamp.connect(a);const b=new Float32Array(a.fftSize);let max=0,sum=0;" +
+                            "for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,50));a.getFloatTimeDomainData(b);let s=0;for(const v of b)s+=v*v;" +
+                            "const rms=Math.sqrt(s/b.length);sum+=rms;if(rms>max)max=rms;}g.preamp.disconnect(a);" +
+                            "return {ok:true,meanRms:sum/20,maxRms:max,contextState:g.ctx.state}})()");
+                        break;
+                    case "eq-mutant":
+                        var mutant = value.GetString();
+                        if (mutant is not ("none" or "parallel" or "zero-ramp" or "preamp-ignored" or "duplicate-path"))
+                            throw new InvalidDataException("mutant");
+                        await InstallEqualizerCollectorAsync();
+                        result = await EqualizerHookEvaluateAsync($"__nativuneEqCollect.mutant({JsonSerializer.Serialize(mutant)})");
+                        break;
+                    case "eq-stale":
+                        // The late request uses the current epoch but a strictly older revision.
+                        result = await EqualizerHookEvaluateAsync($"__nativuneEq.apply({{rev:{_equalizerRevision - 1},epoch:{_equalizerGeneration},enabled:false,gains:Array(10).fill(0),preampDb:0,bypass:false}})");
+                        break;
+                    default: throw new InvalidDataException("command");
+                }
+                DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory, "eq-" + label + ".json"),
+                    JsonSerializer.Serialize(new { ok = true, result, generation = _equalizerGeneration }));
+            }
+            catch (Exception ex)
+            {
+                File.Delete(path);
+                DiscordPresenceDiagnostics.WriteAtomically(Path.Combine(_discordBenchDirectory, "eq-" + label + ".json"),
+                    JsonSerializer.Serialize(new { ok = false, error = ex.GetType().Name, hresult = ex.HResult, detail = ex.Message }));
+            }
+        }
+    }
+
+    private async Task<JsonElement> EqualizerHookEvaluateAsync(string expression)
+    {
+        if (_equalizerContext is not int context || _browserHost is not { } host)
+            throw new InvalidOperationException("No equalizer world.");
+        var raw = await host.Core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", JsonSerializer.Serialize(new {
+            expression, contextId = context, returnByValue = true, awaitPromise = true, timeout = 5000
+        })).AsTask().WaitAsync(TimeSpan.FromSeconds(6), _lifetime.Token);
+        using var json = JsonDocument.Parse(raw);
+        if (json.RootElement.TryGetProperty("exceptionDetails", out _)) throw new InvalidDataException("EQ hook evaluation.");
+        return json.RootElement.GetProperty("result").GetProperty("value").Clone();
+    }
+
+    private async Task InstallEqualizerCollectorAsync()
+    {
+        using var stream = typeof(WebHostWindow).Assembly.GetManifestResourceStream("Nativune.EqualizerCollector.js")
+            ?? throw new InvalidOperationException("Missing EQ collector.");
+        using var reader = new StreamReader(stream);
+        await EqualizerHookEvaluateAsync(await reader.ReadToEndAsync());
     }
 
     private string DiscordBenchStateJson(string label)

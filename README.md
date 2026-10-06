@@ -133,6 +133,14 @@ Nativune takes a narrower approach. It puts the official website in a native Win
   - **What is not included:** Better Lyrics' themes, accounts and community features, romanization, picture-in-picture, custom fullscreen, songwriter credits and plain (unsynced) lyrics. Only synced lyrics and translation remain.
   - **Limitations:** unlike Compact and Discord status, it does not need the English site language; it depends on YouTube Music's page layout, so a site change can break it; and some songs have no synced lyrics anywhere. An update that changes the bundled lyrics version reinstalls the extension, which resets its lyric settings.
   - **License and source:** it runs as a separate extension, Barebones Better Lyrics 2.4.1.2, a modified Better Lyrics 2.4.1 under GPL-3.0. It uses the newer lyric display library from Better Lyrics 3.0.0.1 (`@braccato/core` 1.12.5), so explicit words are no longer struck through and translated lines are not clipped. Nativune itself stays MIT. Its source is the `barebones-better-lyrics-<version>-source.zip` beside each release and [its public repository](https://github.com/Hantu-Raya/barebones-better-lyrics). See [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+- **Equalizer, off by default.** Settings › Equalizer has a 10-band graphic equalizer (31.5 Hz to 16 kHz, ±12 dB in 0.5 dB steps).
+  - **Presets:** eight built-ins (Flat, Bass boost, Bass reducer, Treble boost, Treble reducer, Vocal, Loudness, Spoken word) and up to 20 of your own. You can save, rename, duplicate and delete them, and copy or paste them as text.
+  - **Editing:** moving a slider plays the change right away; **Save** keeps it and **Cancel** restores the saved state. A response curve shows the shape, and **Bypass (compare)** lets you hear the difference.
+  - **Auto headroom**, on by default, lowers the overall level by the largest boost to reduce the risk of clipping. It cannot guarantee that nothing clips.
+  - **Turn it on or off** from the More menu.
+  - **How it works:** Nativune runs the filters inside YouTube Music's own player, in a separate script context the website cannot see. Nothing is downloaded, extracted or sent anywhere, and no system-wide audio setting changes.
+  - **Status:** if the equalizer is waiting, interrupted or not applied, Settings and Compact say so. **Reload without EQ** turns it off and reloads the page.
+  - **Limitations:** it depends on YouTube Music using a single media element, which a site change could break. Protected (DRM) media is detected but untested.
 - **Per-user installer** with SHA-256 checksums. It does not need administrator rights to install Nativune itself.
 - **Update indicator** that checks GitHub Releases and never downloads or installs anything without a click.
 

@@ -558,7 +558,7 @@ try {
     if ($stubReused) { Write-Host "Installer stub: reused $stubSha256" } else { Write-Host "Installer stub: built $stubSha256" }
     # Test and benchmark seams must be compiled out of public builds (UpdaterTestHooks/PerfBenchHooks/DiscordPresenceTestHooks/InstallerTestHooks=false above).
     $seamChecks = @(
-        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_', 'NATIVUNE_TEST_DISCORD', 'nativune-discord-fixture') },
+        @{ Path = Join-Path $appPublishRoot 'Nativune.dll'; Markers = @('NATIVUNE_TEST_RELEASE_METADATA_URL', 'NATIVUNE_BENCH_', 'NATIVUNE_TEST_DISCORD', 'nativune-discord-fixture', 'NATIVUNE_TEST_EQ_FIXTURE', 'NATIVUNE_TEST_EQ_REAL_MUSIC', 'EqualizerCollector.js', 'eq-mutant', 'eq-block-activation', '__nativuneEqActivation', '__nativuneEqPreparedContext', 'eq-synthetic-event') },
         @{ Path = $stubPath; Markers = @('--test-prerequisites', '--test-shortcut-roundtrip', '--test-detector-dump') }
     )
     foreach ($check in $seamChecks) {

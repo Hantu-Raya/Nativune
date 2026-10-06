@@ -73,6 +73,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly CompactArtworkCanvas _artwork;
     private readonly CompactMarqueeText _title;
     private readonly TextBlock _inlineStatus;
+    private string _equalizerStatusText = string.Empty;
     private readonly TextBlock _elapsed;
     private readonly TextBlock _duration;
     private readonly CompactSeekSlider _seek;
@@ -1114,6 +1115,21 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             (invoker ?? _more).Focus(FocusState.Programmatic);
     }
 
+    internal void SetEqualizerStatus(EqualizerStatus status)
+    {
+        _equalizerStatusText = status.State switch
+        {
+            // Compact has one short status line: only surface EQ states that need the user's attention.
+            EqualizerState.Off or EqualizerState.Active or EqualizerState.Bypassed => string.Empty,
+            EqualizerState.Waiting => "EQ: Waiting",
+            EqualizerState.Interrupted or EqualizerState.ReloadNeeded => "EQ: Interrupted — Reload needed",
+            EqualizerState.ProtectedMedia => "EQ: Protected media",
+            EqualizerState.NotApplied => "EQ: Not applied",
+            _ => "EQ: Unavailable"
+        };
+        UpdateInlineStatus();
+    }
+
     private void UpdateInlineStatus()
     {
         if (_disposed) return;
@@ -1127,6 +1143,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             : timedNotice ? _notice
             : updateNotice ? _updateNotice
             : fallback;
+        if (_equalizerStatusText.Length != 0)
+            text = text.Length == 0 ? _equalizerStatusText : $"{_equalizerStatusText} · {text}";
         SetTextIfChanged(_inlineStatus, text);
         var visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (_inlineStatus.Visibility != visibility) _inlineStatus.Visibility = visibility;
@@ -1134,7 +1152,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _inlineStatus.Foreground = isNotice
             ? ShellTheme.Brush("PrimaryTextBrush", Colors.White)
             : ShellTheme.Brush("SecondaryTextBrush", ColorHelper.FromArgb(0xFF, 0xAA, 0xAA, 0xAA));
-        SetAccessible(_inlineStatus, isNotice ? "Notice" : "Application status", isNotice
+        SetAccessible(_inlineStatus, isNotice ? "Notice" : "Application status", isNotice || _equalizerStatusText.Length != 0
             ? text
             : BuildStatusMenuDescription(_statusMessage, _state is not null));
         UpdateStatusMenuItem();

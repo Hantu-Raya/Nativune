@@ -123,6 +123,7 @@ internal static class ShellChecks
         _ = ShellSettings.Load(root, out warning);
         Require(warning is not null, "Oversized settings were accepted.");
         ShellSettings.SaveAsync(root, settings, CancellationToken.None).GetAwaiter().GetResult();
+        CheckEqualizerSettings(root, settings);
 
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
@@ -162,6 +163,133 @@ internal static class ShellChecks
         CompactPlaybackChecks.Run();
         CheckNativeHost(root);
         Console.WriteLine("Shell checks passed: persisted settings, DPI/off-screen repair, corrupt/oversized input, cancelled writes, timer cancellation and WinUI native lifecycle.");
+    }
+
+    private static void CheckEqualizerSettings(string root, ShellSettings original)
+    {
+        var file = Path.Combine(root, "data", "settings.json");
+        File.WriteAllText(file,
+            "{\"Version\":7,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"DiscordPresence\":true}");
+        var upgraded = ShellSettings.Load(root, out var warning);
+        Require(warning is null && upgraded.Discord.Enabled,
+            "Version 7 Discord opt-in was lost during the version 8 upgrade.");
+        // Files written by the first equalizer builds say Version 8; they must still load in full.
+        File.WriteAllText(file,
+            "{\"Version\":8,\"X\":100,\"Y\":100,\"Width\":1234,\"Height\":800,\"Dpi\":96,\"Maximized\":false,\"Zoom\":1,\"DiscordPresence\":true," +
+            "\"Equalizer\":{\"enabled\":true,\"selectedPresetId\":null,\"gainsDb\":[1,0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[]}}");
+        var fromV8 = ShellSettings.Load(root, out warning);
+        Require(warning is null && fromV8.Width == 1234 && fromV8.Discord.Enabled && fromV8.Equalizer.Enabled && fromV8.Equalizer.GainsDb[0] == 1,
+            "A version 8 settings file did not load in full.");
+
+        var bass = EqualizerPresets.Find(EqualizerSettings.Default, "bass-boost")!;
+        var customs = new[]
+        {
+            new EqualizerPreset("c-01234567", "My bass", bass.GainsDb, -3, false, false),
+            new EqualizerPreset("c-89abcdef", "My flat", new double[10], 0, true, false)
+        };
+        var equalizer = new EqualizerSettings(true, customs[0].Id, bass.GainsDb, -3, false, customs);
+        ShellSettings.SaveAsync(root, original with { Equalizer = equalizer }, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        var loaded = ShellSettings.Load(root, out warning);
+        Require(warning is null && loaded.Equalizer.CustomPresets.Count == 2
+            && EqualizerSharing.Export(customs[0]) == EqualizerSharing.Export(loaded.Equalizer.CustomPresets[0])
+            && EqualizerSharing.Export(customs[1]) == EqualizerSharing.Export(loaded.Equalizer.CustomPresets[1])
+            && loaded.Equalizer.Enabled == equalizer.Enabled
+            && loaded.Equalizer.SelectedPresetId == equalizer.SelectedPresetId
+            && loaded.Equalizer.GainsDb.SequenceEqual(equalizer.GainsDb)
+            && loaded.Equalizer.ManualPreampDb == equalizer.ManualPreampDb
+            && loaded.Equalizer.AutoHeadroom == equalizer.AutoHeadroom,
+            "Version 8 equalizer settings with two custom presets did not round trip.");
+
+        var valid = File.ReadAllText(file);
+        var invalidSubtrees = new[]
+        {
+            "{\"enabled\":true,\"selectedPresetId\":\"flat\",\"gainsDb\":[0,0,0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[]}",
+            "{\"enabled\":true,\"selectedPresetId\":\"flat\",\"gainsDb\":[\"NaN\",0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[]}",
+            "{\"enabled\":true,\"selectedPresetId\":\"flat\",\"gainsDb\":[99,0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[]}",
+            "{\"enabled\":true,\"selectedPresetId\":\"flat\",\"gainsDb\":[0,0,0,0,0,0,0,0,0,0],\"manualPreampDb\":0,\"autoHeadroom\":true,\"customPresets\":[{\"id\":\"c-01234567\",\"name\":\"One\",\"gainsDb\":[0,0,0,0,0,0,0,0,0,0],\"preampDb\":0,\"autoHeadroom\":true},{\"id\":\"c-01234567\",\"name\":\"Two\",\"gainsDb\":[0,0,0,0,0,0,0,0,0,0],\"preampDb\":0,\"autoHeadroom\":true}]}"
+        };
+        foreach (var subtree in invalidSubtrees)
+        {
+            var document = System.Text.Json.Nodes.JsonNode.Parse(valid)!;
+            document["Equalizer"] = System.Text.Json.Nodes.JsonNode.Parse(subtree);
+            File.WriteAllText(file, document.ToJsonString());
+            loaded = ShellSettings.Load(root, out warning);
+            Require(warning is not null && loaded.Equalizer == EqualizerSettings.Default
+                && !loaded.Equalizer.Enabled && loaded.Width == original.Width
+                && loaded.AutoCheckUpdates == original.AutoCheckUpdates && loaded.StartCompact == original.StartCompact,
+                "An invalid equalizer subtree rejected other settings or did not disable EQ with a warning.");
+        }
+
+        var worst = Enumerable.Range(0, 20).Select(index => new EqualizerPreset($"c-{index:x8}",
+            $"{index:D2}" + string.Concat(Enumerable.Repeat("界\"", 19)),
+            Enumerable.Repeat(-12.0, 10).ToArray(), -24, false, false)).ToArray();
+        ShellSettings.SaveAsync(root, original with
+        {
+            Equalizer = new EqualizerSettings(true, worst[0].Id, worst[0].GainsDb, -24, false, worst)
+        }, CancellationToken.None).GetAwaiter().GetResult();
+        Require(new FileInfo(file).Length <= 16 * 1024
+            && ShellSettings.Load(root, out warning).Equalizer.CustomPresets.Count == 20 && warning is null,
+            "Twenty equalizer presets with 40-character escaped multi-byte names exceeded the settings cap.");
+        var before = File.ReadAllBytes(file);
+        try
+        {
+            ShellSettings.SaveAsync(root, original with
+            {
+                Equalizer = equalizer with { SelectedPresetId = new string('x', 20 * 1024) }
+            }, CancellationToken.None).GetAwaiter().GetResult();
+            throw new SelfCheckException("Oversized settings write was accepted.");
+        }
+        catch (IOException) { }
+        Require(before.SequenceEqual(File.ReadAllBytes(file)), "Oversized save replaced the previous settings file.");
+
+        var share = EqualizerSharing.Export(customs[0]);
+        Require(EqualizerSharing.TryImport(share, out var staged, out _) && staged is { Id: "unsaved", BuiltIn: false }
+            && EqualizerSharing.Export(staged) == share, "Equalizer sharing did not round trip.");
+        var invalidShares = new[]
+        {
+            new string(' ', 2049), share.Replace("nativune-eq", "other", StringComparison.Ordinal),
+            share.Replace("\"version\":1", "\"version\":2", StringComparison.Ordinal),
+            share.Replace("\"preampDb\":-3", "\"preampDb\":\"NaN\"", StringComparison.Ordinal),
+            share.Replace("\"preampDb\":-3", "\"preampDb\":1e999", StringComparison.Ordinal),
+            share.Replace("\"preampDb\":-3", "\"preampDb\":99", StringComparison.Ordinal),
+            share.Replace("[6,5,4,2,0,0,0,0,0,0]", "[99,5,4,2,0,0,0,0,0,0]", StringComparison.Ordinal),
+            share.Replace("[6,5,4,2,0,0,0,0,0,0]", "[6,5,4,2,0,0,0,0,0]", StringComparison.Ordinal),
+            share.Replace("My bass", "My\\u0001bass", StringComparison.Ordinal)
+        };
+        foreach (var invalid in invalidShares)
+            Require(!EqualizerSharing.TryImport(invalid, out staged, out var error) && staged is null
+                && !string.IsNullOrWhiteSpace(error), "Malformed equalizer share was accepted or lacked an error.");
+
+        Require(EqualizerMath.ResponseDb(new double[10], 48000, EqualizerBands.CentresHz).All(value => value == 0)
+            && EqualizerMath.EffectivePreampDb(EqualizerSettings.Default) == 0,
+            "Flat equalizer was not exactly unity.");
+        foreach (var rate in new[] { 48000.0, 44100.0 })
+        {
+            var gains = new double[10];
+            gains[5] = 6;
+            Require(Math.Abs(EqualizerMath.ResponseDb(gains, rate, new[] { 1000.0 })[0] - 6) <= 0.05,
+                $"Peaking biquad did not produce +6 dB at its centre at {rate} Hz.");
+            var bassSettings = EqualizerSettings.Default with { GainsDb = bass.GainsDb };
+            Require(Math.Abs(EqualizerMath.EffectivePreampDb(bassSettings, rate)
+                + EqualizerMath.EstimatedPeakDb(bass.GainsDb, rate) + 1) < 1e-10,
+                $"Bass boost auto headroom did not subtract the peak plus 1 dB at {rate} Hz.");
+        }
+        // Low device rates (Codex review): 16 kHz hands-free and 22.05 kHz must not throw; bands at or above
+        // Nyquist are unity because Web Audio clamps their frequency to Nyquist.
+        foreach (var rate in new[] { 16000.0, 22050.0 })
+        {
+            var trebleOnly = new double[10];
+            trebleOnly[8] = 6; trebleOnly[9] = 6;
+            var belowNyquist = Enumerable.Range(0, 50).Select(i => 20 * Math.Pow((rate / 2 - 1) / 20, i / 49.0)).ToArray();
+            var treble = EqualizerMath.ResponseDb(trebleOnly, rate, belowNyquist);
+            Require(rate == 16000 ? treble.All(value => value == 0) : treble.Max() > 0.5,
+                $"Bands at or above Nyquist were not unity (or a band below it was ignored) at {rate} Hz.");
+            var low = EqualizerSettings.Default with { GainsDb = bass.GainsDb };
+            Require(double.IsFinite(EqualizerMath.EffectivePreampDb(low, rate)) && EqualizerMath.EffectivePreampDb(low, rate) < 0,
+                $"Auto headroom failed at a {rate} Hz output rate.");
+        }
+        ShellSettings.SaveAsync(root, original, CancellationToken.None).GetAwaiter().GetResult();
     }
 
 

@@ -877,6 +877,8 @@ public sealed partial class WebHostWindow : Window
             core.HistoryChanged += (_, _) => UpdateNavigation();
             core.SourceChanged += (_, _) => ObserveSection();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
+            // Keep the live document's controller through cancelled navigations and redirects.
+            core.ContentLoading += (_, _) => InvalidateEqualizer();
             core.NewWindowRequested += (_, args) => OnNewWindowRequested(args);
             core.PermissionRequested += (_, args) => OnPermissionRequested(args);
             core.DownloadStarting += (_, args) => OnDownloadStarting(args);
@@ -1077,6 +1079,7 @@ public sealed partial class WebHostWindow : Window
             ObserveSection();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
+            _ = OnEqualizerNavigationCompletedAsync(args);
         }
     }
 
@@ -1438,7 +1441,17 @@ public sealed partial class WebHostWindow : Window
             var applied = _sessionShortcuts?.TryApply(bindings, out error) == true;
             _shortcutsItem.IsChecked = _shortcutsEnabled;
             return applied ? null : error;
-        }, installed, startupState, () => _statusDetailsText, _root);
+        }, installed, startupState, () => _statusDetailsText, _root,
+            previewEqualizer: async apply => { await ApplyEqualizerAsync(apply, _lifetime.Token); },
+            equalizerStatus: () => EqualizerStatus,
+            subscribeEqualizerStatus: callback =>
+            {
+                EventHandler handler = (_, _) => callback();
+                EqualizerStatusChanged += handler;
+                return () => EqualizerStatusChanged -= handler;
+            },
+            reloadWithoutEqualizer: ReloadWithoutEqualizerAsync,
+            restoreEqualizer: ApplyEqualizerFromSettingsAsync);
         dialog.SetDiscordStatus(_discord?.Status ?? DiscordPresenceStatus.Off);
         dialog.SetLyricsStatus(LyricsStatusText, _lyricsState.IsInstalled && _settings.BetterLyricsEnabled);
         dialog.OpenLyricsSettingsRequested += async (_, _) => await OpenLyricsSettingsAsync();
@@ -1470,6 +1483,11 @@ public sealed partial class WebHostWindow : Window
     {
         try
         {
+            if (_openEqualizerSettings)
+            {
+                _openEqualizerSettings = false;
+                dialog.SelectEqualizerPage();
+            }
             if (await dialog.ShowAsync(this))
             {
                 var sleepSettingChanged = _settings.SleepInBackground != dialog.Result.SleepInBackground;
@@ -1489,8 +1507,10 @@ public sealed partial class WebHostWindow : Window
                     RestoreSection = dialog.Result.RestoreSection,
                     Discord = dialog.Result.Discord,
                     ObsOverlay = dialog.Result.ObsOverlay,
+                    Equalizer = dialog.Result.Equalizer,
                     ObsHidePaused = dialog.Result.ObsHidePaused
                 };
+                await ApplyEqualizerFromSettingsAsync();
                 ApplyDiscordOptions(_settings.Discord);
                 RefreshDiscordSurfaces();
                 ApplyObsHidePaused(_settings.ObsHidePaused);
@@ -1533,8 +1553,10 @@ public sealed partial class WebHostWindow : Window
                 RefreshShortcutDescriptions();
                 CompactView.SetPreferences(_settings.ReduceMotion, _presenter?.IsAlwaysOnTop == true);
                 UpdateLoadingSpinner();
-                CaptureSettings();
-                if (startupError is not null)
+                var persisted = await SaveSettingsConfirmedAsync();
+                if (!persisted)
+                    SetStatus("Settings apply for this session only; they could not be saved.", isError: true);
+                else if (startupError is not null)
                     SetStatus(startupError, isError: true);
                 else if (lyricsChanged && !_settings.BetterLyricsEnabled && LyricsOffSaveFailed)
                     SetStatus(LyricsOffUnsavedMessage, isError: true);
@@ -2301,6 +2323,7 @@ public sealed partial class WebHostWindow : Window
         try { _playerControls?.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _playerControls = null;
         try { DisposeOutputAudio(); } catch (Exception ex) { RememberFailure(ex); }
+        try { DisposeEqualizer(); } catch (Exception ex) { RememberFailure(ex); }
         try { _taskbarControls?.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _taskbarControls = null;
         try { _sleep?.Cancel(); } catch (Exception ex) { RememberFailure(ex); }
