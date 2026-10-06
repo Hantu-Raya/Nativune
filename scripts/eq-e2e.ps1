@@ -36,7 +36,7 @@ foreach ($rate in @(48000,44100)) {
     foreach ($suffix in @('cold-Off','natural-policy','gesture-active','blob-playing','series-response','Flat-null',
         'attached-Off-null','transient','mutant-parallel','restore-parallel','mutant-preamp-ignored','restore-preamp-ignored',
         'mutant-duplicate-path','restore-duplicate-path','click-none','click-zero-ramp','stale-rollback',
-        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world')) {
+        'suspend-rejected-resume','normal-resume','suspend-normal-resume','source-change-after-attach','source-restored-after-attach','blocked-navigation-keeps-eq','element-replacement','navigation-new-world','indeterminate-apply-reload-needed')) {
         $requiredRows += "$rate.$suffix"
     }
     for ($band=0;$band -lt 10;$band++) { $requiredRows += "$rate.band-$band-response" }
@@ -342,6 +342,23 @@ function Run-Rate([int] $Rate) {
         $new=Hook 'eq-status'
         $generationAfter=(Get-Content -Raw (Join-Path $script:root ('data/discord-bench/eq-r'+$script:sequence.ToString('d5')+'.json'))|ConvertFrom-Json).generation
         Row "$Rate.navigation-new-world" ($newOff -and -not $new.ctx -and -not $new.attached -and $generationAfter -gt $generationBefore) @{before=$generationBefore;after=$generationAfter;status=$new}
+        # Fresh document: prove the timeout transitions from Active, not an existing Reload needed.
+        [void](Hook 'eq-profile' "tones-$Rate")
+        Click-Page
+        [void](Apply $series -12)
+        if (-not (Status-Is 'active' 20)) { throw 'Indeterminate apply prerequisite was not Active.' }
+        $beforeHang=Hook 'eq-host-status'
+        [void](Hook 'eq-hang-next-apply')
+        [void](Apply $series -6)
+        $hung=Hook 'eq-host-status'
+        [void](Apply $series -12 $false)
+        # Allow the normal polling interval to elapse; it must not replace the host's recovery state.
+        Start-Sleep -Seconds 5
+        $afterOff=Hook 'eq-host-status'
+        Row "$Rate.indeterminate-apply-reload-needed" ($beforeHang.state -ceq 'active' -and
+            $hung.state -ceq 'reloadneeded' -and $hung.reason -ceq 'controller' -and $hung.attached -and
+            $afterOff.state -ceq 'reloadneeded' -and $afterOff.reason -ceq 'controller' -and $afterOff.attached) @{
+                before=$beforeHang;afterTimeout=$hung;afterOffAndPoll=$afterOff}
     } finally { Stop-Fixture }
 }
 function Run-InjectedBlock([int] $Rate) {

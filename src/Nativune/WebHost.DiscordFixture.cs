@@ -549,7 +549,8 @@ public sealed partial class WebHostWindow
                             AutoHeadroom = !value.TryGetProperty("autoHeadroom", out var mathAuto) || mathAuto.GetBoolean() };
                         if (!double.IsFinite(mathSettings.ManualPreampDb) || mathSettings.ManualPreampDb is < -24 or > 6)
                             throw new InvalidDataException("math-preamp");
-                        result = new { effectivePreampDb = EqualizerMath.EffectivePreampDb(mathSettings),
+                        result = new { effectivePreampDb = EqualizerMath.EffectivePreampDb(mathSettings,
+                                value.TryGetProperty("sampleRate", out var mathRate) ? mathRate.GetDouble() : 48000),
                             mayClip = EqualizerMath.MayClip(mathSettings) };
                         break;
                     case "eq-session":
@@ -597,6 +598,19 @@ public sealed partial class WebHostWindow
                                 throw new InvalidOperationException("playback-rejected");
                             result = playbackJson.RootElement.Clone();
                         }
+                        break;
+                    case "eq-hang-next-apply":
+                        result = await EqualizerHookEvaluateAsync("(()=>{const eq=__nativuneEq,apply=eq.apply;" +
+                            "eq.apply=(value)=>{eq.apply=apply;apply(value);return new Promise(()=>{})};return {armed:true}})()");
+                        break;
+                    case "eq-host-status":
+                        result = new { state = EqualizerStatus.State.ToString().ToLowerInvariant(),
+                            reason = EqualizerStatus.Reason, attached = EqualizerStatus.Attached,
+                            sampleRate = EqualizerStatus.SampleRate, preampDb = _equalizerDesired?.PreampDb };
+                        break;
+                    case "eq-applied-preamp":
+                        result = await EqualizerHookEvaluateAsync("(()=>{const g=__nativuneEq.__graph();return " +
+                            "{sampleRate:g.ctx?.sampleRate??0,preampDb:g.preamp?20*Math.log10(g.preamp.gain.value):null}})()");
                         break;
                     case "eq-apply":
                         var apply = new EqualizerApply(value.GetProperty("enabled").GetBoolean(),

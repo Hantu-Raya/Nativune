@@ -71,6 +71,7 @@ public sealed partial class SettingsDialog : Window
     private bool _eqUpdating;
     private bool _eqEdited;
     private bool _eqRecoveryOff;
+    private double? _eqPreviewSampleRate;
     private string? _eqNameOperation;
 
 
@@ -267,13 +268,24 @@ public sealed partial class SettingsDialog : Window
         {
             _eqPreviewTimer.Stop();
             if (_closed || _previewEqualizer is null) return;
-            var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true, ActiveEqualizerSampleRate());
+            var sampleRate = ActiveEqualizerSampleRate();
+            var apply = EqualizerApply.From(_equalizer, EqBypass.IsChecked == true, sampleRate);
+            _eqPreviewSampleRate = sampleRate;
             try { await _previewEqualizer(apply); }
             catch (Exception) { if (!_closed) EqError.Text = "Equalizer preview is unavailable."; }
         };
         RefreshEqualizerControls();
         RefreshEqualizerStatus();
-        _unsubscribeEqualizer = subscribe?.Invoke(() => { if (!_closed) RefreshEqualizerStatus(); });
+        _unsubscribeEqualizer = subscribe?.Invoke(() =>
+        {
+            if (_closed) return;
+            RefreshEqualizerStatus();
+            if (_eqPreviewSampleRate is double rate && _equalizer.AutoHeadroom && rate != ActiveEqualizerSampleRate())
+            {
+                _eqPreviewTimer.Stop();
+                _eqPreviewTimer.Start();
+            }
+        });
     }
 
     private void SetEqualizerBand(int index, double value)

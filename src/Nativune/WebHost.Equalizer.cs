@@ -110,7 +110,7 @@ public sealed partial class WebHostWindow
             if (EqualizerRequestCurrent(core, generation))
             {
                 _equalizerUnknownOutcome = true;
-                SetEqualizerStatus(new(EqualizerState.Unavailable, "controller", null, null, EqualizerStatus.Attached));
+                SetEqualizerStatus(new(EqualizerState.ReloadNeeded, "controller", null, null, EqualizerStatus.Attached));
             }
         }
         UpdateEqualizerPolling();
@@ -241,7 +241,7 @@ public sealed partial class WebHostWindow
 
     private async Task PollEqualizerAsync()
     {
-        if (_equalizerPolling || _equalizerContext is not int context || _browserHost?.Core is not { } core) return;
+        if (_equalizerUnknownOutcome || _equalizerPolling || _equalizerContext is not int context || _browserHost?.Core is not { } core) return;
         var generation = _equalizerGeneration;
         var revision = _equalizerRevision;
         if (!EqualizerRequestCurrent(core, generation)) { _equalizerTimer?.Stop(); return; }
@@ -249,11 +249,11 @@ public sealed partial class WebHostWindow
         try
         {
             var status = await EvaluateEqualizerStatusAsync(core, context, "globalThis.__nativuneEq.status()", _lifetime.Token);
-            if (EqualizerRequestCurrent(core, generation) && revision == _equalizerRevision) SetEqualizerStatus(status);
+            if (!_equalizerUnknownOutcome && EqualizerRequestCurrent(core, generation) && revision == _equalizerRevision) SetEqualizerStatus(status);
         }
         catch (Exception)
         {
-            if (EqualizerRequestCurrent(core, generation) && revision == _equalizerRevision)
+            if (!_equalizerUnknownOutcome && EqualizerRequestCurrent(core, generation) && revision == _equalizerRevision)
                 SetEqualizerStatus(new(EqualizerState.Unavailable, "status", null, null, EqualizerStatus.Attached));
         }
         finally { _equalizerPolling = false; UpdateEqualizerPolling(); }

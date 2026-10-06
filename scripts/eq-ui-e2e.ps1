@@ -395,6 +395,37 @@ function Run-Reload {
     $fileAfterReload=File-State
     Row 'reload-success-disables' ($reloadedOff -and -not $fileAfterReload.equalizer.enabled) @{status=$script:afterReload;fileEnabled=$fileAfterReload.equalizer.enabled}
 }
+function Run-FirstPreviewRate {
+    Start-Fixture 'first-preview-rate' 16000 (Seed)
+    Click-Page
+    Open-Settings
+    # Stage a draft with a boosted band above the real Nyquist while EQ is still Off.
+    Enter-Text 'EqBandBox9' '12'
+    $draftGains=@(0,0,0,0,0,0,0,0,0,12)
+    $fallback=Hook 'eq-math' @{gains=$draftGains;sampleRate=48000}
+    $real=Hook 'eq-math' @{gains=$draftGains;sampleRate=16000}
+    $staged=Wait-For { $script:stagedPreview=Hook 'eq-host-status'
+        $null -eq $script:stagedPreview.sampleRate -and
+        [math]::Abs($script:stagedPreview.preampDb-$fallback.effectivePreampDb) -lt 0.001 } 10
+    Toggle 'EqEnabled' $true
+    $script:appliedPreview=$null
+    $reapplied=Wait-For {
+        $script:ratePreview=Hook 'eq-host-status'
+        if ($script:ratePreview.state -cne 'active') { return $false }
+        $script:appliedPreview=Hook 'eq-applied-preamp'
+        $script:ratePreview.state -ceq 'active' -and $script:ratePreview.sampleRate -eq 16000 -and
+        [math]::Abs($script:ratePreview.preampDb-$real.effectivePreampDb) -lt 0.001 -and
+        $script:appliedPreview.sampleRate -eq 16000 -and
+        [math]::Abs($script:appliedPreview.preampDb-$real.effectivePreampDb) -lt 0.01
+    } 20
+    $persisted=File-State
+    Row 'first-preview-real-rate-auto-headroom' ($staged -and $reapplied -and
+        [math]::Abs($fallback.effectivePreampDb-$real.effectivePreampDb) -gt 1 -and
+        -not $persisted.equalizer.enabled -and (Same-Gains $persisted.equalizer.gainsDb @(0,0,0,0,0,0,0,0,0,0))) @{
+            staged=$script:stagedPreview;host=$script:ratePreview;applied=$script:appliedPreview;
+            fallbackDb=$fallback.effectivePreampDb;realDb=$real.effectivePreampDb;persisted=$persisted}
+    Close-Settings
+}
 function Run-LowRate {
     # Codex review: a 16 kHz output (e.g. Bluetooth hands-free) must not stop Settings or the curve.
     Start-Fixture 'low-rate' 16000 (Seed $true)
@@ -592,6 +623,7 @@ $requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-c
     'paste-invalid-oversize','more-toggle-persists-status','volume-owned-session','volume-quarter-eq-active',
     'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated','low-rate.de-elevated','low-rate-attached-16k','low-rate-settings-curve','reload.de-elevated','reload-save-failure-keeps-state','reload-success-disables')
 foreach($i in 0..9){$requiredRows+="slider-$i-name-step"}
+$requiredRows+=@('first-preview-rate.de-elevated','first-preview-real-rate-auto-headroom')
 $clipboardSaved=Get-Clipboard -Raw
 $failure=$null
 try {
@@ -604,6 +636,7 @@ try {
     try { Run-Ui } catch { Row 'ui-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-Limit } catch { Row 'limit-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-LowRate } catch { Row 'low-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
+    try { Run-FirstPreviewRate } catch { Row 'first-preview-rate-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
     try { Run-Reload } catch { Row 'reload-completion' $false @{error=$_.Exception.Message} } finally { Stop-Fixture }
 } catch { $failure=$_.Exception.Message;Row 'harness-completion' $false @{error=$failure} }
 finally {
