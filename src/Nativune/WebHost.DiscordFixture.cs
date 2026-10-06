@@ -210,6 +210,7 @@ public sealed partial class WebHostWindow
     //   command-discord-off / -on       ApplyDiscordOptions with Enabled false/true (Settings Save path)
     //   command-power-suspend / -resume the WM_POWERBROADCAST suspend / resume-suspend handling (HandlePowerEvent)
     //   command-compact / command-full  SetCompact(true) + RequestActivation / SetCompact(false)
+    //   command-locale-fr / -en         set the fixture page's <html lang> (the page reader accepts only English)
     // Commands are honoured in every fixture run with a valid test prefix, not only bench state runs.
     private const string DiscordBenchProfileMeta = "<meta name=\"nativune-discord-bench-profile\" content=\"\">";
     private static readonly TimeSpan DiscordBenchSetupTimeout = TimeSpan.FromSeconds(50);
@@ -462,6 +463,10 @@ public sealed partial class WebHostWindow
         if (TakeDiscordBenchCommand("command-power-resume")) HandlePowerEvent(PbtApmresumesuspend);
         if (TakeDiscordBenchCommand("command-resume") && _browserHost is { } host)
             await host.Core.ExecuteScriptAsync(DiscordBenchResumeScript);
+        if (TakeDiscordBenchCommand("command-locale-fr") && _browserHost is { } frHost)
+            await frHost.Core.ExecuteScriptAsync("document.documentElement.lang = 'fr'");
+        if (TakeDiscordBenchCommand("command-locale-en") && _browserHost is { } enHost)
+            await enHost.Core.ExecuteScriptAsync("document.documentElement.lang = 'en'");
         await ProcessObsBenchCommandsAsync();
         await ProcessEqualizerBenchCommandsAsync();
         if (_closing || _disposed) return;

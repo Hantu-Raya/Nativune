@@ -67,6 +67,7 @@ public sealed partial class WebHostWindow
             _presenceUnavailableSince = -1;
             _presenceHasState = false;
         }
+        if (!PresenceReadActive) SetPresenceUnsupportedLocale(false);
         // Overlay demand ended during a read gap: the held sample must not greet a later stream.
         if (!OverlayReadActive && _overlayGapSince >= 0)
         {
@@ -277,13 +278,17 @@ public sealed partial class WebHostWindow
         try
         {
             CompactPlaybackState? state;
+            bool? unsupportedLocale;
             try
             {
-                state = (await controls.ReadPlaybackStateAsync(ReasonFor(demand))).State;
+                var read = await controls.ReadPlaybackStateAsync(ReasonFor(demand));
+                state = read.State;
+                unsupportedLocale = read.Sampled ? read.UnsupportedLocale : null;
             }
             catch (Exception)
             {
                 state = null;
+                unsupportedLocale = null;
             }
             var capturedAt = Environment.TickCount64;
 #if NATIVUNE_DISCORD_TEST_HOOKS
@@ -292,7 +297,7 @@ public sealed partial class WebHostWindow
             try
             {
                 DeliverPlaybackSnapshot(state, demand, generation, presenceGeneration, presenceEpoch,
-                    overlayGeneration, capturedAt);
+                    overlayGeneration, capturedAt, unsupportedLocale);
             }
             catch (Exception)
             {
@@ -318,12 +323,17 @@ public sealed partial class WebHostWindow
     // Each consumer accepts the result only if its own generation is still current. Reads made
     // without Compact demand never reach Compact UI. Presence also rejects a read that started on an
     // earlier Discord connection (checked atomically inside Observe). Gates are checked now, at delivery.
+    // unsupportedLocale is null when no read ran, so the Discord note keeps what it last showed.
     private void DeliverPlaybackSnapshot(CompactPlaybackState? state, ReaderDemand demand,
-        int generation, int presenceGeneration, int presenceEpoch, int overlayGeneration, long capturedAt)
+        int generation, int presenceGeneration, int presenceEpoch, int overlayGeneration, long capturedAt,
+        bool? unsupportedLocale = null)
     {
         if (PresenceReadActive && presenceGeneration == _presenceGeneration
             && presenceEpoch == _discord?.ConnectionEpoch)
+        {
+            if (unsupportedLocale is { } locale) SetPresenceUnsupportedLocale(locale);
             ApplyPresenceSnapshot(state, presenceEpoch);
+        }
         if (demand == ReaderDemand.Compact && CompactActive && generation == _compactGeneration)
             ApplyCompactSnapshot(state);
         if (OverlayReadActive && overlayGeneration == _overlayGeneration)

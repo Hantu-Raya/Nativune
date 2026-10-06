@@ -8,6 +8,8 @@ namespace Nativune;
 public sealed partial class WebHostWindow
 {
     private DiscordPresence? _discord;
+    // The last presence read found YouTube Music not in English, so no song can be read for the card.
+    private bool _presenceUnsupportedLocale;
 
     private void InitializeDiscordPresence()
     {
@@ -36,6 +38,13 @@ public sealed partial class WebHostWindow
         RefreshSharedReader();
     }
 
+    private void SetPresenceUnsupportedLocale(bool unsupported)
+    {
+        if (_presenceUnsupportedLocale == unsupported) return;
+        _presenceUnsupportedLocale = unsupported;
+        RefreshDiscordSurfaces();
+    }
+
     private void RefreshDiscordSurfaces()
     {
         if (_disposed) return;
@@ -52,9 +61,12 @@ public sealed partial class WebHostWindow
         };
         var state = enabled ? $"on, {connection}" : "off";
         var name = $"Discord: {state}";
-        var description = enabled
-            ? $"Discord Rich Presence is on; {connection}. Right-click for Discord settings."
-            : "Discord Rich Presence is off. Right-click for Discord settings.";
+        var description = !enabled
+            ? "Discord Rich Presence is off. Right-click for Discord settings."
+            : _presenceUnsupportedLocale
+                ? $"Discord Rich Presence is on; {connection}. Songs cannot be read because YouTube Music is not in English;"
+                    + " switch its language to English to show them. Right-click for Discord settings."
+                : $"Discord Rich Presence is on; {connection}. Right-click for Discord settings.";
         AutomationProperties.SetName(DiscordButton, name);
         AutomationProperties.SetHelpText(DiscordButton, description);
         ToolTipService.SetToolTip(DiscordButton, description);

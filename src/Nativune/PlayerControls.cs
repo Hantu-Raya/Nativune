@@ -154,8 +154,9 @@ internal sealed class PlayerControls : IDisposable
     }
 
     // Sampled is false when no read ran (the page was busy or unavailable to scripts); callers keep
-    // what they already show. Sampled with a null state means the website had no coherent player.
-    internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State);
+    // what they already show. Sampled with a null state means the website had no coherent player;
+    // UnsupportedLocale then says why: the page is not in English, so it cannot be read at all.
+    internal readonly record struct CompactRead(bool Sampled, CompactPlaybackState? State, bool UnsupportedLocale = false);
 
     // reason labels test-hook read diagnostics only; every caller runs the same full read.
     internal async Task<CompactRead> ReadPlaybackStateAsync(ReadReason reason)
@@ -195,7 +196,8 @@ internal sealed class PlayerControls : IDisposable
 #if NATIVUNE_DISCORD_TEST_HOOKS
             diagnosticValid = parsed && state is not null;
 #endif
-            var read = new CompactRead(true, parsed ? state : null);
+            var read = new CompactRead(true, parsed ? state : null,
+                !parsed && CompactPlayback.TryParseOutcome(json, out var outcome) && outcome.Code == "unsupported-locale");
 #if NATIVUNE_DISCORD_TEST_HOOKS
             if (read.State is not null) _probeLastRead = read;
 #endif

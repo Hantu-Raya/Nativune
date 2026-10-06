@@ -84,6 +84,10 @@ with the fixture page and a valid test pipe prefix; see src/Nativune/WebHost.Dis
   the card stays up. command-compact (SetCompact(true) + activation): Compact reads ~1/s and zero Presence
   reads (no duplicate read stream), no clear, no other track. command-full: Presence reads at ~5 s cadence
   resume. Read counts come from diagnostics snapshots (command-snapshot-<label>) bounded by boundaryQpc.
+- Locale: profile Playing. command-locale-fr / -en set the fixture page's <html lang> (the reader accepts only
+  English pages). The Discord button's tooltip/UIA help text must say songs cannot be read while the page is not
+  English, the card must clear after the 8 s read hold, Discord off must drop the note (off text only), Discord
+  on must bring it back without a card, and English must restore the normal text and a fresh Fixture Song A card.
 #>
 [CmdletBinding()]
 param(
@@ -101,7 +105,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $allScenarios = @('Timeline', 'Absent', 'Disable', 'Migration', 'Reconnect', 'ButtonOff', 'ProductionGate', 'PauseExpiry',
-    'ArtGap', 'RejectedClear', 'RejectedReplace', 'SameTitle', 'ReaderGap', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact')
+    'ArtGap', 'RejectedClear', 'RejectedReplace', 'SameTitle', 'ReaderGap', 'LiveToggle', 'TrueQuit', 'HiddenAndCompact', 'Locale')
 $Scenario = @($Scenario | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($name in $Scenario) {
     if ($name -ne 'All' -and $name -notin $allScenarios) { throw "Unknown scenario '$name'. Valid: All, $($allScenarios -join ', ')." }
@@ -1054,6 +1058,74 @@ function Test-LiveToggle {
     }
 }
 
+# The Discord toolbar button's UIA help text (the same string as its tooltip), or $null when not found.
+function Get-DiscordHelpText([Diagnostics.Process] $Process) {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    $byPid = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty, $Process.Id)
+    $byId = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, 'DiscordButton')
+    foreach ($top in [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $byPid)) {
+        $button = $top.FindFirst([Windows.Automation.TreeScope]::Descendants, $byId)
+        if ($button) { return [string] $button.Current.HelpText }
+    }
+    $null
+}
+
+function Test-Locale {
+    $root = New-Root 'locale'
+    Write-Settings $root $true
+    $server = Start-FakeServer 'locale'
+    $app = $null; $alive = $false; $ready = $false
+    $note = 'not in English'
+    $texts = [ordered]@{}
+    $marks = [ordered]@{}
+    try {
+        $app = Start-App $root @{ NATIVUNE_TEST_DISCORD_BENCH_PROFILE = 'Playing'; NATIVUNE_TEST_DISCORD_BENCH_STATE = 'Full' }
+        $ready = Wait-BenchReady $root
+        if (-not (Wait-FirstCard $server)) { throw 'Locale: no non-null SET_ACTIVITY within 90 s.' }
+        $texts.english = Get-DiscordHelpText $app
+        $marks.fr = Send-HookCommand $root 'command-locale-fr'
+        [void] (Wait-Until { (Get-DiscordHelpText $app) -like "*$note*" } 20)
+        $texts.french = Get-DiscordHelpText $app
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $marks.fr }) } 25)
+        $marks.off = Send-HookCommand $root 'command-discord-off'
+        [void] (Wait-Until { (Get-DiscordHelpText $app) -like '*is off*' } 10)
+        $texts.off = Get-DiscordHelpText $app
+        $marks.on = Send-HookCommand $root 'command-discord-on'
+        [void] (Wait-Until { (Get-DiscordHelpText $app) -like "*$note*" } 25)
+        $texts.frenchAgain = Get-DiscordHelpText $app
+        Start-Sleep -Seconds 6
+        $marks.en = Send-HookCommand $root 'command-locale-en'
+        [void] (Wait-Until { [bool] (@(Get-Activities (Read-Frames $server)) | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $marks.en }) } 25)
+        [void] (Wait-Until { (Get-DiscordHelpText $app) -notlike "*$note*" } 10)
+        $texts.englishAgain = Get-DiscordHelpText $app
+        $alive = -not $app.HasExited
+        [void] (Stop-App $app $root)
+        Start-Sleep -Seconds 2
+    } finally { Stop-FakeServer $server }
+    $frames = Read-Frames $server
+    $framesByScenario['Locale'] = $frames
+    Copy-AppLog $root 'locale'
+    $sets = @(Get-Activities $frames)
+    $isA = { param($s) $null -ne $s.Activity -and (Get-Prop $s.Activity 'details') -eq 'Fixture Song A' }
+    $cleared = $sets | Where-Object { $null -eq $_.Activity -and $_.Utc -gt $marks.fr -and $_.Utc -lt $marks.off } | Select-Object -First 1
+    $cardsWhileFrench = @($sets | Where-Object { $null -ne $_.Activity -and $_.Utc -gt $marks.on -and $_.Utc -lt $marks.en })
+    $freshCard = $sets | Where-Object { (& $isA $_) -and $_.Utc -gt $marks.en } | Select-Object -First 1
+    Add-Check 'locale.noCrash' $alive
+    Add-Check 'locale.benchReady' $ready
+    Add-Check 'locale.englishTextNormal' ($texts.english -like '*is on; connected*' -and $texts.english -notlike "*$note*")
+    Add-Check 'locale.frenchTextSaysCannotRead' ($texts.french -like '*is on; connected*' -and $texts.french -like '*cannot be read*' -and $texts.french -like "*$note*")
+    Add-Check 'locale.frenchCardCleared' ($null -ne $cleared)
+    Add-Check 'locale.offTextOnly' ($texts.off -like '*is off*' -and $texts.off -notlike "*$note*")
+    Add-Check 'locale.onTextSaysCannotRead' ($texts.frenchAgain -like '*cannot be read*' -and $cardsWhileFrench.Count -eq 0)
+    Add-Check 'locale.englishRestoresTextAndCard' ($null -ne $freshCard -and $texts.englishAgain -like '*is on; connected*' -and $texts.englishAgain -notlike "*$note*")
+    $scenarioResults['Locale'] = [ordered]@{
+        appPid = $app.Id; helpTexts = $texts
+        clearSeconds = if ($cleared) { [Math]::Round(($cleared.Utc - $marks.fr).TotalSeconds, 3) } else { $null }
+        cardsWhileFrench = $cardsWhileFrench.Count
+        englishToCardSeconds = if ($freshCard) { [Math]::Round(($freshCard.Utc - $marks.en).TotalSeconds, 3) } else { $null }
+    }
+}
+
 function Test-TrueQuit {
     $root = New-Root 'truequit'
     Write-Settings $root $true
@@ -1159,7 +1231,7 @@ function Test-HiddenAndCompact {
 # Order and grouping come from measured serial times (run 20260927T085304Z): Timeline+Disable ~260 s,
 # ProductionGate ~150, PauseExpiry ~95, Reconnect ~90, HiddenAndCompact ~85, then the short ones.
 $parallelGroups = @(@('Timeline', 'Disable'), @('ProductionGate'), @('PauseExpiry'), @('Reconnect'), @('HiddenAndCompact'),
-    @('ArtGap'), @('ReaderGap'), @('RejectedClear'), @('SameTitle'), @('ButtonOff'), @('RejectedReplace'), @('Migration'), @('Absent'),
+    @('ArtGap'), @('ReaderGap'), @('RejectedClear'), @('SameTitle'), @('ButtonOff'), @('RejectedReplace'), @('Locale'), @('Migration'), @('Absent'),
     @('LiveToggle'), @('TrueQuit'))
 $childProcesses = [Collections.Generic.List[Diagnostics.Process]]::new()
 
@@ -1267,6 +1339,7 @@ try {
     & $runScenario 'LiveToggle' { Test-LiveToggle }
     & $runScenario 'TrueQuit' { Test-TrueQuit }
     & $runScenario 'HiddenAndCompact' { Test-HiddenAndCompact }
+    & $runScenario 'Locale' { Test-Locale }
     }
     if ($scenarioErrors.Count -gt 0) { Add-Check 'runner.completed' $false; $scenarioResults['errors'] = $scenarioErrors }
 } catch {
