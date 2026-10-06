@@ -31,7 +31,8 @@ public sealed partial class WebHostWindow
     private long _resumeCompletedSeekAt;
     private bool ResumeInProgress => (_startupCheckpoint is not null || _resumeHomeGuard)
         && _resumeState is not ("Done" or "Cancelled" or "Absent");
-    private bool ResumeReadActive => _settings.StartupDestination == StartupDestination.Continue
+    // Polling also continues while a restore or its safety mute is still active after the destination changed.
+    private bool ResumeReadActive => (_settings.StartupDestination == StartupDestination.Continue || ResumeInProgress || _resumeSafetyMuted)
         && !_closing && !_disposed && !_playerSuspended;
 
     private async Task<string> PrepareResumeStartupAsync(CoreWebView2 core, string fallback)
@@ -136,7 +137,13 @@ public sealed partial class WebHostWindow
         if (_resumeOwnedNavigation && args.Uri == _resumeOwnedUri) { _resumeOwnedNavigation = false; return true; }
         if (args.IsRedirected) return true;
         _resumeCandidate = null;
-        if (!ResumeInProgress && !_resumeSafetyMuted && _resumeRegistration is null && _resumeRegistrationAdd is null) return true;
+        if (!ResumeInProgress && !_resumeSafetyMuted)
+        {
+            // A finished restore never holds navigation; a leftover registration is removed in the background
+            // (its script only acts on the saved song's page).
+            if (_resumeRegistration is not null || _resumeRegistrationAdd is not null) _ = RemoveResumeRegistrationAsync();
+            return true;
+        }
         if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) || !WebHostPolicy.IsAllowedMainFrameNavigation(uri))
         {
             _ = CancelResumeAsync("navigation");
@@ -239,8 +246,11 @@ public sealed partial class WebHostWindow
             _resumeState = state;
             if (state is "Done" or "Cancelled")
             {
-                if (!await RemoveResumeRegistrationAsync()) { FailResume("cleanup"); return; }
+                // The controller is terminal and has dropped its recovery handlers, so release the guard now;
+                // a registration that could not be removed is retried by the next navigation.
+                var removed = await RemoveResumeRegistrationAsync();
                 RestoreResumeMute();
+                if (!removed) AppLog.Write("resume", "cleanup-failed");
                 if (state == "Cancelled")
                 {
                     ++_resumeGeneration;
@@ -299,17 +309,18 @@ public sealed partial class WebHostWindow
     {
         if (!ResumeInProgress && !_resumeSafetyMuted)
         {
-            if (!await RemoveResumeRegistrationAsync()) return false;
+            if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
             _resumeCaptureBlocked = false;
             _resumeStartupMessage = null;
             return true;
         }
         var generation = _resumeGeneration;
         var adRecovery = false;
-        if ((_resumeSetupFailed && _resumeContext is null && _playerControls?.IsAvailable == true)
-            || _resumeOtherDocumentConfirmed)
+        // After a setup failure the fallback Home has no controller even if a late registration created the
+        // named world (the script returns early there), so retire without waiting for a receipt.
+        if ((_resumeSetupFailed && _playerControls?.IsAvailable == true) || _resumeOtherDocumentConfirmed)
         {
-            if (!await RemoveResumeRegistrationAsync()) return false;
+            if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
             ++_resumeGeneration;
             _resumeState = "Cancelled";
             RestoreResumeMute();
@@ -339,7 +350,8 @@ public sealed partial class WebHostWindow
             _resumeState = "AwaitMusic";
             return true;
         }
-        if (!await RemoveResumeRegistrationAsync()) { FailResume("cleanup"); return false; }
+        // The controller has cancelled itself; a failed registration removal must not keep the view muted.
+        if (!await RemoveResumeRegistrationAsync()) AppLog.Write("resume", "cleanup-failed");
         RestoreResumeMute();
         _resumeCaptureBlocked = false;
         _resumeCandidate = null;
