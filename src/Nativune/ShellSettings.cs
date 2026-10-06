@@ -26,7 +26,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
     public bool BlockAds { get; init; }
     // Launch state for --autostart runs (Settings > Startup). Start-with-Windows itself lives in the registry.
     public AutostartMode AutostartMode { get; init; } = AutostartMode.Tray;
-    // Opt-in Discord Rich Presence (Settings > Discord). Off by default; versions before 7 load off.
+    // Opt-in Discord Rich Presence (Settings > Privacy > Discord status). Off by default; versions before 7 load off.
     public DiscordPresenceOptions Discord { get; init; } = DiscordPresenceOptions.Default;
     // Barebones Better Lyrics (Settings > Lyrics). On by default (owner decision, 28 September 2026); missing loads on.
     public bool BetterLyricsEnabled { get; init; } = true;

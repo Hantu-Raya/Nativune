@@ -33,6 +33,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private IconElement? _dislikeIconElement;
     private IconElement? _playlistsIconElement;
     private IconElement? _volumeIconElement;
+    private IconElement? _equalizerIconElement;
     private IconElement? _repeatIconElement;
     private IconElement? _shuffleIconElement;
     private IconElement? _returnToFullIconElement;
@@ -161,6 +162,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     internal event Action? UpdateRequested;
     internal event Action? WhatsNewRequested;
     internal event Action? SettingsRequested;
+    internal event Action? EqualizerSettingsRequested;
     internal event Action? StatusRequested;
     internal event Action? TimerRequested;
     internal event Action? CancelTimerRequested;
@@ -513,7 +515,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (!active)
         {
             _volumeSlider.CancelDrag();
-            _volumeCommitTimer.Stop();
+            // Leave the commit timer running: a non-drag change (keyboard/UIA) still commits.
             _volumeHoverCloseTimer.Stop();
             _volumeButtonPointerOver = false;
             _volumePopupPointerOver = false;
@@ -663,6 +665,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _inlineStatus.Visibility = Visibility.Collapsed;
         WhatsNewRequested = null;
         SettingsRequested = null;
+        EqualizerSettingsRequested = null;
         StatusRequested = null;
         TimerRequested = null;
         CancelTimerRequested = null;
@@ -680,7 +683,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         ConfigureButton(_previous, "Previous item", "Previous item.");
         ConfigureButton(_playPause, "Playback controls unavailable", "Playback controls unavailable.");
         ConfigureButton(_next, "Next item", "Next item.");
-        ConfigureButton(_volume, "App output mute", "Activate to mute or unmute app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider.");
+        ConfigureButton(_volume, "App output mute", "Activate to mute or unmute app output. Hover to adjust app output or open Equalizer settings; press Down or open the context menu for touch and keyboard access.");
         ConfigureButton(_repeat, "Repeat unavailable", "Repeat state is unavailable until playback controls recover.");
         ConfigureButton(_shuffle, "Shuffle unavailable", "Shuffle is unavailable until playback controls recover.");
         ConfigureButton(_playlists, "Playlists", "Show your YouTube Music playlists and play one.");
@@ -726,6 +729,17 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _volumePopupSurface.AddHandler(UIElement.PointerPressedEvent,
             new PointerEventHandler(PinVolumePopupFromPointer), true);
         _volumePopupSurface.GotFocus += (_, _) => PinVolumePopupFromInteraction();
+        VolumeEqualizerButton.Click += (_, _) =>
+        {
+            if (_disposed || !_active) return;
+            _volumeSlider.CancelDrag();
+            _volumeCommitTimer.Stop();
+            _volumeHoverCloseTimer.Stop();
+            _restoreVolumeFocusOnClose = false;
+            _popupInvoker = null;
+            _volumePopup.Hide();
+            EqualizerSettingsRequested?.Invoke();
+        };
 
         _previous.Click += (_, _) => RaiseCommand("previous");
         _next.Click += (_, _) => RaiseCommand("next");
@@ -967,7 +981,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         var name = _outputMuted ? "Unmute app output" : "Mute app output";
         var help = !_outputAvailable
             ? CompactVolumeUnavailableHelp
-            : $"Activate to {(_outputMuted ? "unmute" : "mute")} app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider. App output {sliderStep / 10:0.0} percent; {(_outputMuted ? "muted" : "unmuted")}."
+            : $"Activate to {(_outputMuted ? "unmute" : "mute")} app output. Hover to adjust app output; press Down or open the context menu for touch and keyboard access to the slider and Equalizer settings. App output {sliderStep / 10:0.0} percent; {(_outputMuted ? "muted" : "unmuted")}."
                 + (_outputSessionActive ? "" : " Preference pending until an owned WebView audio session starts.");
         SetAccessible(_volume, name, help);
         SetAccessible(_volumeSlider, "App output volume", !_outputAvailable
@@ -1269,6 +1283,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
                 _dislike.IsChecked == true ? "dislike-filled" : "dislike", 20);
             var volumeIcon = _outputMuted || _outputVolume <= 0 ? "volume-muted" : "volume";
             BindStatefulIcon(_volume, ref _volumeIconElement, ref _volumeIconName, volumeIcon, 20);
+            BindFixedIcon(VolumeEqualizerButton, ref _equalizerIconElement, "equalizer", 20);
             BindStatefulIcon(_repeatIcon, ref _repeatIconElement, ref _repeatIconName,
                 IsRepeatOne(_state?.Repeat) ? "repeat-one" : "repeat", 20);
             BindFixedIcon(_shuffleIcon, ref _shuffleIconElement, "shuffle", 20);

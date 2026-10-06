@@ -112,6 +112,7 @@ public sealed partial class WebHostWindow
         CompactView.ReturnToFullRequested += () => SetCompact(false);
         CompactView.UpdateRequested += OnUpdateButtonClick;
         CompactView.SettingsRequested += () => ShowSettings();
+        CompactView.EqualizerSettingsRequested += OpenEqualizerSettings;
         CompactView.WhatsNewRequested += () =>
         {
             if (_pendingWhatsNewVersion is { } version)

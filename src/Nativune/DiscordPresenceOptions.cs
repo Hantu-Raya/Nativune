@@ -1,6 +1,6 @@
 namespace Nativune;
 
-// Settings > Discord. Persisted in settings.json v7 as DiscordPresence / DiscordStatusLine / DiscordOpenButton / DiscordShowAuthor.
+// Settings > Privacy > Discord status. Persisted in settings.json v7 as DiscordPresence / DiscordStatusLine / DiscordOpenButton / DiscordShowAuthor.
 internal enum DiscordStatusLine
 {
     Artist = 0,   // status_display_type 1 (state); falls back to the app name when the artist is unknown

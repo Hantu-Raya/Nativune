@@ -249,13 +249,14 @@
                             </Style>
                         </Flyout.FlyoutPresenterStyle>
                         <Grid x:Name="VolumePopupSurface"
-                              Width="240"
+                              Width="280"
                               Height="48"
                               ColumnSpacing="8"
                               AutomationProperties.Name="App output volume control">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="180" />
                                 <ColumnDefinition Width="52" />
+                                <ColumnDefinition Width="32" />
                             </Grid.ColumnDefinitions>
                             <local:CompactVolumeSlider x:Name="VolumeSlider"
                                                        Grid.Column="0"
@@ -271,6 +272,12 @@
                                        TextAlignment="Right"
                                        VerticalAlignment="Center"
                                        Foreground="{ThemeResource PrimaryTextBrush}" />
+                            <Button x:Name="VolumeEqualizerButton" Grid.Column="2"
+                                    Width="32" Height="32" Padding="0" VerticalAlignment="Center"
+                                    Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                                    AutomationProperties.Name="Equalizer settings"
+                                    AutomationProperties.HelpText="Open Settings on the Equalizer page."
+                                    ToolTipService.ToolTip="Equalizer settings" />
                         </Grid>
                     </Flyout>
                 </Button.ContextFlyout>

@@ -122,7 +122,8 @@ public sealed partial class WebHostWindow
         };
         OutputVolumeFlyoutSurface.AddHandler(UIElement.PointerPressedEvent,
             new PointerEventHandler((_, _) => PinOutputFlyout()), true);
-        OutputVolumeSlider.GotFocus += (_, _) => PinOutputFlyout();
+        OutputVolumeFlyoutSurface.GotFocus += (_, _) => PinOutputFlyout();
+        OutputEqualizerButton.Click += (_, _) => OpenEqualizerSettings();
         OutputVolumeFlyout.Opened += (_, _) =>
         {
             if (_outputFlyoutFocusSlider && OutputVolumeSlider.IsEnabled)
@@ -733,7 +734,7 @@ public sealed partial class WebHostWindow
             AutomationProperties.SetHelpText(OutputMuteButton,
                 !ready ? unavailableHelp
                     : sessionActive
-                        ? $"Click to {(muted ? "unmute" : "mute")} app output. Hover, right-click, or press Down for the volume slider. App output {value:P1}; independent of YouTube Music volume."
+                        ? $"Click to {(muted ? "unmute" : "mute")} app output. Hover, right-click, or press Down for volume and Equalizer settings. App output {value:P1}; independent of YouTube Music volume."
                         : audio.HasOwnedSessions
                             ? "Verified WebView audio sessions are present but report inconsistent output states. Explicit volume and mute requests are applied transactionally across those owned sessions."
                             : $"Click to {(muted ? "unmute" : "mute")} WebView output; hover, right-click, or press Down for its slider. {value:P1} is a pending preference until an owned audio session starts.");

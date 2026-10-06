@@ -28,7 +28,6 @@
         <NavigationViewItem x:Name="StartupNavItem" Content="Startup" Tag="Startup" AutomationProperties.Name="Startup" />
         <NavigationViewItem x:Name="ShortcutsNavItem" Content="Shortcuts" Tag="Shortcuts" AutomationProperties.Name="Shortcuts" />
         <NavigationViewItem x:Name="PrivacyNavItem" Content="Privacy" Tag="Privacy" AutomationProperties.Name="Privacy" />
-        <NavigationViewItem x:Name="DiscordNavItem" Content="Discord" Tag="Discord" AutomationProperties.Name="Discord" />
         <NavigationViewItem x:Name="ObsNavItem" Content="OBS" Tag="Obs" AutomationProperties.Name="OBS" />
         <NavigationViewItem x:Name="LyricsNavItem" Content="Lyrics" Tag="Lyrics" AutomationProperties.Name="Lyrics" />
         <NavigationViewItem x:Name="EqualizerNavItem" Content="Equalizer" Tag="Equalizer" AutomationProperties.Name="Equalizer" />
@@ -380,14 +379,12 @@
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Block ads (restart required)"
                       AutomationProperties.HelpText="Turns on uBlock Origin Lite's ad filters for YouTube Music. Off by default. YouTube may detect it, interrupt playback or warn your account. Restart required." />
-          </StackPanel>
-
-          <StackPanel x:Name="DiscordPage" Spacing="10" Visibility="Collapsed">
-            <TextBlock Text="Discord"
-                       FontSize="20"
+            <TextBlock x:Name="DiscordSectionHeading" Text="Discord status"
+                       Margin="0,16,0,0"
+                       FontSize="16"
                        FontWeight="SemiBold"
                        Foreground="{ThemeResource PrimaryTextBrush}"
-                       AutomationProperties.HeadingLevel="Level1" />
+                       AutomationProperties.HeadingLevel="Level2" />
             <CheckBox x:Name="DiscordPresenceCheckBox"
                       Content="Show what I'm playing on Discord"
                       MinHeight="36"

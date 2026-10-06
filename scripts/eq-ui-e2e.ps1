@@ -46,6 +46,10 @@ public static class EqUiE2EInput {
    if(SendInput(1,a,Marshal.SizeOf(typeof(Input)))!=1)throw new Exception("SendInput keyboard failed");}
  public static void Text(string text){foreach(char c in text){var a=new Input[2];a[0].type=a[1].type=1;a[0].u.key.scan=a[1].u.key.scan=c;a[0].u.key.flags=4;a[1].u.key.flags=6;
    if(SendInput(2,a,Marshal.SizeOf(typeof(Input)))!=2)throw new Exception("SendInput text failed");}}
+ // SetCursorPos alone may not raise WinUI pointer-enter; follow it with real (relative) move input.
+ public static void Move(int x,int y){if(!SetCursorPos(x,y))throw new Exception("SetCursorPos failed");
+   var a=new Input[2];a[0].u.mouse.flags=a[1].u.mouse.flags=1;a[0].u.mouse.x=1;a[1].u.mouse.x=-1;
+   if(SendInput(2,a,Marshal.SizeOf(typeof(Input)))!=2)throw new Exception("SendInput move failed");}
  public static void Click(int x,int y){SetCursorPos(x,y);var a=new Input[2];a[0].u.mouse.flags=2;a[1].u.mouse.flags=4;
    if(SendInput(2,a,Marshal.SizeOf(typeof(Input)))!=2)throw new Exception("SendInput failed");}
 }
@@ -302,6 +306,83 @@ function Close-Settings([string] $Action = 'CancelButton') {
     if (-not (Wait-For { $null -eq (Find-Control 'EqEnabled') } 10)) { throw 'Settings did not close.' }
     Start-Sleep -Milliseconds 400
 }
+function Visible-Control([string] $Id) {
+    $script:visibleControl=$null
+    if (-not (Wait-For {
+        $script:visibleControl=Find-Control $Id '' $false
+        $script:visibleControl -and -not $script:visibleControl.Current.IsOffscreen
+    } 10)) { throw "Visible UIA control missing: $Id" }
+    return $script:visibleControl
+}
+function Pointer-Control($Element, [bool] $Click = $false) {
+    $bounds=$Element.Current.BoundingRectangle
+    if ($Element.Current.IsOffscreen -or $bounds.Width -le 0 -or $bounds.Height -le 0) { throw 'Pointer target is not visible.' }
+    $x=[int]($bounds.X+$bounds.Width/2);$y=[int]($bounds.Y+$bounds.Height/2)
+    if ($Click) { [EqUiE2EInput]::Click($x,$y) } else { [EqUiE2EInput]::Move($x,$y) }
+}
+function Equalizer-Selected {
+    $nav=Control 'EqualizerNavItem'
+    return (Pattern $nav ([Windows.Automation.SelectionItemPattern])).Current.IsSelected -and
+        -not (Control 'EqEnabled').Current.IsOffscreen
+}
+function Check-SettingsRoutes {
+    # The flyout opens only once the owned audio session is verified (the mute button is disabled until then).
+    if (-not (Wait-For { $script:muteControl=Visible-Control 'OutputMuteButton'; $script:muteControl.Current.IsEnabled } 20)) {
+        throw 'App output control never became available.'
+    }
+    $mute=$script:muteControl
+    Focus $mute
+    # Enter the mute button with a real mouse move; do not substitute its context menu.
+    $bounds=$mute.Current.BoundingRectangle
+    [EqUiE2EInput]::Move([int]($bounds.X+$bounds.Width/2),[int]($bounds.Bottom+80))
+    Start-Sleep -Milliseconds 700
+    Pointer-Control (Visible-Control 'OutputMuteButton')
+    $eq=Visible-Control 'OutputEqualizerButton'
+    # Move onto the button first, as a user would, then click it.
+    Pointer-Control $eq
+    Start-Sleep -Milliseconds 300
+    Pointer-Control (Visible-Control 'OutputEqualizerButton') $true
+    $mouseSelected=Equalizer-Selected
+    Close-Settings
+    $mute=Visible-Control 'OutputMuteButton'
+    Focus $mute
+    Key 0x28 # Down opens and focuses the volume slider.
+    [void](Visible-Control 'OutputEqualizerButton')
+    Key 0x09 # Tab reaches the adjacent EQ button.
+    $focusedId=[Windows.Automation.AutomationElement]::FocusedElement.Current.AutomationId
+    Key 0x0D
+    $keyboardSelected=Equalizer-Selected
+    Row 'volume-eq-button-opens-equalizer' ($mouseSelected -and $focusedId -ceq 'OutputEqualizerButton' -and $keyboardSelected) @{
+        mouseHover=$true;mouseSelected=$mouseSelected;keyboard='Down, Tab, Enter';tabTarget=$focusedId;keyboardSelected=$keyboardSelected}
+    Close-Settings
+    [void](Hook 'eq-open-settings' 'Discord')
+    $privacySelected=(Pattern (Control 'PrivacyNavItem') ([Windows.Automation.SelectionItemPattern])).Current.IsSelected
+    $discordVisible=Wait-For {
+        $check=Find-Control 'DiscordPresenceCheckBox'
+        $check -and -not $check.Current.IsOffscreen -and $check.Current.HasKeyboardFocus
+    } 5
+    $discordNavAbsent=$null -eq (Find-Control 'DiscordNavItem')
+    Row 'discord-settings-in-privacy' ($privacySelected -and $discordVisible -and $discordNavAbsent) @{
+        privacySelected=$privacySelected;discordCheckboxVisibleAndFocused=$discordVisible;discordNavAbsent=$discordNavAbsent}
+    Close-Settings
+    # Cheap Compact smoke: same owned audio session, production Compact toggle and popup click.
+    Pointer-Control (Visible-Control 'CompactButton') $true
+    $volume=Visible-Control 'Volume'
+    Pointer-Control $volume
+    Pointer-Control (Visible-Control 'VolumeEqualizerButton')
+    Start-Sleep -Milliseconds 300
+    Pointer-Control (Visible-Control 'VolumeEqualizerButton') $true
+    $compactSelected=Equalizer-Selected
+    $popupHidden=Wait-For {
+        $button=Find-Control 'VolumeEqualizerButton' '' $false
+        $null -eq $button -or $button.Current.IsOffscreen
+    } 5
+    Row 'compact-volume-eq-button-opens-equalizer' ($compactSelected -and $popupHidden) @{
+        equalizerSelected=$compactSelected;volumePopupHidden=$popupHidden}
+    Close-Settings
+    Pointer-Control (Visible-Control 'ReturnToFull') $true
+    [void](Visible-Control 'OutputMuteButton')
+}
 function File-State { return Hook 'eq-settings-file' }
 function Canonical($Value) { return $Value | ConvertTo-Json -Depth 24 -Compress }
 function Error-Text {
@@ -538,6 +619,7 @@ function Run-Ui {
     Start-Fixture 'ui' 48000 (Seed)
     # Trusted fixture activation is performed before opening the native dialog.
     Click-Page
+    Check-SettingsRoutes
     Open-Settings
     $before=File-State
     Row 'equalizer-navigation' ($null -ne (Find-Control 'EqualizerNavItem')) @{present=($null -ne (Find-Control 'EqualizerNavItem'))}
@@ -716,6 +798,7 @@ $requiredRows=@('bands-fit-min-width','flat-curve-geometry','status-accessible-c
     'copy-preset-schema','paste-valid-staged-only','paste-invalid-version','paste-invalid-nine','paste-invalid-nan',
     'paste-invalid-oversize','more-toggle-persists-status','volume-owned-session','volume-quarter-eq-active',
     'mute-eq-active','twenty-first-preset-refused','ui.de-elevated','preset-limit.de-elevated','low-rate.de-elevated','low-rate-attached-16k','low-rate-settings-curve','reload.de-elevated','reload-save-failure-keeps-state','reload-success-disables')
+$requiredRows+=@('volume-eq-button-opens-equalizer','discord-settings-in-privacy','compact-volume-eq-button-opens-equalizer')
 foreach($i in 0..9){$requiredRows+="slider-$i-name-step"}
 $requiredRows+=@('first-preview-rate.de-elevated','first-preview-real-rate-auto-headroom','readout-real-rate')
 $requiredRows+=@('saved-rate-settings-open.de-elevated','saved-eq-real-rate-with-settings-open')

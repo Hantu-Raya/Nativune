@@ -632,6 +632,11 @@ public sealed partial class SettingsDialog : Window
     private void OnRootLoaded(object sender, RoutedEventArgs args)
     {
         Root.Loaded -= OnRootLoaded;
+        if (_discordSectionRequested)
+        {
+            QueueDiscordSectionFocus();
+            return;
+        }
         if (_focusedBinding < 0)
         {
             if (ReferenceEquals(Nav.SelectedItem, EqualizerNavItem)) EqEnabled.Focus(FocusState.Programmatic);
@@ -900,7 +905,26 @@ public sealed partial class SettingsDialog : Window
         DiscordPresenceCheckBox.Unchecked += (_, _) => UpdateDiscordControls(announce: true);
     }
 
-    internal void SelectDiscordPage() => Nav.SelectedItem = DiscordNavItem;
+    private bool _discordSectionRequested;
+
+    internal void SelectDiscordPage()
+    {
+        _discordSectionRequested = true;
+        Nav.SelectedItem = PrivacyNavItem;
+        if (Root.IsLoaded) QueueDiscordSectionFocus();
+    }
+
+    private void QueueDiscordSectionFocus()
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_closed || !_discordSectionRequested || !ReferenceEquals(Nav.SelectedItem, PrivacyNavItem)) return;
+            _discordSectionRequested = false;
+            Root.UpdateLayout();
+            DiscordPresenceCheckBox.Focus(FocusState.Programmatic);
+            DiscordSectionHeading.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
+        });
+    }
 
     internal event EventHandler? OpenLyricsSettingsRequested;
 
@@ -1068,7 +1092,6 @@ public sealed partial class SettingsDialog : Window
         StartupPage.Visibility = tag == "Startup" ? Visibility.Visible : Visibility.Collapsed;
         ShortcutsPage.Visibility = tag == "Shortcuts" ? Visibility.Visible : Visibility.Collapsed;
         PrivacyPage.Visibility = tag == "Privacy" ? Visibility.Visible : Visibility.Collapsed;
-        DiscordPage.Visibility = tag == "Discord" ? Visibility.Visible : Visibility.Collapsed;
         ObsPage.Visibility = tag == "Obs" ? Visibility.Visible : Visibility.Collapsed;
         LyricsPage.Visibility = tag == "Lyrics" ? Visibility.Visible : Visibility.Collapsed;
         EqualizerPage.Visibility = tag == "Equalizer" ? Visibility.Visible : Visibility.Collapsed;
