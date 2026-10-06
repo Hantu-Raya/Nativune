@@ -135,7 +135,8 @@ Row 1 'paired-track-checkpoint' {
     [void](Hook 'resume-compact' @{ command = 'toggle' })
     $s = State
     Start-Sleep -Milliseconds 2500
-    $mid = Inspect $paired
+    # The app may be replacing the file at this instant; a read during the swap is retried, not judged.
+    $mid = $null; [void](Wait-For { $script:mid = Inspect $paired; $script:mid.valid } 2); $mid = $script:mid
     # A website-side seek on the same song right before quit: only the shutdown read can see it.
     [void](Hook 'resume-fixture' @{ track = 'B'; position = 120.5 })
     Stop-App
@@ -205,7 +206,9 @@ Row 4 'failure-ad-ended-and-cancellation' {
     Stop-App
     $root = New-Root 'ad-playing' $true; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_AD = '1' }; Start-Sleep -Seconds 1; $naturalAd = State
-    [void](Hook 'resume-fixture' @{ endAd = $true; ignoreT = $true }); $wrongStart = Await-Done; Stop-App
+    [void](Hook 'resume-fixture' @{ endAd = $true; ignoreT = $true }); $wrongStart = Await-Done
+    # An unmuted failure is final: the song that keeps playing replaces the bad checkpoint (shutdown read).
+    Start-Sleep -Seconds 3; Stop-App; $replaced = Inspect $root
     $root = New-Root 'timeout'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_BAD_LINK = '1' }; $failed = Await-Done
     [void](Hook 'resume-compact' @{ command = 'toggle' }); Start-Sleep -Seconds 1; $recovered = State; Stop-App
@@ -252,6 +255,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         nextCancellation = $cancel.restoreState -ceq 'Cancelled' -and $cancel.isC -and $cancel.position -lt 15 -and $cancel.seekCount -eq 0
         startPlayingAd = $naturalAd.isAd -and -not $naturalAd.paused -and $naturalAd.seekCount -eq 0
         wrongPosition = $wrongStart.restoreState -ceq 'Failed' -and -not $wrongStart.paused -and $wrongStart.seekCount -eq 0 -and $wrongStart.status -like '*saved position*'
+        failedPlayingReplaces = $replaced.valid -and $replaced.isB -and $replaced.position -lt 20
         timeout = $failed.restoreState -ceq 'Failed' -and $failed.safetyMuted -and $failed.status -like '*Playback is muted*'
         recovery = $recovered.restoreState -ceq 'Cancelled' -and -not $recovered.coreMuted -and -not $recovered.paused
         failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
@@ -264,7 +268,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
         failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
-        wrongPosition = $wrongStart; timeout = $failed; recovered = $recovered; migrations = $migrations;
+        wrongPosition = $wrongStart; replacedAfterFailure = $replaced; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }
 }
 try {

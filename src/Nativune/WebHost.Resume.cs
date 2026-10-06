@@ -29,8 +29,10 @@ public sealed partial class WebHostWindow
     private string? _resumeCompletedSeekSignature;
     private double _resumeCompletedSeekTarget;
     private long _resumeCompletedSeekAt;
+    // An unmuted failure (Start playing) is final: only a muted Wait paused failure still awaits recovery.
     private bool ResumeInProgress => (_startupCheckpoint is not null || _resumeHomeGuard)
-        && _resumeState is not ("Done" or "Cancelled" or "Absent");
+        && _resumeState is not ("Done" or "Cancelled" or "Absent")
+        && !(_resumeState == "Failed" && !_resumeSafetyMuted);
     // Polling also continues while a restore or its safety mute is still active after the destination changed.
     private bool ResumeReadActive => (_settings.StartupDestination == StartupDestination.Continue || ResumeInProgress || _resumeSafetyMuted)
         && !_closing && !_disposed && !_playerSuspended;
@@ -300,7 +302,8 @@ public sealed partial class WebHostWindow
     private void FailResume(string? reason)
     {
         _resumeState = "Failed";
-        _resumeCaptureBlocked = true;
+        // Without the safety mute nothing is held back: whatever plays next replaces the bad checkpoint.
+        _resumeCaptureBlocked = _resumeSafetyMuted;
         SetStatus(_resumeStartupMessage ?? (reason switch {
             "track" => "Saved track could not resume",
             "position" => "Saved track did not start at the saved position.",
@@ -308,6 +311,15 @@ public sealed partial class WebHostWindow
                 : "Saved song did not start. Press Play to continue."
         }), isError: true);
         _ = RemoveResumeRegistrationAsync();
+        // A final (unmuted) failure must not leave the page script pausing later plays, e.g. a Wait paused
+        // restore whose ad was already recovered.
+        if (!_resumeSafetyMuted) _ = RetireResumeControllerAsync();
+    }
+
+    private async Task RetireResumeControllerAsync()
+    {
+        try { await EvaluateResumeAsync("globalThis.__nativuneResume?.cancel()"); }
+        catch (Exception) { AppLog.Write("resume", "controller-retire-failed"); }
     }
 
     private async Task<bool> CancelResumeAsync(string reason)

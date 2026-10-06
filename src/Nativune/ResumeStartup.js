@@ -6,7 +6,17 @@
   if (!request.homeGuard && new URL(location.href).searchParams.get('v') !== saved.videoId) return;
   let state = 'Armed', reason = '', media = null, sought = false, stableAt = 0;
   let baseline = null, timer = null, timeout = null;
-  let initialPosition = null, completeAt = null;
+  let initialPosition = null, completeAt = null, playingAt = null;
+  // The public per-track clock ("1:10 / 3:05"), authoritative when media time is a shared timeline.
+  const trackClock = () => {
+    const infos = document.querySelectorAll('ytmusic-player-bar span.time-info');
+    if (infos.length !== 1) return null;
+    const m = (infos[0].textContent || '').trim().match(/^(\d+(?::\d{1,2}){1,2})\s*\/\s*(\d+(?::\d{1,2}){1,2})$/);
+    if (!m) return null;
+    const secs = s => s.split(':').reduce((a, v) => a * 60 + Number(v), 0);
+    const position = secs(m[1]), duration = secs(m[2]);
+    return Number.isFinite(position) && duration > 0 && position <= duration ? { position, duration } : null;
+  };
   let ignoreSeek = false, recoveryAd = false;
   const waitPaused = request.waitPaused;
   const terminal = () => ['Done','Cancelled','Failed'].includes(state);
@@ -86,11 +96,11 @@
     if (terminal()) return;
     if (recoveryAd && ad()) { wake(); return; }
     if (ad()) {
-      initialPosition=null;
+      initialPosition=null;playingAt=null;
       if(waitPaused){media.pause();state='AdPaused';}else state='AwaitMusic';
       clearTimeout(timeout);wake();return;
     }
-    if(!waitPaused && event.type==='playing' && initialPosition===null)initialPosition=media.currentTime;
+    if(!waitPaused && event.type==='playing' && initialPosition===null){initialPosition=media.currentTime;playingAt=performance.now();}
     // Only an explicit Play control cancels. Site autoplay or metadata retries must not release the safety guard.
     if (waitPaused && !terminal()) media.pause();
     wake();
@@ -163,8 +173,8 @@
     if(saved.positionSeconds > media.duration + 1){if(waitPaused)media.pause();stop('Failed','track');return;}
     const target=Math.min(saved.positionSeconds,media.duration);
     // Signed-in playback can put several items on one media timeline. Media time equals the saved per-track
-    // position only when the element's duration is this track's; otherwise the site's whole-second t= is the
-    // position and the element is only paused, never seeked or checked against track time.
+    // position only when the element's duration is this track's. Otherwise the site's whole-second t= is the
+    // mechanism: the element is never seeked, and the public per-track clock must confirm the position.
     const ownTimeline=Math.abs(media.duration-saved.durationSeconds)<=2;
     if(waitPaused) {
       if(!sought && ownTimeline) {
@@ -174,15 +184,25 @@
       }
       if(!ownTimeline)media.pause();
       state='Verify';
-      if(media.seeking || !media.paused || ownTimeline && Math.abs(media.currentTime-target)>1){stableAt=0;wake();return;}
+      const clock=ownTimeline?null:trackClock();
+      if(media.seeking || !media.paused || (ownTimeline ? Math.abs(media.currentTime-target)>1 : !clock)){stableAt=0;wake();return;}
       if(!stableAt)stableAt=performance.now();
       if(performance.now()-stableAt<500){wake();return;}
+      // Paused, so the displayed whole second cannot drift: it must be the saved one (t= floors).
+      if(!ownTimeline && Math.abs(clock.position-saved.positionSeconds)>1.5){stop('Failed','position');return;}
     } else {
       // URL t= is the entire StartPlaying mechanism: observe only, never seek or retry play.
       state='Verify';
       if(media.readyState<2){wake();return;}
       if(!media.paused && initialPosition===null){wake();return;}
-      if(ownTimeline && Math.abs((initialPosition ?? media.currentTime)-saved.positionSeconds)>1){stop('Failed','position');return;}
+      if(ownTimeline) {
+        if(Math.abs((initialPosition ?? media.currentTime)-saved.positionSeconds)>1){stop('Failed','position');return;}
+      } else {
+        // Let the displayed clock catch up for 1 s, then it must lie between the saved second and now.
+        const clock=trackClock(), since=playingAt===null?0:(performance.now()-playingAt)/1000;
+        if(!clock || playingAt!==null && since<1){wake();return;}
+        if(clock.position<saved.positionSeconds-1.5 || clock.position>saved.positionSeconds+since+2){stop('Failed','position');return;}
+      }
       if(media.paused)reason='paused';
     }
     stop('Done',reason);
