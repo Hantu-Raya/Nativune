@@ -174,6 +174,7 @@
   globalThis.__nativuneResume={
     status:()=>({generation,state,reason,recoveryAd,initialPosition,hidden:document.visibilityState==='hidden'}),
     cancel,
+    fail:()=>{if(!terminal()&&state!=='AdPaused'&&state!=='AwaitMusic')stop('Failed','timeout');return {generation,state};},
     recover:()=>{if(state==='AdPaused'){recoverAd();return {adRecovery:true,generation};}return cancel();}
   };
   state='AwaitMedia';armTimeout();wake();

@@ -1089,7 +1089,10 @@ public sealed partial class WebHostWindow : Window
         _navigationFailed = !args.IsSuccess;
         UpdateNavigation();
         if (!args.IsSuccess)
+        {
             SetStatus($"Page navigation failed: {args.WebErrorStatus}. Use Retry.", isError: true);
+            _ = RetireResumeDocumentAsync();
+        }
         else
         {
             SetStatus(_resumeStartupMessage ?? "Navigation completed. Account and playback remain website-owned.",
@@ -1176,6 +1179,7 @@ public sealed partial class WebHostWindow : Window
             case CoreWebView2ProcessFailedKind.RenderProcessExited:
                 // Microsoft's documented recovery: reload the main frame. Guard against a crash loop.
                 InvalidateCompactState();
+                _ = RetireResumeDocumentAsync();
                 InvalidateDiscord();
                 InvalidateOverlay();
                 if (Environment.TickCount64 - _lastRendererReloadAt < 60_000)
@@ -2284,8 +2288,8 @@ public sealed partial class WebHostWindow : Window
         if (key == VirtualKey.F6) { CycleFocus(shift); return; }
         if (key == VirtualKey.F10 || alt && key == VirtualKey.M) { _moreFlyout.ShowAt(MoreButton); return; }
         if (key == VirtualKey.F11 || key == VirtualKey.Escape && _fullscreen) { ToggleFullscreen(); return; }
-        if (alt && key == VirtualKey.Left && CanNavigate) _browserHost?.Core.GoBack();
-        else if (alt && key == VirtualKey.Right && CanNavigate) _browserHost?.Core.GoForward();
+        if (alt && key == VirtualKey.Left && CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoBack());
+        else if (alt && key == VirtualKey.Right && CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoForward());
     }
 
     private void CycleFocus(bool reverse)

@@ -3,7 +3,7 @@
    Report + exact command: artifacts/resume-e2e/<UTC>/. Audio is measured at owned Core Audio sessions, not inferred from play(). #>
 [CmdletBinding()]
 param([switch] $SkipPublish, [string] $App = 'artifacts/resume-e2e/app',
-    [ValidatePattern('^[A-Za-z0-9_-]{11}$')] [string] $VideoId = 'dQw4w9WgXcQ')
+    [ValidatePattern('^[A-Za-z0-9_-]{11}$')] [string] $VideoId = 'dQw4w9WgXcQ', [switch] $AllowOtherInstances)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -14,7 +14,7 @@ $out = Join-Path $repo "artifacts/resume-e2e/$id"
 $base = Join-Path $repo ".cache/resume-e2e/$id"
 [void][IO.Directory]::CreateDirectory($out)
 [void][IO.Directory]::CreateDirectory($base)
-$command = "pwsh -NoProfile -File scripts/resume-e2e.ps1$(if ($SkipPublish) { ' -SkipPublish' }) -App $App -VideoId $VideoId"
+$command = "pwsh -NoProfile -File scripts/resume-e2e.ps1$(if ($SkipPublish) { ' -SkipPublish' }) -App $App -VideoId $VideoId$(if ($AllowOtherInstances) { ' -AllowOtherInstances' })"
 [IO.File]::WriteAllText((Join-Path $out 'command.txt'), $command + "`n")
 if (-not $SkipPublish) {
     & pwsh -NoProfile -File (Join-Path $repo 'scripts/dotnet.ps1') publish (Join-Path $repo 'src/Nativune/Nativune.csproj') --runtime win-x64 --self-contained false -p:DiscordPresenceTestHooks=true -o $appPath | Out-Null
@@ -71,8 +71,10 @@ function Inspect([string] $Root) {
 }
 function Start-App([string] $Root, [hashtable] $Extra = @{}, [bool] $Autostart = $false) {
     if ($script:run) { throw 'Only one test instance may run.' }
+    # -AllowOtherInstances only tolerates instances from another app folder (e.g. a separate bench); this harness never overlaps itself.
+    $guard = if ($AllowOtherInstances) { [IO.Path]::GetFullPath($appPath) } else { $repo }
     $other = @(Get-CimInstance Win32_Process -Filter "Name='Nativune.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($repo) })
+        Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($guard) })
     if ($other.Count) { throw 'Another project Nativune instance is running; test launch refused.' }
     $envs = @{ NATIVUNE_TEST_DISCORD_FIXTURE_PAGE = '1'; NATIVUNE_TEST_EQ_FIXTURE = '1'; NATIVUNE_TEST_RESUME_FIXTURE = '1';
         NATIVUNE_TEST_AUTOPLAY_POLICY = 'no-user-gesture-required'; NATIVUNE_TEST_DISCORD_CLIENT_ID = '100000000000000001';
@@ -132,9 +134,14 @@ Row 1 'paired-track-checkpoint' {
     [void](Hook 'resume-compact' @{ command = 'seek'; value = 73.625 })
     [void](Hook 'resume-compact' @{ command = 'toggle' })
     $s = State
+    Start-Sleep -Milliseconds 2500
+    $mid = Inspect $paired
+    # A website-side seek on the same song right before quit: only the shutdown read can see it.
+    [void](Hook 'resume-fixture' @{ track = 'B'; position = 120.5 })
     Stop-App
     $cp = Inspect $paired
-    @{ pass = $cp.valid -and $cp.isB -and [math]::Abs($cp.position - 73.625) -le 1; checkpoint = $cp; beforeQuit = $s }
+    @{ pass = $mid.valid -and $mid.isB -and [math]::Abs($mid.position - 73.625) -le 1 -and $cp.valid -and $cp.isB -and [math]::Abs($cp.position - 120.5) -le 1.5;
+        checkpointBeforeLastSeek = $mid; checkpoint = $cp; beforeQuit = $s }
 }
 Row 2 'wait-paused-and-compact-play' {
     $root = New-Root 'wait'; Seed $root

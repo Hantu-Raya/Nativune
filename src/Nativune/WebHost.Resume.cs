@@ -86,6 +86,19 @@ public sealed partial class WebHostWindow
             using var registration = JsonDocument.Parse(json);
             _resumeRegistration = registration.RootElement.GetProperty("identifier").GetString();
             if (string.IsNullOrEmpty(_resumeRegistration)) throw new InvalidDataException("resume-registration");
+            if (_settings.StartupDestination != StartupDestination.Continue)
+            {
+                // Home or Library was saved while setup awaited: retire this restore before navigating.
+                await RemoveResumeRegistrationAsync();
+                RestoreResumeMute();
+                ++_resumeGeneration;
+                _resumeState = "Cancelled";
+                _startupCheckpoint = null;
+                _resumeHomeGuard = false;
+                _resumeCaptureBlocked = false;
+                _resumeStartupMessage = null;
+                return _settings.StartupUri;
+            }
             _resumeOwnedNavigation = true;
             return _resumeOwnedUri;
         }
@@ -155,6 +168,15 @@ public sealed partial class WebHostWindow
         if (await CancelResumeAsync("navigation")) SetStatus("Saved song could not be restored.", isError: true);
     }
 
+    // A failed navigation or an exited renderer leaves no controller to acknowledge cancellation, so retire
+    // the restore directly; Retry, Home and the crash reload then navigate normally. The caller owns the status.
+    private async Task RetireResumeDocumentAsync()
+    {
+        if (!ResumeInProgress && !_resumeSafetyMuted) return;
+        _resumeOtherDocumentConfirmed = true;
+        await CancelResumeAsync("navigation");
+    }
+
     private async Task<JsonElement?> EvaluateResumeAsync(string expression)
     {
         var core = _browserHost?.Core;
@@ -193,9 +215,18 @@ public sealed partial class WebHostWindow
             var changed = state != _resumeState;
             if (changed && _resumeState is "AdPaused" or "AwaitMusic" && state is not ("AdPaused" or "AwaitMusic"))
                 _resumeDeadlineAt = Environment.TickCount64 + 10000;
-            // A never-shown page (tray autostart) has no media yet; the deadline counts visible time only.
-            if (status.TryGetProperty("hidden", out var hidden) && hidden.ValueKind == JsonValueKind.True)
+            // The script's own 10 s starts in the new document; page load time before it does not count.
+            if (changed && _resumeState == "Armed") _resumeDeadlineAt = Environment.TickCount64 + 10000;
+            // A never-shown or hidden window (tray autostart, minimized) has no media yet, so its time does not
+            // count. Visible Compact hides only the WebView: the host enforces the deadline the script suspends.
+            if (status.TryGetProperty("hidden", out var hidden) && hidden.ValueKind == JsonValueKind.True && !WindowIsVisible)
                 _resumeDeadlineAt = Environment.TickCount64 + 10000;
+            if (state is "Armed" or "AwaitMedia" or "Pause/Seek" or "Verify" && Environment.TickCount64 >= _resumeDeadlineAt)
+            {
+                await EvaluateResumeAsync("globalThis.__nativuneResume?.fail()");
+                if (generation == _resumeGeneration) FailResume("timeout");
+                return;
+            }
             _resumeState = state;
             if (state is "Done" or "Cancelled")
             {
@@ -305,6 +336,10 @@ public sealed partial class WebHostWindow
 
     private async Task<bool> RemoveResumeRegistrationAsync()
     {
+        // A rejected or empty registration never existed; only a pending or ambiguous one must be confirmed.
+        if (_resumeRegistration is { Length: 0 }) _resumeRegistration = null;
+        if (_resumeRegistration is null && _resumeRegistrationAdd is { IsFaulted: true } or { IsCanceled: true })
+            _resumeRegistrationAdd = null;
         if (_browserHost is not { } host) return _resumeRegistration is null && _resumeRegistrationAdd is null;
         try
         {
@@ -312,6 +347,7 @@ public sealed partial class WebHostWindow
             {
                 using var result = JsonDocument.Parse(await add.WaitAsync(ResumeCallDeadline));
                 _resumeRegistration = result.RootElement.GetProperty("identifier").GetString();
+                if (string.IsNullOrEmpty(_resumeRegistration)) { _resumeRegistration = null; _resumeRegistrationAdd = null; }
             }
             if (_resumeRegistration is { } registration)
             {
@@ -358,9 +394,12 @@ public sealed partial class WebHostWindow
             && Math.Abs(position - ResumePosition(prior)
                 - (prior.Paused ? 0 : elapsed * (prior.PlaybackRate ?? 1))) <= 1.5;
         var minimum = state.TrackLinkPresent ? 1d : 2d;
-        if (!same && !completedSeek || !state.TrackLinkPresent && string.IsNullOrWhiteSpace(state.Artist))
+        // At shutdown a strongly identified sample of the item already being followed is saved even right
+        // after a website seek; a just-switched item (different prior id) still needs a second sample.
+        var finalStrong = final && state.TrackLinkPresent && prior?.VideoId == state.VideoId;
+        if (!same && !completedSeek && !finalStrong || !state.TrackLinkPresent && string.IsNullOrWhiteSpace(state.Artist))
         { _resumeCandidate = state; _resumeCandidateAt = capturedAt; return; }
-        if (!completedSeek && elapsed < minimum && !(final && state.TrackLinkPresent && state.Paused && prior?.Paused == true)) return;
+        if (!completedSeek && !finalStrong && elapsed < minimum) return;
         var old = _resumeLastSaved;
         var changed = old?.VideoId != state.VideoId;
         var paused = state.Paused && (old?.Paused != true || Math.Abs(ResumePosition(old) - position) > 0.1);
