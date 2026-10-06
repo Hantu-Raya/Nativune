@@ -243,6 +243,10 @@ public sealed partial class WebHostWindow
                 && first is >= 0 and <= ResumeCheckpoint.MaximumSeconds)
                 _resumeInitialPosition = first;
             var changed = state != _resumeState;
+            // The site's own Play on a paused ad recovers it in the page; unmute like the native Play path does.
+            // The flag is latched in the page, so a recovery is seen even if the controller has moved on.
+            if (status.TryGetProperty("adRecovered", out var recovering) && recovering.ValueKind == JsonValueKind.True)
+                RestoreResumeMute();
             if (changed && _resumeState is "AdPaused" or "AwaitMusic" && state is not ("AdPaused" or "AwaitMusic"))
                 _resumeDeadlineAt = Environment.TickCount64 + 10000;
             // The script's own 10 s starts in the new document; page load time before it does not count.
@@ -502,21 +506,28 @@ public sealed partial class WebHostWindow
 
     private async Task CaptureFinalResumeAsync()
     {
-        if (!ResumeReadActive || ResumeInProgress || _playerControls?.IsAvailable != true) return;
         try
         {
-            var generation = _resumeGeneration;
-            var deadline = Environment.TickCount64 + 2000;
-            while ((_playbackReadPending || _playerBusy) && Environment.TickCount64 < deadline)
-                await Task.Delay(25);
-            if (_playbackReadPending || _playerBusy) throw new TimeoutException();
-            // Closing invalidates PlayerControls' host-ready gate, so take this fresh bounded sample first.
-            var read = await _playerControls.ReadPlaybackStateAsync(ReadReason.Resume)
-                .WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, deadline - Environment.TickCount64)));
-            if (read.Sampled) ObserveResumeSnapshot(read.State, generation, Environment.TickCount64, final: true);
+            // The fresh read is optional (player may be mid-navigation); draining an accepted write is not.
+            if (ResumeReadActive && !ResumeInProgress && _playerControls is { IsAvailable: true } controls)
+            {
+                try
+                {
+                    var generation = _resumeGeneration;
+                    var deadline = Environment.TickCount64 + 2000;
+                    while ((_playbackReadPending || _playerBusy) && Environment.TickCount64 < deadline)
+                        await Task.Delay(25);
+                    if (_playbackReadPending || _playerBusy) throw new TimeoutException();
+                    // Closing invalidates PlayerControls' host-ready gate, so take this fresh bounded sample first.
+                    var read = await controls.ReadPlaybackStateAsync(ReadReason.Resume)
+                        .WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, deadline - Environment.TickCount64)));
+                    if (read.Sampled) ObserveResumeSnapshot(read.State, generation, Environment.TickCount64, final: true);
+                }
+                catch (Exception) { AppLog.Write("resume", "final-read-failed"); }
+            }
             await _resumeWriteTask.WaitAsync(ResumeCallDeadline);
         }
-        catch (Exception) { AppLog.Write("resume", "final-read-failed"); }
+        catch (Exception) { AppLog.Write("resume", "final-write-failed"); }
     }
 
     private async Task<string?> ApplyResumePreferencesAsync()

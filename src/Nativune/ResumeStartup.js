@@ -103,6 +103,8 @@
     if (recoveryAd && ad()) { wake(); return; }
     if (ad()) {
       initialPosition=null;playingAt=null;
+      // A play right after trusted in-page input (key shortcut) is the user's Play, like the labelled button.
+      if(waitPaused && state==='AdPaused' && performance.now()-lastInputAt<1500){recoverAd();return;}
       if(waitPaused){media.pause();state='AdPaused';}else state='AwaitMusic';
       clearTimeout(timeout);wake();return;
     }
@@ -143,8 +145,11 @@
     if(performance.now()-lastInputAt < 1500){ cancel(); return; }
     event.target.pause();
   }
+  // adRecovered latches the user's permission to hear the ad and song until the host has seen it,
+  // even if the controller moves on before the next poll.
+  let adRecovered = false;
   function recoverAd() {
-    recoveryAd=true; state='AwaitMusic'; reason=''; clearTimeout(timeout); wake();
+    adRecovered=true; recoveryAd=true; state='AwaitMusic'; reason=''; clearTimeout(timeout); wake();
   }
   function step() {
     if(terminal())return;
@@ -228,7 +233,7 @@
   document.addEventListener('visibilitychange',onVisibility,true);
   for(const event of wakeEvents)document.addEventListener(event,wake,true);
   globalThis.__nativuneResume={
-    status:()=>({generation,state,reason,recoveryAd,initialPosition,diag,hidden:document.visibilityState==='hidden'}),
+    status:()=>({generation,state,reason,recoveryAd,adRecovered,initialPosition,diag,hidden:document.visibilityState==='hidden'}),
     cancel,
     fail:()=>{if(!terminal()&&state!=='AdPaused'&&state!=='AwaitMusic')stop('Failed','timeout');return {generation,state};},
     hold:()=>{clearTimeout(timeout);return true;},

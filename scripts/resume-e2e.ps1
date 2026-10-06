@@ -198,6 +198,11 @@ Row 4 'failure-ad-ended-and-cancellation' {
     Start-App $root @{ NATIVUNE_TEST_RESUME_AD = '1' }; Start-Sleep -Seconds 1; $ad = State
     [void](Hook 'resume-compact' @{ command = 'toggle' }); $adPlaying = State
     [void](Hook 'resume-fixture' @{ endAd = $true }); $post = Await-Done; Stop-App
+    # The website's own keyboard Play on a paused ad recovers it and releases the mute, like native Play.
+    $root = New-Root 'ad-key'; Seed $root
+    Start-App $root @{ NATIVUNE_TEST_RESUME_AD = '1' }; [void](Wait-For { (State).restoreState -ceq 'AdPaused' } 5)
+    [void](Hook 'resume-page-play' @{ key = $true }); [void](Wait-For { -not (State).coreMuted } 4); $adKey = State
+    [void](Hook 'resume-fixture' @{ endAd = $true }); $adKeyPost = Await-Done; Stop-App
     $root = New-Root 'ended' $true; Seed $root 'fixtureSngB' 184.25 185 $true
     Start-App $root; $ended = Await-Done
     $ui = Hook 'resume-settings' @{ destination = 0; launch = 0 }
@@ -259,6 +264,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
         corruptRecovery = $repaired.valid -and $repaired.isB -and $repaired.position -lt 5
         adPaused = $ad.isAd -and $ad.paused -and $ad.seekCount -eq 0 -and $ad.status -like '*Ad paused*'
         adPlay = -not $adPlaying.paused -and -not $adPlaying.coreMuted
+        adKeyPlay = -not $adKey.paused -and -not $adKey.coreMuted -and $adKey.isAd -and $adKeyPost.restoreState -ceq 'Done' -and $adKeyPost.isB -and [math]::Abs($adKeyPost.position - 73.625) -le 1 -and -not $adKeyPost.coreMuted
         afterAd = $post.restoreState -ceq 'Done' -and $post.isB -and $post.paused -and [math]::Abs($post.position - 73.625) -le 1
         ended = $ended.isB -and $ended.paused -and [math]::Abs($ended.position - 184.25) -le 1
         settingsClear = $ui.shown -and $ui.accessible -and -not $disabled.checkpointExists
@@ -277,7 +283,7 @@ Row 4 'failure-ad-ended-and-cancellation' {
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
-        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared; sleep = $slept; adKey = $adKey; adKeyPost = $adKeyPost;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; replacedAfterFailure = $replaced; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }
