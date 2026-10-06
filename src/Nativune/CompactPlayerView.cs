@@ -515,7 +515,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         if (!active)
         {
             _volumeSlider.CancelDrag();
-            // Leave the commit timer running: a non-drag change (keyboard/UIA) still commits.
+            _volumeCommitTimer.Stop();
             _volumeHoverCloseTimer.Stop();
             _volumeButtonPointerOver = false;
             _volumePopupPointerOver = false;
@@ -733,7 +733,13 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         {
             if (_disposed || !_active) return;
             _volumeSlider.CancelDrag();
-            _volumeCommitTimer.Stop();
+            // A keyboard/UIA change is committed only by this timer: flush it rather than drop it.
+            if (_volumeCommitTimer.IsRunning)
+            {
+                _volumeCommitTimer.Stop();
+                if (_pendingOutputVolume is { } pending && _volumeSlider.IsEnabled && !_volumeSlider.Dragging)
+                    RaiseCommand("output-volume", pending);
+            }
             _volumeHoverCloseTimer.Stop();
             _restoreVolumeFocusOnClose = false;
             _popupInvoker = null;
