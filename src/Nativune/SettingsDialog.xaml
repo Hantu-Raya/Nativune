@@ -187,7 +187,7 @@
                       Foreground="{ThemeResource PrimaryTextBrush}"
                       AutomationProperties.Name="Start in Compact"
                       AutomationProperties.HelpText="Applies when you open Nativune yourself." />
-            <ComboBox x:Name="StartupDestinationComboBox" Header="Startup"
+            <ComboBox x:Name="StartupDestinationComboBox" Header="When Nativune opens"
                       HorizontalAlignment="Stretch" AutomationProperties.Name="Startup destination"
                       AutomationProperties.HelpText="Open Home, Library, or continue the saved song at its exact position. Only the song and position are saved, not the queue. Saved listening state is protected for this Windows account and machine.">
               <ComboBoxItem Content="Home" />

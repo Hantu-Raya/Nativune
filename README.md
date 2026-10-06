@@ -88,6 +88,8 @@ Nativune takes a narrower approach. It puts the official website in a native Win
 - **Keyboard shortcuts you can customize.** They only work after you enable them for the current session from the menu.
 - **Window options:** keep on top, fullscreen, page zoom, and start in Compact.
 - **Continue where you left off**, on by default, reopens the saved song within one second of its saved position and waits paused. **Settings › Startup** lets you choose Home or Library instead, or **Start playing** when continuing. Ended and nearly ended songs always reopen paused. Only the song, optional finite playlist and position are saved—not the queue or Radio session. The checkpoint is protected for this Windows account and machine; choosing Home or Library deletes it. Saving positions uses the same English-language public-page reader as Compact.
+
+  ![Settings › Startup: When Nativune opens set to Continue where you left off, and When continuing set to Wait paused](assets/screenshots/resume/settings-startup.png)
 - **Reduce motion** setting that stops the rotating artwork and scrolling titles in Compact.
 - **uBlock Origin Lite, privacy-only by default.** Only the EasyPrivacy tracker list is enabled, and only on `music.youtube.com`.
 - **Optional ad blocking, off by default.** **Settings › Privacy › Block ads** adds uBlock Origin Lite's ad filters on `music.youtube.com` after a restart. Blocking ads is against YouTube's terms; YouTube may detect it, interrupt playback or warn your account. YouTube Premium removes ads legitimately.
