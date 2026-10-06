@@ -216,6 +216,10 @@ Row 4 'failure-ad-ended-and-cancellation' {
     [void](Hook 'resume-page-play' @{ key = $false }); Start-Sleep -Seconds 1; $lateAutoplay = State
     [void](Hook 'resume-page-play' @{ key = $true }); [void](Wait-For { (State).restoreState -ceq 'Cancelled' } 4); Start-Sleep -Seconds 1; $keyPlay = State
     Stop-App
+    # Media duration differs from the saved track's (a shared signed-in timeline): never seek the element,
+    # keep the site's whole-second t= position and pause.
+    $root = New-Root 'shared-timeline'; Seed $root 'fixtureSngB' 73.625 400
+    Start-App $root; $shared = Await-Done; Stop-App
     $root = New-Root 'account-redirect'; Seed $root
     Start-App $root @{ NATIVUNE_TEST_RESUME_REDIRECT = '1' }; Start-Sleep -Seconds 1; $redirect = State
     [void](Hook 'resume-visit'); [void](Wait-For { (State).isC } 5); Start-Sleep -Seconds 1; $afterRedirect = State; Stop-App
@@ -252,12 +256,13 @@ Row 4 'failure-ad-ended-and-cancellation' {
         recovery = $recovered.restoreState -ceq 'Cancelled' -and -not $recovered.coreMuted -and -not $recovered.paused
         failedLateAutoplay = $failed2.restoreState -ceq 'Failed' -and $lateAutoplay.restoreState -ceq 'Failed' -and $lateAutoplay.paused -and $lateAutoplay.safetyMuted
         failedKeyPlay = $keyPlay.restoreState -ceq 'Cancelled' -and -not $keyPlay.paused -and -not $keyPlay.coreMuted -and -not $keyPlay.safetyMuted
+        sharedTimeline = $shared.restoreState -ceq 'Done' -and $shared.isB -and $shared.paused -and $shared.seekCount -eq 0 -and [math]::Abs($shared.position - 73) -le 0.5 -and -not $shared.coreMuted
         migrations = @($migrations | Where-Object { -not $_.pass }).Count -eq 0
         accountRedirect = $redirect.otherDocument -and $redirect.restoreState -ceq 'Cancelled' -and -not $redirect.coreMuted -and $afterRedirect.isC -and -not $afterRedirect.coreMuted -and $afterRedirect.position -lt 10 -and $afterRedirect.seekCount -eq 0
     }
     @{ pass = @($checks.Values | Where-Object { -not $_ }).Count -eq 0; checks = $checks;
         corrupt = $bad; corruptNoMedia = $noMedia; repairedCheckpoint = $repaired; ad = $ad; adPlaying = $adPlaying; afterAd = $post;
-        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay;
+        failedLateAutoplay = $lateAutoplay; failedKeyPlay = $keyPlay; sharedTimeline = $shared;
         ended = $ended; settingsUi = $ui; disabled = $disabled; cancelled = $cancel; startPlayingAd = $naturalAd;
         wrongPosition = $wrongStart; timeout = $failed; recovered = $recovered; migrations = $migrations;
         accountRedirect = $redirect; afterRedirect = $afterRedirect }

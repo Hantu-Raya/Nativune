@@ -1097,6 +1097,7 @@ public sealed partial class WebHostWindow : Window
         {
             SetStatus(_resumeStartupMessage ?? "Navigation completed. Account and playback remain website-owned.",
                 isError: _resumeStartupMessage is not null);
+            if (!ResumeInProgress) _resumeStartupMessage = null; // a finished restore's message is shown once
             RefreshSharedReader();
             ArmResumeDeadline();
             _ = FinalizeResumeOtherDocumentAsync();

@@ -162,14 +162,19 @@
     if(!identity() || media.readyState<1){state='AwaitMedia';wake();return;}
     if(saved.positionSeconds > media.duration + 1){if(waitPaused)media.pause();stop('Failed','track');return;}
     const target=Math.min(saved.positionSeconds,media.duration);
+    // Signed-in playback can put several items on one media timeline. Media time equals the saved per-track
+    // position only when the element's duration is this track's; otherwise the site's whole-second t= is the
+    // position and the element is only paused, never seeked or checked against track time.
+    const ownTimeline=Math.abs(media.duration-saved.durationSeconds)<=2;
     if(waitPaused) {
-      if(!sought) {
+      if(!sought && ownTimeline) {
         if(!seekable(target)){state='AwaitMedia';wake();return;}
         state='Pause/Seek';media.pause();ignoreSeek=true;sought=true;media.currentTime=target;
         media.addEventListener('seeked',()=>{ignoreSeek=false;wake();},{once:true});
       }
+      if(!ownTimeline)media.pause();
       state='Verify';
-      if(media.seeking || !media.paused || Math.abs(media.currentTime-target)>1){stableAt=0;wake();return;}
+      if(media.seeking || !media.paused || ownTimeline && Math.abs(media.currentTime-target)>1){stableAt=0;wake();return;}
       if(!stableAt)stableAt=performance.now();
       if(performance.now()-stableAt<500){wake();return;}
     } else {
@@ -177,7 +182,7 @@
       state='Verify';
       if(media.readyState<2){wake();return;}
       if(!media.paused && initialPosition===null){wake();return;}
-      if(Math.abs((initialPosition ?? media.currentTime)-saved.positionSeconds)>1){stop('Failed','position');return;}
+      if(ownTimeline && Math.abs((initialPosition ?? media.currentTime)-saved.positionSeconds)>1){stop('Failed','position');return;}
       if(media.paused)reason='paused';
     }
     stop('Done',reason);

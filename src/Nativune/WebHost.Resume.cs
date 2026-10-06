@@ -108,13 +108,18 @@ public sealed partial class WebHostWindow
         }
         catch (Exception) when (!_lifetime.IsCancellationRequested)
         {
+            // Home has no saved song to protect, so a setup failure retires the restore and unmutes right away;
+            // only the status says the song could not be restored. A pending registration is removed in the background.
             _resumeSetupFailed = true;
+            RestoreResumeMute();
+            ++_resumeGeneration;
+            _resumeState = "Cancelled";
+            _resumeCaptureBlocked = false;
+            _resumeStartupMessage = "Saved song could not be restored.";
+            _ = RemoveResumeRegistrationAsync();
             _resumeOwnedUri = "https://music.youtube.com/";
             _resumeOwnedNavigation = true;
-            _resumeState = "Failed";
-            _resumeCaptureBlocked = true;
-            _resumeStartupMessage = "Saved song could not be restored.";
-            return "https://music.youtube.com/";
+            return _resumeOwnedUri;
         }
     }
 
