@@ -127,6 +127,8 @@ public sealed partial class WebHostWindow : Window
     private const int DefaultDpi = 96;
     private const string MemoryBrowserArguments =
         "--enable-low-end-device-mode " +
+        // Low-end mode caps V8 at ~259 MiB; this measured ~515 MiB with no startup cost.
+        "--js-flags=--max-old-space-size=512 " +
         "--process-per-site " +
         "--renderer-process-limit=2 " +
         "--force_low_power_gpu " +
@@ -904,6 +906,7 @@ public sealed partial class WebHostWindow : Window
             core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
+            InitializeMemoryTrail(core);
 #if NATIVUNE_DISCORD_TEST_HOOKS
             InstallDiscordFixturePage(core);
 #endif
@@ -1248,6 +1251,7 @@ public sealed partial class WebHostWindow : Window
         if (_closing || _disposed) return;
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
         {
+            MemoryTrailBeforeFailure();
             ReleaseRendererCap("process-failed");
             _fullIdleDocumentLoaded = false;
         }
@@ -2451,6 +2455,7 @@ public sealed partial class WebHostWindow : Window
     private async Task ShutdownCoreAsync()
     {
         if (_disposed) return;
+        StopMemoryTrail();
         RecordAppActivity("shutdown");
         _fullIdleTimer?.Stop();
         ReleaseRendererCap("shutdown");
@@ -2538,6 +2543,7 @@ public sealed partial class WebHostWindow : Window
         try { _iconCache.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _environment = null;
         _disposed = true;
+        AppLog.Stop();
         if (firstFailure is not null)
         {
             ExitCode = ExitCode == 0 ? 1 : ExitCode;

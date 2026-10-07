@@ -371,7 +371,7 @@ No. You sign in on Google's own pages inside the embedded view. Nativune does no
 In the installation's `data/` directory, `%LOCALAPPDATA%\Nativune\data` by default. It holds the isolated WebView2 profile, `settings.json` and `nativune.log`.
 
 **Where can I find error and crash details?**
-In `data\nativune.log`. It records error messages, WebView2 process failures (for example a GPU process restart) and unhandled exceptions, with timestamps. It does not record page content, cookies or what you play. Once it passes 1 MB, it moves to `nativune.old.log` and a new file starts.
+In `data\nativune.log`. It records error messages, WebView2 process failures (for example a GPU process restart) and unhandled exceptions, with timestamps. Numeric memory samples are recorded after the first successful page load and every 5 minutes, including in Compact and the tray. They include JavaScript heap usage and limit, DOM counts, process memory, system memory and elapsed session/renderer time. The last sample is repeated before page/browser crash recovery, and a normal quit records session length. It does not record page content, cookies or what you play. Once it passes 1 MB, it moves to `nativune.old.log` and a new file starts.
 
 **Which Windows versions are supported?**
 64-bit Windows 10 version 2004 (build 19041) or later, including Windows 11.
