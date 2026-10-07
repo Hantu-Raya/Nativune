@@ -1953,7 +1953,7 @@ public sealed partial class WebHostWindow : Window
         ApplyCompactSurface();
         _compactModeGeneration++;
         UpdateWindowPresentation();
-        UpdateFullIdlePolling();
+        UpdateWindowVisibilityPolicy();
         CaptureSettings();
         BenchPresentationChanged();
     }

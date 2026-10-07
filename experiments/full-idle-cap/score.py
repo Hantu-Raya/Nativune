@@ -93,6 +93,11 @@ def screen(path):
         'compact':phase(samples,events,first.get('compact-shown',0)+30000,first.get('compact-shown',0)+120000,enabled),
         'tray':phase(samples,events,first.get('hide-done',0)+30000,min(first.get('hide-done',0)+120000,first.get('show-requested',float('inf'))),enabled),
     }
+    if enabled and compact:
+        interval=settled_interval(events,compact-90000,compact)
+        phases['full_settled']=phase(samples,events,*interval,True) if interval else {
+            'complete':False,'reason':'No continuous first Full cap interval with >=30 s samples after >=30 s applied settling.'}
+    else:phases['full_settled']=phases['full']
     if enabled and full2 and hide:
         interval=settled_interval(events,full2,hide)
         phases['full2_settled']=phase(samples,events,interval[0],min(interval[1],interval[0]+90000),True) if interval else {
@@ -115,7 +120,9 @@ def screen(path):
         'conventionalScore':score}
 
 def latency(path):
-    rows=json.loads((path/'trials.json').read_text()); result: dict[str,Any]={'trials':len(rows)}
+    rows=json.loads((path/'trials.json').read_text()) if (path/'trials.json').exists() else []
+    errors=json.loads((path/'latency-errors.json').read_text()) if (path/'latency-errors.json').exists() else []
+    result={'trials':len(rows),'gate':'COMPLETE' if len(rows)>=10 and not errors else 'BLOCKED','errors':errors}
     for kind in ('all','wheel','click'):
         selected=[r for r in rows if kind=='all' or r['kind']==kind]
         result[kind]={'trials':len(selected)}
@@ -137,15 +144,19 @@ def main():
     results['limits'] += ['Input heuristic cannot distinguish keyboard from mouse: typing elsewhere with the cursor over Nativune counts as activity.',
         'Fixture latency exercises detection/presentation, not the real Music SPA memory pressure.',
         '80-a orchestration was stopped before input trials to add fresh-target injection guards; its in-flight app was not terminated, but that arm is not used.']
+    results['limits'] += ['Memory screens use the frozen pre-b3ac76b prototype build; lifecycle/build/input evidence uses the rebased build.',
+        'Broad Full windows include uncapped work after source/input activity; incomplete settled windows are not memory passes.',
+        'A few guarded native injections are partial evidence, never the required >=10 trials per arm.']
     for cap in (0,60,80,100):
         candidates=[p for p in OUT.glob(f'fullidle-{cap}-*') if (p/'summary.json').exists() and (p/'score.json').exists()]
         if candidates:
             path=max(candidates,key=lambda p:json.loads((p/'summary.json').read_text())['utc'])
             results['screens'][str(cap)]=dict(screen(path),label=path.name)
     for cap in (0,60):
-        candidates=[p for p in OUT.glob(f'fullidle-input-{cap}-*') if (p/'trials.json').exists()]
+        candidates=[p for p in OUT.glob(f'fullidle-input-{cap}-*') if (p/'summary.json').exists()
+                    and ((p/'trials.json').exists() or (p/'latency-errors.json').exists())]
         if candidates:
-            path=max(candidates,key=lambda p:(p/'trials.json').stat().st_mtime)
+            path=max(candidates,key=lambda p:json.loads((p/'summary.json').read_text())['utc'])
             results['latency'][str(cap)]=dict(latency(path),label=path.name)
     (OUT/'results.json').write_text(json.dumps(results,indent=2))
     print(json.dumps({group:{cap:({k:v for k,v in item.items() if k in ('phases','exit','playing','contaminated')} if group=='screens' else item)

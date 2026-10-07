@@ -48,6 +48,7 @@ u.WindowFromPoint.argtypes = [W.POINT]; u.WindowFromPoint.restype = W.HWND
 u.GetAncestor.argtypes = [W.HWND, W.UINT]; u.GetAncestor.restype = W.HWND
 u.GetForegroundWindow.restype = W.HWND
 u.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+u.SetWindowPos.argtypes = [W.HWND,W.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,W.UINT]
 g.CreateCompatibleDC.argtypes = [W.HDC]; g.CreateCompatibleDC.restype = W.HDC
 g.CreateCompatibleBitmap.argtypes = [W.HDC, ctypes.c_int, ctypes.c_int]; g.CreateCompatibleBitmap.restype = W.HBITMAP
 g.SelectObject.argtypes = [W.HDC, W.HGDIOBJ]; g.SelectObject.restype = W.HGDIOBJ
@@ -127,6 +128,10 @@ class Capture:
     def close(self):
         g.SelectObject(self.dc,self.old); g.DeleteObject(self.bitmap); g.DeleteDC(self.dc); u.ReleaseDC(None,self.screen)
 
+def fixture_pixels(pixels):
+    color=pixels[:3]
+    return color in (b'\x6e\x50\x24',b'\x40\x40\x82') and all(pixels[i:i+3]==color for i in range(0,len(pixels),4))
+
 def inject(kind):
     items=(INPUT*2)()
     if kind=='wheel':
@@ -138,14 +143,13 @@ def inject(kind):
     if u.SendInput(count,items,ctypes.sizeof(INPUT)) != count: raise ctypes.WinError()
     return stamp
 
-def latency_watch(label, cap, result, errors, stop, probe=False):
+def latency_watch(label, cap, result, errors, stop, probe=False, position=None):
     try:
         started=time.time(); run=None
         while not stop.is_set() and run is None:
             runs=sorted(r for r in (MAINTAINER/'.cache/memory-attribution/runs').glob('*-'+label) if r.stat().st_mtime>=started-5)
             if runs and (runs[-1]/'app-process.json').exists(): run=runs[-1]
             else: time.sleep(.2)
-            if time.time()-started > 7200: raise RuntimeError('Solo launch never acquired its slot')
         if run is None: return
         pid=json.loads((run/'app-process.json').read_text(encoding='utf-8-sig'))['pid']; log=run/'bench.jsonl'
         ready=time.time()
@@ -154,6 +158,15 @@ def latency_watch(label, cap, result, errors, stop, probe=False):
             time.sleep(.1)
         top,_,rect=window_for(pid)
         arm=OUT/label; arm.mkdir(parents=True,exist_ok=True)
+        if position is not None:
+            if not u.SetWindowPos(top,None,*position,0,0,0x0015):raise ctypes.WinError()
+            time.sleep(.25)
+            top,_,rect=window_for(pid)
+        ready=time.time()
+        while not any(e['event']=='show-requested' for e in events(log)):
+            if stop.is_set() or time.time()-ready>15:raise RuntimeError('Owned activation path did not run')
+            time.sleep(.025)
+        time.sleep(.25)
         u.SetForegroundWindow(top)
         placed=bool(u.SetCursorPos((rect.left+rect.right)//2, rect.top+300))
         initial=target_snapshot(top,rect);initial['setCursorSucceeded']=placed
@@ -162,19 +175,26 @@ def latency_watch(label, cap, result, errors, stop, probe=False):
         if not placed or not initial['inside'] or not initial['rootMatches']:
             raise RuntimeError('Initial cursor placement does not target the owned WebView; refusing input')
         capture=Capture(rect.left+20,rect.top+20)
-        previous=0; quiet=time.time()
+        previous=0
         try:
             for trial in range(10):
                 deadline=time.time()+100
+                parked=False
                 while True:
-                    applied=[e for e in events(log) if e['event']=='fullidle-cap' and e.get('outcome')=='applied' and e['t']>previous]
-                    if cap and applied: previous=applied[-1]['t']; break
-                    if not cap and time.time()-quiet>=62: break
+                    log_events=events(log)
+                    shown=[e for e in log_events if e['event']=='show-requested']
+                    activation=shown[trial]['t'] if len(shown)>trial else None
+                    if activation is not None and not parked:
+                        if not u.SetCursorPos((rect.left+rect.right)//2,rect.top+300):raise ctypes.WinError()
+                        parked=True
+                    applied=[e for e in log_events if e['event']=='fullidle-cap' and e.get('outcome')=='applied'
+                             and activation is not None and e['t']>max(previous,activation)]
+                    if cap and applied:previous=applied[-1]['t'];break
+                    if not cap and activation is not None and time.time()*1000-activation>=62000:break
                     if stop.is_set() or time.time()>deadline: raise RuntimeError(f'No idle cap before trial {trial}')
                     time.sleep(.025)
                 kind='wheel' if trial%2==0 else 'click'
                 frames=arm/f'trial-{trial:02}-{kind}';frames.mkdir(exist_ok=True)
-                _,_,baseline=capture.frame();capture.save(frames/'baseline.bmp',baseline)
                 live_top,_,live_rect=window_for(pid)
                 target=target_snapshot(top,rect)
                 (frames/'input-target.json').write_text(json.dumps(target,indent=2))
@@ -182,12 +202,16 @@ def latency_watch(label, cap, result, errors, stop, probe=False):
                     raise RuntimeError('Owned fixture geometry changed; refusing input')
                 if not target['inside'] or not target['rootMatches']:
                     raise RuntimeError('Cursor is no longer over the owned WebView; refusing input')
-                color=baseline[:3]
-                if color not in (b'\x6e\x50\x24',b'\x40\x40\x82') or any(baseline[i:i+3]!=color for i in range(0,len(baseline),4)):
+                _,_,baseline=capture.frame()
+                if not fixture_pixels(baseline):
                     raise RuntimeError('Fixture response band is not visible and unobscured; refusing input')
+                capture.save(frames/'baseline.bmp',baseline)
                 stamp=inject(kind); first=None; frame_records=[]; target=time.perf_counter()
                 for number in range(32):
-                    a,b,pixels=capture.frame();capture.save(frames/f'{number:02}.bmp',pixels)
+                    a,b,pixels=capture.frame()
+                    if not fixture_pixels(pixels):
+                        raise RuntimeError('Response band obscured; refusing to retain non-fixture pixels')
+                    capture.save(frames/f'{number:02}.bmp',pixels)
                     changed=pixels!=baseline
                     frame_records.append({'startQpc':a,'endQpc':b,'changed':changed})
                     if changed and first is None: first=(a,b)
@@ -208,12 +232,12 @@ def latency_watch(label, cap, result, errors, stop, probe=False):
                 result.append(row);(arm/'trials.json').write_text(json.dumps(result,indent=2))
                 if cap and release is None: raise RuntimeError('No FullIdle release after real input')
                 if first is None: raise RuntimeError('No changed fixture frame after real input')
-                quiet=time.time()
         finally: capture.close()
     except Exception as e: errors.append(str(e))
 
-def launch(label, cap, latency=False, schedule=None, probe=False):
-    selected_schedule=schedule or ('full@0;quit@12' if probe else 'full@0;compact@650;quit@655' if latency else SCHEDULE)
+def launch(label, cap, latency=False, schedule=None, probe=False, position=None):
+    input_schedule=';'.join(f'show@{70*i}' for i in range(10))+';compact@720;quit@725'
+    selected_schedule=schedule or ('show@0;quit@12' if probe else input_schedule if latency else SCHEDULE)
     args=[sys.executable,str(SOLO),label,str(EXE),'--schedule',selected_schedule,
           '--extra-args=--no-delay-for-dx12-vulkan-info-collection','--env',f'NATIVUNE_BENCH_FULLIDLE_CAP_MIB={cap}']
     if latency:
@@ -224,7 +248,7 @@ def launch(label, cap, latency=False, schedule=None, probe=False):
     rows,errors,stop=[],[],threading.Event()
     monitor=None
     if latency:
-        monitor=threading.Thread(target=latency_watch,args=(label,cap,rows,errors,stop,probe));monitor.start()
+        monitor=threading.Thread(target=latency_watch,args=(label,cap,rows,errors,stop,probe,position));monitor.start()
     env=dict(os.environ,SOLO_ATTEMPTS='1',SOLO_QUIET_SECONDS='60')
     p=subprocess.run(args,cwd=ROOT,env=env,capture_output=True,text=True)
     stop.set()
@@ -238,7 +262,7 @@ def launch(label, cap, latency=False, schedule=None, probe=False):
     run=sorted((MAINTAINER/'.cache/memory-attribution/runs').glob('*-'+label))[-1]
     safe={'fullidle-cap','tray-cap','renderer-cap-restored','webview-input-windows','anchor','media-playing','media-timeout','media-sample',
           'compact-requested','compact-shown','full-requested','full-shown','hide-requested','hide-done',
-          'show-requested','show-done','quit-requested','process-infos'}
+          'show-requested','show-done','quit-requested','process-infos','presentation-state'}
     retained=[e for e in events(run/'bench.jsonl') if e['event'] in safe]
     (dst/'events.json').write_text(json.dumps(retained,indent=2))
     if errors: (dst/'latency-errors.json').write_text(json.dumps(errors))
@@ -252,8 +276,14 @@ def launch(label, cap, latency=False, schedule=None, probe=False):
         sticky=[e for e in retained if e['event'] in ('tray-cap','fullidle-cap') and e.get('outcome')=='applied'
                 and release[0]['t']<e['t']<full_entry]
         exact=[e for e in retained if e['event']=='renderer-cap-restored' and e.get('exact')]
+        tray_applied=[e for e in retained if e['event']=='tray-cap' and e.get('outcome')=='applied']
+        if not tray_applied:raise RuntimeError('Minimize -> hide did not apply the shared Tray cap')
+        full_state=next(e for e in retained if e['event']=='presentation-state' and not e['compact'] and e['t']>full_entry)
+        if full_state['inTray'] and not any(e['t']>full_entry for e in tray_applied):
+            raise RuntimeError('Hidden Compact -> Full did not re-arm the shared Tray cap')
         if sticky or not exact:raise RuntimeError('A cap survived Compact or original limits were not restored')
-        (dst/'lifecycle-check.json').write_text(json.dumps({'passed':True,'compactRelease':release[0],'exactRestoreChecks':len(exact)},indent=2))
+        (dst/'lifecycle-check.json').write_text(json.dumps({'passed':True,'compactRelease':release[0],
+            'exactRestoreChecks':len(exact),'trayApplied':tray_applied,'fullState':full_state},indent=2))
     return dst
 
 def main():
@@ -263,13 +293,19 @@ def main():
     ap.add_argument('--screen-caps',default='0,60,80,100')
     ap.add_argument('--screen-suffix',default='a')
     ap.add_argument('--input-suffix',default='a')
+    ap.add_argument('--fixture-x',type=int);ap.add_argument('--fixture-y',type=int)
     a=ap.parse_args();OUT.mkdir(parents=True,exist_ok=True)
+    position=(a.fixture_x,a.fixture_y) if a.fixture_x is not None and a.fixture_y is not None else None
     if a.screens:
         for cap in map(int,a.screen_caps.split(',')): launch(f'fullidle-{cap}-{a.screen_suffix}',cap)
     if a.latency:
-        for cap in (0,60): launch(f'fullidle-input-{cap}-{a.input_suffix}',cap,True)
-    if a.target_probe:launch('fullidle-target-probe',0,True,probe=True)
+        failures=[]
+        for cap in (0,60):
+            try:launch(f'fullidle-input-{cap}-{a.input_suffix}',cap,True,position=position)
+            except RuntimeError as e:failures.append(str(e))
+        if failures:raise RuntimeError('; '.join(failures))
+    if a.target_probe:launch(f'fullidle-target-probe-{a.input_suffix}',0,True,probe=True,position=position)
     if a.lifecycle:
-        launch('fullidle-lifecycle-60-a',60,schedule='full@0;hide@100;compact@130;full@170;show@200;quit@220')
+        launch('fullidle-lifecycle-60-c',60,schedule='full@0;minimize@100;hide@105;compact@135;full@165;show@195;quit@205')
     return 0
 if __name__=='__main__': sys.exit(main())

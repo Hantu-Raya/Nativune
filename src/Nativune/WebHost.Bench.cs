@@ -165,6 +165,8 @@ public sealed partial class WebHostWindow
 
     partial void BenchPresentationChanged()
     {
+        BenchHooks.Event("presentation-state", ("visible", WindowIsVisible), ("inTray", IsInTray),
+            ("compact", _compact), ("trayTimerRunning", _trayCapTimer.IsRunning));
         if (_benchPresentationTimer is null) return;
         _benchPendingCompactPresentation = _compact;
         _benchPresentationTimer.Start();
@@ -336,14 +338,7 @@ public sealed partial class WebHostWindow
                     BenchHooks.ShowRequested();
                     if (_presenter?.State == OverlappedPresenterState.Minimized)
                         _presenter.Restore();
-                    if (_appWindow?.IsVisible == false)
-                        RequestActivation();
-                    else
-                    {
-                        _appWindow?.Show();
-                        Activate();
-                        UpdateBrowserVisibility();
-                    }
+                    RequestActivation();
                     if (await WaitForBenchVisibilityAsync(visible: true))
                         BenchHooks.ShowDone();
                     break;
