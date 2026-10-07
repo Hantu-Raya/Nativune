@@ -292,6 +292,8 @@ public sealed partial class WebHostWindow
         {
             var policy = _rendererCapPolicy;
             _rendererCapPolicy = RendererCapPolicy.None;
+            _fullIdleRevalidationRequested = false;
+            _fullIdleRevalidationRetries = 0;
             handle.Dispose();
             _rendererCapHandle = null;
             RendererCapLog(policy, restored ? "released" : "released-exited", _rendererCapPid,

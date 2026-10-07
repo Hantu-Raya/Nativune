@@ -289,6 +289,7 @@ def launch(label, cap, latency=False, schedule=None, probe=False, position=None)
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--screens',action='store_true');ap.add_argument('--latency',action='store_true')
     ap.add_argument('--lifecycle',action='store_true')
+    ap.add_argument('--short-bench',action='store_true')
     ap.add_argument('--target-probe',action='store_true')
     ap.add_argument('--screen-caps',default='0,60,80,100')
     ap.add_argument('--screen-suffix',default='a')
@@ -296,6 +297,13 @@ def main():
     ap.add_argument('--fixture-x',type=int);ap.add_argument('--fixture-y',type=int)
     a=ap.parse_args();OUT.mkdir(parents=True,exist_ok=True)
     position=(a.fixture_x,a.fixture_y) if a.fixture_x is not None and a.fixture_y is not None else None
+    if a.short_bench:
+        path=launch('fullidle-rebase-60-c171e50',60,schedule='full@0;compact@300;quit@330')
+        cap_events=json.loads((path/'events.json').read_text())
+        applied=[e for e in cap_events if e['event']=='fullidle-cap' and e.get('outcome')=='applied']
+        released=[e for e in cap_events if e['event']=='fullidle-cap' and e.get('outcome')=='released']
+        if not applied or not released:raise RuntimeError('Short bench did not demonstrate FullIdle apply/release')
+        (path/'short-check.json').write_text(json.dumps({'passed':True,'applied':applied,'released':released},indent=2))
     if a.screens:
         for cap in map(int,a.screen_caps.split(',')): launch(f'fullidle-{cap}-{a.screen_suffix}',cap)
     if a.latency:
