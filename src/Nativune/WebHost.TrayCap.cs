@@ -25,6 +25,9 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _fullIdleTimer;
     private long _lastAppActivity = Stopwatch.GetTimestamp();
     private uint? _lastInputTick;
+    // Any app input since the last source change makes the next change user-driven, even if it is delayed.
+    private bool _appInputSinceSource = true;
+    private double _fullIdleWaitSeconds = 60;
     private bool _fullIdleDocumentLoaded, _fullIdleNavigationInProgress, _rendererCapPending;
     private long _rendererCapRetryAfter;
 
@@ -52,13 +55,46 @@ public sealed partial class WebHostWindow
             return 60;
         }
     }
+    private static int FullIdleWatchdogMilliseconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_WATCHDOG_MS"), out var milliseconds)
+                && milliseconds is >= 10 and <= 1000) return milliseconds;
+#endif
+            return 50;
+        }
+    }
+    private static int FullIdlePendingMilliseconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_PENDING_MS"), out var milliseconds)
+                && milliseconds is >= 50 and <= 10000) return milliseconds;
+#endif
+            return 1000;
+        }
+    }
+    private static double FullIdleRearmSeconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_REARM_SECONDS"), out var seconds)
+                && seconds is >= 0 and <= 60) return seconds;
+#endif
+            return 10;
+        }
+    }
 
     private bool FullIdleCanWait => WindowIsVisible && !_compact
         && _fullIdleDocumentLoaded && !_fullIdleNavigationInProgress && !_navigationFailed && !_browserFailed
         && !_configuringPrivacy && !_awaitingFirstPage && !_playerBusy && !_settingsDialogOpen && !_timerDialogOpen
         && _ownedDialogs.Count == 0 && !_resumeShutdownStarted && !_closing && !_disposed;
     private bool FullIdleEligible => FullIdleCanWait && FullIdleCapBytes > 0
-        && Stopwatch.GetElapsedTime(_lastAppActivity).TotalSeconds >= FullIdleSeconds;
+        && Stopwatch.GetElapsedTime(_lastAppActivity).TotalSeconds >= _fullIdleWaitSeconds;
 
     private void RegisterFullIdleButtons(Microsoft.UI.Xaml.DependencyObject root)
     {
@@ -70,6 +106,12 @@ public sealed partial class WebHostWindow
 
     private void InitializeFullIdlePolicy()
     {
+        _fullIdleWaitSeconds = FullIdleSeconds;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        BenchHooks.Event("fullidle-policy", ("idleSeconds", FullIdleSeconds),
+            ("watchdogMs", FullIdleWatchdogMilliseconds), ("pendingMs", FullIdlePendingMilliseconds),
+            ("rearmSeconds", FullIdleRearmSeconds));
+#endif
         _fullIdleTimer = _dispatcherQueue.CreateTimer();
         _fullIdleTimer.IsRepeating = true;
         _fullIdleTimer.Tick += (_, _) =>
@@ -87,13 +129,25 @@ public sealed partial class WebHostWindow
         };
     }
 
-    private void RecordAppActivity(string reason)
+    private void RecordAppActivity(string reason, bool appInput = true, double? idleWaitSeconds = null)
     {
         var detected = Stopwatch.GetTimestamp();
         _lastAppActivity = detected;
+        _fullIdleWaitSeconds = idleWaitSeconds ?? FullIdleSeconds;
+        if (appInput) _appInputSinceSource = true;
         _rendererCapGeneration++; // Invalidate discovery even when there is no applied cap yet.
         if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap(reason, detected);
         UpdateFullIdlePolling();
+    }
+
+    private void RecordSourceChange(bool newDocument)
+    {
+        // Poll now, before attributing the change: the pending timer may not have seen the user's click yet.
+        var inputAvailable = PollAppInput();
+        var automatic = inputAvailable && !newDocument && _fullIdleDocumentLoaded && !_appInputSinceSource;
+        RecordAppActivity(automatic ? "track-change" : "source-changed", appInput: false,
+            idleWaitSeconds: automatic ? FullIdleRearmSeconds : FullIdleSeconds);
+        _appInputSinceSource = false;
     }
 
     // WebView input HWNDs can belong to the browser process. No global hooks and no input content is recorded.
@@ -122,7 +176,8 @@ public sealed partial class WebHostWindow
             if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap("ineligible");
             return;
         }
-        var interval = TimeSpan.FromMilliseconds(_rendererCapPolicy == RendererCapPolicy.FullIdle ? 50 : 1000);
+        var interval = TimeSpan.FromMilliseconds(_rendererCapPolicy == RendererCapPolicy.FullIdle
+            ? FullIdleWatchdogMilliseconds : FullIdlePendingMilliseconds);
         // Do not restart an already running timer on every geometry/state notification.
         if (_fullIdleTimer.IsRunning && _fullIdleTimer.Interval == interval) return;
         _fullIdleTimer.Stop();

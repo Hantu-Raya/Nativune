@@ -916,7 +916,7 @@ public sealed partial class WebHostWindow : Window
             StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
-            core.SourceChanged += (_, _) => { RecordAppActivity("source-changed"); ObserveResumeSource(); };
+            core.SourceChanged += (_, args) => { RecordSourceChange(args.IsNewDocument); ObserveResumeSource(); };
             BenchFullIdleConfigure();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
@@ -1066,7 +1066,7 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationStarting(CoreWebView2NavigationStartingEventArgs args)
     {
-        RecordAppActivity("navigation-starting");
+        RecordAppActivity("navigation-starting", appInput: false);
         if (_closing || _disposed || _browserFailed)
         {
             args.Cancel = true;
@@ -1115,7 +1115,7 @@ public sealed partial class WebHostWindow : Window
         {
             _fullIdleNavigationInProgress = false;
             _fullIdleDocumentLoaded = args.IsSuccess && args.NavigationId != _blockedNavigation;
-            RecordAppActivity(args.IsSuccess ? "document-loaded" : "navigation-failed");
+            RecordAppActivity(args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false);
         }
         if (_awaitingFirstPage && _browserHost?.Core.Source is { } source
             && !source.StartsWith("chrome-extension:", StringComparison.OrdinalIgnoreCase))
