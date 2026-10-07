@@ -109,7 +109,8 @@ report = {'label': label, 'exe': exe, 'status': status, 'checks': checks, 'marks
           'run': str(run), 'counts': {'memory': len(memory), 'beforeFailure': len(before), 'stop': len(stop)},
           'firstRows': memory[:2], 'beforeFailureRows': before, 'postRows': post[:2], 'stopRows': stop,
           'privacyViolations': len(privacy_bad),
-          'command': f'python experiments/memory-trail/trail_e2e.py {label} {exe}'}
+          'command': subprocess.list2cmdline(['python', 'experiments/memory-trail/trail_e2e.py', label, exe]
+                                     + ([f'--harness-root={override[0]}'] if override else []))}
 (out / 'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print(json.dumps({'label': label, 'status': status, 'checks': checks}))
 sys.exit(0 if status == 'PASS' else 2 if status == 'INVALID' else 1)
