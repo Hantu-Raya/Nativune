@@ -172,7 +172,8 @@ public sealed partial class WebHostWindow
             _appInputSinceSource = true;
             _automaticDocumentChange = false;
         }
-        _rendererCapGeneration++; // Invalidate discovery even when there is no applied cap yet.
+        // Tray discovery is independent of activity; only invalidate pending Full-idle discovery.
+        if (!IsInTray) _rendererCapGeneration++;
         if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap(reason, detected);
         UpdateFullIdlePolling();
     }

@@ -1237,9 +1237,11 @@ public sealed partial class WebHostWindow : Window
         catch (Exception) { description = args.ProcessFailedKind.ToString(); }
         AppLog.Write("process-failed", description);
         if (_closing || _disposed) return;
-        ReleaseRendererCap("process-failed");
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
+        {
+            ReleaseRendererCap("process-failed");
             _fullIdleDocumentLoaded = false;
+        }
         RecordAppActivity("process-failed");
         if (args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
             InvalidateOutputAudioProcesses();

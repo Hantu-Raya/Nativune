@@ -254,7 +254,7 @@ public sealed partial class WebHostWindow
         HashSet<int> FailClosed()
         {
             _cachedOutputAudioProcessIds = [];
-            _outputAudioProcessesCapturedAt = DateTime.UtcNow;
+            _outputAudioProcessesCapturedAt = default;
             _outputAudioPathVerified = false;
             UpdateOutputAudioControls();
             return [];
