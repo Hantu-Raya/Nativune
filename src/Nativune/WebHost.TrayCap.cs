@@ -42,6 +42,7 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _fullIdleTimer;
     private long _lastAppActivity = Stopwatch.GetTimestamp();
     private uint? _lastInputTick;
+    private PointI? _lastInputCursor;
     // The applied cap is also an idle-eligible baseline: older startup/scheduled commands cannot own the next track.
     private bool _appInputSinceSource = true;
     // Carry automatic document navigation through its lifecycle without shortening user navigation.
@@ -203,9 +204,14 @@ public sealed partial class WebHostWindow
 #endif
     }
 
-    // WebView input HWNDs can belong to the browser process. No global hooks and no input content is recorded.
+    // Count foreground input, or pointer movement over the window; no global hooks or input content recording.
+    // Wheel-only input over an unfocused window with a stationary pointer intentionally does not count.
     private bool PollAppInput()
     {
+        var cursorAvailable = GetCursorPos(out var cursor);
+        var cursorMoved = cursorAvailable && _lastInputCursor is { } lastCursor
+            && (cursor.X != lastCursor.X || cursor.Y != lastCursor.Y);
+        _lastInputCursor = cursorAvailable ? cursor : null;
         var input = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
         if (!GetLastInputInfo(ref input))
         {
@@ -215,7 +221,7 @@ public sealed partial class WebHostWindow
         var changed = _lastInputTick is { } previous && previous != input.Tick;
         _lastInputTick = input.Tick;
         if (changed && (GetForegroundWindow() == NativeHandle
-            || GetCursorPos(out var cursor) && GetAncestor(WindowFromPoint(cursor), 2) == NativeHandle))
+            || cursorMoved && GetAncestor(WindowFromPoint(cursor), 2) == NativeHandle))
             RecordAppActivity("app-input");
         return true;
     }
@@ -226,6 +232,7 @@ public sealed partial class WebHostWindow
         if (!FullIdleCanWait || FullIdleCapBytes == 0)
         {
             _fullIdleTimer.Stop();
+            _lastInputCursor = null;
             if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap("ineligible");
             return;
         }
@@ -233,6 +240,8 @@ public sealed partial class WebHostWindow
             ? FullIdleWatchdogMilliseconds : FullIdlePendingMilliseconds);
         // Do not restart an already running timer on every geometry/state notification.
         if (_fullIdleTimer.IsRunning && _fullIdleTimer.Interval == interval) return;
+        // Seed at restart, not the first tick, so movement during the first interval still counts.
+        if (!_fullIdleTimer.IsRunning) _lastInputCursor = GetCursorPos(out var cursor) ? cursor : null;
         _fullIdleTimer.Stop();
         _fullIdleTimer.Interval = interval;
         _fullIdleTimer.Start();
