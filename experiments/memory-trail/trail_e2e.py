@@ -8,7 +8,7 @@ Ways it can fail (checked below):
  B the cached row is missing before recovery, or it is stale (older than one interval)
  C the renderer kill did not register as RenderProcessExited (run is INVALID, not PASS)
  D no fresh row after the reload, or the sample counter restarts or goes backwards
- E no [stop] line on a normal quit, or the app exit code is not 0
+ E not exactly one [start] and one [stop] for the session, or the app exit code is not 0
  F a memory line contains anything except allowlisted keys with numeric/null/enum values
 """
 import json, re, subprocess, sys, time
@@ -101,7 +101,7 @@ checks = {
     'C_rendererExitRegistered': bool(kill_at and failed),
     'D_freshRowAfterReload': bool(post) and bool(pre) and int(fields(post[0])['sample']) > int(fields(pre[-1])['sample'])
                              and fields(post[0])['status'] == 'ok' and float(fields(post[0])['renderer_min']) < 1.0,
-    'E_stopLineAndCleanExit': bool(stop) and launcher_rc == 0,
+    'E_stopLineAndCleanExit': len(stop) == 1 and sum('[start] ' in l for l in lines) == 1 and launcher_rc == 0,
     'F_numericOnly': bool(memory) and not privacy_bad,
 }
 status = 'INVALID' if not checks['C_rendererExitRegistered'] else 'PASS' if all(checks.values()) else 'FAIL'

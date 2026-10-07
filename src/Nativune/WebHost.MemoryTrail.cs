@@ -36,6 +36,8 @@ public sealed partial class WebHostWindow
         _memoryTrailDocumentReady = false;
         _memoryTrailLimitRead = false;
         _memoryTrailHeapLimit = null;
+        _memoryTrailLastLine = null; // A committed document must not replay the previous document/renderer's row.
+        _memoryTrailLastAt = 0;
         if (_memoryTrailSample == 0) _memoryTrailSampleRequested = true;
     }
 
@@ -67,9 +69,9 @@ public sealed partial class WebHostWindow
     {
         if (_memoryTrailStopped || _closing || _disposed || _browserFailed) return;
         writeSample |= _memoryTrailSampleRequested;
-        if (_memoryTrailCollecting || !_memoryTrailDocumentReady)
+        if (_memoryTrailCollecting || !_memoryTrailDocumentReady && !writeSample)
         {
-            if (writeSample) _memoryTrailSampleRequested = true; // Coalesce ticks until the current collection/document is ready.
+            if (writeSample) _memoryTrailSampleRequested = true; // Coalesce ticks until the current collection completes.
             return;
         }
         if (_browserHost is not { } host || (!writeSample && _memoryTrailLimitRead)) return;
@@ -83,7 +85,7 @@ public sealed partial class WebHostWindow
         double? rendererAge = null, rendererPrivate = null, rendererWorkingSet = null, treePrivate = null;
         double? hostPrivate = null, hostWorkingSet = null;
         double? commitUsed = null, commitLimit = null, physicalAvailable = null;
-        var status = "ok";
+        var status = _memoryTrailDocumentReady ? "ok" : "partial";
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         cancellation.CancelAfter(TimeSpan.FromSeconds(2));
         _memoryTrailCancellation = cancellation;
@@ -135,7 +137,8 @@ public sealed partial class WebHostWindow
                         _memoryTrailHeapLimit = MemoryTrailNumber(result, "value") / MemoryTrailMiB;
                 }
             }
-            if (writeSample)
+            // Failed/loading documents still get scheduled native counters, never CDP/page reads.
+            if (writeSample && _memoryTrailDocumentReady && document == _memoryTrailDocument)
             {
                 using var heap = await MemoryTrailCallAsync(host.Core, "Runtime.getHeapUsage", "{}", cancellation.Token);
                 if (heap is not null)
@@ -150,11 +153,11 @@ public sealed partial class WebHostWindow
                     nodes = MemoryTrailNumber(dom.RootElement, "nodes");
                     listeners = MemoryTrailNumber(dom.RootElement, "jsEventListeners");
                 }
-                if (jsUsed is null || jsTotal is null || _memoryTrailHeapLimit is null || documents is null
-                    || nodes is null || listeners is null || rendererAge is null || rendererPrivate is null
-                    || rendererWorkingSet is null || hostPrivate is null || hostWorkingSet is null || treePrivate is null
-                    || commitUsed is null || commitLimit is null || physicalAvailable is null) status = "partial";
             }
+            if (writeSample && (jsUsed is null || jsTotal is null || _memoryTrailHeapLimit is null || documents is null
+                || nodes is null || listeners is null || rendererAge is null || rendererPrivate is null
+                || rendererWorkingSet is null || hostPrivate is null || hostWorkingSet is null || treePrivate is null
+                || commitUsed is null || commitLimit is null || physicalAvailable is null)) status = "partial";
         }
         catch (OperationCanceledException) { status = "timeout"; }
         catch (Exception) { status = "failed"; } // Never log CDP responses or exception messages.
@@ -220,8 +223,6 @@ public sealed partial class WebHostWindow
         AppLog.Write("memory-trail-before-failure", _memoryTrailLastLine is { } line
             ? $"{line} age_min={MemoryTrailFormat((Environment.TickCount64 - _memoryTrailLastAt) / 60_000d)}"
             : "sample=null age_min=null");
-        _memoryTrailLastLine = null; // A replacement renderer must not inherit the failed renderer's pre-failure cache.
-        _memoryTrailLastAt = 0;
         _memoryTrailTimer?.Stop();
         MemoryTrailDocumentChanged();
     }
@@ -240,6 +241,8 @@ public sealed partial class WebHostWindow
         {
             double total = 0;
             var count = 0;
+            // WebView2 processes reported by GetProcessInfos exclude the crashpad helper (a few MiB).
+            // The caller adds the host's private bytes; this is not a complete OS process-tree sum.
             foreach (var info in _environment.GetProcessInfos())
             {
                 token.ThrowIfCancellationRequested();

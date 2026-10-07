@@ -17,9 +17,8 @@ internal static class AppLog
     internal static string? FilePath => _path;
     internal static double SessionMinutes => (Environment.TickCount64 - _sessionStartedAt) / 60_000d;
 
-    internal static void Start(string root)
+    internal static void Initialize(string root)
     {
-        _sessionStartedAt = Environment.TickCount64;
         try
         {
             var directory = Path.Combine(Path.GetFullPath(root), "data");
@@ -30,12 +29,17 @@ internal static class AppLog
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
                 Write("crash", e.ExceptionObject?.ToString() ?? "Unknown unhandled exception.");
             TaskScheduler.UnobservedTaskException += (_, e) => Write("unobserved-task", e.Exception.ToString());
-            Write("start", $"Nativune {AppVersion.Number} on {Environment.OSVersion.VersionString}");
         }
         catch (Exception)
         {
             _path = null; // Logging must never stop the app.
         }
+    }
+
+    internal static void Start()
+    {
+        _sessionStartedAt = Environment.TickCount64;
+        Write("start", $"Nativune {AppVersion.Number} on {Environment.OSVersion.VersionString}");
     }
 
     internal static void Stop() => Write("stop", FormattableString.Invariant($"session_min={SessionMinutes:0.0}"));

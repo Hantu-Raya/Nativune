@@ -29,7 +29,7 @@ internal static class WebHost
 
     public static int Run(string root, bool autostart = false)
     {
-        AppLog.Start(root);
+        AppLog.Initialize(root);
         Exception? startupFailure = null;
         var exitCode = 0;
         var thread = new Thread(() =>
@@ -40,6 +40,7 @@ internal static class WebHost
                 if (instance is null)
                     return;
 
+                AppLog.Start(); // Only the profile owner opens a logged session.
                 WebHostWindow? window = null;
                 ShellApplication.Run(() =>
                 {
@@ -51,6 +52,7 @@ internal static class WebHost
                         window.Activate();
                 });
                 exitCode = window?.ExitCode ?? 0;
+                AppLog.Stop(); // Normal end of the owner's session only; a shell that throws is a crash, not a stop.
             }
             catch (Exception ex)
             {
@@ -2543,7 +2545,6 @@ public sealed partial class WebHostWindow : Window
         try { _iconCache.Dispose(); } catch (Exception ex) { RememberFailure(ex); }
         _environment = null;
         _disposed = true;
-        AppLog.Stop();
         if (firstFailure is not null)
         {
             ExitCode = ExitCode == 0 ? 1 : ExitCode;
