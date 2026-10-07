@@ -19,8 +19,27 @@ public sealed partial class WebHostWindow
     private int _trayCapGeneration;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer _trayCapTimer = null!;
     private bool _wasInTray;
+    private int _trayCapProcessId;
 
     private bool IsInTray => _appWindow?.IsVisible == false;
+
+    // Timer entry: a navigation in the tray can move the main frame to a new renderer (process changes are
+    // reported through ProcessInfosChanged, not ProcessFailed). Release a cap whose PID no longer hosts the
+    // main frame, then cap the current renderer.
+    private async Task CapOrRevalidateTrayRendererAsync()
+    {
+        if (_trayCapHandle is not null)
+        {
+            var generation = _trayCapGeneration;
+            var capped = _trayCapProcessId;
+            var (current, _) = await FindMainRendererAsync();
+            if (generation != _trayCapGeneration || _trayCapHandle is null || !IsInTray || _closing || _disposed) return;
+            if (current == capped) return;
+            ReleaseTrayRendererCap("renderer-changed");
+            if (_trayCapHandle is not null) return; // restore failed; the next show, failure or shutdown retries
+        }
+        await CapTrayRendererAsync();
+    }
 
     private async Task CapTrayRendererAsync()
     {
@@ -54,6 +73,7 @@ public sealed partial class WebHostWindow
             return;
         }
         _trayCapHandle = handle;
+        _trayCapProcessId = processId;
         (_trayCapOriginalMin, _trayCapOriginalMax, _trayCapOriginalFlags) = (min, max, flags);
         TrayCapLog("applied", processId);
     }
@@ -107,6 +127,7 @@ public sealed partial class WebHostWindow
         {
             handle.Dispose();
             _trayCapHandle = null;
+            _trayCapProcessId = 0;
             TrayCapLog(restored ? $"released {reason}" : $"released {reason} (process exited)", 0);
             return;
         }

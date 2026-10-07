@@ -308,7 +308,7 @@ public sealed partial class WebHostWindow : Window
         _trayCapTimer.IsRepeating = false;
         _trayCapTimer.Tick += (_, _) =>
         {
-            if (IsInTray && !_closing && !_disposed) _ = CapTrayRendererAsync();
+            if (IsInTray && !_closing && !_disposed) _ = CapOrRevalidateTrayRendererAsync();
         };
         _trayRetryTimer = _dispatcherQueue.CreateTimer();
         _trayRetryTimer.IsRepeating = false;
@@ -1121,8 +1121,9 @@ public sealed partial class WebHostWindow : Window
             _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
-            // Autostart in the tray loads the page after tray entry; also re-arms after a renderer replacement.
-            if (IsInTray && _trayCapHandle is null) { _trayCapTimer.Stop(); _trayCapTimer.Start(); }
+            // Autostart in the tray loads the page after tray entry; a navigation in the tray can also move the
+            // main frame to a new renderer, so the timer revalidates an existing cap.
+            if (IsInTray) { _trayCapTimer.Stop(); _trayCapTimer.Start(); }
             _ = OnEqualizerNavigationCompletedAsync(args);
         }
     }
