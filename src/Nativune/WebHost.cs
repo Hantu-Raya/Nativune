@@ -300,7 +300,15 @@ public sealed partial class WebHostWindow : Window
             if (!SetProcessWorkingSetSizeEx(GetCurrentProcess(), (nint)(-1), (nint)(-1), 0))
                 Console.Error.WriteLine($"Hidden host working-set trim failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
             TrimWebViewTree();
-            if (IsInTray) _ = CapTrayRendererAsync();
+        };
+        // The tray cap has its own timer: tray entry is not always a visible-to-hidden transition
+        // (autostart in the tray, or minimize then hide), and the renderer may not exist yet at entry.
+        _trayCapTimer = _dispatcherQueue.CreateTimer();
+        _trayCapTimer.Interval = TimeSpan.FromSeconds(5);
+        _trayCapTimer.IsRepeating = false;
+        _trayCapTimer.Tick += (_, _) =>
+        {
+            if (IsInTray && !_closing && !_disposed) _ = CapTrayRendererAsync();
         };
         _trayRetryTimer = _dispatcherQueue.CreateTimer();
         _trayRetryTimer.IsRepeating = false;
@@ -760,6 +768,13 @@ public sealed partial class WebHostWindow : Window
     {
         var visible = WindowIsVisible;
         if (visible) ReleaseTrayRendererCap("show");
+        var inTray = IsInTray;
+        if (inTray != _wasInTray)
+        {
+            _wasInTray = inTray;
+            _trayCapTimer.Stop();
+            if (inTray) _trayCapTimer.Start();
+        }
         var wasVisible = _windowWasVisible;
         _windowWasVisible = visible;
         if (wasVisible == visible) return;
@@ -1106,6 +1121,8 @@ public sealed partial class WebHostWindow : Window
             _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
+            // Autostart in the tray loads the page after tray entry; also re-arms after a renderer replacement.
+            if (IsInTray && _trayCapHandle is null) { _trayCapTimer.Stop(); _trayCapTimer.Start(); }
             _ = OnEqualizerNavigationCompletedAsync(args);
         }
     }
@@ -2365,6 +2382,7 @@ public sealed partial class WebHostWindow : Window
         try { _setupCleanupTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { _trayCapTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { ReleaseTrayRendererCap("shutdown"); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }

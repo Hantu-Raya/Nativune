@@ -257,6 +257,13 @@ public sealed partial class WebHostWindow
                     if (await WaitForBenchVisibilityAsync(visible: false))
                         BenchHooks.HideDone();
                     break;
+                case "minimize":
+                    BenchHooks.HideRequested();
+                    _presenter?.Minimize();
+                    UpdateWindowVisibilityPolicy();
+                    if (await WaitForBenchVisibilityAsync(visible: false))
+                        BenchHooks.HideDone();
+                    break;
                 case "show":
                     BenchHooks.ShowRequested();
                     if (_presenter?.State == OverlappedPresenterState.Minimized)

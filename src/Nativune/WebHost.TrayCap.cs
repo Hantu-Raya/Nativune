@@ -17,6 +17,8 @@ public sealed partial class WebHostWindow
     private nint _trayCapOriginalMin, _trayCapOriginalMax;
     private uint _trayCapOriginalFlags;
     private int _trayCapGeneration;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer _trayCapTimer = null!;
+    private bool _wasInTray;
 
     private bool IsInTray => _appWindow?.IsVisible == false;
 
