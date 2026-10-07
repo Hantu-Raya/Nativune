@@ -772,8 +772,7 @@ public sealed partial class WebHostWindow : Window
         if (inTray != _wasInTray)
         {
             _wasInTray = inTray;
-            _trayCapTimer.Stop();
-            if (inTray) _trayCapTimer.Start();
+            if (inTray) ArmTrayCap(); else _trayCapTimer.Stop();
         }
         var wasVisible = _windowWasVisible;
         _windowWasVisible = visible;
@@ -1123,7 +1122,7 @@ public sealed partial class WebHostWindow : Window
             BenchNavigationCompleted();
             // Autostart in the tray loads the page after tray entry; a navigation in the tray can also move the
             // main frame to a new renderer, so the timer revalidates an existing cap.
-            if (IsInTray) { _trayCapTimer.Stop(); _trayCapTimer.Start(); }
+            if (IsInTray) ArmTrayCap();
             _ = OnEqualizerNavigationCompletedAsync(args);
         }
     }

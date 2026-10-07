@@ -20,6 +20,7 @@ public sealed partial class WebHostWindow
     private Microsoft.UI.Dispatching.DispatcherQueueTimer _trayCapTimer = null!;
     private bool _wasInTray;
     private int _trayCapProcessId;
+    private int _trayCapRetries;
 
     private bool IsInTray => _appWindow?.IsVisible == false;
 
@@ -34,6 +35,9 @@ public sealed partial class WebHostWindow
             var capped = _trayCapProcessId;
             var (current, _) = await FindMainRendererAsync();
             if (generation != _trayCapGeneration || _trayCapHandle is null || !IsInTray || _closing || _disposed) return;
+            // An inconclusive lookup (0) is not a replacement: keep the held cap and look again shortly.
+            // Exits go through ProcessFailed.
+            if (current == 0) { RetryTrayCap(); return; }
             if (current == capped) return;
             ReleaseTrayRendererCap("renderer-changed");
             if (_trayCapHandle is not null) return; // restore failed; the next show, failure or shutdown retries
@@ -48,18 +52,18 @@ public sealed partial class WebHostWindow
         if (!Current()) return;
         var (processId, outcome) = await FindMainRendererAsync();
         if (!Current()) return;
-        if (processId == 0) { TrayCapLog(outcome, 0); return; }
+        if (processId == 0) { TrayCapLog(outcome, 0); RetryTrayCap(); return; }
 
         const uint processSetQuota = 0x0100, processQueryLimitedInformation = 0x1000;
         var handle = OpenProcess(processSetQuota | processQueryLimitedInformation, false, processId);
-        if (handle.IsInvalid) { handle.Dispose(); TrayCapLog("open-failed", processId); return; }
+        if (handle.IsInvalid) { handle.Dispose(); TrayCapLog("open-failed", processId); RetryTrayCap(); return; }
         // The open handle pins the PID from here on; a fresh snapshot proves it still hosts this view's main frame
         // (the PID could have been reused between the first snapshot and OpenProcess).
         var (recheckId, _) = await FindMainRendererAsync();
         if (!Current() || recheckId != processId)
         {
             handle.Dispose();
-            if (Current()) TrayCapLog("renderer-changed", processId);
+            if (Current()) { TrayCapLog("renderer-changed", processId); RetryTrayCap(); }
             return;
         }
         // Keep the renderer's own minimum: raising it needs a privilege a standard-user token lacks
@@ -76,6 +80,22 @@ public sealed partial class WebHostWindow
         _trayCapProcessId = processId;
         (_trayCapOriginalMin, _trayCapOriginalMax, _trayCapOriginalFlags) = (min, max, flags);
         TrayCapLog("applied", processId);
+    }
+
+    // Discovery can be inconclusive while a page or renderer is still settling; try again a few times.
+    private void RetryTrayCap()
+    {
+        if (_trayCapRetries >= 3 || !IsInTray || _closing || _disposed) return;
+        _trayCapRetries++;
+        _trayCapTimer.Stop();
+        _trayCapTimer.Start();
+    }
+
+    private void ArmTrayCap()
+    {
+        _trayCapRetries = 0;
+        _trayCapTimer.Stop();
+        _trayCapTimer.Start();
     }
 
     // Exactly one renderer must host this view's main frame and no other view's main frame; no fallback.
