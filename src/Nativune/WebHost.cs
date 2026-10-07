@@ -301,6 +301,15 @@ public sealed partial class WebHostWindow : Window
                 Console.Error.WriteLine($"Hidden host working-set trim failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
             TrimWebViewTree();
         };
+        // The tray cap has its own timer: tray entry is not always a visible-to-hidden transition
+        // (autostart in the tray, or minimize then hide), and the renderer may not exist yet at entry.
+        _trayCapTimer = _dispatcherQueue.CreateTimer();
+        _trayCapTimer.Interval = TimeSpan.FromSeconds(5);
+        _trayCapTimer.IsRepeating = false;
+        _trayCapTimer.Tick += (_, _) =>
+        {
+            if (IsInTray && !_closing && !_disposed) _ = CapOrRevalidateTrayRendererAsync();
+        };
         _trayRetryTimer = _dispatcherQueue.CreateTimer();
         _trayRetryTimer.IsRepeating = false;
         _trayRetryTimer.Tick += (_, _) => RestoreTray("retry");
@@ -758,6 +767,13 @@ public sealed partial class WebHostWindow : Window
     private void UpdateWindowVisibilityPolicy()
     {
         var visible = WindowIsVisible;
+        if (visible) ReleaseTrayRendererCap("show");
+        var inTray = IsInTray;
+        if (inTray != _wasInTray)
+        {
+            _wasInTray = inTray;
+            if (inTray) ArmTrayCap(); else _trayCapTimer.Stop();
+        }
         var wasVisible = _windowWasVisible;
         _windowWasVisible = visible;
         if (wasVisible == visible) return;
@@ -1104,6 +1120,9 @@ public sealed partial class WebHostWindow : Window
             _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
+            // Autostart in the tray loads the page after tray entry; a navigation in the tray can also move the
+            // main frame to a new renderer, so the timer revalidates an existing cap.
+            if (IsInTray) ArmTrayCap();
             _ = OnEqualizerNavigationCompletedAsync(args);
         }
     }
@@ -1165,6 +1184,8 @@ public sealed partial class WebHostWindow : Window
         catch (Exception) { description = args.ProcessFailedKind.ToString(); }
         AppLog.Write("process-failed", description);
         if (_closing || _disposed) return;
+        if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
+            ReleaseTrayRendererCap("process-failed");
 
         switch (args.ProcessFailedKind)
         {
@@ -1813,6 +1834,7 @@ public sealed partial class WebHostWindow : Window
             Interlocked.Exchange(ref _activationPending, 0);
             if (_disposed || _closing) return;
             TryInitializeNativeWindow();
+            ReleaseTrayRendererCap("show");
             _appWindow?.Show();
             Activate();
             BenchWindowShown();
@@ -2360,6 +2382,8 @@ public sealed partial class WebHostWindow : Window
         try { _setupCleanupTimer?.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { _trayCapTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
+        try { ReleaseTrayRendererCap("shutdown"); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
         try { CloseOverlayDesignerWindow(); } catch (Exception ex) { RememberFailure(ex); }
@@ -2598,8 +2622,8 @@ public sealed partial class WebHostWindow : Window
     }
 
     // Trimming Browser and Gpu after hide cut the hidden tree from 148 to 123 MiB private WS (26 Sep 2026 bench v4).
-    // ponytail: renderer and utility processes are deliberately not trimmed; renderers refault on the next
-    // show and the audio service cannot be told apart from other utilities.
+    // ponytail: renderer and utility processes are not trimmed here; renderers refault on the next show and the
+    // audio service cannot be told apart from other utilities. In the tray only, WebHost.TrayCap.cs caps the page renderer.
     private void TrimWebViewTree()
     {
         if (_environment is null) return;
@@ -2666,7 +2690,10 @@ public sealed partial class WebHostWindow : Window
             if (NativeHandle != 0)
                 EnableWindow(NativeHandle, true);
             if (!_closing && !_disposed)
+            {
+                ReleaseTrayRendererCap("show");
                 Activate();
+            }
         };
 
         if (NativeHandle != 0)

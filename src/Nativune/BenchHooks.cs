@@ -132,7 +132,7 @@ internal static class BenchHooks
                 _ => argument is null,
             };
             if (!validArgument
-                || verb is not ("compact" or "full" or "hide" or "show" or "quit" or "pause" or "play"
+                || verb is not ("compact" or "full" or "hide" or "minimize" or "show" or "quit" or "pause" or "play"
                     or "lyrics" or "seekfwd" or "seekback" or "next" or "options" or "translate-on" or "translate-off" or "offset-set"
                     or "nav" or "capture" or "capture-options" or "style-probe" or "home" or "lyrics-off-now" or "coverage")
                 || !double.TryParse(entry[(separator + 1)..].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
