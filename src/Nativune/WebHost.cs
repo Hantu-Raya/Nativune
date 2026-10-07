@@ -1241,6 +1241,10 @@ public sealed partial class WebHostWindow : Window
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
             _fullIdleDocumentLoaded = false;
         RecordAppActivity("process-failed");
+        if (args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+            InvalidateOutputAudioProcesses();
+        else
+            RefreshOutputAudio(refreshProcessInfos: true);
 
         switch (args.ProcessFailedKind)
         {
@@ -2671,7 +2675,7 @@ public sealed partial class WebHostWindow : Window
     {
         if (_closing || _disposed || _environment is null) return;
         ArmFullIdleRevalidation();
-        RefreshOutputAudio();
+        RefreshOutputAudio(refreshProcessInfos: true);
         BenchProcessInfos();
         try
         {
