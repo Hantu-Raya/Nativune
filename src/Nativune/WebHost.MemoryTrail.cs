@@ -13,7 +13,7 @@ public sealed partial class WebHostWindow
     private CancellationTokenSource? _memoryTrailCancellation;
     private Task _memoryTrailPending = Task.CompletedTask;
     private bool _memoryTrailCollecting, _memoryTrailStopped, _memoryTrailDocumentReady, _memoryTrailLimitRead;
-    private bool _memoryTrailFirstSamplePending;
+    private bool _memoryTrailSampleRequested;
     private int _memoryTrailDocument, _memoryTrailSample;
     private double? _memoryTrailHeapLimit;
     private string? _memoryTrailLastLine;
@@ -36,7 +36,7 @@ public sealed partial class WebHostWindow
         _memoryTrailDocumentReady = false;
         _memoryTrailLimitRead = false;
         _memoryTrailHeapLimit = null;
-        if (_memoryTrailSample == 0) _memoryTrailFirstSamplePending = true;
+        if (_memoryTrailSample == 0) _memoryTrailSampleRequested = true;
     }
 
     private void MemoryTrailPageReady()
@@ -56,7 +56,7 @@ public sealed partial class WebHostWindow
         var firstLoad = !_memoryTrailTimer.IsRunning;
         if (firstLoad)
         {
-            _memoryTrailFirstSamplePending = true;
+            _memoryTrailSampleRequested = true;
             _memoryTrailTimer.Start();
         }
         // Refresh the limit once for each committed document, without adding a row on every navigation.
@@ -65,18 +65,23 @@ public sealed partial class WebHostWindow
 
     private async Task CollectMemoryTrailAsync(bool writeSample)
     {
-        writeSample |= _memoryTrailFirstSamplePending;
-        if (_memoryTrailStopped || _closing || _disposed || _browserFailed || _memoryTrailCollecting
-            || _browserHost is not { } host
-            || (!writeSample && _memoryTrailLimitRead)) return;
+        if (_memoryTrailStopped || _closing || _disposed || _browserFailed) return;
+        writeSample |= _memoryTrailSampleRequested;
+        if (_memoryTrailCollecting || !_memoryTrailDocumentReady)
+        {
+            if (writeSample) _memoryTrailSampleRequested = true; // Coalesce ticks until the current collection/document is ready.
+            return;
+        }
+        if (_browserHost is not { } host || (!writeSample && _memoryTrailLimitRead)) return;
         _memoryTrailCollecting = true;
-        if (writeSample) _memoryTrailFirstSamplePending = false;
+        if (writeSample) _memoryTrailSampleRequested = false;
         var document = _memoryTrailDocument;
         var started = Environment.TickCount64;
         var session = AppLog.SessionMinutes;
         var mode = IsInTray ? "tray" : _compact ? "compact" : "full";
         double? jsUsed = null, jsTotal = null, documents = null, nodes = null, listeners = null;
         double? rendererAge = null, rendererPrivate = null, rendererWorkingSet = null, treePrivate = null;
+        double? hostPrivate = null, hostWorkingSet = null;
         double? commitUsed = null, commitLimit = null, physicalAvailable = null;
         var status = "ok";
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -84,11 +89,22 @@ public sealed partial class WebHostWindow
         _memoryTrailCancellation = cancellation;
         try
         {
-            // A timed-out WebView2 request may still be alive; wait within this sample's deadline, never overlap it.
-            if (!_memoryTrailPending.IsCompleted) await _memoryTrailPending.WaitAsync(cancellation.Token);
             if (writeSample)
             {
                 ReadMemoryTrailSystem(out commitUsed, out commitLimit, out physicalAvailable);
+                using var handle = OpenProcess(0x1000, false, Environment.ProcessId);
+                if (TryReadMemoryTrailProcess(handle, out var counters))
+                {
+                    hostPrivate = (double)counters.PrivateUsage / MemoryTrailMiB;
+                    hostWorkingSet = (double)counters.WorkingSetSize / MemoryTrailMiB;
+                }
+                treePrivate = ReadMemoryTrailTree(cancellation.Token) + hostPrivate;
+            }
+            // A timed-out WebView2 request may still be alive; wait within this sample's deadline, never overlap it.
+            // Keep the cheap native counters above this barrier so a stalled CDP call cannot hide system/host pressure.
+            if (!_memoryTrailPending.IsCompleted) await _memoryTrailPending.WaitAsync(cancellation.Token);
+            if (writeSample)
+            {
                 cancellation.Token.ThrowIfCancellationRequested();
                 var (processId, _) = await AwaitMemoryTrailAsync(FindMainRendererAsync(), cancellation.Token);
                 if (processId != 0)
@@ -106,17 +122,18 @@ public sealed partial class WebHostWindow
                             rendererAge = Math.Max(0, (DateTime.UtcNow - DateTime.FromFileTimeUtc(created)).TotalMinutes);
                     }
                 }
-                treePrivate = ReadMemoryTrailTree(cancellation.Token);
             }
 
             if (_memoryTrailDocumentReady && !_memoryTrailLimitRead && document == _memoryTrailDocument)
             {
-                _memoryTrailLimitRead = true; // Unavailable/failed reads stay null; no retry in this document.
                 using var limit = await MemoryTrailCallAsync(host.Core, "Runtime.evaluate",
                     "{\"expression\":\"performance.memory?.jsHeapSizeLimit\",\"returnByValue\":true,\"timeout\":1000}", cancellation.Token);
-                if (document == _memoryTrailDocument && limit is not null
-                    && limit.RootElement.TryGetProperty("result", out var result))
-                    _memoryTrailHeapLimit = MemoryTrailNumber(result, "value") / MemoryTrailMiB;
+                if (document == _memoryTrailDocument && limit is not null)
+                {
+                    _memoryTrailLimitRead = true; // Unsupported values stay null; failed/timed-out calls retry next interval.
+                    if (limit.RootElement.TryGetProperty("result", out var result))
+                        _memoryTrailHeapLimit = MemoryTrailNumber(result, "value") / MemoryTrailMiB;
+                }
             }
             if (writeSample)
             {
@@ -135,8 +152,8 @@ public sealed partial class WebHostWindow
                 }
                 if (jsUsed is null || jsTotal is null || _memoryTrailHeapLimit is null || documents is null
                     || nodes is null || listeners is null || rendererAge is null || rendererPrivate is null
-                    || rendererWorkingSet is null || treePrivate is null || commitUsed is null
-                    || commitLimit is null || physicalAvailable is null) status = "partial";
+                    || rendererWorkingSet is null || hostPrivate is null || hostWorkingSet is null || treePrivate is null
+                    || commitUsed is null || commitLimit is null || physicalAvailable is null) status = "partial";
             }
         }
         catch (OperationCanceledException) { status = "timeout"; }
@@ -145,17 +162,19 @@ public sealed partial class WebHostWindow
         {
             _memoryTrailCancellation = null;
             _memoryTrailCollecting = false;
-            // A load can finish while the previous document's cancelled collection is unwinding.
+            // Preserve a requested row when navigation cancelled its collection, even if the new page is not ready yet.
+            if (writeSample && document != _memoryTrailDocument) _memoryTrailSampleRequested = true;
             if (_memoryTrailDocumentReady && !_memoryTrailStopped && !_closing && !_disposed && !_browserFailed
-                && (_memoryTrailFirstSamplePending || document != _memoryTrailDocument && !_memoryTrailLimitRead))
-                _dispatcherQueue.TryEnqueue(() => _ = CollectMemoryTrailAsync(writeSample: _memoryTrailFirstSamplePending));
+                && (_memoryTrailSampleRequested || document != _memoryTrailDocument && !_memoryTrailLimitRead))
+                _dispatcherQueue.TryEnqueue(() => _ = CollectMemoryTrailAsync(writeSample: false));
         }
         if (!writeSample || _memoryTrailStopped || _closing || _disposed || _browserFailed
             || document != _memoryTrailDocument) return;
         var line = $"sample={++_memoryTrailSample} session_min={MemoryTrailFormat(session)} renderer_min={MemoryTrailFormat(rendererAge)} mode={mode} "
             + $"js_used_mib={MemoryTrailFormat(jsUsed)} js_total_mib={MemoryTrailFormat(jsTotal)} js_limit_mib={MemoryTrailFormat(_memoryTrailHeapLimit)} "
             + $"documents={MemoryTrailFormat(documents, "0")} nodes={MemoryTrailFormat(nodes, "0")} listeners={MemoryTrailFormat(listeners, "0")} "
-            + $"renderer_private_mib={MemoryTrailFormat(rendererPrivate)} renderer_ws_mib={MemoryTrailFormat(rendererWorkingSet)} tree_private_mib={MemoryTrailFormat(treePrivate)} "
+            + $"renderer_private_mib={MemoryTrailFormat(rendererPrivate)} renderer_ws_mib={MemoryTrailFormat(rendererWorkingSet)} "
+            + $"host_private_mib={MemoryTrailFormat(hostPrivate)} host_ws_mib={MemoryTrailFormat(hostWorkingSet)} tree_private_mib={MemoryTrailFormat(treePrivate)} "
             + $"commit_used_mib={MemoryTrailFormat(commitUsed)} commit_limit_mib={MemoryTrailFormat(commitLimit)} phys_available_mib={MemoryTrailFormat(physicalAvailable)} "
             + $"collection_ms={Environment.TickCount64 - started} status={status}";
         _memoryTrailLastLine = line;
@@ -201,6 +220,8 @@ public sealed partial class WebHostWindow
         AppLog.Write("memory-trail-before-failure", _memoryTrailLastLine is { } line
             ? $"{line} age_min={MemoryTrailFormat((Environment.TickCount64 - _memoryTrailLastAt) / 60_000d)}"
             : "sample=null age_min=null");
+        _memoryTrailLastLine = null; // A replacement renderer must not inherit the failed renderer's pre-failure cache.
+        _memoryTrailLastAt = 0;
         _memoryTrailTimer?.Stop();
         MemoryTrailDocumentChanged();
     }

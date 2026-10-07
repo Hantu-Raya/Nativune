@@ -75,7 +75,7 @@ before = [l for l in lines if '[memory-trail-before-failure] ' in l]
 failed = [l for l in lines if '[process-failed] RenderProcessExited' in l]
 stop = [l for l in lines if '[stop] ' in l]
 allowed = {'sample', 'session_min', 'renderer_min', 'mode', 'js_used_mib', 'js_total_mib', 'js_limit_mib', 'documents', 'nodes',
-           'listeners', 'renderer_private_mib', 'renderer_ws_mib', 'tree_private_mib', 'commit_used_mib', 'commit_limit_mib',
+           'listeners', 'renderer_private_mib', 'renderer_ws_mib', 'host_private_mib', 'host_ws_mib', 'tree_private_mib', 'commit_used_mib', 'commit_limit_mib',
            'phys_available_mib', 'collection_ms', 'status', 'age_min'}
 value_ok = re.compile(r'^(null|-?\d+(\.\d+)?|full|compact|tray|ok|partial|timeout|failed)$')
 privacy_bad = [l for l in memory + before if fields(l) is None
@@ -91,7 +91,9 @@ pre = [l for l in pre if l in memory]
 post = [l for l in post if l in memory]
 bf = [l for l in bf if l in before]
 limit_ok = bool(pre) and all(fields(l)['status'] == 'ok' and 500 <= float(fields(l)['js_limit_mib']) <= 530
-                             and fields(l)['renderer_private_mib'] != 'null' for l in pre)
+                             and fields(l)['renderer_private_mib'] != 'null' and fields(l).get('host_private_mib', 'null') != 'null'
+                             and float(fields(l)['tree_private_mib']) >= float(fields(l)['host_private_mib']) + float(fields(l)['renderer_private_mib'])
+                             for l in pre)
 checks = {
     'A_rowsBeforeKillOkWithLimit515': len(pre) >= 3 and limit_ok,
     'B_cachedRowBeforeRecoveryFresh': bool(bf) and fields(bf[0]).get('age_min') not in (None, 'null') and float(fields(bf[0])['age_min']) <= 0.2
