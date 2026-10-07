@@ -11,6 +11,7 @@ public sealed partial class WebHostWindow
 {
     private static readonly TimeSpan OutputAudioCommandLifetime = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan OutputAudioStateLifetime = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan OutputAudioProcessLifetime = TimeSpan.FromSeconds(30);
     private const int MaximumOutputPreferenceAttempts = 2;
 
     private readonly object _outputAudioGate = new();
@@ -19,6 +20,8 @@ public sealed partial class WebHostWindow
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _outputFlyoutCloseTimer;
     private string? _outputAudioExecutablePath;
     private HashSet<int> _outputAudioProcessIds = [];
+    private HashSet<int> _cachedOutputAudioProcessIds = [];
+    private DateTime _outputAudioProcessesCapturedAt;
     private bool _outputAudioPathVerified;
     private PendingOutputVolume? _pendingOutputVolume;
     private PendingOutputMute? _pendingOutputMute;
@@ -139,8 +142,8 @@ public sealed partial class WebHostWindow
             _outputFlyoutFocusSlider = false;
         };
         OutputVolumeSlider.ValueChanged += OutputVolumeChanged;
-        OutputVolumeSlider.Committed += SetOutputVolume;
-        OutputVolumeSlider.LiveChanged += PreviewOutputVolume;
+        OutputVolumeSlider.Committed += value => { RecordAppActivity("volume-command"); SetOutputVolume(value); };
+        OutputVolumeSlider.LiveChanged += value => { RecordAppActivity("volume-command"); PreviewOutputVolume(value); };
         OutputVolumeSlider.RolledBack += RestoreOutputVolumePreference;
         UpdateOutputAudioControls();
     }
@@ -152,6 +155,7 @@ public sealed partial class WebHostWindow
     {
         if (_closing || _disposed || _compact || !OutputMuteButton.IsEnabled || !OutputVolumeSlider.IsEnabled)
             return;
+        RecordAppActivity("volume-flyout");
         _outputFlyoutPinned = !fromHover;
         _outputFlyoutFocusSlider = !fromHover;
         OutputVolumeFlyout.ShowMode = fromHover ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
@@ -173,6 +177,7 @@ public sealed partial class WebHostWindow
     private void PinOutputFlyout()
     {
         if (!OutputVolumeFlyout.IsOpen) return;
+        RecordAppActivity("volume-flyout-input");
         _outputFlyoutCloseTimer?.Stop();
         _outputFlyoutPinned = true;
     }
@@ -210,26 +215,46 @@ public sealed partial class WebHostWindow
         if (_closing || _disposed) return;
         UpdateOutputAudioControls();
         _outputAudioTimer?.Start();
-        RefreshOutputAudio();
+        RefreshOutputAudio(refreshProcessInfos: true);
     }
 
-    private void RefreshOutputAudio()
+    private void RefreshOutputAudio() => RefreshOutputAudio(refreshProcessInfos: false);
+
+    private void RefreshOutputAudio(bool refreshProcessInfos)
     {
         if (!_dispatcherQueue.HasThreadAccess)
         {
-            _dispatcherQueue.TryEnqueue(RefreshOutputAudio);
+            _dispatcherQueue.TryEnqueue(() => RefreshOutputAudio(refreshProcessInfos));
             return;
         }
 
-        if (_closing || _disposed || _outputAudioClosed) return;
+        if (_closing || _disposed || _outputAudioClosed || _browserFailed) return;
         ExpireOutputAudioStateIfStale();
-        QueueOutputAudioRequest(CaptureOutputAudioProcesses());
+        var processes = refreshProcessInfos
+            || DateTime.UtcNow - _outputAudioProcessesCapturedAt >= OutputAudioProcessLifetime
+            ? CaptureOutputAudioProcesses()
+            : [.. _cachedOutputAudioProcessIds];
+        QueueOutputAudioRequest(processes);
+    }
+
+    private void InvalidateOutputAudioProcesses()
+    {
+        _outputAudioTimer?.Stop();
+        _cachedOutputAudioProcessIds = [];
+        _outputAudioProcessesCapturedAt = default;
+        _outputAudioPathVerified = false;
+        _outputAudioState = OutputAudioState.Unavailable;
+        _outputAudioStateConfirmedAt = default;
+        UpdateOutputAudioControls();
+        QueueOutputAudioRequest([]);
     }
 
     private HashSet<int> CaptureOutputAudioProcesses()
     {
         HashSet<int> FailClosed()
         {
+            _cachedOutputAudioProcessIds = [];
+            _outputAudioProcessesCapturedAt = default;
             _outputAudioPathVerified = false;
             UpdateOutputAudioControls();
             return [];
@@ -267,6 +292,8 @@ public sealed partial class WebHostWindow
                 return FailClosed();
 
             _outputAudioExecutablePath ??= verifiedExecutablePath;
+            _cachedOutputAudioProcessIds = processIds;
+            _outputAudioProcessesCapturedAt = DateTime.UtcNow;
             _outputAudioPathVerified = true;
             UpdateOutputAudioControls();
             return processIds;
@@ -301,7 +328,7 @@ public sealed partial class WebHostWindow
         UpdateOutputAudioControls();
     }
 
-    // Live drag preview: reuses the verified process set; no re-capture, no settings save. Release commits via SetOutputVolume.
+    // Live drag preview re-verifies WebView ownership before each write; release commits via SetOutputVolume.
     private void PreviewOutputVolume(double value)
     {
         if (!_dispatcherQueue.HasThreadAccess)
@@ -313,8 +340,7 @@ public sealed partial class WebHostWindow
             || _outputAudioExecutablePath is null
             || !double.IsFinite(value) || value < 0 || value > 1)
             return;
-        HashSet<int> processIds;
-        lock (_outputAudioGate) processIds = [.. _outputAudioProcessIds];
+        var processIds = CaptureOutputAudioProcesses();
         _pendingOutputDisplayVolume = value;
         _pendingOutputDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
         QueueOutputAudioRequest(processIds, volume: value);
@@ -764,6 +790,8 @@ public sealed partial class WebHostWindow
         CloseOutputVolumeFlyout();
         _outputAudioState = OutputAudioState.Unavailable;
         _outputAudioStateConfirmedAt = default;
+        _cachedOutputAudioProcessIds = [];
+        _outputAudioProcessesCapturedAt = default;
         UpdateOutputAudioControls();
 
         var startWorker = false;

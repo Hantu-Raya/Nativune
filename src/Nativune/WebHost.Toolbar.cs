@@ -38,6 +38,7 @@ public sealed partial class WebHostWindow
         AutomationProperties.SetName(_equalizerMenuItem, "Equalizer");
         _equalizerMenuItem.Click += async (_, _) =>
         {
+            RecordAppActivity("equalizer-command");
             if (_closing || _disposed) return;
             _equalizerMenuItem.IsEnabled = false;
             try
@@ -53,7 +54,7 @@ public sealed partial class WebHostWindow
         };
         var equalizerSettingsItem = new MenuFlyoutItem { Text = "Equalizer settings…" };
         AutomationProperties.SetName(equalizerSettingsItem, "Equalizer settings");
-        equalizerSettingsItem.Click += (_, _) => OpenEqualizerSettings();
+        equalizerSettingsItem.Click += (_, _) => { RecordAppActivity("equalizer-settings"); OpenEqualizerSettings(); };
         EqualizerStatusChanged += (_, _) => CompactView.SetEqualizerStatus(EqualizerStatus);
         CompactView.SetEqualizerStatus(EqualizerStatus);
         _moreFlyout.Opening += (_, _) => RefreshToolbarOverflowItems();

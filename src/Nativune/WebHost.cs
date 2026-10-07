@@ -308,11 +308,13 @@ public sealed partial class WebHostWindow : Window
         _trayCapTimer.IsRepeating = false;
         _trayCapTimer.Tick += (_, _) =>
         {
-            if (IsInTray && !_closing && !_disposed) _ = CapOrRevalidateTrayRendererAsync();
+            if (IsInTray && !_compact && !_closing && !_disposed) _ = CapOrRevalidateRendererAsync(RendererCapPolicy.Tray);
         };
         _trayRetryTimer = _dispatcherQueue.CreateTimer();
         _trayRetryTimer.IsRepeating = false;
         _trayRetryTimer.Tick += (_, _) => RestoreTray("retry");
+        InitializeFullIdlePolicy();
+        RegisterFullIdleButtons(RootGrid);
         BenchInitialize();
 
         TryInitializeNativeWindow();
@@ -530,7 +532,7 @@ public sealed partial class WebHostWindow : Window
     {
         var item = new MenuFlyoutItem { Text = text, Icon = _iconCache.CreateElement(icon, 16) };
         AutomationProperties.SetName(item, text);
-        item.Click += (_, _) => action();
+        item.Click += (_, _) => { RecordAppActivity("shell-command"); action(); };
         return item;
     }
 
@@ -546,7 +548,7 @@ public sealed partial class WebHostWindow : Window
         var item = new ToggleMenuFlyoutItem { Text = text, Icon = _iconCache.CreateElement(icon, 16) };
         AutomationProperties.SetName(item, text);
         item.IsChecked = false;
-        item.Click += (_, _) => action(item.IsChecked);
+        item.Click += (_, _) => { RecordAppActivity("shell-command"); action(item.IsChecked); };
         return item;
     }
 
@@ -558,6 +560,8 @@ public sealed partial class WebHostWindow : Window
 
     private void WireSurface()
     {
+        RootGrid.AddHandler(UIElement.PointerPressedEvent,
+            new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => RecordAppActivity("shell-pointer")), true);
         BackButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoBack == true) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoBack()); };
         ForwardButton.Click += (_, _) => { if (CanNavigate && _browserHost?.Core.CanGoForward == true) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.GoForward()); };
         HomeButton.Click += (_, _) => { if (CanNavigate) _ = NavigateAfterResumeAsync(() => _browserHost?.Core.Navigate(_initialUri)); };
@@ -767,8 +771,7 @@ public sealed partial class WebHostWindow : Window
     private void UpdateWindowVisibilityPolicy()
     {
         var visible = WindowIsVisible;
-        if (visible) ReleaseTrayRendererCap("show");
-        var inTray = IsInTray;
+        var inTray = IsInTray && !_compact;
         if (inTray != _wasInTray)
         {
             _wasInTray = inTray;
@@ -776,6 +779,14 @@ public sealed partial class WebHostWindow : Window
         }
         var wasVisible = _windowWasVisible;
         _windowWasVisible = visible;
+        if (!visible)
+        {
+            if (_rendererCapPolicy == RendererCapPolicy.FullIdle)
+                ReleaseRendererCap(IsInTray ? "hide" : "minimize");
+        }
+        else if (_rendererCapPolicy == RendererCapPolicy.Tray) ReleaseRendererCap("show");
+        if (visible && wasVisible != true) RecordAppActivity("show");
+        UpdateFullIdlePolling();
         if (wasVisible == visible) return;
         _gcOnHideTimer.Stop();
         _trimOnHideTimer.Stop();
@@ -799,6 +810,7 @@ public sealed partial class WebHostWindow : Window
 
     private async Task ExecutePlayerCommandAsync(string command)
     {
+        RecordAppActivity("player-command");
         if (_closing || _disposed || _resumeShutdownStarted) return;
         if (command is "toggle" or "play") { if (!await CancelResumeAsync("play")) return; }
         else if (command is "previous" or "next") { if (!await CancelResumeAsync(command)) return; }
@@ -822,6 +834,7 @@ public sealed partial class WebHostWindow : Window
         finally
         {
             _playerBusy = false;
+            UpdateFullIdlePolling();
         }
         if (_closing || _disposed) return;
         _lastCompactReadAt = 0;
@@ -903,10 +916,15 @@ public sealed partial class WebHostWindow : Window
             StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
-            core.SourceChanged += (_, _) => ObserveResumeSource();
+            core.SourceChanged += (sender, args) => { RecordSourceChange(args.IsNewDocument, sender.Source); ObserveResumeSource(); };
+            BenchFullIdleConfigure();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
-            core.ContentLoading += (_, _) => InvalidateEqualizer();
+            core.ContentLoading += (_, _) =>
+            {
+                _fullIdleDocumentLoaded = false;
+                InvalidateEqualizer();
+            };
             core.NewWindowRequested += (_, args) => OnNewWindowRequested(args);
             core.PermissionRequested += (_, args) => OnPermissionRequested(args);
             core.DownloadStarting += (_, args) => OnDownloadStarting(args);
@@ -1052,12 +1070,36 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationStarting(CoreWebView2NavigationStartingEventArgs args)
     {
+        // A cap proves a quiet Full interval even when a prior bench/full command preceded the last source change.
+        var inputAvailable = PollAppInput();
+        _automaticDocumentChange = inputAvailable && !_appInputSinceSource
+            && PlayerControls.IsMusicUri(args.Uri)
+            && (_automaticDocumentChange || _rendererCapPolicy == RendererCapPolicy.FullIdle);
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = new { navigationStarting = true, inputAvailable,
+            inputSinceBaseline = _appInputSinceSource, cappedBeforeRelease = _rendererCapPolicy == RendererCapPolicy.FullIdle,
+            automatic = _automaticDocumentChange };
+#endif
+        RecordAppActivity(_automaticDocumentChange ? "track-change" : "navigation-starting", appInput: false,
+            idleWaitSeconds: _automaticDocumentChange ? FullIdleRearmSeconds : null);
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = null;
+#endif
         if (_closing || _disposed || _browserFailed)
         {
             args.Cancel = true;
+            _blockedNavigation = args.NavigationId;
+            _automaticDocumentChange = false;
             return;
         }
-        if (!_configuringPrivacy && !ObserveResumeNavigation(args)) { args.Cancel = true; return; }
+        if (!_configuringPrivacy && !ObserveResumeNavigation(args))
+        {
+            args.Cancel = true;
+            _blockedNavigation = args.NavigationId;
+            _automaticDocumentChange = false;
+            RecordAppActivity("navigation-cancelled", appInput: false);
+            return;
+        }
         InvalidateCompactState();
         // A main-frame navigation replaces the document (account pages included).
         InvalidateDiscord();
@@ -1065,16 +1107,22 @@ public sealed partial class WebHostWindow : Window
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
+            if (args.Cancel) _blockedNavigation = args.NavigationId;
+            _automaticDocumentChange = false;
             return;
         }
 
         _activeNavigation = args.NavigationId;
+        // The current document survives an attempt that is cancelled before ContentLoading.
+        _fullIdleNavigationInProgress = true;
+        UpdateFullIdlePolling();
         _navigationFailed = false;
         SetStatus("Loading page...");
         UpdateNavigation();
         if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) || !WebHostPolicy.IsAllowedMainFrameNavigation(uri))
         {
             args.Cancel = true;
+            _automaticDocumentChange = false;
             _blockedNavigation = args.NavigationId;
             var destination = uri is null ? "invalid address" : uri.Host;
             SetStatus($"Navigation blocked to {destination}. Only Music and Google account pages are allowed.", isError: true);
@@ -1093,6 +1141,19 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationCompleted(CoreWebView2NavigationCompletedEventArgs args)
     {
+        var cancelled = args.NavigationId == _blockedNavigation
+            || !args.IsSuccess && args.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled;
+        if (args.NavigationId == _activeNavigation)
+        {
+            _fullIdleNavigationInProgress = false;
+            if (!cancelled) _fullIdleDocumentLoaded = args.IsSuccess;
+            var inputAvailable = PollAppInput();
+            var automatic = args.IsSuccess && !cancelled
+                && inputAvailable && _automaticDocumentChange && !_appInputSinceSource;
+            _automaticDocumentChange = false;
+            RecordAppActivity(cancelled ? "navigation-cancelled" : args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false,
+                idleWaitSeconds: automatic ? FullIdleRearmSeconds : null);
+        }
         if (_awaitingFirstPage && _browserHost?.Core.Source is { } source
             && !source.StartsWith("chrome-extension:", StringComparison.OrdinalIgnoreCase))
         {
@@ -1120,11 +1181,11 @@ public sealed partial class WebHostWindow : Window
             _ = TombstoneResumeScriptAsync();
             Console.WriteLine("Embedded web page ready.");
             BenchNavigationCompleted();
-            // Autostart in the tray loads the page after tray entry; a navigation in the tray can also move the
-            // main frame to a new renderer, so the timer revalidates an existing cap.
-            if (IsInTray) ArmTrayCap();
+            // Tray navigation may replace a held renderer; the timer revalidates it before retaining the cap.
+            if (IsInTray && !_compact) ArmTrayCap();
             _ = OnEqualizerNavigationCompletedAsync(args);
         }
+        UpdateFullIdlePolling();
     }
 
     // Perf bench seam: WebHost.Bench.cs implements these only under NATIVUNE_PERF_BENCH_HOOKS.
@@ -1141,6 +1202,7 @@ public sealed partial class WebHostWindow : Window
     partial void BenchPresentationChanged();
     partial void BenchProcessInfos();
     partial void BenchStopTimers();
+    partial void BenchFullIdleConfigure();
 
     private void OnNewWindowRequested(CoreWebView2NewWindowRequestedEventArgs args)
     {
@@ -1185,7 +1247,15 @@ public sealed partial class WebHostWindow : Window
         AppLog.Write("process-failed", description);
         if (_closing || _disposed) return;
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
-            ReleaseTrayRendererCap("process-failed");
+        {
+            ReleaseRendererCap("process-failed");
+            _fullIdleDocumentLoaded = false;
+        }
+        RecordAppActivity("process-failed");
+        if (args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+            InvalidateOutputAudioProcesses();
+        else
+            RefreshOutputAudio(refreshProcessInfos: true);
 
         switch (args.ProcessFailedKind)
         {
@@ -1325,6 +1395,7 @@ public sealed partial class WebHostWindow : Window
     {
         if (_sleep is null || _closing || _settingsDialogOpen || _timerDialogOpen) return;
         _timerDialogOpen = true;
+        RecordAppActivity("timer-dialog");
         Window? dialog = null;
         try
         {
@@ -1381,6 +1452,7 @@ public sealed partial class WebHostWindow : Window
             dialog.Closed += (_, _) =>
             {
                 _timerDialogOpen = false;
+                UpdateFullIdlePolling();
                 result.TrySetResult(null);
             };
             pauseDialog.Activate();
@@ -1400,6 +1472,7 @@ public sealed partial class WebHostWindow : Window
         finally
         {
             _timerDialogOpen = false;
+            UpdateFullIdlePolling();
         }
     }
 
@@ -1463,6 +1536,7 @@ public sealed partial class WebHostWindow : Window
     {
         if (_closing || _disposed || _settingsDialogOpen) return;
         _settingsDialogOpen = true;
+        RecordAppActivity("settings-dialog");
         var installed = ReleaseUpdater.IsInstalledBuild(_root);
         var startupState = StartupEntryState.Off;
         if (installed)
@@ -1619,6 +1693,7 @@ public sealed partial class WebHostWindow : Window
         {
             _settingsDialog = null;
             _settingsDialogOpen = false;
+            UpdateFullIdlePolling();
         }
     }
 
@@ -1787,6 +1862,7 @@ public sealed partial class WebHostWindow : Window
 
     private void OnTrayCommand(string command)
     {
+        RecordAppActivity("tray-command");
         if (_closing || _disposed) return;
         switch (command)
         {
@@ -1807,6 +1883,7 @@ public sealed partial class WebHostWindow : Window
             return false;
         try
         {
+            RecordAppActivity("hide");
             CaptureSettings();
             _appWindow.Hide();
             UpdateWindowVisibilityPolicy();
@@ -1834,7 +1911,8 @@ public sealed partial class WebHostWindow : Window
             Interlocked.Exchange(ref _activationPending, 0);
             if (_disposed || _closing) return;
             TryInitializeNativeWindow();
-            ReleaseTrayRendererCap("show");
+            RecordAppActivity("show");
+            ReleaseRendererCap("show");
             _appWindow?.Show();
             Activate();
             BenchWindowShown();
@@ -1848,6 +1926,7 @@ public sealed partial class WebHostWindow : Window
     private void SetCompact(bool compact, bool preserveStartupIntent)
     {
         if (_closing || _disposed) return;
+        RecordAppActivity(compact ? "compact-request" : "full-request");
         BenchCompactRequested(compact);
         if (!compact)
         {
@@ -1880,6 +1959,8 @@ public sealed partial class WebHostWindow : Window
     private void ToggleCompactCore()
     {
         if (_closing) return;
+        RecordAppActivity(_compact ? "full-entry" : "compact-entry");
+        if (!_compact) ReleaseRendererCap("compact-entry");
         if (_fullscreen) ToggleFullscreen();
         if (!_compact)
         {
@@ -1915,6 +1996,7 @@ public sealed partial class WebHostWindow : Window
         ApplyCompactSurface();
         _compactModeGeneration++;
         UpdateWindowPresentation();
+        UpdateWindowVisibilityPolicy();
         CaptureSettings();
         BenchPresentationChanged();
     }
@@ -2265,6 +2347,7 @@ public sealed partial class WebHostWindow : Window
 
     private void OnRootKeyDown(object sender, KeyRoutedEventArgs args)
     {
+        RecordAppActivity("shell-key");
         if (args.Key is VirtualKey.F10 or VirtualKey.F11 or VirtualKey.F6)
         {
             args.Handled = true;
@@ -2276,6 +2359,7 @@ public sealed partial class WebHostWindow : Window
         CoreWebView2Controller sender,
         CoreWebView2AcceleratorKeyPressedEventArgs args)
     {
+        RecordAppActivity("accelerator");
         if (args.KeyEventKind is not (CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)
             || args.PhysicalKeyStatus.WasKeyDown != 0)
             return;
@@ -2307,6 +2391,7 @@ public sealed partial class WebHostWindow : Window
 
     private void ExecuteShellKey(VirtualKey key, bool alt, bool shift)
     {
+        RecordAppActivity("shell-command");
         if (_compact)
         {
             if (key == VirtualKey.F10 || alt && key == VirtualKey.M) { CompactView.ShowMoreMenu(); return; }
@@ -2366,6 +2451,9 @@ public sealed partial class WebHostWindow : Window
     private async Task ShutdownCoreAsync()
     {
         if (_disposed) return;
+        RecordAppActivity("shutdown");
+        _fullIdleTimer?.Stop();
+        ReleaseRendererCap("shutdown");
         _resumeShutdownStarted = true;
         _playbackReadTimer?.Stop();
         await CaptureFinalResumeAsync();
@@ -2383,7 +2471,7 @@ public sealed partial class WebHostWindow : Window
         try { _gcOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trimOnHideTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
         try { _trayCapTimer.Stop(); } catch (Exception ex) { RememberFailure(ex); }
-        try { ReleaseTrayRendererCap("shutdown"); } catch (Exception ex) { RememberFailure(ex); }
+        try { ReleaseRendererCap("shutdown"); } catch (Exception ex) { RememberFailure(ex); }
         BenchStopTimers();
         try { CloseLyricsSettingsWindow(); } catch (Exception ex) { RememberFailure(ex); }
         try { CloseOverlayDesignerWindow(); } catch (Exception ex) { RememberFailure(ex); }
@@ -2597,7 +2685,8 @@ public sealed partial class WebHostWindow : Window
     private void OnProcessInfosChanged()
     {
         if (_closing || _disposed || _environment is null) return;
-        RefreshOutputAudio();
+        ArmFullIdleRevalidation();
+        RefreshOutputAudio(refreshProcessInfos: true);
         BenchProcessInfos();
         try
         {
@@ -2623,7 +2712,7 @@ public sealed partial class WebHostWindow : Window
 
     // Trimming Browser and Gpu after hide cut the hidden tree from 148 to 123 MiB private WS (26 Sep 2026 bench v4).
     // ponytail: renderer and utility processes are not trimmed here; renderers refault on the next show and the
-    // audio service cannot be told apart from other utilities. In the tray only, WebHost.TrayCap.cs caps the page renderer.
+    // audio service cannot be told apart from other utilities. WebHost.TrayCap.cs separately caps the page in Tray/FullIdle, never Compact.
     private void TrimWebViewTree()
     {
         if (_environment is null) return;
@@ -2687,11 +2776,13 @@ public sealed partial class WebHostWindow : Window
         dialog.Closed += (_, _) =>
         {
             _ownedDialogs.Remove(dialog);
+            UpdateFullIdlePolling();
             if (NativeHandle != 0)
                 EnableWindow(NativeHandle, true);
             if (!_closing && !_disposed)
             {
-                ReleaseTrayRendererCap("show");
+                RecordAppActivity("activation");
+                ReleaseRendererCap("show");
                 Activate();
             }
         };
@@ -2722,6 +2813,7 @@ public sealed partial class WebHostWindow : Window
         catch
         {
             _ownedDialogs.Remove(dialog);
+            UpdateFullIdlePolling();
             if (NativeHandle != 0)
                 EnableWindow(NativeHandle, true);
             throw;

@@ -48,8 +48,11 @@ public sealed partial class WebHostWindow
         : OverlayReadActive ? ReaderDemand.Overlay : ResumeReadActive ? ReaderDemand.Resume
         : PresenceReadActive ? ReaderDemand.Presence : ReaderDemand.None;
 
-    private static long ReadIntervalMs(ReaderDemand demand)
-        => demand == ReaderDemand.Presence ? PresenceReadIntervalMs : 1000;
+    private long ReadIntervalMs(ReaderDemand demand)
+        => demand == ReaderDemand.Presence ? PresenceReadIntervalMs
+            : demand == ReaderDemand.Resume && _rendererCapPolicy == RendererCapPolicy.FullIdle
+                && _rendererCapHandle is not null && !ResumeInProgress && !_resumeSafetyMuted
+                && !CompactActive && !OverlayReadActive ? FullIdleResumeReadMilliseconds : 1000;
 
     private static ReadReason ReasonFor(ReaderDemand demand) => demand switch
     {
@@ -59,7 +62,8 @@ public sealed partial class WebHostWindow
         _ => ReadReason.Presence
     };
 
-    // Starts/stops the shared reader: 1 s for Compact, overlay or resume, else 5 s for presence.
+    // Starts/stops the shared reader: 1 s for Compact, overlay or active restore; 5 s for
+    // presence or steady Continue while the Full idle renderer cap is applied.
     private void RefreshSharedReader()
     {
         if (_playbackReadTimer is null) return;
@@ -466,7 +470,7 @@ public sealed partial class WebHostWindow
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (_closing || _disposed) return;
         if (command == "seek" && result.Outcome == PlayerCommandOutcome.Sent && value is { } target)
         {
@@ -493,7 +497,7 @@ public sealed partial class WebHostWindow
         IReadOnlyList<CompactPlayback.PlaylistEntry>? playlists = null;
         try { playlists = await controls.ReadPlaylistsAsync(); }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (CompactActive) CompactView.ShowPlaylists(playlists);
     }
 
@@ -515,7 +519,7 @@ public sealed partial class WebHostWindow
         try { result = await controls.ExecuteCompactAsync("play-playlist", index, title); }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (_closing || _disposed) return;
         result = result.Outcome switch
         {
