@@ -108,6 +108,19 @@ public sealed partial class WebHostWindow
         }
     }
 
+    private static int FullIdleResumeReadMilliseconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (int.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_RESUME_READ_MS"), out var milliseconds)
+                && (milliseconds == 0 || milliseconds is >= 1000 and <= 30000))
+                return milliseconds == 0 ? 1000 : milliseconds;
+#endif
+            return 5000;
+        }
+    }
+
     private bool FullIdleCanWait => WindowIsVisible && !_compact
         && _fullIdleDocumentLoaded && !_fullIdleNavigationInProgress && !_navigationFailed && !_browserFailed
         && !_configuringPrivacy && !_awaitingFirstPage && !_playerBusy && !_settingsDialogOpen && !_timerDialogOpen
@@ -327,6 +340,7 @@ public sealed partial class WebHostWindow
             if (policy == RendererCapPolicy.FullIdle) _appInputSinceSource = false;
             RendererCapLog(policy, "applied", processId, min, cap, QuotaMinDisable | QuotaMaxEnable,
                 reason: policy == RendererCapPolicy.FullIdle ? "idle" : "tray");
+            if (policy == RendererCapPolicy.FullIdle) RefreshSharedReader();
         }
         finally
         {
@@ -425,6 +439,7 @@ public sealed partial class WebHostWindow
             _rendererCapHandle = null;
             RendererCapLog(policy, restored ? "released" : "released-exited", _rendererCapPid,
                 _rendererCapOriginalMin, _rendererCapOriginalMax, _rendererCapOriginalFlags, reason, detected, completed);
+            if (policy == RendererCapPolicy.FullIdle) RefreshSharedReader();
             return;
         }
         // Retain the original snapshot and handle so the next lifecycle/input notification retries exactly.
