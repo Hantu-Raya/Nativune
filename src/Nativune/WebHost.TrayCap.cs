@@ -18,6 +18,22 @@ public sealed partial class WebHostWindow
     private uint _rendererCapOriginalFlags;
     private int _rendererCapGeneration, _rendererCapPid;
     private RendererCapPolicy _rendererCapPolicy;
+#if NATIVUNE_PERF_BENCH_HOOKS
+    private bool _fullIdlePollOnlyApplied;
+    private static bool FullIdlePollOnly =>
+        Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_POLL_ONLY") == "1";
+#endif
+    private bool RendererCapActive
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            return _rendererCapHandle is not null || _fullIdlePollOnlyApplied;
+#else
+            return _rendererCapHandle is not null;
+#endif
+        }
+    }
     private UiDispatcherQueueTimer _trayCapTimer = null!;
     private bool _wasInTray;
     private int _trayCapRetries, _fullIdleRevalidationRetries;
@@ -110,7 +126,7 @@ public sealed partial class WebHostWindow
 #if NATIVUNE_PERF_BENCH_HOOKS
         BenchHooks.Event("fullidle-policy", ("idleSeconds", FullIdleSeconds),
             ("watchdogMs", FullIdleWatchdogMilliseconds), ("pendingMs", FullIdlePendingMilliseconds),
-            ("rearmSeconds", FullIdleRearmSeconds));
+            ("rearmSeconds", FullIdleRearmSeconds), ("pollOnly", FullIdlePollOnly));
 #endif
         _fullIdleTimer = _dispatcherQueue.CreateTimer();
         _fullIdleTimer.IsRepeating = true;
@@ -118,7 +134,7 @@ public sealed partial class WebHostWindow
         {
             if (!PollAppInput()) return;
             UpdateFullIdlePolling();
-            if (FullIdleEligible && (_rendererCapHandle is null || _fullIdleRevalidationRequested) && !_rendererCapPending
+            if (FullIdleEligible && (!RendererCapActive || _fullIdleRevalidationRequested) && !_rendererCapPending
                 && Stopwatch.GetTimestamp() >= _rendererCapRetryAfter)
                 _ = CapOrRevalidateRendererAsync(RendererCapPolicy.FullIdle);
         };
@@ -196,7 +212,7 @@ public sealed partial class WebHostWindow
     private async Task CapOrRevalidateRendererAsync(RendererCapPolicy policy)
     {
         if (_rendererCapPending) return;
-        if (_rendererCapHandle is not null)
+        if (RendererCapActive)
         {
             var generation = _rendererCapGeneration;
             var capped = _rendererCapPid;
@@ -205,7 +221,7 @@ public sealed partial class WebHostWindow
             try
             {
                 var (current, _) = await FindMainRendererAsync();
-                if (_closing || _disposed || _resumeShutdownStarted || _rendererCapHandle is null
+                if (_closing || _disposed || _resumeShutdownStarted || !RendererCapActive
                     || _rendererCapPolicy != policy
                     || !(policy == RendererCapPolicy.Tray ? IsInTray && !_compact : PollAppInput() && FullIdleEligible)
                     || generation != _rendererCapGeneration) return;
@@ -222,7 +238,7 @@ public sealed partial class WebHostWindow
                 }
                 if (current == capped) return;
                 ReleaseRendererCap("renderer-changed");
-                if (_rendererCapHandle is not null) return; // Failed restore retains the original snapshot.
+                if (RendererCapActive) return; // Failed restore retains the original snapshot.
             }
             finally { _rendererCapPending = false; }
         }
@@ -232,7 +248,7 @@ public sealed partial class WebHostWindow
     private async Task CapRendererAsync(RendererCapPolicy policy)
     {
         var generation = ++_rendererCapGeneration;
-        bool Current() => !_closing && !_disposed && !_resumeShutdownStarted && _rendererCapHandle is null
+        bool Current() => !_closing && !_disposed && !_resumeShutdownStarted && !RendererCapActive
             && (policy == RendererCapPolicy.Tray ? IsInTray && !_compact : PollAppInput() && FullIdleEligible)
             && generation == _rendererCapGeneration;
         if (!Current()) return;
@@ -242,6 +258,23 @@ public sealed partial class WebHostWindow
             var (processId, outcome) = await FindMainRendererAsync();
             if (!Current()) return;
             if (processId == 0) { RendererCapLog(policy, outcome, 0); if (policy == RendererCapPolicy.Tray) RetryTrayCap(); return; }
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (policy == RendererCapPolicy.FullIdle && FullIdlePollOnly)
+            {
+                var (pollRecheckId, _) = await FindMainRendererAsync();
+                if (!Current() || pollRecheckId != processId)
+                {
+                    if (Current()) RendererCapLog(policy, "renderer-changed", processId);
+                    return;
+                }
+                _fullIdlePollOnlyApplied = true;
+                _rendererCapPid = processId;
+                _rendererCapPolicy = policy;
+                (_rendererCapOriginalMin, _rendererCapOriginalMax, _rendererCapOriginalFlags) = (0, 0, 0);
+                RendererCapLog(policy, "applied-poll-only", processId, reason: "idle");
+                return;
+            }
+#endif
             const uint processSetQuota = 0x0100, processQueryLimitedInformation = 0x1000;
             var handle = OpenProcess(processSetQuota | processQueryLimitedInformation, false, processId);
             if (handle.IsInvalid) { handle.Dispose(); RendererCapLog(policy, "open-failed", processId); if (policy == RendererCapPolicy.Tray) RetryTrayCap(); return; }
@@ -272,7 +305,7 @@ public sealed partial class WebHostWindow
         finally
         {
             _rendererCapPending = false;
-            if (_rendererCapHandle is null) _rendererCapRetryAfter = Stopwatch.GetTimestamp() + 30 * Stopwatch.Frequency;
+            if (!RendererCapActive) _rendererCapRetryAfter = Stopwatch.GetTimestamp() + 30 * Stopwatch.Frequency;
             UpdateFullIdlePolling();
         }
 
@@ -328,6 +361,19 @@ public sealed partial class WebHostWindow
     private void ReleaseRendererCap(string reason, long detected = 0)
     {
         _rendererCapGeneration++;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        if (_fullIdlePollOnlyApplied)
+        {
+            if (detected == 0) detected = Stopwatch.GetTimestamp();
+            _fullIdlePollOnlyApplied = false;
+            _rendererCapPolicy = RendererCapPolicy.None;
+            _fullIdleRevalidationRequested = false;
+            _fullIdleRevalidationRetries = 0;
+            RendererCapLog(RendererCapPolicy.FullIdle, "released-poll-only", _rendererCapPid,
+                reason: reason, detected: detected, completed: Stopwatch.GetTimestamp());
+            return;
+        }
+#endif
         var handle = _rendererCapHandle;
         if (handle is null) return;
         if (detected == 0) detected = Stopwatch.GetTimestamp();
