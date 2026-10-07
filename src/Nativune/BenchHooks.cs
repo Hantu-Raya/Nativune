@@ -27,6 +27,9 @@ internal static class BenchHooks
         .Where(id => id.Length == 11 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')).ToArray();
     private static readonly int StatsSecondsValue = int.TryParse(ReadValue("NATIVUNE_BENCH_STATS_SECONDS"), NumberStyles.Integer,
         CultureInfo.InvariantCulture, out var statsSeconds) && statsSeconds is > 0 and <= 3600 ? statsSeconds : 0;
+    private static readonly int MemoryTrailSecondsValue = int.TryParse(ReadValue("NATIVUNE_BENCH_MEMORY_TRAIL_SECONDS"),
+        NumberStyles.Integer, CultureInfo.InvariantCulture, out var memoryTrailSeconds)
+        && memoryTrailSeconds is >= 5 and <= 600 ? memoryTrailSeconds : 300;
 
     private static StreamWriter? _writer;
     private static int _startWritten;
@@ -42,6 +45,7 @@ internal static class BenchHooks
     internal static IReadOnlyList<BenchScheduledAction> Schedule => Enabled ? ScheduledActions : Array.Empty<BenchScheduledAction>();
     internal static IReadOnlyList<string> CoverageTracks => Enabled ? CoverageTrackList : Array.Empty<string>();
     internal static int StatsSeconds => Enabled ? StatsSecondsValue : 0;
+    internal static int MemoryTrailSeconds => Enabled ? MemoryTrailSecondsValue : 300;
     internal static string? LogDirectory => Enabled ? Path.GetDirectoryName(LogPath!) : null;
 
     internal static void Event(string eventName, params (string Name, object? Value)[] properties)

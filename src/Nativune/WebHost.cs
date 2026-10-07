@@ -29,7 +29,7 @@ internal static class WebHost
 
     public static int Run(string root, bool autostart = false)
     {
-        AppLog.Start(root);
+        AppLog.Initialize(root);
         Exception? startupFailure = null;
         var exitCode = 0;
         var thread = new Thread(() =>
@@ -40,6 +40,7 @@ internal static class WebHost
                 if (instance is null)
                     return;
 
+                AppLog.Start(); // Only the profile owner opens a logged session.
                 WebHostWindow? window = null;
                 ShellApplication.Run(() =>
                 {
@@ -51,6 +52,7 @@ internal static class WebHost
                         window.Activate();
                 });
                 exitCode = window?.ExitCode ?? 0;
+                AppLog.Stop(); // Normal end of the owner's session only; a shell that throws is a crash, not a stop.
             }
             catch (Exception ex)
             {
@@ -127,6 +129,8 @@ public sealed partial class WebHostWindow : Window
     private const int DefaultDpi = 96;
     private const string MemoryBrowserArguments =
         "--enable-low-end-device-mode " +
+        // Low-end mode caps V8 at ~259 MiB; this measured ~515 MiB with no startup cost.
+        "--js-flags=--max-old-space-size=512 " +
         "--process-per-site " +
         "--renderer-process-limit=2 " +
         "--force_low_power_gpu " +
@@ -904,6 +908,7 @@ public sealed partial class WebHostWindow : Window
             core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.IsWebMessageEnabled = false;
+            InitializeMemoryTrail(core);
 #if NATIVUNE_DISCORD_TEST_HOOKS
             InstallDiscordFixturePage(core);
 #endif
@@ -1248,6 +1253,7 @@ public sealed partial class WebHostWindow : Window
         if (_closing || _disposed) return;
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
         {
+            MemoryTrailBeforeFailure();
             ReleaseRendererCap("process-failed");
             _fullIdleDocumentLoaded = false;
         }
@@ -2451,6 +2457,7 @@ public sealed partial class WebHostWindow : Window
     private async Task ShutdownCoreAsync()
     {
         if (_disposed) return;
+        StopMemoryTrail();
         RecordAppActivity("shutdown");
         _fullIdleTimer?.Stop();
         ReleaseRendererCap("shutdown");

@@ -3,19 +3,21 @@ using System.Text;
 namespace Nativune;
 
 /// <summary>
-/// Appends errors, WebView2 process failures and unhandled exceptions to data/nativune.log. Everything
-/// already written to Console.Error is captured, so existing type-only diagnostics land here too.
-/// Only error text is written: no page content, cookies, titles or URLs beyond what an error names.
+/// Appends errors, WebView2 process failures, numeric memory samples and session start/stop to data/nativune.log.
+/// Everything already written to Console.Error is captured, so existing type-only diagnostics land here too.
+/// Memory samples contain only resource counters, elapsed times and presentation mode, never page content.
 /// </summary>
 internal static class AppLog
 {
     private const long MaxBytes = 1024 * 1024; // ponytail: one rotation (.old.log); add more if 2 MiB proves too little
     private static readonly object Gate = new();
     private static string? _path;
+    private static long _sessionStartedAt;
 
     internal static string? FilePath => _path;
+    internal static double SessionMinutes => (Environment.TickCount64 - _sessionStartedAt) / 60_000d;
 
-    internal static void Start(string root)
+    internal static void Initialize(string root)
     {
         try
         {
@@ -27,13 +29,20 @@ internal static class AppLog
             AppDomain.CurrentDomain.UnhandledException += (_, e) =>
                 Write("crash", e.ExceptionObject?.ToString() ?? "Unknown unhandled exception.");
             TaskScheduler.UnobservedTaskException += (_, e) => Write("unobserved-task", e.Exception.ToString());
-            Write("start", $"Nativune {AppVersion.Number} on {Environment.OSVersion.VersionString}");
         }
         catch (Exception)
         {
             _path = null; // Logging must never stop the app.
         }
     }
+
+    internal static void Start()
+    {
+        _sessionStartedAt = Environment.TickCount64;
+        Write("start", $"Nativune {AppVersion.Number} on {Environment.OSVersion.VersionString}");
+    }
+
+    internal static void Stop() => Write("stop", FormattableString.Invariant($"session_min={SessionMinutes:0.0}"));
 
     internal static void Write(string category, string message)
     {
