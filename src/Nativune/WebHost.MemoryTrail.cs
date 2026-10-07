@@ -160,7 +160,7 @@ public sealed partial class WebHostWindow
             + $"collection_ms={Environment.TickCount64 - started} status={status}";
         _memoryTrailLastLine = line;
         _memoryTrailLastAt = started;
-        AppLog.Write("memory", line);
+        AppLog.Write("memory-trail", line);
     }
 
     private async Task<T> AwaitMemoryTrailAsync<T>(Task<T> operation, CancellationToken token)
@@ -198,7 +198,7 @@ public sealed partial class WebHostWindow
 
     private void MemoryTrailBeforeFailure()
     {
-        AppLog.Write("memory-before-failure", _memoryTrailLastLine is { } line
+        AppLog.Write("memory-trail-before-failure", _memoryTrailLastLine is { } line
             ? $"{line} age_min={MemoryTrailFormat((Environment.TickCount64 - _memoryTrailLastAt) / 60_000d)}"
             : "sample=null age_min=null");
         _memoryTrailTimer?.Stop();

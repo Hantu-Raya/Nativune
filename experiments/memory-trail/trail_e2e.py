@@ -4,7 +4,7 @@ python experiments/memory-trail/trail_e2e.py <label> <bench exe>
 Report: artifacts/memory-trail/<label>/report.json
 
 Ways it can fail (checked below):
- A no [memory] rows, a wrong heap limit (flag not applied), non-numeric fields or status != ok
+ A no [memory-trail] rows, a wrong heap limit (flag not applied), non-numeric fields or status != ok
  B the cached row is missing before recovery, or it is stale (older than one interval)
  C the renderer kill did not register as RenderProcessExited (run is INVALID, not PASS)
  D no fresh row after the reload, or the sample counter restarts or goes backwards
@@ -15,9 +15,15 @@ import json, re, subprocess, sys, time
 from pathlib import Path
 import psutil
 
-ROOT = Path('D:/youtube')
 WT = Path(__file__).resolve().parents[2]
-label, exe = sys.argv[1], sys.argv[2]
+args = [a for a in sys.argv[1:] if not a.startswith('--harness-root=')]
+override = [a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--harness-root=')]
+# The bench harness (experiments/memory-attribution) lives in the maintainer checkout; worktrees sit at <root>/.cache/<wt>.
+ROOT = Path(override[0]) if override else next(
+    (p for p in [WT, *WT.parents] if (p / 'experiments/memory-attribution/run.py').exists()), None)
+if ROOT is None:
+    sys.exit('experiments/memory-attribution/run.py not found; pass --harness-root=<maintainer checkout>')
+label, exe = args[0], args[1]
 out = WT / 'artifacts/memory-trail' / label
 out.mkdir(parents=True, exist_ok=True)
 started = time.time()
@@ -57,23 +63,33 @@ def ts(line):
     return time.mktime(time.strptime(m.group(1)[:19], '%Y-%m-%d %H:%M:%S')) if m else None
 
 def fields(line):
-    body = line.split('] ', 1)[1]
-    return dict(item.split('=', 1) for item in body.split())
+    """Parse key=value tokens; None if any token is not key=value (counted as a violation, never raised)."""
+    body = line.split('] ', 1)[1] if '] ' in line else ''
+    tokens = body.split()
+    if not tokens or any('=' not in t for t in tokens):
+        return None
+    return dict(t.split('=', 1) for t in tokens)
 
-memory = [l for l in lines if '[memory] ' in l]
-before = [l for l in lines if '[memory-before-failure] ' in l]
+memory = [l for l in lines if '[memory-trail] ' in l]
+before = [l for l in lines if '[memory-trail-before-failure] ' in l]
 failed = [l for l in lines if '[process-failed] RenderProcessExited' in l]
 stop = [l for l in lines if '[stop] ' in l]
 allowed = {'sample', 'session_min', 'renderer_min', 'mode', 'js_used_mib', 'js_total_mib', 'js_limit_mib', 'documents', 'nodes',
            'listeners', 'renderer_private_mib', 'renderer_ws_mib', 'tree_private_mib', 'commit_used_mib', 'commit_limit_mib',
            'phys_available_mib', 'collection_ms', 'status', 'age_min'}
 value_ok = re.compile(r'^(null|-?\d+(\.\d+)?|full|compact|tray|ok|partial|timeout|failed)$')
-privacy_bad = [l for l in memory + before if any(k not in allowed or not value_ok.match(v) for k, v in fields(l).items())]
+privacy_bad = [l for l in memory + before if fields(l) is None
+               or any(k not in allowed or not value_ok.match(v) for k, v in fields(l).items())]
+memory = [l for l in memory if fields(l) is not None and 'sample' in fields(l)]
+before = [l for l in before if fields(l) is not None]
 kill_at = marks.get('killAt')
 fail_idx = lines.index(failed[0]) if failed else None
-pre = [l for i, l in enumerate(lines) if '[memory] ' in l and fail_idx is not None and i < fail_idx]
-post = [l for i, l in enumerate(lines) if '[memory] ' in l and fail_idx is not None and i > fail_idx]
-bf = [l for i, l in enumerate(lines) if '[memory-before-failure] ' in l and fail_idx is not None and i > fail_idx]
+pre = [l for i, l in enumerate(lines) if '[memory-trail] ' in l and fail_idx is not None and i < fail_idx]
+post = [l for i, l in enumerate(lines) if '[memory-trail] ' in l and fail_idx is not None and i > fail_idx]
+bf = [l for i, l in enumerate(lines) if '[memory-trail-before-failure] ' in l and fail_idx is not None and i > fail_idx]
+pre = [l for l in pre if l in memory]
+post = [l for l in post if l in memory]
+bf = [l for l in bf if l in before]
 limit_ok = bool(pre) and all(fields(l)['status'] == 'ok' and 500 <= float(fields(l)['js_limit_mib']) <= 530
                              and fields(l)['renderer_private_mib'] != 'null' for l in pre)
 checks = {
