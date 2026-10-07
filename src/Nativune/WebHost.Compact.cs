@@ -470,7 +470,7 @@ public sealed partial class WebHostWindow
         }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (_closing || _disposed) return;
         if (command == "seek" && result.Outcome == PlayerCommandOutcome.Sent && value is { } target)
         {
@@ -497,7 +497,7 @@ public sealed partial class WebHostWindow
         IReadOnlyList<CompactPlayback.PlaylistEntry>? playlists = null;
         try { playlists = await controls.ReadPlaylistsAsync(); }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (CompactActive) CompactView.ShowPlaylists(playlists);
     }
 
@@ -519,7 +519,7 @@ public sealed partial class WebHostWindow
         try { result = await controls.ExecuteCompactAsync("play-playlist", index, title); }
         catch (OperationCanceledException) when (_closing || _disposed || _lifetime.IsCancellationRequested) { return; }
         catch (Exception) { }
-        finally { _playerBusy = false; }
+        finally { _playerBusy = false; UpdateFullIdlePolling(); }
         if (_closing || _disposed) return;
         result = result.Outcome switch
         {

@@ -39,6 +39,7 @@ public sealed partial class WebHostWindow
     private bool _wasInTray;
     private int _trayCapRetries, _fullIdleRevalidationRetries;
     private bool _fullIdleRevalidationRequested;
+    private bool _trayCapDeferred;
     private UiDispatcherQueueTimer? _fullIdleTimer;
     private long _lastAppActivity = Stopwatch.GetTimestamp();
     private uint? _lastInputTick;
@@ -258,7 +259,11 @@ public sealed partial class WebHostWindow
 
     private async Task CapOrRevalidateRendererAsync(RendererCapPolicy policy)
     {
-        if (_rendererCapPending) return;
+        if (_rendererCapPending)
+        {
+            if (policy == RendererCapPolicy.Tray) _trayCapDeferred = true;
+            return;
+        }
         if (RendererCapActive)
         {
             var generation = _rendererCapGeneration;
@@ -287,7 +292,7 @@ public sealed partial class WebHostWindow
                 ReleaseRendererCap("renderer-changed");
                 if (RendererCapActive) return; // Failed restore retains the original snapshot.
             }
-            finally { _rendererCapPending = false; }
+            finally { FinishRendererCapLookup(); }
         }
         await CapRendererAsync(policy);
     }
@@ -354,11 +359,21 @@ public sealed partial class WebHostWindow
         }
         finally
         {
-            _rendererCapPending = false;
+            FinishRendererCapLookup();
             if (!RendererCapActive) _rendererCapRetryAfter = Stopwatch.GetTimestamp() + 30 * Stopwatch.Frequency;
             UpdateFullIdlePolling();
         }
 
+    }
+
+    private void FinishRendererCapLookup()
+    {
+        _rendererCapPending = false;
+        if (!_trayCapDeferred) return;
+        _trayCapDeferred = false;
+        // Waiting for another policy's lookup must not consume the bounded discovery retry budget.
+        if (IsInTray && !_compact && !_closing && !_disposed && !_resumeShutdownStarted)
+            ArmTrayCap();
     }
 
     // Discovery can be inconclusive while a page or renderer is still settling; try again a few times.

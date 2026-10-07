@@ -920,7 +920,11 @@ public sealed partial class WebHostWindow : Window
             BenchFullIdleConfigure();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
-            core.ContentLoading += (_, _) => InvalidateEqualizer();
+            core.ContentLoading += (_, _) =>
+            {
+                _fullIdleDocumentLoaded = false;
+                InvalidateEqualizer();
+            };
             core.NewWindowRequested += (_, args) => OnNewWindowRequested(args);
             core.PermissionRequested += (_, args) => OnPermissionRequested(args);
             core.DownloadStarting += (_, args) => OnDownloadStarting(args);
@@ -1084,12 +1088,14 @@ public sealed partial class WebHostWindow : Window
         if (_closing || _disposed || _browserFailed)
         {
             args.Cancel = true;
+            _blockedNavigation = args.NavigationId;
             _automaticDocumentChange = false;
             return;
         }
         if (!_configuringPrivacy && !ObserveResumeNavigation(args))
         {
             args.Cancel = true;
+            _blockedNavigation = args.NavigationId;
             _automaticDocumentChange = false;
             RecordAppActivity("navigation-cancelled", appInput: false);
             return;
@@ -1101,12 +1107,13 @@ public sealed partial class WebHostWindow : Window
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
+            if (args.Cancel) _blockedNavigation = args.NavigationId;
             _automaticDocumentChange = false;
             return;
         }
 
         _activeNavigation = args.NavigationId;
-        _fullIdleDocumentLoaded = false;
+        // The current document survives an attempt that is cancelled before ContentLoading.
         _fullIdleNavigationInProgress = true;
         UpdateFullIdlePolling();
         _navigationFailed = false;
@@ -1134,15 +1141,17 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationCompleted(CoreWebView2NavigationCompletedEventArgs args)
     {
+        var cancelled = args.NavigationId == _blockedNavigation
+            || !args.IsSuccess && args.WebErrorStatus == CoreWebView2WebErrorStatus.OperationCanceled;
         if (args.NavigationId == _activeNavigation)
         {
             _fullIdleNavigationInProgress = false;
-            _fullIdleDocumentLoaded = args.IsSuccess && args.NavigationId != _blockedNavigation;
+            if (!cancelled) _fullIdleDocumentLoaded = args.IsSuccess;
             var inputAvailable = PollAppInput();
-            var automatic = args.IsSuccess && args.NavigationId != _blockedNavigation
+            var automatic = args.IsSuccess && !cancelled
                 && inputAvailable && _automaticDocumentChange && !_appInputSinceSource;
             _automaticDocumentChange = false;
-            RecordAppActivity(args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false,
+            RecordAppActivity(cancelled ? "navigation-cancelled" : args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false,
                 idleWaitSeconds: automatic ? FullIdleRearmSeconds : null);
         }
         if (_awaitingFirstPage && _browserHost?.Core.Source is { } source
