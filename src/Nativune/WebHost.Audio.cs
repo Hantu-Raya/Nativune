@@ -139,8 +139,8 @@ public sealed partial class WebHostWindow
             _outputFlyoutFocusSlider = false;
         };
         OutputVolumeSlider.ValueChanged += OutputVolumeChanged;
-        OutputVolumeSlider.Committed += SetOutputVolume;
-        OutputVolumeSlider.LiveChanged += PreviewOutputVolume;
+        OutputVolumeSlider.Committed += value => { RecordAppActivity("volume-command"); SetOutputVolume(value); };
+        OutputVolumeSlider.LiveChanged += value => { RecordAppActivity("volume-command"); PreviewOutputVolume(value); };
         OutputVolumeSlider.RolledBack += RestoreOutputVolumePreference;
         UpdateOutputAudioControls();
     }
@@ -152,6 +152,7 @@ public sealed partial class WebHostWindow
     {
         if (_closing || _disposed || _compact || !OutputMuteButton.IsEnabled || !OutputVolumeSlider.IsEnabled)
             return;
+        RecordAppActivity("volume-flyout");
         _outputFlyoutPinned = !fromHover;
         _outputFlyoutFocusSlider = !fromHover;
         OutputVolumeFlyout.ShowMode = fromHover ? FlyoutShowMode.Transient : FlyoutShowMode.Standard;
@@ -173,6 +174,7 @@ public sealed partial class WebHostWindow
     private void PinOutputFlyout()
     {
         if (!OutputVolumeFlyout.IsOpen) return;
+        RecordAppActivity("volume-flyout-input");
         _outputFlyoutCloseTimer?.Stop();
         _outputFlyoutPinned = true;
     }

@@ -3,6 +3,10 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Web.WebView2.Core;
+using Windows.Storage.Streams;
 using UiDispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
 
 namespace Nativune;
@@ -36,6 +40,68 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _benchMediaPollTimer;
     private UiDispatcherQueueTimer? _benchScheduleTimer;
     private UiDispatcherQueueTimer? _benchPresentationTimer;
+
+    private bool FullIdleFixtureEnabled => BenchHooks.Enabled
+        && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_FIXTURE") == "1";
+
+    partial void BenchFullIdleConfigure()
+    {
+        if (!FullIdleFixtureEnabled || _browserHost is not { } host || _environment is not { } environment) return;
+        const string fixtureUri = "https://music.youtube.com/fullidle-fixture";
+        host.Core.AddWebResourceRequestedFilter(fixtureUri, CoreWebView2WebResourceContext.Document,
+            CoreWebView2WebResourceRequestSourceKinds.Document);
+        host.Core.WebResourceRequested += (_, args) =>
+        {
+            if (args.Request.Uri != fixtureUri) return;
+            var html = """
+                <!doctype html><html><head><meta name="color-scheme" content="dark">
+                <style>body{margin:0;background:#151515;color:white;font:24px sans-serif}
+                div#response{position:fixed;inset:0 0 auto;height:120px;background:#24506e;pointer-events:none}
+                div#scroll{height:12000px;background:repeating-linear-gradient(#151515 0 80px,#335533 80px 160px)}
+                </style></head><body tabindex="0"><div id="response"></div><div id="scroll"></div>
+                <script>let n=0;for(const type of ['wheel','click','keydown'])
+                addEventListener(type,()=>{document.getElementById('response').style.background=++n%2?'#824040':'#24506e'})</script>
+                </body></html>
+                """;
+            var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(Encoding.UTF8.GetBytes(html));
+                writer.StoreAsync().AsTask().GetAwaiter().GetResult();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            args.Response = environment.CreateWebResourceResponse(stream, 200, "OK",
+                "Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store");
+        };
+    }
+
+    private void BenchFullIdleInputWindows()
+    {
+        if (!BenchHooks.Enabled) return;
+        var windows = new List<object>();
+        EnumFullIdleChildWindows(NativeHandle, (window, _) =>
+        {
+            var name = new StringBuilder(128);
+            GetFullIdleClassName(window, name, name.Capacity);
+            var className = name.ToString();
+            if (className.StartsWith("Chrome_", StringComparison.Ordinal) || className == "Intermediate D3D Window")
+            {
+                var thread = GetFullIdleWindowThreadProcessId(window, out var pid);
+                windows.Add(new { hwnd = (long)window, className, pid, thread, hostOwned = pid == Environment.ProcessId });
+            }
+            return true;
+        }, 0);
+        BenchHooks.Event("webview-input-windows", ("hostPid", Environment.ProcessId), ("windows", windows));
+    }
+
+    private delegate bool FullIdleEnumWindow(nint window, nint parameter);
+    [DllImport("user32.dll", EntryPoint = "EnumChildWindows")]
+    private static extern bool EnumFullIdleChildWindows(nint parent, FullIdleEnumWindow callback, nint parameter);
+    [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)]
+    private static extern int GetFullIdleClassName(nint window, StringBuilder name, int capacity);
+    [DllImport("user32.dll", EntryPoint = "GetWindowThreadProcessId")]
+    private static extern uint GetFullIdleWindowThreadProcessId(nint window, out uint processId);
 
     partial void BenchInitialize()
     {
@@ -81,6 +147,8 @@ public sealed partial class WebHostWindow
     {
         if (!BenchHooks.Enabled || _benchNavigationLogged) return;
         _benchNavigationLogged = true;
+        BenchFullIdleInputWindows();
+        if (FullIdleFixtureEnabled) { StartBenchSchedule("fullidle-fixture"); return; }
         var path = "/";
         if (Uri.TryCreate(_browserHost?.Core.Source, UriKind.Absolute, out var navigationUri))
             path = navigationUri.AbsolutePath;
