@@ -87,7 +87,25 @@ def drive(label, marks, errors, stop):
     finally:
         if helper: helper.kill()
 
+def score(report, marks):
+    ev = report['capEvents']
+    a, b, c, end = marks['phaseA'], marks['phaseB'], marks['phaseC'], marks['end']
+    applied_a = [e for e in ev if a <= e['t'] < b and e['outcome'] == 'applied']
+    # Typing into another window must neither block nor lift the cap while the pointer rests on Nativune.
+    typed_release = [e for e in ev if applied_a and applied_a[0]['t'] <= e['t'] < b and e['outcome'] == 'released']
+    nudge = [e for e in ev if b <= e['t'] < b+1500 and e['outcome'] == 'released' and e['reason'] == 'app-input']
+    again = [e for e in ev if c <= e['t'] <= end and e['outcome'] == 'applied']
+    report['checks'] = {'A_capWhileTypingElsewhere': bool(applied_a) and not typed_release,
+                        'B_releaseOnPointerMove': bool(nudge), 'C_capAgain': bool(again)}
+    report['passed'] = all(report['checks'].values()) and not report['errors']
+
 def main():
+    if sys.argv[1] == '--rescore':
+        path = h.OUT/sys.argv[2]/'pointer-report.json'
+        report = json.loads(path.read_text()); score(report, report['marks'])
+        path.write_text(json.dumps(report, indent=2))
+        print(json.dumps({k: report.get(k) for k in ('label', 'passed', 'checks', 'errors')}))
+        return 0 if report['passed'] else 1
     label = sys.argv[1]
     exe = sys.argv[2] if len(sys.argv) > 2 else str(h.EXE)
     out = h.OUT/label; out.mkdir(parents=True, exist_ok=True)
@@ -106,12 +124,8 @@ def main():
         from pathlib import Path
         ev = cap_events(Path(marks['log']), marks['phaseA'] - 30000)
         report['capEvents'] = [{k: e.get(k) for k in ('t', 'outcome', 'reason')} for e in ev]
-        A = [e for e in ev if marks['phaseA'] <= e['t'] < marks['phaseB'] and e.get('outcome') == 'applied']
-        B = [e for e in ev if marks['phaseB'] <= e['t'] < marks['phaseB']+1500 and e.get('outcome') == 'released' and e.get('reason') == 'app-input']
-        C = [e for e in ev if marks['phaseC'] <= e['t'] <= marks['end'] and e.get('outcome') == 'applied']
-        report['checks'] = {'A_capWhileTypingElsewhere': bool(A), 'B_releaseOnPointerMove': bool(B), 'C_capAgain': bool(C)}
-        report['passed'] = all(report['checks'].values()) and not errors
         report['marks'] = {k: v for k, v in marks.items() if k != 'log'}
+        score(report, report['marks'])
     else:
         report['passed'] = False
     (out/'pointer-report.json').write_text(json.dumps(report, indent=2))
