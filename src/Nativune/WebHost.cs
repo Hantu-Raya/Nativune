@@ -916,7 +916,7 @@ public sealed partial class WebHostWindow : Window
             StartOutputAudio();
             OnProcessInfosChanged();
             core.HistoryChanged += (_, _) => UpdateNavigation();
-            core.SourceChanged += (_, args) => { RecordSourceChange(args.IsNewDocument); ObserveResumeSource(); };
+            core.SourceChanged += (sender, args) => { RecordSourceChange(args.IsNewDocument, sender.Source); ObserveResumeSource(); };
             BenchFullIdleConfigure();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
@@ -1066,13 +1066,34 @@ public sealed partial class WebHostWindow : Window
 
     private void OnNavigationStarting(CoreWebView2NavigationStartingEventArgs args)
     {
-        RecordAppActivity("navigation-starting", appInput: false);
+        // A cap proves a quiet Full interval even when a prior bench/full command preceded the last source change.
+        var inputAvailable = PollAppInput();
+        _automaticDocumentChange = inputAvailable && !_appInputSinceSource
+            && PlayerControls.IsMusicUri(args.Uri)
+            && (_automaticDocumentChange || _rendererCapPolicy == RendererCapPolicy.FullIdle);
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = new { navigationStarting = true, inputAvailable,
+            inputSinceBaseline = _appInputSinceSource, cappedBeforeRelease = _rendererCapPolicy == RendererCapPolicy.FullIdle,
+            automatic = _automaticDocumentChange };
+#endif
+        RecordAppActivity(_automaticDocumentChange ? "track-change" : "navigation-starting", appInput: false,
+            idleWaitSeconds: _automaticDocumentChange ? FullIdleRearmSeconds : null);
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = null;
+#endif
         if (_closing || _disposed || _browserFailed)
         {
             args.Cancel = true;
+            _automaticDocumentChange = false;
             return;
         }
-        if (!_configuringPrivacy && !ObserveResumeNavigation(args)) { args.Cancel = true; return; }
+        if (!_configuringPrivacy && !ObserveResumeNavigation(args))
+        {
+            args.Cancel = true;
+            _automaticDocumentChange = false;
+            RecordAppActivity("navigation-cancelled", appInput: false);
+            return;
+        }
         InvalidateCompactState();
         // A main-frame navigation replaces the document (account pages included).
         InvalidateDiscord();
@@ -1080,6 +1101,7 @@ public sealed partial class WebHostWindow : Window
         if (_configuringPrivacy)
         {
             args.Cancel = !string.Equals(args.Uri, _privacySetupUri, StringComparison.Ordinal);
+            _automaticDocumentChange = false;
             return;
         }
 
@@ -1093,6 +1115,7 @@ public sealed partial class WebHostWindow : Window
         if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) || !WebHostPolicy.IsAllowedMainFrameNavigation(uri))
         {
             args.Cancel = true;
+            _automaticDocumentChange = false;
             _blockedNavigation = args.NavigationId;
             var destination = uri is null ? "invalid address" : uri.Host;
             SetStatus($"Navigation blocked to {destination}. Only Music and Google account pages are allowed.", isError: true);
@@ -1115,7 +1138,12 @@ public sealed partial class WebHostWindow : Window
         {
             _fullIdleNavigationInProgress = false;
             _fullIdleDocumentLoaded = args.IsSuccess && args.NavigationId != _blockedNavigation;
-            RecordAppActivity(args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false);
+            var inputAvailable = PollAppInput();
+            var automatic = args.IsSuccess && args.NavigationId != _blockedNavigation
+                && inputAvailable && _automaticDocumentChange && !_appInputSinceSource;
+            _automaticDocumentChange = false;
+            RecordAppActivity(args.IsSuccess ? "document-loaded" : "navigation-failed", appInput: false,
+                idleWaitSeconds: automatic ? FullIdleRearmSeconds : null);
         }
         if (_awaitingFirstPage && _browserHost?.Core.Source is { } source
             && !source.StartsWith("chrome-extension:", StringComparison.OrdinalIgnoreCase))

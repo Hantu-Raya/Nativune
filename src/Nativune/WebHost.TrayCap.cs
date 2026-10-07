@@ -22,6 +22,7 @@ public sealed partial class WebHostWindow
     private bool _fullIdlePollOnlyApplied;
     private static bool FullIdlePollOnly =>
         Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_POLL_ONLY") == "1";
+    private object? _fullIdleReleaseClassification;
 #endif
     private bool RendererCapActive
     {
@@ -41,8 +42,10 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _fullIdleTimer;
     private long _lastAppActivity = Stopwatch.GetTimestamp();
     private uint? _lastInputTick;
-    // Any app input since the last source change makes the next change user-driven, even if it is delayed.
+    // The applied cap is also an idle-eligible baseline: older startup/scheduled commands cannot own the next track.
     private bool _appInputSinceSource = true;
+    // Carry automatic document navigation through its lifecycle without shortening user navigation.
+    private bool _automaticDocumentChange;
     private double _fullIdleWaitSeconds = 60;
     private bool _fullIdleDocumentLoaded, _fullIdleNavigationInProgress, _rendererCapPending;
     private long _rendererCapRetryAfter;
@@ -150,20 +153,41 @@ public sealed partial class WebHostWindow
         var detected = Stopwatch.GetTimestamp();
         _lastAppActivity = detected;
         _fullIdleWaitSeconds = idleWaitSeconds ?? FullIdleSeconds;
-        if (appInput) _appInputSinceSource = true;
+        if (appInput)
+        {
+            _appInputSinceSource = true;
+            _automaticDocumentChange = false;
+        }
         _rendererCapGeneration++; // Invalidate discovery even when there is no applied cap yet.
         if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap(reason, detected);
         UpdateFullIdlePolling();
     }
 
-    private void RecordSourceChange(bool newDocument)
+    private void RecordSourceChange(bool newDocument, string? source)
     {
         // Poll now, before attributing the change: the pending timer may not have seen the user's click yet.
+        var cappedBeforePoll = _rendererCapPolicy == RendererCapPolicy.FullIdle;
         var inputAvailable = PollAppInput();
-        var automatic = inputAvailable && !newDocument && _fullIdleDocumentLoaded && !_appInputSinceSource;
+        var cappedAfterPoll = _rendererCapPolicy == RendererCapPolicy.FullIdle;
+        var musicSource = PlayerControls.IsMusicUri(source);
+        var automatic = inputAvailable && musicSource && !_appInputSinceSource
+            && (_automaticDocumentChange || _fullIdleDocumentLoaded
+                && (!newDocument || cappedBeforePoll && cappedAfterPoll));
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = new {
+            newDocument, inputAvailable, musicSource, cappedBeforePoll, cappedAfterPoll,
+            documentLoaded = _fullIdleDocumentLoaded, navigationInProgress = _fullIdleNavigationInProgress,
+            inputSinceBaseline = _appInputSinceSource, automaticDocument = _automaticDocumentChange, automatic
+        };
+        BenchHooks.Event("fullidle-source-classification", ("classification", _fullIdleReleaseClassification));
+#endif
+        if (newDocument || !musicSource) _automaticDocumentChange = automatic;
         RecordAppActivity(automatic ? "track-change" : "source-changed", appInput: false,
             idleWaitSeconds: automatic ? FullIdleRearmSeconds : FullIdleSeconds);
-        _appInputSinceSource = false;
+        if (automatic) _appInputSinceSource = false;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        _fullIdleReleaseClassification = null;
+#endif
     }
 
     // WebView input HWNDs can belong to the browser process. No global hooks and no input content is recorded.
@@ -270,6 +294,7 @@ public sealed partial class WebHostWindow
                 _fullIdlePollOnlyApplied = true;
                 _rendererCapPid = processId;
                 _rendererCapPolicy = policy;
+                _appInputSinceSource = false;
                 (_rendererCapOriginalMin, _rendererCapOriginalMax, _rendererCapOriginalFlags) = (0, 0, 0);
                 RendererCapLog(policy, "applied-poll-only", processId, reason: "idle");
                 return;
@@ -299,6 +324,7 @@ public sealed partial class WebHostWindow
             (_rendererCapOriginalMin, _rendererCapOriginalMax, _rendererCapOriginalFlags) = (min, max, flags);
             _rendererCapPid = processId;
             _rendererCapPolicy = policy;
+            if (policy == RendererCapPolicy.FullIdle) _appInputSinceSource = false;
             RendererCapLog(policy, "applied", processId, min, cap, QuotaMinDisable | QuotaMaxEnable,
                 reason: policy == RendererCapPolicy.FullIdle ? "idle" : "tray");
         }
@@ -416,7 +442,8 @@ public sealed partial class WebHostWindow
             ("reason", reason), ("pid", processId), ("min", (long)min), ("max", (long)max), ("flags", flags),
             ("originalMin", (long)_rendererCapOriginalMin), ("originalMax", (long)_rendererCapOriginalMax), ("originalFlags", _rendererCapOriginalFlags),
             ("detectedQpc", detected), ("completedQpc", completed), ("qpcFrequency", Stopwatch.Frequency),
-            ("releaseLatencyMs", detected == 0 ? null : (double?)(1000d * (completed - detected) / Stopwatch.Frequency)));
+            ("releaseLatencyMs", detected == 0 ? null : (double?)(1000d * (completed - detected) / Stopwatch.Frequency)),
+            ("classification", policy == RendererCapPolicy.FullIdle && reason is not null ? _fullIdleReleaseClassification : null));
 #endif
     }
 
