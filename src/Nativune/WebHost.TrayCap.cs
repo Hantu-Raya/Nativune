@@ -544,15 +544,19 @@ public sealed partial class WebHostWindow
             {
                 handle.Dispose();
                 RendererCapLog(policy, "monitor-seed-failed", processId);
+                RetryRendererCap(policy);
                 return;
             }
             var seedTimestamp = Stopwatch.GetTimestamp();
             // Raising the process's minimum fails from a standard token (ERROR_PRIVILEGE_NOT_HELD).
-            if (!GetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), out var min, out var max, out var flags)
-                || min >= cap || !SetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), min, cap, QuotaMinDisable | QuotaMaxEnable))
+            var limitsRead = GetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), out var min, out var max, out var flags);
+            if (!limitsRead || min >= cap
+                || !SetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), min, cap, QuotaMinDisable | QuotaMaxEnable))
             {
                 RendererCapLog(policy, "apply-failed", processId);
                 handle.Dispose();
+                // API failure may be an exiting renderer; a successfully read excessive minimum is permanent.
+                if (!limitsRead || min < cap) RetryRendererCap(policy);
                 return;
             }
             _rendererCapHandle = handle;
