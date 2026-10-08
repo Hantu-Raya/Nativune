@@ -684,6 +684,7 @@ public sealed partial class WebHostWindow : Window
     private void UpdateBrowserVisibility()
     {
         UpdateLoadingSpinner();
+        UpdateHiddenRenderMaintenance();
         if (_browserHost is null) return;
         try { _browserHost.SetVisible(BrowserShouldBeVisible); }
         catch (Exception) when (_closing || _disposed) { }
@@ -787,6 +788,7 @@ public sealed partial class WebHostWindow : Window
         _windowWasVisible = visible;
         if (visible && wasVisible != true) RecordAppActivity("show", appInput: false);
         UpdateFullIdlePolling();
+        UpdateHiddenRenderMaintenance();
         if (wasVisible == visible) return;
         _gcOnHideTimer.Stop();
         _trimOnHideTimer.Stop();
@@ -806,6 +808,7 @@ public sealed partial class WebHostWindow : Window
         _statusDetailsItem.IsEnabled = true;
         UpdatePlayerControls();
         UpdateLoadingSpinner();
+        UpdateHiddenRenderMaintenance();
     }
 
     private async Task ExecutePlayerCommandAsync(string command)
@@ -916,14 +919,20 @@ public sealed partial class WebHostWindow : Window
             BenchMuteOutput();
             StartOutputAudio();
             OnProcessInfosChanged();
-            core.HistoryChanged += (_, _) => UpdateNavigation();
-            core.SourceChanged += (sender, args) => { RecordSourceChange(args.IsNewDocument, sender.Source); ObserveResumeSource(); };
+            core.HistoryChanged += (_, _) => { UpdateNavigation(); MarkHiddenRenderDirty(); };
+            core.SourceChanged += (sender, args) =>
+            {
+                RecordSourceChange(args.IsNewDocument, sender.Source);
+                ObserveResumeSource();
+                MarkHiddenRenderDirty();
+            };
             BenchFullIdleConfigure();
             core.NavigationStarting += (_, args) => OnNavigationStarting(args);
             // Keep the live document's controller through cancelled navigations and redirects.
             core.ContentLoading += (_, _) =>
             {
                 _fullIdleDocumentLoaded = false;
+                UpdateHiddenRenderMaintenance();
                 InvalidateEqualizer();
             };
             core.NewWindowRequested += (_, args) => OnNewWindowRequested(args);
@@ -1252,6 +1261,7 @@ public sealed partial class WebHostWindow : Window
         catch (Exception) { description = args.ProcessFailedKind.ToString(); }
         AppLog.Write("process-failed", description);
         if (_closing || _disposed) return;
+        StopHiddenRenderMaintenance();
         if (args.ProcessFailedKind is CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited)
         {
             MemoryTrailBeforeFailure();
@@ -2253,6 +2263,7 @@ public sealed partial class WebHostWindow : Window
             _playerControls?.Invalidate();
             RefreshCompactActivity();
             UpdatePlayerControls();
+            UpdateHiddenRenderMaintenance();
         }
     }
 
@@ -2469,6 +2480,7 @@ public sealed partial class WebHostWindow : Window
         _fullIdleTimer?.Stop();
         ReleaseRendererCap("shutdown");
         _resumeShutdownStarted = true;
+        StopHiddenRenderMaintenance();
         _playbackReadTimer?.Stop();
         await CaptureFinalResumeAsync();
         await RemoveResumeRegistrationAsync();

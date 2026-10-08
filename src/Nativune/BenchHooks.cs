@@ -131,12 +131,13 @@ internal static class BenchHooks
             var action = argument is null ? verb : verb + ":" + argument;
             var validArgument = verb switch
             {
+                "pulse" => argument is null || int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out var milliseconds) && milliseconds > 0,
                 "nav" => argument is { Length: 11 } && argument.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'),
                 "capture" or "capture-options" or "style-probe" => argument is { Length: > 0 and <= 40 } && argument.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'),
                 _ => argument is null,
             };
             if (!validArgument
-                || verb is not ("compact" or "full" or "hide" or "minimize" or "show" or "quit" or "pause" or "play"
+                || verb is not ("compact" or "full" or "hide" or "minimize" or "show" or "quit" or "pulse" or "pulse2" or "pause" or "play"
                     or "lyrics" or "seekfwd" or "seekback" or "next" or "options" or "translate-on" or "translate-off" or "offset-set"
                     or "nav" or "capture" or "capture-options" or "style-probe" or "home" or "lyrics-off-now" or "coverage")
                 || !double.TryParse(entry[(separator + 1)..].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds)
