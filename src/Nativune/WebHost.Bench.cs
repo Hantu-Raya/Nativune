@@ -41,6 +41,43 @@ public sealed partial class WebHostWindow
     private UiDispatcherQueueTimer? _benchScheduleTimer;
     private UiDispatcherQueueTimer? _benchPresentationTimer;
 
+    private UiDispatcherQueueTimer? _benchCapSweepTimer, _benchCapControlTimer;
+    private bool _benchCapSweepPending, _benchCapRestoreFailureInjected;
+    private bool CapHeavyFixtureEnabled => FullIdleFixtureEnabled
+        && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_HEAVY") == "1";
+
+    private async void OnBenchCapSweepTick(object? sender, object args)
+    {
+        if (_closing || _disposed || !CapHeavyFixtureEnabled || _benchCapSweepPending
+            || WindowIsVisible && !_compact || _browserHost is not { } host) return;
+        _benchCapSweepPending = true;
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            // Do not time out then overlap another call: the retained workload must remain the same after release.
+            var result = await host.Core.ExecuteScriptAsync("window.__sweep?.()");
+            BenchHooks.Event("cap-heavy-sweep", ("completed", result != "null"),
+                ("elapsed_ms", Stopwatch.GetElapsedTime(started).TotalMilliseconds));
+        }
+        catch (Exception) { BenchHooks.Event("cap-heavy-sweep", ("completed", false)); }
+        finally { _benchCapSweepPending = false; }
+    }
+
+    private void BenchCapApplied()
+    {
+        if (!CapHeavyFixtureEnabled || Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_NO_FUSE") != "1") return;
+        // Bound the intentionally unguarded control independently of schedule/launcher jitter.
+        _benchCapControlTimer ??= _dispatcherQueue.CreateTimer();
+        _benchCapControlTimer.Interval = TimeSpan.FromSeconds(5);
+        _benchCapControlTimer.IsRepeating = false;
+        _benchCapControlTimer.Tick += (_, _) =>
+        {
+            _benchCapControlTimer?.Stop();
+            BenchHooks.QuitRequested();
+            _ = ShutdownAsync();
+        };
+        _benchCapControlTimer.Start();
+    }
     private bool FullIdleFixtureEnabled => BenchHooks.Enabled
         && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_FULLIDLE_FIXTURE") == "1";
 
@@ -63,6 +100,25 @@ public sealed partial class WebHostWindow
                 addEventListener(type,()=>{document.getElementById('response').style.background=++n%2?'#824040':'#24506e'})</script>
                 </body></html>
                 """;
+            if (CapHeavyFixtureEnabled)
+                html = html.Replace("</body>", """
+                    <script>
+                    window.__capHeap = new Array(20 * 1024 * 1024);
+                    for (let i = 0; i < __capHeap.length; i++) __capHeap[i] = i + 0.125;
+                    window.__sweep = () => {
+                      let sum = 0;
+                      for (let i = 0; i < __capHeap.length; i += 512) sum += __capHeap[i];
+                      window.__capChecksum = sum;
+                      return sum;
+                    };
+                    const animate = () => {
+                      __sweep();
+                      document.getElementById('response').style.transform = `translateX(${Math.sin(performance.now()/1000)}px)`;
+                      requestAnimationFrame(animate);
+                    };
+                    requestAnimationFrame(animate);
+                    </script></body>
+                    """);
             var stream = new InMemoryRandomAccessStream();
             using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
             {
@@ -148,7 +204,24 @@ public sealed partial class WebHostWindow
         if (!BenchHooks.Enabled || _benchNavigationLogged) return;
         _benchNavigationLogged = true;
         BenchFullIdleInputWindows();
-        if (FullIdleFixtureEnabled) { StartBenchSchedule("fullidle-fixture"); return; }
+        if (FullIdleFixtureEnabled)
+        {
+            BenchHooks.Event("cap-guard-fixture", ("heavy", CapHeavyFixtureEnabled),
+                ("runtime", _environment?.BrowserVersionString),
+                ("build", typeof(WebHostWindow).Assembly.GetCustomAttributes(
+                    typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion));
+            if (CapHeavyFixtureEnabled && _benchCapSweepTimer is null)
+            {
+                _benchCapSweepTimer = _dispatcherQueue.CreateTimer();
+                _benchCapSweepTimer.Interval = TimeSpan.FromMilliseconds(500);
+                _benchCapSweepTimer.IsRepeating = true;
+                _benchCapSweepTimer.Tick += OnBenchCapSweepTick;
+                _benchCapSweepTimer.Start();
+            }
+            StartBenchSchedule("fullidle-fixture");
+            return;
+        }
         var path = "/";
         if (Uri.TryCreate(_browserHost?.Core.Source, UriKind.Absolute, out var navigationUri))
             path = navigationUri.AbsolutePath;
@@ -181,6 +254,8 @@ public sealed partial class WebHostWindow
             _benchPresentationTimer?.Stop();
             _benchStatsTimer?.Stop();
             _lyricsBenchTimer?.Stop();
+            _benchCapSweepTimer?.Stop();
+            _benchCapControlTimer?.Stop();
         }
         catch (Exception) { }
     }

@@ -142,8 +142,8 @@ public sealed partial class WebHostWindow
             _outputFlyoutFocusSlider = false;
         };
         OutputVolumeSlider.ValueChanged += OutputVolumeChanged;
-        OutputVolumeSlider.Committed += value => { RecordAppActivity("volume-command"); SetOutputVolume(value); };
-        OutputVolumeSlider.LiveChanged += value => { RecordAppActivity("volume-command"); PreviewOutputVolume(value); };
+        OutputVolumeSlider.Committed += value => { RecordAppActivity("volume-command", appInput: true); SetOutputVolume(value); };
+        OutputVolumeSlider.LiveChanged += value => { RecordAppActivity("volume-command", appInput: true); PreviewOutputVolume(value); };
         OutputVolumeSlider.RolledBack += RestoreOutputVolumePreference;
         UpdateOutputAudioControls();
     }
