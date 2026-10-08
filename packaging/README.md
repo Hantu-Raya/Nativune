@@ -1,6 +1,6 @@
 # Package manager packaging
 
-Nativune's winget manifests and Chocolatey package are prepared here but not yet installable. As of 8 October 2026 both first submissions (0.1.32) are waiting for store review: [winget-pkgs PR #442614](https://github.com/microsoft/winget-pkgs/pull/442614) needs a moderator, and the [Chocolatey package](https://community.chocolatey.org/packages/nativune/0.1.32) is in moderation. Until they are approved, the release workflow's submit steps fail as expected: winget-releaser reports that the package does not exist, and `choco push` returns 403. The first publishable version is 0.1.27: the switches both package managers need (`--install-prerequisites` and the `QuietUninstallString`) ship with Setup 1.0.2, and older Setups exit 2 on the unknown switch. The workflow only submits 0.1.27 or later; rendering older releases is fine for template validation.
+Nativune's winget manifests and Chocolatey package are prepared here but not yet approved. As of 8 October 2026 both first submissions (0.1.32) are waiting for store review: [winget-pkgs PR #442614](https://github.com/microsoft/winget-pkgs/pull/442614) needs a moderator, and the [Chocolatey package](https://community.chocolatey.org/packages/nativune/0.1.32) is in moderation. `choco install nativune` without `--version` finds nothing yet; an explicit version can fetch the unapproved package. The workflow records warnings while waiting rather than attempting submissions that winget and Chocolatey would reject. The first publishable version is 0.1.27: the required `--install-prerequisites` switch and `QuietUninstallString` ship with Setup 1.0.2, and older Setups exit 2 on the unknown switch. The workflow only submits 0.1.27 or later; rendering older releases is fine for template validation.
 
 ## Layout
 
@@ -14,7 +14,7 @@ Templates use `{{VERSION}}`, `{{SETUP_SHA256}}` (uppercase hex) and `{{RELEASE_D
 Download `Nativune-Setup.exe` and `SHA256SUMS.txt` from a release into one directory, then:
 
 ```powershell
-./scripts/render-package-manifests.ps1 -Version 0.1.26 -ReleaseDirectory artifacts/release-download
+./scripts/render-package-manifests.ps1 -Version 0.1.39 -ReleaseDirectory artifacts/release-download
 ```
 
 The script checks that the Setup hash matches `SHA256SUMS.txt` and writes to `artifacts/package-managers/<version>/`:
@@ -35,10 +35,14 @@ Install tests change the machine; run them on a disposable Windows account or VM
 
 ## Automation
 
-`.github/workflows/package-managers.yml` renders and packs on every published release, on manual dispatch (with a tag) and on pull requests that touch this folder (against the latest release). It uploads the result as an artifact. It submits only for release or dispatch runs, and only when the matching secret exists:
+`.github/workflows/package-managers.yml` renders, packs and uploads artifacts on published releases, manual dispatch, weekly catch-up runs and relevant pull requests. Dispatch accepts a release tag (for example `v0.1.39`); leaving it blank uses the latest stable, non-draft release, as do scheduled and pull-request runs. Pull requests run read-only store preflight without store credentials or publishing. Release, dispatch and scheduled runs submit only when the store is ready and the matching secret exists:
 
 - `WINGET_TOKEN`: opens a winget-pkgs pull request with `vedantmgoyal9/winget-releaser`.
 - `CHOCO_API_KEY`: runs `choco push` to the Chocolatey Community Repository.
+
+Preflight checks first approval, approved versions and pending submissions. Waiting states produce warnings and a step summary without failing the job. Weekly catch-up submits only the latest release once first approval lands, and skips versions already approved or submitted; manual dispatch can catch up sooner. Store requests and actual submission errors still fail, and one store's failure does not skip the other. Render or pack failure blocks both submissions.
+
+The workflow runs `scripts/package-manager-preflight.ps1 -SelfCheck` before packaging. Run that command locally for the isolated state checks, or use `-Store winget -Version 0.1.39` / `-Store chocolatey -Version 0.1.39` for read-only live preflight. Winget token authentication is checked outside pull requests; Chocolatey API-key validity is deferred until an authorized push, never tested by a throwaway upload.
 
 ## Owner-only first steps
 
