@@ -3,16 +3,23 @@ name: Package managers
 on:
   release:
     types: [published]
+  schedule:
+    - cron: '17 6 * * 1'
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to package (for example v0.1.26)
-        required: true
+        description: Release tag to package (for example v0.1.39; blank uses latest stable)
+        required: false
   pull_request:
     paths:
       - packaging/**
       - scripts/render-package-manifests.ps1
+      - scripts/package-manager-preflight.ps1
       - .github/workflows/package-managers.yml
+
+concurrency:
+  group: package-managers
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -22,45 +29,92 @@ jobs:
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-      CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+      WINGET_TOKEN: ${{ github.event_name != 'pull_request' && secrets.WINGET_TOKEN || '' }}
+      CHOCO_API_KEY: ${{ github.event_name != 'pull_request' && secrets.CHOCO_API_KEY || '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check preflight decisions
+        shell: pwsh
+        run: ./scripts/package-manager-preflight.ps1 -SelfCheck
 
       - name: Resolve release tag
         id: tag
         shell: pwsh
+        env:
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          switch ('${{ github.event_name }}') {
-            'release' { $tag = '${{ github.event.release.tag_name }}' }
-            'workflow_dispatch' { $tag = '${{ inputs.tag }}' }
-            default { $tag = gh release view --repo '${{ github.repository }}' --json tagName --jq .tagName }
+          $ErrorActionPreference = 'Stop'
+          $tag = switch ($env:GITHUB_EVENT_NAME) {
+            'release' { $env:EVENT_RELEASE_TAG }
+            'workflow_dispatch' { $env:INPUT_TAG }
           }
-          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Unsupported release tag '$tag'." }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $json = gh release view --repo $env:GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease
+            if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the latest release.' }
+            $release = $json | ConvertFrom-Json
+            if ($release.isDraft -or $release.isPrerelease) { throw 'Latest release must be stable and published.' }
+            $tag = $release.tagName
+          }
+          if ($tag -notmatch '^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$)') { throw "Unsupported release tag '$tag'." }
+          $version = $Matches[1]
           "tag=$tag" >> $env:GITHUB_OUTPUT
-          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
           # Setup 1.0.2 (first shipped in 0.1.27) adds --install-prerequisites and QuietUninstallString.
-          "publishable=$(([version]$Matches[1] -ge [version]'0.1.27').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "publishable=$(([version]$version -ge [version]'0.1.27').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       - name: Download release assets
         shell: pwsh
-        run: gh release download '${{ steps.tag.outputs.tag }}' --repo '${{ github.repository }}' --pattern Nativune-Setup.exe --pattern SHA256SUMS.txt --dir artifacts/release-download
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern Nativune-Setup.exe --pattern SHA256SUMS.txt --dir artifacts/release-download
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset download failed.' }
 
       - name: Render manifests
+        id: render
         shell: pwsh
-        run: ./scripts/render-package-manifests.ps1 -Version '${{ steps.tag.outputs.version }}' -ReleaseDirectory artifacts/release-download -OutputDirectory artifacts/package-managers
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: ./scripts/render-package-manifests.ps1 -Version $env:VERSION -ReleaseDirectory artifacts/release-download -OutputDirectory artifacts/package-managers
 
       - name: Pack Chocolatey package
+        id: pack
         shell: pwsh
-        run: choco pack artifacts/package-managers/chocolatey/nativune/nativune.nuspec --outputdirectory artifacts/package-managers/chocolatey
+        run: |
+          choco pack artifacts/package-managers/chocolatey/nativune/nativune.nuspec --outputdirectory artifacts/package-managers/chocolatey
+          if ($LASTEXITCODE -ne 0) { throw 'Chocolatey pack failed.' }
 
       - uses: actions/upload-artifact@v4
         with:
           name: package-managers-${{ steps.tag.outputs.version }}
           path: artifacts/package-managers
 
+      - name: Check winget state and credentials
+        id: winget_preflight
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request' -and $env:WINGET_TOKEN) {
+            try {
+              $headers = @{ Authorization = "Bearer $env:WINGET_TOKEN"; 'User-Agent' = 'Nativune-package-preflight' }
+              $response = Invoke-WebRequest https://api.github.com/user -Headers $headers -SkipHttpErrorCheck -TimeoutSec 30
+            } catch { throw 'Could not validate WINGET_TOKEN.' }
+            if ($response.StatusCode -ne 200) { throw "WINGET_TOKEN authentication failed (HTTP $($response.StatusCode))." }
+            if (-not ($response.Content | ConvertFrom-Json).login) { throw 'Unexpected winget token validation response.' }
+          }
+          ./scripts/package-manager-preflight.ps1 -Store winget -Version $env:VERSION
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request' -and -not $env:WINGET_TOKEN) {
+            Write-Output '::warning::Winget publishing is disabled: WINGET_TOKEN is not configured.'
+            '- Winget publishing disabled: WINGET_TOKEN is not configured.' >> $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Submit to winget-pkgs
-        if: github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.WINGET_TOKEN != ''
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' && steps.winget_preflight.outcome == 'success' && steps.winget_preflight.outputs.state == 'ready' && github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.WINGET_TOKEN != '' }}
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: Nativune.Nativune
@@ -69,8 +123,30 @@ jobs:
           installers-regex: 'Nativune-Setup\.exe$'
           token: ${{ secrets.WINGET_TOKEN }}
 
+      - name: Check Chocolatey state
+        id: choco_preflight
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' }}
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/package-manager-preflight.ps1 -Store chocolatey -Version $env:VERSION
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') {
+            if (-not $env:CHOCO_API_KEY) {
+              Write-Output '::warning::Chocolatey publishing is disabled: CHOCO_API_KEY is not configured.'
+              '- Chocolatey publishing disabled: CHOCO_API_KEY is not configured.' >> $env:GITHUB_STEP_SUMMARY
+            } else {
+              '- Chocolatey key validity will be checked only by an authorized push.' >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+
       - name: Push to Chocolatey
         # Independent of winget: a failed winget submission must not skip the Chocolatey push.
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.CHOCO_API_KEY != '' }}
+        if: ${{ !cancelled() && steps.pack.outcome == 'success' && steps.choco_preflight.outcome == 'success' && steps.choco_preflight.outputs.state == 'ready' && github.event_name != 'pull_request' && steps.tag.outputs.publishable == 'true' && env.CHOCO_API_KEY != '' }}
         shell: pwsh
-        run: choco push "artifacts/package-managers/chocolatey/nativune.${{ steps.tag.outputs.version }}.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          choco push "artifacts/package-managers/chocolatey/nativune.$env:VERSION.nupkg" --source https://push.chocolatey.org/ --api-key $env:CHOCO_API_KEY
+          if ($LASTEXITCODE -ne 0) { throw 'Chocolatey push failed.' }
