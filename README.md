@@ -256,7 +256,12 @@ The default install location is `%LOCALAPPDATA%\Nativune`. Setup adds Start menu
 
 ### Package managers
 
-winget and Chocolatey packages are prepared but not yet published. Once they are, you will be able to install with:
+**Not working yet.** `winget install` and `choco install` can't install Nativune yet. Both stores review a new package's first version before it can be installed, and Nativune's first version is still waiting (as of 8 October 2026):
+
+- **winget:** the first submission (version 0.1.32, [winget-pkgs PR #442614](https://github.com/microsoft/winget-pkgs/pull/442614)) passed automated validation and is waiting for a moderator. Until it is merged, `winget search Nativune` finds nothing and newer versions can't be submitted.
+- **Chocolatey:** version 0.1.32 is [in moderation](https://community.chocolatey.org/packages/nativune/0.1.32); its install test is being rerun. Chocolatey rejects newer versions until a first version is approved.
+
+Until then, install from the [Releases page](https://github.com/Hantu-Raya/Nativune/releases) as described above. Once the packages are approved, these commands will work:
 
 ```powershell
 winget install Nativune.Nativune

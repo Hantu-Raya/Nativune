@@ -1,6 +1,6 @@
 # Package manager packaging
 
-Nativune's winget manifests and Chocolatey package are prepared here but not yet published. The first publishable version is 0.1.27: the switches both package managers need (`--install-prerequisites` and the `QuietUninstallString`) ship with Setup 1.0.2, and older Setups exit 2 on the unknown switch. The workflow only submits 0.1.27 or later; rendering older releases is fine for template validation.
+Nativune's winget manifests and Chocolatey package are prepared here but not yet installable. As of 8 October 2026 both first submissions (0.1.32) are waiting for store review: [winget-pkgs PR #442614](https://github.com/microsoft/winget-pkgs/pull/442614) needs a moderator, and the [Chocolatey package](https://community.chocolatey.org/packages/nativune/0.1.32) is in moderation. Until they are approved, the release workflow's submit steps fail as expected: winget-releaser reports that the package does not exist, and `choco push` returns 403. The first publishable version is 0.1.27: the switches both package managers need (`--install-prerequisites` and the `QuietUninstallString`) ship with Setup 1.0.2, and older Setups exit 2 on the unknown switch. The workflow only submits 0.1.27 or later; rendering older releases is fine for template validation.
 
 ## Layout
 
