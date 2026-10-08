@@ -32,6 +32,7 @@ internal sealed class NativeBrowserHost : IDisposable
     private XamlRoot? _xamlRoot;
     private TypedEventHandler<XamlRoot, XamlRootChangedEventArgs>? _xamlRootChanged;
     private bool _containerVisible;
+    private bool _controllerPulseVisible;
     private bool _disposed;
     private (int X, int Y, int Width, int Height)? _lastBounds;
 
@@ -168,11 +169,18 @@ internal sealed class NativeBrowserHost : IDisposable
         }
         else
         {
-            _controller.IsVisible = false;
+            _controller.IsVisible = _controllerPulseVisible;
             _containerVisible = false;
             _lastBounds = null;
             SetContainerVisibility(false);
         }
+    }
+
+    internal void PulseControllerVisible(bool on)
+    {
+        ThrowIfDisposed();
+        _controllerPulseVisible = on;
+        _controller.IsVisible = on || _containerVisible;
     }
 
     // Focus is best effort: WebView2 rejects MoveFocus (E_INVALIDARG / element not found) while the parent

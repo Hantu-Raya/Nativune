@@ -417,6 +417,14 @@ public sealed partial class WebHostWindow
                     if (await WaitForBenchVisibilityAsync(visible: true))
                         BenchHooks.ShowDone();
                     break;
+                case "pulse":
+                case "pulse2":
+                case string pulseAction when pulseAction.StartsWith("pulse:", StringComparison.Ordinal):
+                    var pulseMilliseconds = scheduled.Action == "pulse" ? 1000
+                        : scheduled.Action == "pulse2" ? 2000
+                        : int.Parse(scheduled.Action["pulse:".Length..], System.Globalization.CultureInfo.InvariantCulture);
+                    StartHiddenRenderPulse(pulseMilliseconds);
+                    break;
                 case "quit":
                     BenchHooks.QuitRequested();
                     _benchScheduleTimer?.Stop();
