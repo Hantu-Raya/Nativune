@@ -25,7 +25,7 @@ YouTube and YouTube Music are trademarks of Google LLC. Discord and the Discord 
 | Language and UI | C# on .NET 10, WinUI 3 (Windows App SDK 2.5.1) |
 | Web engine | Microsoft Edge WebView2, shared Evergreen Runtime |
 | License | [MIT](LICENSE) |
-| Latest release | [v0.1.38](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.38) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
+| Latest release | [v0.1.39](https://github.com/Hantu-Raya/Nativune/releases/tag/v0.1.39) at the time of writing (unsigned installer); see [all releases](https://github.com/Hantu-Raya/Nativune/releases) |
 | Status | Early and experimental; see [Known limitations](#known-limitations) |
 
 ## Why Nativune exists
@@ -186,18 +186,20 @@ Nativune applies these resource settings by default:
 - **Sleep in background** (on by default), which lets Chromium throttle timers and rendering while the window is minimized, hidden or covered
 - Faster startup: the app code is precompiled (ReadyToRun), and the privacy extension is reused when it is already installed instead of being reinstalled on every launch. Its configuration is still checked on every launch.
 - About 5 seconds after the window is minimized or hidden to the tray, the app releases unused memory once, from its own process and from the WebView2 browser and GPU processes. Page and audio processes are left alone so playback isn't interrupted.
+- A 60 MB limit on how much of the music page stays in memory: 5 seconds after hiding to the tray, 5 seconds after Compact settles, and in the full view after 60 seconds without input. Interacting with the full view, returning from Compact or showing the window lifts the limit right away. Every 2 seconds the app checks the page; if the limit makes it keep re-loading memory (about 6 seconds of heavy CPU use, or 20 seconds of light use), the limit is removed and that mode stays unlimited for at least 10 minutes. This reduces resident memory, not what the page allocates.
 
-**Maintainer-observed memory (informal).** Numbers from Windows Task Manager with v0.1.10, counting the Nativune process group including its WebView2 child processes:
+**Memory and CPU (8 October 2026, v0.1.39).** Measured on one PC (Ryzen 7 5700X, Evergreen WebView2 152.0.4191.66, signed in, music playing muted, **Block ads** off). Memory is the private working set of the complete process tree: the app plus all WebView2 processes, which is what Task Manager's Memory column adds up. CPU is the share of total CPU. Each state ran two to six times; "without the limit" is the same build with the page memory limit turned off.
 
-| State | Approximate memory |
-| --- | --- |
-| Idle (app open, no music playing) | ~60 MB |
-| Typical use | ~250 MB |
-| Peak observed | under ~400 MB |
+| State | Memory | Without the limit | CPU |
+| --- | ---: | ---: | --- |
+| Full view, in use | 208–230 MiB | same (no limit while in use) | 0.4–0.6 % |
+| Full view, idle for 60 s or more | 139–140 MiB | 228–230 MiB | 0.5 %, no change |
+| Compact | 150–154 MiB | 251–253 MiB | 0.5 % (0.3 % without the limit) |
+| Hidden to the tray | 86–91 MiB | 193–202 MiB | 0.1–0.4 % |
 
-These are informal observations on one machine, not a controlled benchmark. Memory varies with hardware, account, page content and session length.
+Short runs of a few minutes each; long sessions were not measured. Memory varies with hardware, account, page content and session length. A long-open, heavily used page can be much larger; there the limit may drop itself to avoid CPU spikes.
 
-**Benchmark (25 September 2026).** `scripts/bench-perf.ps1` measures the complete process tree (the app and all WebView2 processes) in the full view, Compact and hidden to the tray while music plays, plus startup times. On one PC (Ryzen 7 5700X, Evergreen WebView2 152, signed out, **Block ads** on, short runs), the startup and memory changes above measured against the previous defaults:
+**Earlier startup benchmark (25 September 2026).** `scripts/bench-perf.ps1` measures the complete process tree (the app and all WebView2 processes) in the full view, Compact and hidden to the tray while music plays, plus startup times. On one PC (Ryzen 7 5700X, Evergreen WebView2 152, signed out, **Block ads** on, short runs), the startup and memory changes of that release measured against the previous defaults:
 
 | Median | Before | After |
 | --- | ---: | ---: |
@@ -316,7 +318,7 @@ pwsh -NoProfile -File scripts/setup-webview2.ps1
 pwsh -NoProfile -File scripts/setup-ubol.ps1
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune/Nativune.csproj --runtime win-x64
 pwsh -NoProfile -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64
-pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.38 -Configuration Release
+pwsh -NoProfile -File scripts/build-release.ps1 -Version 0.1.39 -Configuration Release
 ```
 
 Downloaded tools, browser and extension inputs and NuGet packages stay in repository-local `.tools/` and `.cache/` directories. The release build writes `Nativune-Setup.exe`, `Nativune-Setup.zip`, `release-manifest.json`, `delta-update.json` and `SHA256SUMS.txt` to `artifacts/release/`.
@@ -377,7 +379,7 @@ In `data\nativune.log`. It records error messages, WebView2 process failures (fo
 64-bit Windows 10 version 2004 (build 19041) or later, including Windows 11.
 
 **How much memory does Nativune use?**
-In informal maintainer observations with v0.1.10: about 60 MB when the app is open with no music playing, about 250 MB in typical use and under about 400 MB at peak, counting all WebView2 processes. See [Performance](#performance).
+Measured with v0.1.39, counting all WebView2 processes: about 210–230 MB while you use the full view, about 140 MB when the full view sits idle, about 150 MB in Compact and about 90 MB hidden to the tray. See [Performance](#performance).
 
 **Is Nativune open source?**
 Yes, under the MIT License. Bundled components keep their own licenses.
