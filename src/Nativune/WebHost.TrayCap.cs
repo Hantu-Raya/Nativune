@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Web.WebView2.Core;
@@ -10,7 +9,8 @@ namespace Nativune;
 // One renderer, one original snapshot. This limits residency, not allocation; Full is capped only while idle.
 public sealed partial class WebHostWindow
 {
-    private enum RendererCapPolicy { None, Tray, FullIdle }
+    // Numeric policy codes are also used in the privacy-safe fuse log.
+    private enum RendererCapPolicy { None = 0, Tray = 1, FullIdle = 2, Compact = 3 }
     private const nint TrayRendererCapBytes = 60 << 20;
     private const uint QuotaMinDisable = 0x2, QuotaMaxEnable = 0x4;
     private SafeProcessHandle? _rendererCapHandle;
@@ -18,6 +18,15 @@ public sealed partial class WebHostWindow
     private uint _rendererCapOriginalFlags;
     private int _rendererCapGeneration, _rendererCapPid;
     private RendererCapPolicy _rendererCapPolicy;
+    private UiDispatcherQueueTimer? _rendererCapGuardTimer, _compactCapTimer;
+    private RendererCapPolicy _rendererCapEpisode;
+    private int _rendererCapSuppressedEpisodes, _rendererCapGuardStrikes, _rendererCapGuardSlowStrikes, _rendererCapRestoreError;
+    private readonly long[] _rendererCapCooldownUntil = new long[4]; // Indexed by policy; None is unused.
+    private long _rendererCapGuardTimestamp, _rendererCapGuardCpu;
+    private long _trayCapSettleUntil, _compactCapSettleUntil;
+    private uint _rendererCapGuardFaults;
+    private bool _rendererCapRestorePending, _compactCapDeferred;
+    private int _compactCapRetries;
 #if NATIVUNE_PERF_BENCH_HOOKS
     private bool _fullIdlePollOnlyApplied;
     private static bool FullIdlePollOnly =>
@@ -42,7 +51,7 @@ public sealed partial class WebHostWindow
     private bool _trayCapDeferred;
     private UiDispatcherQueueTimer? _fullIdleTimer;
     private long _lastAppActivity = Stopwatch.GetTimestamp();
-    private uint? _lastInputTick;
+    private uint? _lastInputTick, _lastNativeCommandInputTick;
     private PointI? _lastInputCursor;
     // The applied cap is also an idle-eligible baseline: older startup/scheduled commands cannot own the next track.
     private bool _appInputSinceSource = true;
@@ -130,10 +139,175 @@ public sealed partial class WebHostWindow
     private bool FullIdleEligible => FullIdleCanWait && FullIdleCapBytes > 0
         && Stopwatch.GetElapsedTime(_lastAppActivity).TotalSeconds >= _fullIdleWaitSeconds;
 
+    private static double RendererCapCooldownSeconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (BenchHooks.Enabled && double.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_COOLDOWN_SECONDS"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+                && double.IsFinite(seconds) && seconds is >= 0 and <= 3600) return seconds;
+#endif
+            return 600;
+        }
+    }
+
+    private static double CompactCapSeconds
+    {
+        get
+        {
+#if NATIVUNE_PERF_BENCH_HOOKS
+            if (BenchHooks.Enabled && double.TryParse(Environment.GetEnvironmentVariable("NATIVUNE_BENCH_COMPACT_CAP_SECONDS"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+                && double.IsFinite(seconds) && seconds is > 0 and <= 3600) return seconds;
+#endif
+            return 5;
+        }
+    }
+
+    private bool RendererCapAllowed(RendererCapPolicy policy)
+    {
+#if NATIVUNE_PERF_BENCH_HOOKS
+        if (BenchHooks.Enabled && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_DISABLED") == "1") return false;
+#endif
+        return (_rendererCapSuppressedEpisodes & (1 << (int)policy)) == 0
+            && Stopwatch.GetTimestamp() >= _rendererCapCooldownUntil[(int)policy] && !_rendererCapRestorePending;
+    }
+
+    private bool RendererCapEligible(RendererCapPolicy policy, bool settled = true) => !_closing && !_disposed
+        && !_resumeShutdownStarted && !_browserFailed && RendererCapAllowed(policy) && (policy switch
+        {
+            RendererCapPolicy.Tray => IsInTray && (!settled || Stopwatch.GetTimestamp() >= _trayCapSettleUntil),
+            RendererCapPolicy.Compact => CompactActive && (!settled || Stopwatch.GetTimestamp() >= _compactCapSettleUntil)
+                && _fullIdleDocumentLoaded && !_fullIdleNavigationInProgress
+                && !_navigationFailed && !_configuringPrivacy && !_awaitingFirstPage,
+            RendererCapPolicy.FullIdle => PollAppInput() && FullIdleEligible,
+            _ => false
+        });
+
+    private void UpdateRendererCapEpisode()
+    {
+        // A hidden Compact window belongs to Tray, not Compact. Restore before handing over.
+        var episode = IsInTray ? RendererCapPolicy.Tray
+            : WindowIsVisible ? (_compact ? RendererCapPolicy.Compact : RendererCapPolicy.FullIdle)
+            : RendererCapPolicy.None;
+        if (episode == _rendererCapEpisode) return;
+        _rendererCapGeneration++; // Invalidate discovery even when no cap has been applied yet.
+        // Full's fuse is latched across mode changes until genuine input; hidden episodes reset on departure.
+        if (_rendererCapEpisode != RendererCapPolicy.FullIdle)
+            _rendererCapSuppressedEpisodes &= ~(1 << (int)_rendererCapEpisode);
+        _rendererCapEpisode = episode;
+        if (_rendererCapPolicy != RendererCapPolicy.None && _rendererCapPolicy != episode)
+            ReleaseRendererCap("mode-change");
+        _compactCapTimer?.Stop();
+        if (episode == RendererCapPolicy.Compact) ArmCompactCap();
+    }
+
+    private void ArmCompactCap()
+    {
+        if (_compactCapTimer is null || !RendererCapEligible(RendererCapPolicy.Compact, settled: false)) return;
+        _compactCapRetries = 0;
+        _rendererCapGeneration++;
+        _compactCapSettleUntil = Stopwatch.GetTimestamp() + (long)(_compactCapTimer.Interval.TotalSeconds * Stopwatch.Frequency);
+        _compactCapTimer.Stop();
+        _compactCapTimer.Start();
+    }
+
+    private void RetryCompactCap()
+    {
+        if (_compactCapTimer is null || _compactCapRetries >= 3 || !RendererCapEligible(RendererCapPolicy.Compact, settled: false)) return;
+        _compactCapRetries++;
+        _rendererCapGeneration++;
+        _compactCapSettleUntil = Stopwatch.GetTimestamp() + (long)(_compactCapTimer.Interval.TotalSeconds * Stopwatch.Frequency);
+        _compactCapTimer.Stop();
+        _compactCapTimer.Start();
+    }
+
+    private void RetryRendererCap(RendererCapPolicy policy)
+    {
+        if (policy == RendererCapPolicy.Tray) RetryTrayCap();
+        else if (policy == RendererCapPolicy.Compact) RetryCompactCap();
+    }
+
+    private static bool TryReadRendererCapCounters(SafeProcessHandle handle,
+        out MemoryTrailProcessCounters memory, out long cpu)
+    {
+        cpu = 0;
+        if (!TryReadMemoryTrailProcess(handle, out memory)
+            || !GetProcessTimes(handle, out _, out _, out var kernel, out var user)) return false;
+        cpu = kernel + user;
+        return true;
+    }
+
+    private void SampleRendererCapGuard()
+    {
+        var handle = _rendererCapHandle;
+        if (handle is null) { _rendererCapGuardTimer?.Stop(); return; }
+        if (_rendererCapRestorePending) { ReleaseRendererCap("restore-retry"); return; }
+        var now = Stopwatch.GetTimestamp();
+        var elapsed = (double)(now - _rendererCapGuardTimestamp) / Stopwatch.Frequency;
+        if (!TryReadRendererCapCounters(handle, out var memory, out var cpu)
+            || elapsed <= 0 || cpu < _rendererCapGuardCpu)
+        {
+            TripRendererCapGuard(3, 0, 0, 0, 0, Math.Max(0, elapsed) * 1000); // 3 = monitoring failed
+            return;
+        }
+        var cores = (cpu - _rendererCapGuardCpu) / 10_000_000d / elapsed;
+        var faults = unchecked(memory.PageFaultCount - _rendererCapGuardFaults) / elapsed;
+        _rendererCapGuardTimestamp = now;
+        _rendererCapGuardCpu = cpu;
+        _rendererCapGuardFaults = memory.PageFaultCount;
+        _rendererCapGuardStrikes = faults >= 10_000 && cores >= 0.15 ? _rendererCapGuardStrikes + 1 : 0;
+        _rendererCapGuardSlowStrikes = faults >= 10_000 && cores >= 0.05 ? _rendererCapGuardSlowStrikes + 1 : 0;
+        var ws = (double)memory.WorkingSetSize / MemoryTrailMiB;
+        var allocation = (double)memory.PrivateUsage / MemoryTrailMiB;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        BenchHooks.Event("cap-guard-sample", ("policy", (int)_rendererCapPolicy), ("cpu_cores", cores),
+            ("faults_s", faults), ("ws_mib", ws), ("private_mib", allocation),
+            ("strikes", _rendererCapGuardStrikes), ("fast_strikes", _rendererCapGuardStrikes),
+            ("slow_strikes", _rendererCapGuardSlowStrikes), ("sample_ms", elapsed * 1000));
+        if (BenchHooks.Enabled && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_NO_FUSE") == "1") return;
+#endif
+        // 1 = three fast windows; 4 = ten slow windows; 2 is unused; 3 = monitoring failure.
+        if (_rendererCapGuardStrikes >= 3 || _rendererCapGuardSlowStrikes >= 10)
+            TripRendererCapGuard(_rendererCapGuardStrikes >= 3 ? 1 : 4, cores, faults, ws, allocation, elapsed * 1000);
+    }
+
+    private void TripRendererCapGuard(int reason, double cores, double faults, double ws, double allocation, double sampleMs)
+    {
+        var policy = _rendererCapPolicy;
+        var pid = _rendererCapPid;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        var strikes = _rendererCapGuardStrikes;
+        var slowStrikes = _rendererCapGuardSlowStrikes;
+#endif
+        var cooldown = RendererCapCooldownSeconds;
+        _rendererCapSuppressedEpisodes |= 1 << (int)policy;
+        _rendererCapCooldownUntil[(int)policy] = Stopwatch.GetTimestamp() + (long)(cooldown * Stopwatch.Frequency);
+        if (policy == RendererCapPolicy.FullIdle)
+        {
+            // Only input newer than this trip can release Full's latch.
+            var input = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+            _lastInputTick = _lastNativeCommandInputTick = GetLastInputInfo(ref input) ? input.Tick : null;
+            _lastInputCursor = GetCursorPos(out var cursor) ? cursor : null;
+        }
+        ReleaseRendererCap("fuse");
+        var restored = _rendererCapHandle is null && _rendererCapRestoreError == 0 ? 1 : 0;
+        AppLog.Write("memory", FormattableString.Invariant(
+            $"renderer cap fuse: policy={(int)policy} reason={reason} pid={pid} cpu_cores={cores:F3} faults_s={faults:F0} ws_mib={ws:F1} private_mib={allocation:F1} sample_ms={sampleMs:F0} cooldown_s={cooldown:F0} restored={restored} error={_rendererCapRestoreError}"));
+#if NATIVUNE_PERF_BENCH_HOOKS
+        BenchHooks.Event("cap-guard-trip", ("policy", (int)policy), ("reason", reason), ("pid", pid),
+            ("cpu_cores", cores), ("faults_s", faults), ("ws_mib", ws), ("private_mib", allocation),
+            ("sample_ms", sampleMs), ("strikes", strikes), ("fast_strikes", strikes),
+            ("slow_strikes", slowStrikes), ("cooldown_s", cooldown),
+            ("restored", restored), ("error", _rendererCapRestoreError));
+#endif
+    }
+
     private void RegisterFullIdleButtons(Microsoft.UI.Xaml.DependencyObject root)
     {
         if (root is Microsoft.UI.Xaml.Controls.Primitives.ButtonBase button)
-            button.Click += (_, _) => RecordAppActivity("shell-command");
+            button.Click += (_, _) => RecordAppActivity("shell-command", appInput: true);
         for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root); i++)
             RegisterFullIdleButtons(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i));
     }
@@ -141,6 +315,18 @@ public sealed partial class WebHostWindow
     private void InitializeFullIdlePolicy()
     {
         _fullIdleWaitSeconds = FullIdleSeconds;
+        _rendererCapGuardTimer = _dispatcherQueue.CreateTimer();
+        _rendererCapGuardTimer.Interval = TimeSpan.FromSeconds(2);
+        _rendererCapGuardTimer.IsRepeating = true;
+        _rendererCapGuardTimer.Tick += (_, _) => SampleRendererCapGuard();
+        _compactCapTimer = _dispatcherQueue.CreateTimer();
+        _compactCapTimer.Interval = TimeSpan.FromSeconds(CompactCapSeconds);
+        _compactCapTimer.IsRepeating = false;
+        _compactCapTimer.Tick += (_, _) =>
+        {
+            if (RendererCapEligible(RendererCapPolicy.Compact)) _ = CapOrRevalidateRendererAsync(RendererCapPolicy.Compact);
+            else if (RendererCapEligible(RendererCapPolicy.Compact, settled: false)) _compactCapTimer?.Start();
+        };
 #if NATIVUNE_PERF_BENCH_HOOKS
         BenchHooks.Event("fullidle-policy", ("idleSeconds", FullIdleSeconds),
             ("watchdogMs", FullIdleWatchdogMilliseconds), ("pendingMs", FullIdlePendingMilliseconds),
@@ -152,18 +338,18 @@ public sealed partial class WebHostWindow
         {
             if (!PollAppInput()) return;
             UpdateFullIdlePolling();
-            if (FullIdleEligible && (!RendererCapActive || _fullIdleRevalidationRequested) && !_rendererCapPending
+            if (RendererCapEligible(RendererCapPolicy.FullIdle) && (!RendererCapActive || _fullIdleRevalidationRequested) && !_rendererCapPending
                 && Stopwatch.GetTimestamp() >= _rendererCapRetryAfter)
                 _ = CapOrRevalidateRendererAsync(RendererCapPolicy.FullIdle);
         };
         Activated += (_, args) =>
         {
             if (args.WindowActivationState != Microsoft.UI.Xaml.WindowActivationState.Deactivated)
-                RecordAppActivity("activation");
+                RecordAppActivity("activation", appInput: false);
         };
     }
 
-    private void RecordAppActivity(string reason, bool appInput = true, double? idleWaitSeconds = null)
+    private void RecordAppActivity(string reason, bool appInput = false, double? idleWaitSeconds = null)
     {
         var detected = Stopwatch.GetTimestamp();
         _lastAppActivity = detected;
@@ -172,15 +358,17 @@ public sealed partial class WebHostWindow
         {
             _appInputSinceSource = true;
             _automaticDocumentChange = false;
+            _rendererCapSuppressedEpisodes &= ~(1 << (int)RendererCapPolicy.FullIdle);
         }
         // Tray discovery is independent of activity; only invalidate pending Full-idle discovery.
-        if (!IsInTray) _rendererCapGeneration++;
+        if (!IsInTray && !_compact) _rendererCapGeneration++;
         if (_rendererCapPolicy == RendererCapPolicy.FullIdle) ReleaseRendererCap(reason, detected);
         UpdateFullIdlePolling();
     }
 
     private void RecordSourceChange(bool newDocument, string? source)
     {
+        _rendererCapGeneration++; // A same-renderer SPA change must also retire stale pending discovery.
         // Poll now, before attributing the change: the pending timer may not have seen the user's click yet.
         var cappedBeforePoll = _rendererCapPolicy == RendererCapPolicy.FullIdle;
         var inputAvailable = PollAppInput();
@@ -200,6 +388,8 @@ public sealed partial class WebHostWindow
         if (newDocument || !musicSource) _automaticDocumentChange = automatic;
         RecordAppActivity(automatic ? "track-change" : "source-changed", appInput: false,
             idleWaitSeconds: automatic ? FullIdleRearmSeconds : FullIdleSeconds);
+        if (IsInTray) ArmTrayCap();
+        else if (CompactActive) ArmCompactCap();
         if (automatic) _appInputSinceSource = false;
 #if NATIVUNE_PERF_BENCH_HOOKS
         _fullIdleReleaseClassification = null;
@@ -217,15 +407,26 @@ public sealed partial class WebHostWindow
         var input = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
         if (!GetLastInputInfo(ref input))
         {
-            RecordAppActivity("input-query-failed");
+            RecordAppActivity("input-query-failed", appInput: false);
             return false;
         }
         var changed = _lastInputTick is { } previous && previous != input.Tick;
         _lastInputTick = input.Tick;
+        _lastNativeCommandInputTick ??= input.Tick; // Seed only; foreground polling must not consume command input.
         if (changed && (GetForegroundWindow() == NativeHandle
             || cursorMoved && GetAncestor(WindowFromPoint(cursor), 2) == NativeHandle))
-            RecordAppActivity("app-input");
+            RecordAppActivity("app-input", appInput: true);
         return true;
+    }
+
+    private void RecordNativeCommandInput(string reason)
+    {
+        // Native command messages alone are not input: programmatic commands must not clear Full's fuse.
+        var input = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref input)) return;
+        var changed = _lastNativeCommandInputTick is { } previous && previous != input.Tick;
+        _lastNativeCommandInputTick = input.Tick;
+        if (changed) RecordAppActivity(reason, appInput: true);
     }
 
     private void UpdateFullIdlePolling()
@@ -259,9 +460,11 @@ public sealed partial class WebHostWindow
 
     private async Task CapOrRevalidateRendererAsync(RendererCapPolicy policy)
     {
+        if (!RendererCapEligible(policy)) return;
         if (_rendererCapPending)
         {
             if (policy == RendererCapPolicy.Tray) _trayCapDeferred = true;
+            if (policy == RendererCapPolicy.Compact) _compactCapDeferred = true;
             return;
         }
         if (RendererCapActive)
@@ -273,14 +476,12 @@ public sealed partial class WebHostWindow
             try
             {
                 var (current, _) = await FindMainRendererAsync();
-                if (_closing || _disposed || _resumeShutdownStarted || !RendererCapActive
-                    || _rendererCapPolicy != policy
-                    || !(policy == RendererCapPolicy.Tray ? IsInTray && !_compact : PollAppInput() && FullIdleEligible)
-                    || generation != _rendererCapGeneration) return;
+                if (!RendererCapActive || _rendererCapPolicy != policy
+                    || !RendererCapEligible(policy) || generation != _rendererCapGeneration) return;
                 // An inconclusive lookup is not evidence of replacement; retain the original pinned snapshot.
                 if (current == 0)
                 {
-                    if (policy == RendererCapPolicy.Tray) RetryTrayCap();
+                    if (policy != RendererCapPolicy.FullIdle) RetryRendererCap(policy);
                     else if (_fullIdleRevalidationRetries++ < 3)
                     {
                         _fullIdleRevalidationRequested = true;
@@ -300,16 +501,14 @@ public sealed partial class WebHostWindow
     private async Task CapRendererAsync(RendererCapPolicy policy)
     {
         var generation = ++_rendererCapGeneration;
-        bool Current() => !_closing && !_disposed && !_resumeShutdownStarted && !RendererCapActive
-            && (policy == RendererCapPolicy.Tray ? IsInTray && !_compact : PollAppInput() && FullIdleEligible)
-            && generation == _rendererCapGeneration;
+        bool Current() => !RendererCapActive && RendererCapEligible(policy) && generation == _rendererCapGeneration;
         if (!Current()) return;
         _rendererCapPending = true;
         try
         {
             var (processId, outcome) = await FindMainRendererAsync();
             if (!Current()) return;
-            if (processId == 0) { RendererCapLog(policy, outcome, 0); if (policy == RendererCapPolicy.Tray) RetryTrayCap(); return; }
+            if (processId == 0) { RendererCapLog(policy, outcome, 0); RetryRendererCap(policy); return; }
 #if NATIVUNE_PERF_BENCH_HOOKS
             if (policy == RendererCapPolicy.FullIdle && FullIdlePollOnly)
             {
@@ -330,21 +529,29 @@ public sealed partial class WebHostWindow
 #endif
             const uint processSetQuota = 0x0100, processQueryLimitedInformation = 0x1000;
             var handle = OpenProcess(processSetQuota | processQueryLimitedInformation, false, processId);
-            if (handle.IsInvalid) { handle.Dispose(); RendererCapLog(policy, "open-failed", processId); if (policy == RendererCapPolicy.Tray) RetryTrayCap(); return; }
+            if (handle.IsInvalid) { handle.Dispose(); RendererCapLog(policy, "open-failed", processId); RetryRendererCap(policy); return; }
             // The handle pins the PID; recheck that it still owns only our main frame.
             var (recheckId, _) = await FindMainRendererAsync();
             if (!Current() || recheckId != processId)
             {
                 handle.Dispose();
-                if (Current()) { RendererCapLog(policy, "renderer-changed", processId); if (policy == RendererCapPolicy.Tray) RetryTrayCap(); }
+                if (Current()) { RendererCapLog(policy, "renderer-changed", processId); RetryRendererCap(policy); }
                 return;
             }
-            var cap = policy == RendererCapPolicy.Tray ? TrayRendererCapBytes : FullIdleCapBytes;
+            var cap = policy == RendererCapPolicy.FullIdle ? FullIdleCapBytes : TrayRendererCapBytes;
+            // Never apply a cap whose pinned process cannot be monitored.
+            if (!TryReadRendererCapCounters(handle, out var seedMemory, out var seedCpu))
+            {
+                handle.Dispose();
+                RendererCapLog(policy, "monitor-seed-failed", processId);
+                return;
+            }
+            var seedTimestamp = Stopwatch.GetTimestamp();
             // Raising the process's minimum fails from a standard token (ERROR_PRIVILEGE_NOT_HELD).
             if (!GetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), out var min, out var max, out var flags)
                 || min >= cap || !SetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), min, cap, QuotaMinDisable | QuotaMaxEnable))
             {
-                RendererCapLog(policy, $"apply-failed {new Win32Exception(Marshal.GetLastWin32Error()).Message}", processId);
+                RendererCapLog(policy, "apply-failed", processId);
                 handle.Dispose();
                 return;
             }
@@ -353,8 +560,18 @@ public sealed partial class WebHostWindow
             _rendererCapPid = processId;
             _rendererCapPolicy = policy;
             if (policy == RendererCapPolicy.FullIdle) _appInputSinceSource = false;
+            _rendererCapGuardTimestamp = seedTimestamp;
+            _rendererCapGuardCpu = seedCpu;
+            _rendererCapGuardFaults = seedMemory.PageFaultCount;
+            _rendererCapGuardStrikes = _rendererCapGuardSlowStrikes = 0;
+            _rendererCapRestorePending = false;
+            _rendererCapRestoreError = 0;
+            _rendererCapGuardTimer?.Start();
             RendererCapLog(policy, "applied", processId, min, cap, QuotaMinDisable | QuotaMaxEnable,
-                reason: policy == RendererCapPolicy.FullIdle ? "idle" : "tray");
+                reason: policy == RendererCapPolicy.FullIdle ? "idle" : policy == RendererCapPolicy.Compact ? "compact" : "tray");
+#if NATIVUNE_PERF_BENCH_HOOKS
+            BenchCapApplied();
+#endif
             if (policy == RendererCapPolicy.FullIdle) RefreshSharedReader();
         }
         finally
@@ -369,25 +586,36 @@ public sealed partial class WebHostWindow
     private void FinishRendererCapLookup()
     {
         _rendererCapPending = false;
-        if (!_trayCapDeferred) return;
-        _trayCapDeferred = false;
-        // Waiting for another policy's lookup must not consume the bounded discovery retry budget.
-        if (IsInTray && !_compact && !_closing && !_disposed && !_resumeShutdownStarted)
+        if (_trayCapDeferred)
+        {
+            _trayCapDeferred = false;
+            // A deferred lookup must still honor episode suppression and cooldown.
             ArmTrayCap();
+        }
+        if (_compactCapDeferred)
+        {
+            _compactCapDeferred = false;
+            ArmCompactCap();
+        }
     }
 
     // Discovery can be inconclusive while a page or renderer is still settling; try again a few times.
     private void RetryTrayCap()
     {
-        if (_trayCapRetries >= 3 || !IsInTray || _compact || _closing || _disposed || _resumeShutdownStarted) return;
+        if (_trayCapRetries >= 3 || !RendererCapEligible(RendererCapPolicy.Tray, settled: false)) return;
         _trayCapRetries++;
+        _rendererCapGeneration++;
+        _trayCapSettleUntil = Stopwatch.GetTimestamp() + (long)(_trayCapTimer.Interval.TotalSeconds * Stopwatch.Frequency);
         _trayCapTimer.Stop();
         _trayCapTimer.Start();
     }
 
     private void ArmTrayCap()
     {
+        if (!RendererCapEligible(RendererCapPolicy.Tray, settled: false)) return;
         _trayCapRetries = 0;
+        _rendererCapGeneration++;
+        _trayCapSettleUntil = Stopwatch.GetTimestamp() + (long)(_trayCapTimer.Interval.TotalSeconds * Stopwatch.Frequency);
         _trayCapTimer.Stop();
         _trayCapTimer.Start();
     }
@@ -443,10 +671,22 @@ public sealed partial class WebHostWindow
         if (handle is null) return;
         if (detected == 0) detected = Stopwatch.GetTimestamp();
         // Restore the exact saved limits/flags, never (-1,-1) or an already-capped snapshot.
-        var restored = SetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), _rendererCapOriginalMin,
+        var injectRestoreFailure = false;
+#if NATIVUNE_PERF_BENCH_HOOKS
+        if (BenchHooks.Enabled && !_benchCapRestoreFailureInjected
+            && Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_RESTORE_FAIL_ONCE") == "1")
+        {
+            _benchCapRestoreFailureInjected = true;
+            injectRestoreFailure = true;
+        }
+#endif
+        var restored = !injectRestoreFailure && SetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), _rendererCapOriginalMin,
             _rendererCapOriginalMax, _rendererCapOriginalFlags);
         var completed = Stopwatch.GetTimestamp();
-        var error = restored ? 0 : Marshal.GetLastWin32Error();
+        var error = restored ? 0 : injectRestoreFailure ? 5 : Marshal.GetLastWin32Error();
+        var reportRestoreFailure = !_rendererCapRestorePending || _rendererCapRestoreError != error;
+        var wasRestorePending = _rendererCapRestorePending;
+        _rendererCapRestoreError = error;
 #if NATIVUNE_PERF_BENCH_HOOKS
         if (restored && GetProcessWorkingSetSizeEx(handle.DangerousGetHandle(), out var restoredMin, out var restoredMax, out var restoredFlags))
             BenchHooks.Event("renderer-cap-restored", ("pid", _rendererCapPid), ("min", (long)restoredMin),
@@ -456,6 +696,11 @@ public sealed partial class WebHostWindow
         const uint stillActive = 259;
         if (restored || (GetExitCodeProcess(handle, out var exitCode) && exitCode != stillActive))
         {
+            _rendererCapGuardTimer?.Stop();
+            _rendererCapGuardStrikes = _rendererCapGuardSlowStrikes = 0;
+            _rendererCapGuardTimestamp = _rendererCapGuardCpu = 0;
+            _rendererCapGuardFaults = 0;
+            _rendererCapRestorePending = false;
             var policy = _rendererCapPolicy;
             _rendererCapPolicy = RendererCapPolicy.None;
             _fullIdleRevalidationRequested = false;
@@ -465,20 +710,40 @@ public sealed partial class WebHostWindow
             RendererCapLog(policy, restored ? "released" : "released-exited", _rendererCapPid,
                 _rendererCapOriginalMin, _rendererCapOriginalMax, _rendererCapOriginalFlags, reason, detected, completed);
             if (policy == RendererCapPolicy.FullIdle) RefreshSharedReader();
+            if (wasRestorePending)
+            {
+                // A failed handoff must resume its new owner after restoration, not lose the one-shot arm.
+                // The arm gates still enforce episode suppression and that policy's cooldown.
+                if (_rendererCapEpisode == RendererCapPolicy.Tray) ArmTrayCap();
+                else if (_rendererCapEpisode == RendererCapPolicy.Compact) ArmCompactCap();
+                else if (_rendererCapEpisode == RendererCapPolicy.FullIdle) UpdateFullIdlePolling();
+            }
             return;
         }
-        // Retain the original snapshot and handle so the next lifecycle/input notification retries exactly.
-        RendererCapLog(_rendererCapPolicy, $"release-failed {new Win32Exception(error).Message}", _rendererCapPid,
-            reason: reason, detected: detected, completed: completed);
+        // Keep sampling/retrying with this snapshot; never treat a failed restore as uncapped.
+        if (reportRestoreFailure)
+            AppLog.Write("memory", $"renderer cap restore: policy={(int)_rendererCapPolicy} pid={_rendererCapPid} restored=0 error={error}");
+        _rendererCapRestorePending = true;
+        _rendererCapGuardTimer?.Start();
+#if NATIVUNE_PERF_BENCH_HOOKS
+        BenchHooks.Event("renderer-cap-restore-failed", ("policy", (int)_rendererCapPolicy),
+            ("pid", _rendererCapPid), ("error", error));
+#endif
     }
 
     private void RendererCapLog(RendererCapPolicy policy, string outcome, int processId,
         nint min = 0, nint max = 0, uint flags = 0, string? reason = null, long detected = 0, long completed = 0)
     {
         if (!outcome.StartsWith("applied", StringComparison.Ordinal) && !outcome.StartsWith("released", StringComparison.Ordinal))
-            AppLog.Write("memory", $"{policy} renderer cap: {outcome}");
+        {
+            // Numeric outcome codes: 1=open, 2=apply, 3=monitor seed, 4=identity, 5=discovery.
+            var code = outcome switch { "open-failed" => 1, "apply-failed" => 2,
+                "monitor-seed-failed" => 3, "renderer-changed" => 4, _ => 5 };
+            AppLog.Write("memory", $"renderer cap: policy={(int)policy} outcome={code} pid={processId} error={Marshal.GetLastWin32Error()}");
+        }
 #if NATIVUNE_PERF_BENCH_HOOKS
-        BenchHooks.Event(policy == RendererCapPolicy.FullIdle ? "fullidle-cap" : "tray-cap", ("outcome", outcome),
+        BenchHooks.Event(policy == RendererCapPolicy.FullIdle ? "fullidle-cap"
+            : policy == RendererCapPolicy.Compact ? "compact-cap" : "tray-cap", ("outcome", outcome),
             ("reason", reason), ("pid", processId), ("min", (long)min), ("max", (long)max), ("flags", flags),
             ("originalMin", (long)_rendererCapOriginalMin), ("originalMax", (long)_rendererCapOriginalMax), ("originalFlags", _rendererCapOriginalFlags),
             ("detectedQpc", detected), ("completedQpc", completed), ("qpcFrequency", Stopwatch.Frequency),

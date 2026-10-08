@@ -209,6 +209,7 @@ public sealed partial class WebHostWindow
 
     private void RefreshCompactActivity()
     {
+        UpdateRendererCapEpisode();
         var active = CompactActive;
         if (_compactActivity == active)
         {
