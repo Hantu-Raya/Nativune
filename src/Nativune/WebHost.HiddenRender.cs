@@ -33,6 +33,15 @@ public sealed partial class WebHostWindow
     private bool HiddenRenderReady
         => HiddenRenderAllowed && _fullIdleDocumentLoaded && !_fullIdleNavigationInProgress;
 
+    private bool HiddenPagePlayingAudio
+    {
+        get
+        {
+            try { return _browserHost?.Core.IsDocumentPlayingAudio == true; }
+            catch (Exception ex) when (ex is COMException or InvalidOperationException) { return false; }
+        }
+    }
+
     private void MarkHiddenRenderDirty()
     {
         if (HiddenRenderAllowed)
@@ -67,11 +76,13 @@ public sealed partial class WebHostWindow
             _hiddenRenderTimer = _dispatcherQueue.CreateTimer();
             // Hidden WebView2 pages retain discarded YouTube Music queue DOM until they render;
             // a 1 s controller-only render releases it without showing the container HWND.
+            // Route changes alone miss song changes made off the player page (Home, Library, a playlist),
+            // where the URL stays put while the queue advances, so audible playback also counts as dirty.
             _hiddenRenderTimer.Interval = TimeSpan.FromSeconds(120);
             _hiddenRenderTimer.IsRepeating = true;
             _hiddenRenderTimer.Tick += (_, _) =>
             {
-                if (_hiddenRenderDirty) StartHiddenRenderPulse();
+                if (_hiddenRenderDirty || HiddenPagePlayingAudio) StartHiddenRenderPulse();
             };
         }
         if (!_hiddenRenderTimer.IsRunning) _hiddenRenderTimer.Start();
