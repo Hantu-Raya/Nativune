@@ -10,6 +10,8 @@ Failure modes this run is built to catch (written before the driver):
   5. pulse interrupts playback                                       -> media paused or site clock not advancing
   6. CPU cost / cap fuse                                             -> hidden-phase tree CPU vs control, fuse lines in log
 The control arm (NATIVUNE_BENCH_NO_HIDDEN_RENDER=1) must show the leak, or the run proves nothing.
+'-home' arms leave the player page for Home (home.ts) before hiding, so song changes no longer change the URL
+(the owner's 0.1.40 tray report): 7. maintenance keyed only to route changes stops pulsing there -> nodes grow.
 DOM counts come from Memory.getDOMCounters after HeapProfiler.collectGarbage (retained nodes). Tags only; no page text.
 """
 from __future__ import annotations
@@ -33,8 +35,11 @@ ARMS = {  # name: (env, mode action, seconds until quit)
     "control-tray": (["NATIVUNE_BENCH_NO_HIDDEN_RENDER=1"], "hide", 1080),
     "candidate-compact": ([], "compact", 960),
     "candidate-minimized": ([], "minimize", 960),
+    "candidate-tray-home": ([], "hide", 1080),
 }
+HOME = WT / "experiments/hidden-render/home.ts"
 HIDE_AT = 30
+HOME_HIDE_AT = 60  # Home arms: playback must start on /watch and the click land before the window hides
 u = ctypes.WinDLL("user32", use_last_error=True)
 ENUM = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
 u.EnumWindows.argtypes = [ENUM, W.LPARAM]
@@ -78,13 +83,17 @@ def visible_surfaces(pid: int, tray: bool) -> int:
 
 def run_arm(name: str, exe: Path, out: Path) -> dict:
     env, mode, quit_s = ARMS[name]
+    home = name.endswith("-home")
+    hide_at = HOME_HIDE_AT if home else HIDE_AT
     started = time.time()
     cmd = [sys.executable, str(RUN), "--label", f"hidden-render-{name}", "--exe", str(exe),
-           "--schedule", f"full@0;{mode}@{HIDE_AT};quit@{quit_s}", "--max-seconds", str(quit_s + 200),
+           "--schedule", f"full@0;{mode}@{hide_at};quit@{quit_s}", "--max-seconds", str(quit_s + 200),
            "--extra-args=--remote-debugging-port=9333", "--settings-override", SETTINGS]
     for e in env:
         cmd += ["--env", e]
     launcher = subprocess.Popen(cmd, cwd=MAINTAINER, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    home_proc = subprocess.Popen([BUN, str(HOME), "9333", str(out / f"{name}.home.json")], cwd=WT,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) if home else None
     run_dir = None
     deadline = time.time() + 180
     while launcher.poll() is None and time.time() < deadline:
@@ -98,6 +107,8 @@ def run_arm(name: str, exe: Path, out: Path) -> dict:
     if run_dir is None:
         launcher.kill()
         return {"arm": name, "error": "app did not reach the hidden state"}
+    if home_proc is not None:
+        home_proc.wait(timeout=120)
     host_pid = json.loads((run_dir / "app-process.json").read_text("utf-8-sig"))["pid"]
     flashes, stop = [], threading.Event()
     def watch():
@@ -108,12 +119,13 @@ def run_arm(name: str, exe: Path, out: Path) -> dict:
             time.sleep(0.1)
     watcher = threading.Thread(target=watch, daemon=True); watcher.start()
     samples = out / f"{name}.jsonl"
-    sampler = subprocess.run([BUN, str(SAMPLER), "9333", str((quit_s - HIDE_AT - 60) / 60), str(samples), "--gc-each"],
+    sampler = subprocess.run([BUN, str(SAMPLER), "9333", str((quit_s - hide_at - 60) / 60), str(samples), "--gc-each"],
                              cwd=WT, capture_output=True, text=True)
     launch_out = launcher.communicate(timeout=quit_s + 400)[0]
     stop.set()
     artifacts = launch_out.strip().rsplit("->", 1)[-1].strip() if "->" in launch_out else None
-    meta = {"arm": name, "runDir": str(run_dir), "artifacts": artifacts, "flashes": flashes, "samplerExit": sampler.returncode}
+    meta = {"arm": name, "runDir": str(run_dir), "artifacts": artifacts, "flashes": flashes, "samplerExit": sampler.returncode,
+            "home": json.loads((out / f"{name}.home.json").read_text("utf-8")) if home and (out / f"{name}.home.json").exists() else None}
     (out / f"{name}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return score(out, name)
 
@@ -160,6 +172,7 @@ def score(out: Path, name: str) -> dict:
                               and any(a <= datetime.fromisoformat(line[:23] + line[24:30]).timestamp() * 1000 <= b + 10_000 - 1500
                                       for a, b in windows)),
         "treeCpuPctOneCore": cpu, "samplerExit": meta["samplerExit"],
+        "home": meta.get("home"), "offWatchSamples": sum(1 for r in hidden if r["churn"].get("path") != "/watch"),
     }
 
 
@@ -201,6 +214,9 @@ def main() -> int:
         checks[f"{n}: playing, clock advancing"] = r["pausedSamples"] == 0 and r["clockStalls"] == 0
         checks[f"{n}: no visible window/browser slot"] = r["surfaceFlashes"] == 0
         checks[f"{n}: no pulse-caused cap fuse trip"] = r["pulseFuseTrips"] == 0
+        if n.endswith("-home"):
+            checks[f"{n}: left /watch for Home while playing"] = bool(r.get("home") and r["home"].get("ok"))
+            checks[f"{n}: every hidden sample off /watch"] = r["samples"] > 0 and r["offWatchSamples"] == r["samples"]
     cand = by.get("candidate-tray")
     if cand and control and "error" not in cand and "error" not in control:
         checks["candidate-tray fuse trips <= control"] = cand["fuseTrips"] <= control["fuseTrips"]
