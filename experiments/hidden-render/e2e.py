@@ -273,8 +273,10 @@ def main() -> int:
             checks[f"{n}: cap re-applied within 20 s after every lifted pulse"] = \
                 r["capReapplyJudged"] >= 1 and r["capReappliedAfterPulse"] == r["capReapplyJudged"]
             checks[f"{n}: cap never applied mid-pulse"] = r["capAppliedInPulse"] == 0
+            # Real-site trips are chance events; the deterministic return check is cap-guard heavy-tray/heavy-compact.
             checks[f"{n}: cap returns within 30 s after every judged trip's cooldown"] = \
-                r["capReturnedAfterTrip"] == r["capReturnJudged"]
+                (r["capReturnedAfterTrip"] == r["capReturnJudged"]) if r["capReturnJudged"] else \
+                "not_applicable: no trip with a full cooldown in this run (see cap-guard heavy-tray/heavy-compact)"
             checks[f"{n}: cap never returns during a trip's cooldown"] = r["capReturnedDuringCooldown"] == 0
         if n.endswith("-home"):
             checks[f"{n}: left /watch for Home while playing"] = bool(r.get("home") and r["home"].get("ok"))
