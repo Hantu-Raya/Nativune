@@ -125,7 +125,8 @@ def launch(root, label, exe, mode, heavy, schedule, baseline=False, nofuse=False
     if heavy:
         env["NATIVUNE_BENCH_CAP_HEAVY"] = "1"
     if mode != "full" and heavy:
-        env["NATIVUNE_BENCH_CAP_COOLDOWN_SECONDS"] = "5"
+        # Long enough that the hidden cap's return (cooldown + 5 s settle) falls after the 5-15 s recovery window.
+        env["NATIVUNE_BENCH_CAP_COOLDOWN_SECONDS"] = "30"
     if cooldown is not None:
         env["NATIVUNE_BENCH_CAP_COOLDOWN_SECONDS"] = str(cooldown)
     if baseline:
@@ -295,8 +296,12 @@ def score_arm(arm, data, baseline):
                 metrics[isolated_mode + "_trips"] = other_trips
     else:
         departure = first(events, "show-requested" if mode == "tray" else "full-requested")
-        checks["cooldown_expired_during_same_episode"] = bool(departure) and departure["t"] > trip["t"] + trip["cooldown_s"] * 1000 + 30_000
-        checks["same_episode_never_recaps"] = bool(departure) and not any(trip["t"] < e["t"] < departure["t"] for e in applied)
+        cooldown_end = trip["t"] + trip["cooldown_s"] * 1000
+        checks["cooldown_expired_during_same_episode"] = bool(departure) and departure["t"] > cooldown_end + 10_000
+        checks["no_recap_during_cooldown"] = not any(trip["t"] < e["t"] < cooldown_end for e in applied)
+        # Hidden caps return in the same episode once the cooldown ends (an episode-long latch cost ~140 MB for hours).
+        checks["recaps_after_cooldown_same_episode"] = bool(departure) and any(
+            cooldown_end <= e["t"] < departure["t"] for e in applied)
         checks["genuine_reentry_rearms"] = bool(departure) and any(e["t"] > departure["t"] for e in applied)
         sweeps = [e for e in events if e["event"] == "cap-heavy-sweep" and e.get("completed")]
         checks["hidden_workload_continues_after_release"] = len(window(sweeps, released_at, released_at + 15_000)) >= 15
