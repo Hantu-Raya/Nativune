@@ -12,6 +12,13 @@ Failure modes this run is built to catch (written before the driver):
 The control arm (NATIVUNE_BENCH_NO_HIDDEN_RENDER=1) must show the leak, or the run proves nothing.
 '-home' arms leave the player page for Home (home.ts) before hiding, so song changes no longer change the URL
 (the owner's 0.1.40 tray report): 7. maintenance keyed only to route changes stops pulsing there -> nodes grow.
+Tray/Compact renderer cap around pulses (the owner's 0.1.41 tray: a pulse under the 60 MiB cap tripped the fuse and left the
+renderer uncapped for the rest of the tray session):
+  8. pulse renders under the cap                -> cap-guard strike windows inside pulse windows (0.1.41: 1-2 per pulse)
+  9. pulse lifts the cap but never restores it  -> no cap 'applied' event within 20 s after a pulse ends
+ 10. cap re-applied mid-pulse                   -> a cap 'applied' event inside a pulse window
+ 11. a hidden cap's fuse trip latches it off   -> no cap 'applied' within 30 s after the trip's cooldown ends
+ 12. the cap returns before its cooldown ends  -> a cap 'applied' event between a trip and its cooldown end
 DOM counts come from Memory.getDOMCounters after HeapProfiler.collectGarbage (retained nodes). Tags only; no page text.
 """
 from __future__ import annotations
@@ -50,6 +57,7 @@ u.EnumChildWindows.argtypes = [W.HWND, ENUM, W.LPARAM]
 u.GetClassNameW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
 u.GetParent.argtypes = [W.HWND]
 u.GetParent.restype = W.HWND
+u.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
 
 
 def class_name(hwnd) -> str:
@@ -58,30 +66,32 @@ def class_name(hwnd) -> str:
     return buffer.value
 
 
-def visible_surfaces(pid: int, tray: bool) -> int:
+def visible_surfaces(pid: int, tray: bool) -> list[str]:
     """Visible app surfaces that must stay hidden: any top-level window in the tray arm, and in every arm the
-    browser slot (the 'Static' container child that hosts Chrome_WidgetWin_*), e.g. over Compact."""
-    count = 0
+    browser slot (the 'Static' container child that hosts Chrome_WidgetWin_*), e.g. over Compact.
+    Returns 'kind:class:WxH' descriptors (no titles: they can hold page text)."""
+    found = []
+    def size(hwnd) -> str:
+        r = W.RECT()
+        return f"{r.right - r.left}x{r.bottom - r.top}" if u.GetWindowRect(hwnd, ctypes.byref(r)) else "?"
     def child(hwnd, _):
-        nonlocal count
         if class_name(hwnd).startswith("Chrome_WidgetWin") and class_name(u.GetParent(hwnd)) == "Static" \
                 and u.IsWindowVisible(u.GetParent(hwnd)):
-            count += 1
+            found.append(f"slot:{class_name(hwnd)}:{size(hwnd)}")
         return True
     def top(hwnd, _):
-        nonlocal count
         owner = W.DWORD()
         u.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
         if owner.value == pid and u.IsWindowVisible(hwnd):
             if tray and not u.IsIconic(hwnd):
-                count += 1
+                found.append(f"top:{class_name(hwnd)}:{size(hwnd)}")
             u.EnumChildWindows(hwnd, ENUM(child), 0)
         return True
     u.EnumWindows(ENUM(top), 0)
-    return count
+    return found
 
 
-def run_arm(name: str, exe: Path, out: Path) -> dict:
+def run_arm(name: str, exe: Path, out: Path, allow_others: bool = False) -> dict:
     env, mode, quit_s = ARMS[name]
     home = name.endswith("-home")
     hide_at = HOME_HIDE_AT if home else HIDE_AT
@@ -91,6 +101,8 @@ def run_arm(name: str, exe: Path, out: Path) -> dict:
            "--extra-args=--remote-debugging-port=9333", "--settings-override", SETTINGS]
     for e in env:
         cmd += ["--env", e]
+    if allow_others:
+        cmd.append("--allow-other-instances")
     launcher = subprocess.Popen(cmd, cwd=MAINTAINER, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     home_proc = subprocess.Popen([BUN, str(HOME), "9333", str(out / f"{name}.home.json")], cwd=WT,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) if home else None
@@ -110,12 +122,15 @@ def run_arm(name: str, exe: Path, out: Path) -> dict:
     if home_proc is not None:
         home_proc.wait(timeout=120)
     host_pid = json.loads((run_dir / "app-process.json").read_text("utf-8-sig"))["pid"]
-    flashes, stop = [], threading.Event()
+    flashes, surfaces, stop = [], {}, threading.Event()
     def watch():
         time.sleep(2)  # the hidden state was already reached
         while not stop.is_set():
-            if psutil.pid_exists(host_pid) and visible_surfaces(host_pid, tray=mode == "hide"):
+            seen = visible_surfaces(host_pid, tray=mode == "hide") if psutil.pid_exists(host_pid) else []
+            if seen:
                 flashes.append(time.time())
+                for s in seen:
+                    surfaces[s] = surfaces.get(s, 0) + 1
             time.sleep(0.1)
     watcher = threading.Thread(target=watch, daemon=True); watcher.start()
     samples = out / f"{name}.jsonl"
@@ -124,7 +139,8 @@ def run_arm(name: str, exe: Path, out: Path) -> dict:
     launch_out = launcher.communicate(timeout=quit_s + 400)[0]
     stop.set()
     artifacts = launch_out.strip().rsplit("->", 1)[-1].strip() if "->" in launch_out else None
-    meta = {"arm": name, "runDir": str(run_dir), "artifacts": artifacts, "flashes": flashes, "samplerExit": sampler.returncode,
+    meta = {"arm": name, "runDir": str(run_dir), "artifacts": artifacts, "flashes": flashes, "flashSurfaces": surfaces,
+            "samplerExit": sampler.returncode,
             "home": json.loads((out / f"{name}.home.json").read_text("utf-8")) if home and (out / f"{name}.home.json").exists() else None}
     (out / f"{name}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return score(out, name)
@@ -166,6 +182,7 @@ def score(out: Path, name: str) -> dict:
         "pausedSamples": sum(1 for r in hidden if r["churn"].get("paused") is not False),
         "clockStalls": sum(1 for a, b in zip(clock, clock[1:]) if a == b),
         "surfaceFlashes": len(flashes), "fuseTrips": log.count("renderer cap fuse"),
+        **cap_around_pulses(events, starts, ends, windows),
         # The cap fuse also trips without pulses (the control arm trips on its first hidden queue re-render);
         # a pulse-caused trip is one logged from pulse start until 10 s after the pulse ends.
         "pulseFuseTrips": sum(1 for line in log.splitlines() if "renderer cap fuse" in line
@@ -176,11 +193,47 @@ def score(out: Path, name: str) -> dict:
     }
 
 
+def cap_around_pulses(events: list, starts: list, ends: list, windows: list) -> dict:
+    """Failure modes 8-10. A pulse 'was capped' if a Tray/Compact cap release with reason render-pulse precedes it by <= 1 s."""
+    caps = [e for e in events if e["event"] in ("tray-cap", "compact-cap")]
+    applied = [e["t"] for e in caps if e.get("outcome") == "applied"]
+    lifted = [s for s in starts if any(e.get("outcome") == "released" and e.get("reason") == "render-pulse"
+                                       and s - 1000 <= e["t"] <= s for e in caps)]
+    ended = [next((e for e in ends if e >= s), None) for s in lifted]
+    last = max((e["t"] for e in events), default=0)
+    # A pulse ending within 20 s of the run's last event cannot show its re-apply; do not count it either way.
+    judged = [e for e in ended if e is not None and e + 20_000 <= last]
+    return {
+        "cappedPulses": len(lifted),
+        "capReappliedAfterPulse": sum(1 for e in judged if any(e <= t <= e + 20_000 for t in applied)),
+        "capReapplyJudged": len(judged),
+        "capAppliedInPulse": sum(1 for t in applied if any(a + 500 <= t <= b - 1500 for a, b in windows)),
+        "pulseGuardStrikes": sum(1 for e in events if e["event"] == "cap-guard-sample" and (e.get("fast_strikes") or 0) > 0
+                                 and any(a <= e["t"] <= b for a, b in windows)),
+        **cap_after_trips(events, applied, last),
+    }
+
+
+def cap_after_trips(events: list, applied: list, last: float) -> dict:
+    """Failure modes 11-12: a hidden cap's fuse trip must not latch it off for the session, nor return early."""
+    trips = [e for e in events if e["event"] == "cap-guard-trip" and e.get("policy") in (1, 3)]
+    ends = [(t["t"], t["t"] + 1000 * (t.get("cooldown_s") or 0)) for t in trips]
+    judged = [(s, c) for s, c in ends if c + 30_000 <= last]  # cooldown + 1 s timer + 5 s settle, with slack
+    return {
+        "hiddenTrips": len(trips),
+        "capReturnedAfterTrip": sum(1 for s, c in judged if any(c <= t <= c + 30_000 for t in applied)),
+        "capReturnJudged": len(judged),
+        "capReturnedDuringCooldown": sum(1 for s, c in ends for t in applied if s < t < c),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", type=Path)
     ap.add_argument("--arms", default=",".join(ARMS))
     ap.add_argument("--rescore", type=Path, help="recompute report.json from a retained output folder")
+    ap.add_argument("--allow-other-instances", action="store_true",
+                    help="run beside another Nativune.exe (scores DOM/cap events, not host memory)")
     a = ap.parse_args()
     names = a.arms.split(",")
     results = []
@@ -195,7 +248,7 @@ def main() -> int:
         out = OUT / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out.mkdir(parents=True)
         for name in names:
-            result = run_arm(name, exe, out)
+            result = run_arm(name, exe, out, a.allow_other_instances)
             print(json.dumps(result), flush=True)
             results.append(result)
     by = {r["arm"]: r for r in results}
@@ -214,6 +267,15 @@ def main() -> int:
         checks[f"{n}: playing, clock advancing"] = r["pausedSamples"] == 0 and r["clockStalls"] == 0
         checks[f"{n}: no visible window/browser slot"] = r["surfaceFlashes"] == 0
         checks[f"{n}: no pulse-caused cap fuse trip"] = r["pulseFuseTrips"] == 0
+        if r["mode"] in ("hide", "compact"):
+            checks[f"{n}: cap lifted for >=1 pulse (else 8-10 are untested)"] = r["cappedPulses"] >= 1
+            checks[f"{n}: no cap-guard strike inside a pulse"] = r["pulseGuardStrikes"] == 0
+            checks[f"{n}: cap re-applied within 20 s after every lifted pulse"] = \
+                r["capReapplyJudged"] >= 1 and r["capReappliedAfterPulse"] == r["capReapplyJudged"]
+            checks[f"{n}: cap never applied mid-pulse"] = r["capAppliedInPulse"] == 0
+            checks[f"{n}: cap returns within 30 s after every judged trip's cooldown"] = \
+                r["capReturnedAfterTrip"] == r["capReturnJudged"]
+            checks[f"{n}: cap never returns during a trip's cooldown"] = r["capReturnedDuringCooldown"] == 0
         if n.endswith("-home"):
             checks[f"{n}: left /watch for Home while playing"] = bool(r.get("home") and r["home"].get("ok"))
             checks[f"{n}: every hidden sample off /watch"] = r["samples"] > 0 and r["offWatchSamples"] == r["samples"]
@@ -223,7 +285,8 @@ def main() -> int:
     if cand and control and cand.get("treeCpuPctOneCore") is not None and control.get("treeCpuPctOneCore") is not None:
         checks["candidate-tray CPU within +0.5 pp of one core vs control"] = \
             cand["treeCpuPctOneCore"] - control["treeCpuPctOneCore"] <= 0.5
-    command = "python experiments/hidden-render/e2e.py " + (f"--rescore {out}" if a.rescore else f"--exe {a.exe}") + " --arms " + a.arms
+    command = "python experiments/hidden-render/e2e.py " + (f"--rescore {out}" if a.rescore else f"--exe {a.exe}") + " --arms " + a.arms \
+        + (" --allow-other-instances" if a.allow_other_instances and not a.rescore else "")
     report = {"command": command, "results": results, "checks": checks, "passed": bool(checks) and all(checks.values())}
     (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({"checks": checks, "passed": report["passed"], "report": str(out / "report.json")}, indent=2))

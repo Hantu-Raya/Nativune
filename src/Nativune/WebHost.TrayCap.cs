@@ -18,7 +18,7 @@ public sealed partial class WebHostWindow
     private uint _rendererCapOriginalFlags;
     private int _rendererCapGeneration, _rendererCapPid;
     private RendererCapPolicy _rendererCapPolicy;
-    private UiDispatcherQueueTimer? _rendererCapGuardTimer, _compactCapTimer;
+    private UiDispatcherQueueTimer? _rendererCapGuardTimer, _compactCapTimer, _rendererCapReturnTimer;
     private RendererCapPolicy _rendererCapEpisode;
     private int _rendererCapSuppressedEpisodes, _rendererCapGuardStrikes, _rendererCapGuardSlowStrikes, _rendererCapRestoreError;
     private readonly long[] _rendererCapCooldownUntil = new long[4]; // Indexed by policy; None is unused.
@@ -177,8 +177,11 @@ public sealed partial class WebHostWindow
     private bool RendererCapEligible(RendererCapPolicy policy, bool settled = true) => !_closing && !_disposed
         && !_resumeShutdownStarted && !_browserFailed && RendererCapAllowed(policy) && (policy switch
         {
-            RendererCapPolicy.Tray => IsInTray && (!settled || Stopwatch.GetTimestamp() >= _trayCapSettleUntil),
-            RendererCapPolicy.Compact => CompactActive && (!settled || Stopwatch.GetTimestamp() >= _compactCapSettleUntil)
+            // A hidden render pulse lays out the whole page; under the cap it thrashes and trips the fuse.
+            RendererCapPolicy.Tray => IsInTray && _hiddenRenderPulseHost is null
+                && (!settled || Stopwatch.GetTimestamp() >= _trayCapSettleUntil),
+            RendererCapPolicy.Compact => CompactActive && _hiddenRenderPulseHost is null
+                && (!settled || Stopwatch.GetTimestamp() >= _compactCapSettleUntil)
                 && _fullIdleDocumentLoaded && !_fullIdleNavigationInProgress
                 && !_navigationFailed && !_configuringPrivacy && !_awaitingFirstPage,
             RendererCapPolicy.FullIdle => PollAppInput() && FullIdleEligible,
@@ -282,8 +285,12 @@ public sealed partial class WebHostWindow
         var slowStrikes = _rendererCapGuardSlowStrikes;
 #endif
         var cooldown = RendererCapCooldownSeconds;
-        _rendererCapSuppressedEpisodes |= 1 << (int)policy;
         _rendererCapCooldownUntil[(int)policy] = Stopwatch.GetTimestamp() + (long)(cooldown * Stopwatch.Frequency);
+        // Full stays latched until genuine input. Hidden caps return once the cooldown ends: YouTube Music's
+        // periodic bursts trip them about once per session, and an episode-long latch left the renderer
+        // uncapped (about 200 MB instead of 60) for the rest of a multi-hour tray session.
+        if (policy == RendererCapPolicy.FullIdle) _rendererCapSuppressedEpisodes |= 1 << (int)policy;
+        else if (policy is RendererCapPolicy.Tray or RendererCapPolicy.Compact) ScheduleRendererCapReturn();
         if (policy == RendererCapPolicy.FullIdle)
         {
             // Only input newer than this trip can release Full's latch.
@@ -302,6 +309,34 @@ public sealed partial class WebHostWindow
             ("slow_strikes", slowStrikes), ("cooldown_s", cooldown),
             ("restored", restored), ("error", _rendererCapRestoreError));
 #endif
+    }
+
+    // Fires at the earliest pending Tray/Compact cooldown end, then reschedules for any later one,
+    // so a second policy's trip never postpones the first policy's return.
+    private void ScheduleRendererCapReturn()
+    {
+        var now = Stopwatch.GetTimestamp();
+        long due = 0;
+        foreach (var until in (ReadOnlySpan<long>)[_rendererCapCooldownUntil[(int)RendererCapPolicy.Tray],
+                     _rendererCapCooldownUntil[(int)RendererCapPolicy.Compact]])
+            if (until > now && (due == 0 || until < due)) due = until;
+        _rendererCapReturnTimer?.Stop();
+        if (due == 0) return;
+        if (_rendererCapReturnTimer is null)
+        {
+            _rendererCapReturnTimer = _dispatcherQueue.CreateTimer();
+            _rendererCapReturnTimer.IsRepeating = false;
+            // The arm gates recheck the episode, cooldown and restore state; a stale tick is a no-op.
+            _rendererCapReturnTimer.Tick += (_, _) =>
+            {
+                if (IsInTray) ArmTrayCap();
+                else if (CompactActive) ArmCompactCap();
+                ScheduleRendererCapReturn();
+            };
+        }
+        // One second past the Stopwatch gate, so the arm sees the cooldown as over.
+        _rendererCapReturnTimer.Interval = TimeSpan.FromSeconds((double)(due - now) / Stopwatch.Frequency + 1);
+        _rendererCapReturnTimer.Start();
     }
 
     private void RegisterFullIdleButtons(Microsoft.UI.Xaml.DependencyObject root)

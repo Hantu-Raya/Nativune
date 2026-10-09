@@ -103,6 +103,17 @@ public sealed partial class WebHostWindow
         };
         _hiddenRenderPulseHost = host;
         _hiddenRenderPulseRevision = _hiddenRenderRevision;
+        // Render uncapped; EndHiddenRenderPulse re-arms through the normal settle, suppression and cooldown gates.
+        if (_rendererCapPolicy is RendererCapPolicy.Tray or RendererCapPolicy.Compact)
+        {
+            ReleaseRendererCap("render-pulse");
+            if (RendererCapActive)
+            {
+                // A failed restore keeps the cap; rendering under it is what this avoids. Retry next cadence.
+                EndHiddenRenderPulse(completed: false);
+                return false;
+            }
+        }
         try
         {
             host.SetVisible(false); // Keep the HWND hidden; retain the last nonzero controller bounds.
@@ -136,6 +147,8 @@ public sealed partial class WebHostWindow
         catch (Exception ex) when (ex is COMException or InvalidOperationException) { }
         try { UpdateBrowserVisibility(); } // Restore today's logical state, not the pulse's starting state.
         catch (Exception ex) when (ex is COMException or InvalidOperationException) { }
+        if (IsInTray) ArmTrayCap();
+        else if (CompactActive) ArmCompactCap();
 #if NATIVUNE_PERF_BENCH_HOOKS
         if (_hiddenRenderPulseMilliseconds > 0)
             BenchHooks.Event("pulse-end", ("duration_ms", _hiddenRenderPulseMilliseconds), ("completed", completed));
