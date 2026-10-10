@@ -87,8 +87,6 @@ internal interface ISetupReporter
 {
     void Step(string text, bool cancellable);
     void Progress(long done, long total);
-    bool Confirm(SetupConfirmation confirmation);
-    void Result(SetupOutcome outcome);
 }
 
 internal sealed class ConsoleSetupReporter : ISetupReporter
@@ -99,8 +97,6 @@ internal sealed class ConsoleSetupReporter : ISetupReporter
 
     public void Step(string text, bool cancellable) => Console.WriteLine(text);
     public void Progress(long done, long total) { }
-    public bool Confirm(SetupConfirmation confirmation) => true;
-    public void Result(SetupOutcome outcome) { }
 }
 
 internal sealed class SetupWindow : ISetupReporter, IDisposable
@@ -143,7 +139,6 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
     private nint _dialog;
     private volatile DialogPage _page;
     private SetupOutcome? _outcome;
-    private volatile bool _confirmed;
     private volatile bool _canCancel;
     private volatile bool _allowClose;
     private bool _navigationCompleted;
@@ -186,10 +181,6 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         window.Show(window._pages[0]);
         return window._reopenRequested;
     }
-
-    public bool Confirm(SetupConfirmation confirmation)
-        => _confirmed && ReferenceEquals(confirmation, _confirmation);
-
 
     public void Step(string text, bool cancellable)
     {
@@ -234,7 +225,7 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         });
     }
 
-    public void Result(SetupOutcome outcome)
+    private void Result(SetupOutcome outcome)
     {
         _outcome = outcome;
         EnqueueUi(() => CompleteResult(outcome));
@@ -482,12 +473,6 @@ internal sealed class SetupWindow : ISetupReporter, IDisposable
         {
             if (button == ButtonInstall)
             {
-                var confirmation = _confirmation!;
-                _confirmed = true;
-                if (!Confirm(confirmation))
-                {
-                    return SFalse;
-                }
                 _canCancel = true;
                 try
                 {

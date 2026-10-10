@@ -462,12 +462,3 @@ internal static class InstallRoot
         }
     }
 }
-
-internal static class PathSafety
-{
-    internal static void EnsureRegularFile(string path) => InstallRoot.EnsureRegularFile(path);
-    internal static void EnsureDirectory(string path) => InstallRoot.EnsureDirectory(path);
-    internal static void EnsureNoReparseTree(string path) => InstallRoot.EnsureNoReparseTree(path);
-    internal static string ResolvePayloadPath(string root, string path) => InstallRoot.ResolvePayloadPath(root, path);
-    internal static void EnsureDirectoryChain(string root, string directory) => InstallRoot.EnsureDirectoryChain(root, directory);
-}

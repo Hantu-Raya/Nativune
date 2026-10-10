@@ -430,12 +430,13 @@ internal static partial class ReleaseUpdater
             throw new DeltaUpdateException($"Unexpected encoding or length for {asset.Name}.");
         using var stream = response.Content.ReadAsStream(token);
         var bytes = new byte[asset.Size];
-        var total = 0;
-        while (total < bytes.Length)
+        try
         {
-            var read = stream.Read(bytes, total, bytes.Length - total);
-            if (read == 0) throw new DeltaUpdateException($"{asset.Name} was truncated.");
-            total += read;
+            stream.ReadExactly(bytes);
+        }
+        catch (EndOfStreamException)
+        {
+            throw new DeltaUpdateException($"{asset.Name} was truncated.");
         }
         if (stream.Read(new byte[1], 0, 1) != 0 || !HashMatches(bytes, asset.Digest))
             throw new DeltaUpdateException($"{asset.Name} did not match its published digest.");
@@ -851,13 +852,13 @@ internal sealed class HttpRangeReadStream : Stream
             throw new DeltaUpdateException("The release archive range response did not match the request.");
         using var body = response.Content.ReadAsStream(_token);
         var bytes = new byte[count];
-        var total = 0;
-        while (total < bytes.Length)
+        try
         {
-            var read = body.Read(bytes, total, bytes.Length - total);
-            if (read == 0)
-                throw new DeltaUpdateException("The release archive range response was truncated.");
-            total += read;
+            body.ReadExactly(bytes);
+        }
+        catch (EndOfStreamException)
+        {
+            throw new DeltaUpdateException("The release archive range response was truncated.");
         }
         if (body.Read(new byte[1], 0, 1) != 0)
             throw new DeltaUpdateException("The release archive range response was too long.");

@@ -224,7 +224,7 @@ internal sealed class Manifest
     {
         try
         {
-            PathSafety.EnsureRegularFile(path);
+            InstallRoot.EnsureRegularFile(path);
             var info = new FileInfo(path);
             if (info.Length > MaxManifestBytes)
             {
@@ -245,8 +245,8 @@ internal sealed class Manifest
     internal static void ValidateExtractedTools(string stage)
     {
         var ubolRoot = Path.Combine(stage, ".tools", "ubol", "2026.907.2003");
-        PathSafety.EnsureRegularFile(Path.Combine(ubolRoot, "LICENSE.txt"));
-        PathSafety.EnsureRegularFile(Path.Combine(ubolRoot, "manifest.json"));
+        InstallRoot.EnsureRegularFile(Path.Combine(ubolRoot, "LICENSE.txt"));
+        InstallRoot.EnsureRegularFile(Path.Combine(ubolRoot, "manifest.json"));
     }
 
     private static Dictionary<string, JsonElement> ReadProperties(JsonElement element, string label)
@@ -342,7 +342,7 @@ internal static class PayloadReader
     {
         try
         {
-            PathSafety.EnsureRegularFile(setupPath);
+            InstallRoot.EnsureRegularFile(setupPath);
             using var file = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
             var (offset, length) = ReadFooter(file);
 
@@ -398,7 +398,7 @@ internal static class PayloadReader
     {
         try
         {
-            PathSafety.EnsureRegularFile(setupPath);
+            InstallRoot.EnsureRegularFile(setupPath);
             using var file = new FileStream(setupPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
             var (offset, length) = ReadFooter(file);
 
@@ -460,8 +460,8 @@ internal static class PayloadReader
                 {
                     throw new SetupException(ExitCode.InvalidPayload, "The release archive is missing a file listed in its manifest.");
                 }
-                var destination = PathSafety.ResolvePayloadPath(stage, payloadFile.Path);
-                PathSafety.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
+                var destination = InstallRoot.ResolvePayloadPath(stage, payloadFile.Path);
+                InstallRoot.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
                 ExtractAndHash(entry, destination, payloadFile);
                 completedFiles++;
                 reporter?.Step($"Unpacking Nativune v{manifest.Version} ({completedFiles:N0} of {manifest.Files.Count:N0} files)", cancellable: true);
@@ -587,11 +587,11 @@ internal static class PayloadReader
             foreach (var payloadFile in manifest.Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var destination = PathSafety.ResolvePayloadPath(stage, payloadFile.Path);
-                PathSafety.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
+                var destination = InstallRoot.ResolvePayloadPath(stage, payloadFile.Path);
+                InstallRoot.EnsureDirectoryChain(stage, Path.GetDirectoryName(destination)!);
                 if (present.Contains(payloadFile.Path))
                 {
-                    var source = PathSafety.ResolvePayloadPath(fullDelta, payloadFile.Path);
+                    var source = InstallRoot.ResolvePayloadPath(fullDelta, payloadFile.Path);
                     RequireRegularDeltaFile(source, payloadFile.Path);
                     File.Move(source, destination);
                     // Verified after the move so the staged bytes are the ones checked.
@@ -602,12 +602,12 @@ internal static class PayloadReader
                 }
                 else
                 {
-                    var installed = PathSafety.ResolvePayloadPath(root, payloadFile.Path);
+                    var installed = InstallRoot.ResolvePayloadPath(root, payloadFile.Path);
                     RequireRegularDeltaFile(installed, payloadFile.Path);
                     using (var input = new FileStream(installed, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan))
                     using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.SequentialScan))
                     {
-                        if (!CopyAndHash(input, output, payloadFile))
+                        if (!CopyAndHash(input, output, payloadFile, out _))
                         {
                             throw new SetupException(ExitCode.InvalidPayload, DeltaFailure($"The installed file {payloadFile.Path} does not match the new release."));
                         }
@@ -660,13 +660,15 @@ internal static class PayloadReader
     private static bool FileMatches(string path, PayloadFile expected)
     {
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, FileOptions.SequentialScan);
-        return CopyAndHash(input, Stream.Null, expected);
+        return CopyAndHash(input, Stream.Null, expected, out _);
     }
 
-    private static bool CopyAndHash(Stream source, Stream output, PayloadFile expected)
+    private static bool CopyAndHash(Stream source, Stream output, PayloadFile expected, out bool tooLong)
     {
-        if (source.Length != expected.Length)
+        tooLong = false;
+        if (source.CanSeek && source.Length != expected.Length)
         {
+            tooLong = source.Length > expected.Length;
             return false;
         }
         using var hash = SHA256.Create();
@@ -682,6 +684,7 @@ internal static class PayloadReader
             total = checked(total + read);
             if (total > expected.Length)
             {
+                tooLong = true;
                 return false;
             }
             output.Write(buffer, 0, read);
@@ -725,28 +728,11 @@ internal static class PayloadReader
     {
         using var source = entry.Open();
         using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.SequentialScan);
-        using var hash = SHA256.Create();
-        var buffer = new byte[128 * 1024];
-        long total = 0;
-        while (true)
+        if (!CopyAndHash(source, output, expected, out var tooLong))
         {
-            var read = source.Read(buffer, 0, buffer.Length);
-            if (read == 0)
-            {
-                break;
-            }
-            total = checked(total + read);
-            if (total > expected.Length)
-            {
-                throw new SetupException(ExitCode.InvalidPayload, $"The archive entry {expected.Path} is longer than its manifest.");
-            }
-            output.Write(buffer, 0, read);
-            hash.TransformBlock(buffer, 0, read, buffer, 0);
-        }
-        hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-        if (total != expected.Length || !Convert.ToHexString(hash.Hash!).Equals(expected.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new SetupException(ExitCode.InvalidPayload, $"The SHA-256 or length for {expected.Path} does not match its manifest.");
+            throw new SetupException(ExitCode.InvalidPayload, tooLong
+                ? $"The archive entry {expected.Path} is longer than its manifest."
+                : $"The SHA-256 or length for {expected.Path} does not match its manifest.");
         }
     }
 
@@ -840,18 +826,7 @@ internal static class PayloadReader
             set => Seek(value, SeekOrigin.Begin);
         }
 
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            var allowed = (int)Math.Min(count, _length - _position);
-            if (allowed <= 0)
-            {
-                return 0;
-            }
-            _inner.Position = _start + _position;
-            var read = _inner.Read(buffer, offset, allowed);
-            _position += read;
-            return read;
-        }
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
 
         public override int Read(Span<byte> buffer)
         {

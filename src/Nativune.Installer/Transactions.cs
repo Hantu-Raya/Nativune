@@ -7,21 +7,14 @@ namespace Nativune.Installer;
 
 internal sealed record ShortcutState(string Path, bool Exists, byte[]? Bytes);
 
-internal sealed class ShellState
+internal sealed class ShellState(
+    IReadOnlyList<ShortcutState> shortcuts,
+    bool registryExists,
+    IReadOnlyDictionary<string, (object Value, RegistryValueKind Kind)> registryValues)
 {
-    internal ShellState(
-        IReadOnlyList<ShortcutState> shortcuts,
-        bool registryExists,
-        IReadOnlyDictionary<string, (object Value, RegistryValueKind Kind)> registryValues)
-    {
-        Shortcuts = shortcuts;
-        RegistryExists = registryExists;
-        RegistryValues = registryValues;
-    }
-
-    internal IReadOnlyList<ShortcutState> Shortcuts { get; }
-    internal bool RegistryExists { get; }
-    internal IReadOnlyDictionary<string, (object Value, RegistryValueKind Kind)> RegistryValues { get; }
+    internal IReadOnlyList<ShortcutState> Shortcuts { get; } = shortcuts;
+    internal bool RegistryExists { get; } = registryExists;
+    internal IReadOnlyDictionary<string, (object Value, RegistryValueKind Kind)> RegistryValues { get; } = registryValues;
 }
 
 internal static class InstallTransaction
@@ -204,7 +197,7 @@ internal static class InstallTransaction
         var source = string.Equals(relativePath, Program.ManifestFileName, StringComparison.Ordinal)
             ? Path.Combine(stage, Program.ManifestFileName)
             : InstallRoot.ResolvePayloadPath(stage, relativePath);
-        PathSafety.EnsureRegularFile(source);
+        InstallRoot.EnsureRegularFile(source);
         var destination = string.Equals(relativePath, Program.ManifestFileName, StringComparison.Ordinal)
             ? Path.Combine(root, Program.ManifestFileName)
             : InstallRoot.ResolvePayloadPath(root, relativePath);
