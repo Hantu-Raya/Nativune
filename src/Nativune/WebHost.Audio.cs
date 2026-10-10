@@ -310,40 +310,32 @@ public sealed partial class WebHostWindow
         OutputVolumeValue.Text = $"{args.NewValue / 10:0.0}%";
     }
 
-    private void SetOutputVolume(double value)
-    {
-        if (!_dispatcherQueue.HasThreadAccess)
-        {
-            _dispatcherQueue.TryEnqueue(() => SetOutputVolume(value));
-            return;
-        }
-        if (_closing || _disposed || _outputAudioClosed || !_outputAudioPathVerified
-            || _outputAudioExecutablePath is null
-            || !double.IsFinite(value) || value < 0 || value > 1)
-            return;
-        _pendingOutputDisplayVolume = value;
-        _pendingOutputDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
-        QueueOutputAudioRequest(CaptureOutputAudioProcesses(), volume: value);
-        RememberOutputPreference(_settings with { OutputVolume = value });
-        UpdateOutputAudioControls();
-    }
+    private void SetOutputVolume(double value) => WriteOutputVolume(value, commit: true);
 
     // Live drag preview re-verifies WebView ownership before each write; release commits via SetOutputVolume.
-    private void PreviewOutputVolume(double value)
+    private void PreviewOutputVolume(double value) => WriteOutputVolume(value, commit: false);
+
+    private void WriteOutputVolume(double value, bool commit)
     {
         if (!_dispatcherQueue.HasThreadAccess)
         {
-            _dispatcherQueue.TryEnqueue(() => PreviewOutputVolume(value));
+            _dispatcherQueue.TryEnqueue(() => WriteOutputVolume(value, commit));
             return;
         }
         if (_closing || _disposed || _outputAudioClosed || !_outputAudioPathVerified
             || _outputAudioExecutablePath is null
             || !double.IsFinite(value) || value < 0 || value > 1)
             return;
-        var processIds = CaptureOutputAudioProcesses();
+        // Capture refreshes controls: previews capture before publishing display state; commits after.
+        var processIds = commit ? null : CaptureOutputAudioProcesses();
         _pendingOutputDisplayVolume = value;
         _pendingOutputDisplayUntil = DateTime.UtcNow.Add(OutputAudioCommandLifetime);
-        QueueOutputAudioRequest(processIds, volume: value);
+        QueueOutputAudioRequest(processIds ?? CaptureOutputAudioProcesses(), volume: value);
+        if (commit)
+        {
+            RememberOutputPreference(_settings with { OutputVolume = value });
+            UpdateOutputAudioControls();
+        }
     }
 
     // A cancelled drag's rollback must survive audio readiness dropping mid-drag. While the audio path is

@@ -327,6 +327,21 @@ internal sealed class WebViewAudioVolume : IDisposable
     {
         if (!double.IsFinite(value) || value < 0 || value > 1 || _disposed)
             return false;
+        return TrySetOutput((float)value, null, canApplyPreference);
+    }
+
+    public bool TrySetMute(bool requested, Func<bool>? canApplyPreference = null)
+    {
+        if (_disposed)
+        {
+            MarkUnavailable();
+            return false;
+        }
+        return TrySetOutput(null, requested, canApplyPreference);
+    }
+
+    private bool TrySetOutput(float? requestedVolume, bool? requestedMute, Func<bool>? canApplyPreference)
+    {
         if (!TryInitializeComMta(out var uninitializeCom))
         {
             MarkUnavailable();
@@ -339,64 +354,27 @@ internal sealed class WebViewAudioVolume : IDisposable
             if (!TryGetCurrentSessions(out sessions))
                 return false;
 
-            var requested = (float)value;
-            if (!TryApplyTransaction(sessions, requested, null, canApplyPreference))
+            if (!TryApplyTransaction(sessions, requestedVolume, requestedMute, canApplyPreference))
             {
                 MarkUnavailable();
                 return false;
             }
 
-            if (!TryRefreshStates(sessions) || !HaveRequestedVolume(sessions, requested))
+            if (!TryRefreshStates(sessions)
+                || (requestedVolume is { } volume && !HaveRequestedVolume(sessions, volume))
+                || (requestedMute is { } muted && !HaveRequestedMute(sessions, muted)))
             {
                 MarkUnavailable();
                 return false;
             }
 
-            _preferredVolume = requested;
-            PublishGuardSnapshot();
-            RememberSessions(sessions);
-            if (HaveConsistentState(sessions))
-                SetObservedState(sessions);
-            else
-                MarkUnavailable();
-            return true;
-        }
-        finally
-        {
-            ReleaseSessions(sessions);
-            if (uninitializeCom)
-                CoUninitialize();
-        }
-    }
-
-    public bool TrySetMute(bool requested, Func<bool>? canApplyPreference = null)
-    {
-        if (_disposed || !TryInitializeComMta(out var uninitializeCom))
-        {
-            MarkUnavailable();
-            return false;
-        }
-
-        List<AudioSession> sessions = [];
-        try
-        {
-            if (!TryGetCurrentSessions(out sessions))
-                return false;
-
-            if (!TryApplyTransaction(sessions, null, requested, canApplyPreference))
+            if (requestedVolume is { } preferredVolume)
+                _preferredVolume = preferredVolume;
+            if (requestedMute is { } preferredMute)
             {
-                MarkUnavailable();
-                return false;
+                _hasMutePreference = true;
+                _preferredMute = preferredMute;
             }
-
-            if (!TryRefreshStates(sessions) || !HaveRequestedMute(sessions, requested))
-            {
-                MarkUnavailable();
-                return false;
-            }
-
-            _hasMutePreference = true;
-            _preferredMute = requested;
             PublishGuardSnapshot();
             RememberSessions(sessions);
             if (HaveConsistentState(sessions))
@@ -868,17 +846,7 @@ internal sealed class WebViewAudioVolume : IDisposable
         var complete = false;
         try
         {
-            var classId = MmDeviceEnumeratorClassId;
-            var interfaceId = MmDeviceEnumeratorInterfaceId;
-            var result = CoCreateInstance(ref classId, 0, ClsCtxAll, ref interfaceId, out deviceEnumerator);
-            if (result != S_OK || deviceEnumerator is null)
-                return false;
-
-            result = deviceEnumerator.EnumAudioEndpoints(DataFlow.Render, DeviceStateActive, out devices);
-            if (result != S_OK || devices is null)
-                return false;
-            result = devices.GetCount(out var endpointCount);
-            if (result != S_OK || endpointCount > MaximumRenderEndpointCount)
+            if (!TryGetRenderEndpoints(out deviceEnumerator, out devices, out var endpointCount))
                 return false;
             if (endpointCount == 0)
             {
@@ -894,7 +862,7 @@ internal sealed class WebViewAudioVolume : IDisposable
                 IAudioSessionEnumerator? sessionEnumerator = null;
                 try
                 {
-                    result = devices.Item(endpointIndex, out device);
+                    var result = devices!.Item(endpointIndex, out device);
                     if (result != S_OK || device is null)
                         return false;
 
@@ -1453,35 +1421,9 @@ internal sealed class WebViewAudioVolume : IDisposable
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IAudioSessionControl
     {
-        [PreserveSig]
-        int GetState(out int state);
-
-        [PreserveSig]
-        int GetDisplayName(out nint displayName);
-
-        [PreserveSig]
-        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string displayName, [In] ref Guid eventContext);
-
-        [PreserveSig]
-        int GetIconPath(out nint iconPath);
-
-        [PreserveSig]
-        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string iconPath, [In] ref Guid eventContext);
-
-        [PreserveSig]
-        int GetGroupingParam(out Guid groupingId);
-
-        [PreserveSig]
-        int SetGroupingParam([In] ref Guid groupingId, [In] ref Guid eventContext);
-
-        [PreserveSig]
-        int RegisterAudioSessionNotification(nint notification);
-
-        [PreserveSig]
-        int UnregisterAudioSessionNotification(nint notification);
     }
 
-    // Flatten the inherited IAudioSessionControl vtable before declaring the five Control2 methods.
+    // Retain the inherited IAudioSessionControl slots and Control2 slots through GetProcessId.
     [ComImport]
     [Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -1522,12 +1464,6 @@ internal sealed class WebViewAudioVolume : IDisposable
 
         [PreserveSig]
         int GetProcessId(out uint processId);
-
-        [PreserveSig]
-        int IsSystemSoundsSession();
-
-        [PreserveSig]
-        int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
     }
 
     [ComImport]
