@@ -1,7 +1,6 @@
 using System.Net;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Storage.Streams;
 
 namespace Nativune;
 
@@ -142,16 +141,8 @@ internal static class CompactArtwork
     private static async Task<BitmapImage?> DecodeCoreAsync(
         byte[] payload, int width, int height, CancellationToken cancellation)
     {
-        using var stream = new InMemoryRandomAccessStream();
-        using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
-        {
-            writer.WriteBytes(payload);
-            await writer.StoreAsync().AsTask(cancellation);
-            await writer.FlushAsync().AsTask(cancellation);
-            writer.DetachStream();
-        }
-
-        stream.Seek(0);
+        using var bytes = new MemoryStream(payload, writable: false);
+        using var stream = bytes.AsRandomAccessStream();
         var bitmap = new BitmapImage
         {
             DecodePixelWidth = width,

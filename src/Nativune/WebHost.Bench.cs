@@ -459,19 +459,12 @@ public sealed partial class WebHostWindow
         _benchStatsPending = true;
         try
         {
-            using var document = JsonDocument.Parse(await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchPageStateScript).AsTask()));
+            using var document = JsonDocument.Parse(await _browserHost.Core.ExecuteScriptAsync(BenchPageStateScript).AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
             var page = document.RootElement.Clone();
             BenchHooks.Event("page-stats", ("page", page));
         }
         catch (Exception ex) { BenchHooks.Event("page-stats-error", ("error", ex.GetType().Name)); }
         finally { _benchStatsPending = false; }
-    }
-
-    private static async Task<string> BenchWithTimeout(Task<string> task, int seconds = 10)
-    {
-        var finished = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(seconds)));
-        if (finished != task) throw new TimeoutException("bench call timed out");
-        return await task;
     }
 
     private async Task<bool> WaitForBenchVisibilityAsync(bool visible)
@@ -490,7 +483,7 @@ public sealed partial class WebHostWindow
         if (_browserHost is null) return new(null, null, null, false);
         try
         {
-            var result = await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchMediaScript).AsTask(), 5);
+            var result = await _browserHost.Core.ExecuteScriptAsync(BenchMediaScript).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
             return ParseBenchMediaState(result);
         }
         catch (Exception)
