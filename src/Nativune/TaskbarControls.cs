@@ -328,8 +328,6 @@ internal sealed class TaskbarControls : IDisposable
         Exception? failure = null;
         foreach (var handle in handles)
         {
-            if (handle == 0)
-                continue;
             try
             {
                 DestroyOwnedIcon(handle);
@@ -389,10 +387,6 @@ internal sealed class TaskbarControls : IDisposable
             [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] ThumbButton[] buttons);
         void ThumbBarUpdateButtons(nint hwnd, uint count,
             [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] ThumbButton[] buttons);
-        void ThumbBarSetImageList(nint hwnd, nint imageList);
-        void SetOverlayIcon(nint hwnd, nint icon, [MarshalAs(UnmanagedType.LPWStr)] string description);
-        void SetThumbnailTooltip(nint hwnd, [MarshalAs(UnmanagedType.LPWStr)] string tooltip);
-        void SetThumbnailClip(nint hwnd, ref ThumbnailClip clip);
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -405,15 +399,6 @@ internal sealed class TaskbarControls : IDisposable
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
         public string szTip;
         public ThumbButtonFlags dwFlags;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ThumbnailClip
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
     }
 
     [Flags]
