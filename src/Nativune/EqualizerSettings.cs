@@ -33,7 +33,6 @@ internal sealed record EqualizerSettings(
 {
     public static EqualizerSettings Default { get; } = new(false, "flat", Array.AsReadOnly(new double[10]),
         0, true, Array.Empty<EqualizerPreset>());
-    public bool IsFlat => GainsDb.All(gain => gain == 0) && EqualizerMath.EffectivePreampDb(this) == 0;
 }
 
 internal static class EqualizerPresets

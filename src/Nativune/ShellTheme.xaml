@@ -15,28 +15,7 @@
   <SolidColorBrush x:Key="FocusStrokeColorOuterBrush" Color="#FF0033" />
   <SolidColorBrush x:Key="FocusStrokeColorInnerBrush" Color="#FFFFFF" />
 
-  <!-- Compatibility aliases for native controls and migrated state bindings. -->
-  <SolidColorBrush x:Key="RootBrush" Color="#030303" />
-  <SolidColorBrush x:Key="ToolbarBrush" Color="#121212" />
-  <SolidColorBrush x:Key="DropdownBrush" Color="#212121" />
-  <SolidColorBrush x:Key="ForegroundBrush" Color="#FFFFFF" />
-  <SolidColorBrush x:Key="SecondaryBrush" Color="#AAAAAA" />
-  <SolidColorBrush x:Key="DisabledBrush" Color="#777777" />
-  <SolidColorBrush x:Key="ErrorBrush" Color="#FFB8BF" />
-  <SolidColorBrush x:Key="ErrorForegroundBrush" Color="#FFB8BF" />
-  <SolidColorBrush x:Key="ErrorBackgroundBrush" Color="#331219" />
-  <SolidColorBrush x:Key="HoverBrush" Color="#2D2D2D" />
-  <SolidColorBrush x:Key="PressedBrush" Color="#3A3A3A" />
   <SolidColorBrush x:Key="SeparatorBrush" Color="#3A3A3A" />
-  <SolidColorBrush x:Key="CheckedBrush" Color="#FF6680" />
-  <SolidColorBrush x:Key="FocusBrush" Color="#FF0033" />
-  <SolidColorBrush x:Key="SelectedForegroundBrush" Color="#FFFFFF" />
-  <SolidColorBrush x:Key="PrimarySurfaceBrush" Color="#FFFFFF" />
-  <SolidColorBrush x:Key="PrimaryInkBrush" Color="#030303" />
-  <SolidColorBrush x:Key="ArtworkPlaceholderBrush" Color="#373737" />
-  <SolidColorBrush x:Key="ArtworkPlaceholderBorderBrush" Color="#828282" />
-  <SolidColorBrush x:Key="FocusVisualPrimaryBrush" Color="#FF0033" />
-  <SolidColorBrush x:Key="FocusVisualSecondaryBrush" Color="#FFFFFF" />
 
   <!-- WinUI default control state resource names. Normal text never sits on red. -->
   <SolidColorBrush x:Key="ButtonBackground" Color="#212121" />
@@ -76,27 +55,7 @@
       <SolidColorBrush x:Key="AccentBrush" Color="{ThemeResource SystemColorHighlightColor}" />
       <SolidColorBrush x:Key="FocusStrokeBrush" Color="{ThemeResource SystemColorHighlightColor}" />
 
-      <SolidColorBrush x:Key="RootBrush" Color="{ThemeResource SystemColorWindowColor}" />
-      <SolidColorBrush x:Key="ToolbarBrush" Color="{ThemeResource SystemColorButtonFaceColor}" />
-      <SolidColorBrush x:Key="DropdownBrush" Color="{ThemeResource SystemColorWindowColor}" />
-      <SolidColorBrush x:Key="ForegroundBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-      <SolidColorBrush x:Key="SecondaryBrush" Color="{ThemeResource SystemColorGrayTextColor}" />
-      <SolidColorBrush x:Key="DisabledBrush" Color="{ThemeResource SystemColorGrayTextColor}" />
-      <SolidColorBrush x:Key="ErrorBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-      <SolidColorBrush x:Key="ErrorForegroundBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-      <SolidColorBrush x:Key="ErrorBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
-      <SolidColorBrush x:Key="HoverBrush" Color="{ThemeResource SystemColorHighlightColor}" />
-      <SolidColorBrush x:Key="PressedBrush" Color="{ThemeResource SystemColorHighlightColor}" />
       <SolidColorBrush x:Key="SeparatorBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-      <SolidColorBrush x:Key="CheckedBrush" Color="{ThemeResource SystemColorHighlightColor}" />
-      <SolidColorBrush x:Key="FocusBrush" Color="{ThemeResource SystemColorHighlightColor}" />
-      <SolidColorBrush x:Key="SelectedForegroundBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
-      <SolidColorBrush x:Key="PrimarySurfaceBrush" Color="{ThemeResource SystemColorButtonFaceColor}" />
-      <SolidColorBrush x:Key="PrimaryInkBrush" Color="{ThemeResource SystemColorButtonTextColor}" />
-      <SolidColorBrush x:Key="ArtworkPlaceholderBrush" Color="{ThemeResource SystemColorButtonFaceColor}" />
-      <SolidColorBrush x:Key="ArtworkPlaceholderBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-      <SolidColorBrush x:Key="FocusVisualPrimaryBrush" Color="{ThemeResource SystemColorHighlightColor}" />
-      <SolidColorBrush x:Key="FocusVisualSecondaryBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
 
       <SolidColorBrush x:Key="ButtonBackground" Color="{ThemeResource SystemColorButtonFaceColor}" />
       <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />

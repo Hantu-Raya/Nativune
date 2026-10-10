@@ -119,7 +119,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private readonly TextBlock _volumeValue;
     private readonly ContentControl _timerIcon;
     private readonly TextBlock _timerText;
-    private readonly Canvas _layoutCanvas;
 
     private CompactPlaybackState? _state;
     private readonly CompactRatingGate _ratingGate = new();
@@ -177,7 +176,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     {
         InitializeComponent();
 
-        _layoutCanvas = LayoutCanvas;
         _artwork = Artwork;
         _title = Title;
         _inlineStatus = InlineStatus;
@@ -601,7 +599,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void RequestRating(ToggleButton button, string command)
     {
         var state = _state;
-        RestoreRatingState(button, command == "like" ? state?.Liked : state?.Disliked);
+        button.IsChecked = command == "like" ? state?.Liked : state?.Disliked;
         var now = Environment.TickCount64;
         if (state is null || !_ratingGate.Allows(now)) return;
         _ratingGate.Sent(state.Liked, state.Disliked, now);
@@ -933,8 +931,8 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
             _seek.SetPositionSeconds(clockMismatch ? 0 : position,
                 clockMismatch ? 0 : state.Duration);
             SetTextIfChanged(_elapsed, clockMismatch
-                ? mediaClock ? "~" + FormatElapsed(displayPosition) : "--:--"
-                : FormatElapsed(position));
+                ? mediaClock ? "~" + FormatTime(displayPosition) : "--:--"
+                : FormatTime(position));
         }
         SetTextIfChanged(_duration, FormatTime(state.ClockMismatch
             ? mediaClock ? state.Duration : null : state.Duration <= 0 ? null : state.Duration));
@@ -1389,7 +1387,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void PreviewSeekDrag(double position)
     {
         if (!_dragging || _state is null) return;
-        _elapsed.Text = FormatElapsed(position);
+        _elapsed.Text = FormatTime(position);
         _artwork.Angle = SeekPreviewAngle(_dragStartAngle, _seek.HorizontalDelta, _reduceMotion);
     }
 
@@ -1411,7 +1409,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
     private void CommitSeekTarget(CompactPlaybackState state, double position, bool send)
     {
         var target = ClampSeekTarget(position, state.Duration);
-        _elapsed.Text = FormatElapsed(target);
+        _elapsed.Text = FormatTime(target);
         if (send)
         {
             _pendingSeek = target;
@@ -1429,7 +1427,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         _artwork.Angle = _dragStartAngle;
         if (_state is { } state)
         {
-            _elapsed.Text = FormatElapsed(state.Position);
+            _elapsed.Text = FormatTime(state.Position);
             _seek.SetPositionSeconds(state.Position, state.Duration);
         }
         UpdateAnimationTimer();
@@ -1613,11 +1611,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
                 shuffle.Value ? "Shuffle is on. Activate to turn it off." : "Shuffle is off. Activate to turn it on.");
     }
 
-    private static void RestoreRatingState(ToggleButton button, bool? state)
-    {
-        button.IsChecked = state;
-    }
-
     private static string FormatRepeat(string repeat) => repeat.Trim().ToLowerInvariant() switch
     {
         "all" or "repeatall" => "All",
@@ -1635,9 +1628,6 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         return hours > 0 ? $"{hours}:{minutes:00}:{remaining:00}" : $"{minutes}:{remaining:00}";
     }
 
-    private static string FormatElapsed(double position)
-        => FormatTime(position);
-
     private static string FormatTimer(TimeSpan value)
     {
         var seconds = Math.Max(0, (long)Math.Round(value.TotalSeconds, MidpointRounding.AwayFromZero));
@@ -1647,7 +1637,7 @@ public sealed partial class CompactPlayerView : UserControl, IDisposable
         return hours > 0 ? $"{hours}:{minutes:00}:{remaining:00}" : $"{minutes}:{remaining:00}";
     }
 
-    private static double NormalizeAngle(double value)
+    internal static double NormalizeAngle(double value)
     {
         if (!double.IsFinite(value)) return 0;
         value %= 360;
@@ -1721,7 +1711,7 @@ public sealed class CompactArtworkCanvas : Grid
         get => _angle;
         set
         {
-            _angle = Normalize(value);
+            _angle = CompactPlayerView.NormalizeAngle(value);
             _rotation.Angle = _angle;
         }
     }
@@ -1759,13 +1749,6 @@ public sealed class CompactArtworkCanvas : Grid
         ring.Width = diameter;
         ring.Height = diameter;
         ring.StrokeThickness = thickness;
-    }
-
-    private static double Normalize(double value)
-    {
-        if (!double.IsFinite(value)) return 0;
-        value %= 360;
-        return value < 0 ? value + 360 : value;
     }
 
 }

@@ -106,7 +106,6 @@ public sealed partial class WebHostWindow
             state.Ended,
             state.Seeking,
             state.PlaybackRate,
-            Environment.TickCount64,
             DateTimeOffset.UtcNow,
             state.VideoId), epoch);
     }

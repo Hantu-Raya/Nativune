@@ -202,10 +202,8 @@ public sealed partial class WebHostWindow : Window
     private bool _compactWhenReady;
     private bool _compactStartupPending;
     private bool _compactResumeAfterAccount;
-    private int _compactModeGeneration;
     private bool _fullMaximized;
     private bool _windowMaximized;
-    private bool _lastMaximized;
     private bool _settingsDialogOpen;
     private bool _shortcutsEnabled;
     private SessionShortcuts? _sessionShortcuts;
@@ -2015,7 +2013,6 @@ public sealed partial class WebHostWindow : Window
             if (_fullMaximized) _presenter?.Maximize();
         }
         ApplyCompactSurface();
-        _compactModeGeneration++;
         UpdateWindowPresentation();
         UpdateWindowVisibilityPolicy();
         CaptureSettings();
@@ -2100,7 +2097,6 @@ public sealed partial class WebHostWindow : Window
             GetWorkArea(), CurrentDpi());
         MoveResize(bounds);
         if (_settings.Maximized) _presenter?.Maximize();
-        _lastMaximized = _settings.Maximized;
     }
 
     private void ResizeCompact()
@@ -2833,7 +2829,7 @@ public sealed partial class WebHostWindow : Window
             var id = Win32Interop.GetWindowIdFromWindow(handle);
             var app = AppWindow.GetFromWindowId(id)
                 ?? throw new InvalidOperationException("The dialog AppWindow could not be resolved.");
-            app.Resize(new SizeInt32(DipForDialog(width), DipForDialog(height)));
+            app.Resize(new SizeInt32(Dip(width), Dip(height)));
             var owner = GetAppBounds();
             var size = app.Size;
             app.Move(new PointInt32(owner.X + Math.Max(0, (owner.Width - size.Width) / 2),
@@ -2849,8 +2845,6 @@ public sealed partial class WebHostWindow : Window
             throw;
         }
     }
-
-    private int DipForDialog(int value) => Math.Max(1, (int)Math.Round(value * CurrentDpi() / 96d));
 
     [DllImport("user32.dll")] private static extern bool FlashWindow(nint window, bool invert);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int RegisterWindowMessage(string message);

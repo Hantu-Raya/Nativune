@@ -184,7 +184,7 @@ internal static class ShellTheme
     /// <summary>Gets a shared theme brush when the application dictionary is ready.</summary>
     internal static Brush Brush(string key, UiColor fallback)
     {
-        if (IsHighContrast && key is "PrimaryTextBrush" or "ForegroundBrush" or "SelectedForegroundBrush")
+        if (IsHighContrast && key == "PrimaryTextBrush")
             return new SolidColorBrush(ForegroundColor);
 
         if (Application.Current?.Resources is { } resources && resources.ContainsKey(key))
