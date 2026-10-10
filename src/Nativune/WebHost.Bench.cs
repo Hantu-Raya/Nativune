@@ -67,15 +67,18 @@ public sealed partial class WebHostWindow
     {
         if (!CapHeavyFixtureEnabled || Environment.GetEnvironmentVariable("NATIVUNE_BENCH_CAP_NO_FUSE") != "1") return;
         // Bound the intentionally unguarded control independently of schedule/launcher jitter.
-        _benchCapControlTimer ??= _dispatcherQueue.CreateTimer();
-        _benchCapControlTimer.Interval = TimeSpan.FromSeconds(5);
-        _benchCapControlTimer.IsRepeating = false;
-        _benchCapControlTimer.Tick += (_, _) =>
+        if (_benchCapControlTimer is null)
         {
-            _benchCapControlTimer?.Stop();
-            BenchHooks.QuitRequested();
-            _ = ShutdownAsync();
-        };
+            _benchCapControlTimer = _dispatcherQueue.CreateTimer();
+            _benchCapControlTimer.Interval = TimeSpan.FromSeconds(5);
+            _benchCapControlTimer.IsRepeating = false;
+            _benchCapControlTimer.Tick += (_, _) =>
+            {
+                _benchCapControlTimer?.Stop();
+                BenchHooks.QuitRequested();
+                _ = ShutdownAsync();
+            };
+        }
         _benchCapControlTimer.Start();
     }
     private bool FullIdleFixtureEnabled => BenchHooks.Enabled
@@ -456,7 +459,8 @@ public sealed partial class WebHostWindow
         _benchStatsPending = true;
         try
         {
-            var page = JsonDocument.Parse(await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchPageStateScript).AsTask())).RootElement.Clone();
+            using var document = JsonDocument.Parse(await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(BenchPageStateScript).AsTask()));
+            var page = document.RootElement.Clone();
             BenchHooks.Event("page-stats", ("page", page));
         }
         catch (Exception ex) { BenchHooks.Event("page-stats-error", ("error", ex.GetType().Name)); }

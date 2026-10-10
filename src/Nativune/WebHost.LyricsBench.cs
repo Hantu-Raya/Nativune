@@ -220,7 +220,8 @@ public sealed partial class WebHostWindow
         try
         {
             var raw = await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(LyricsBenchSampleScript).AsTask(), 3);
-            var sample = JsonDocument.Parse(raw).RootElement.Clone();
+            using var document = JsonDocument.Parse(raw);
+            var sample = document.RootElement.Clone();
             _lyricsBenchLastSample = sample;
             _lyricsBenchLastSampleAt = System.Diagnostics.Stopwatch.GetTimestamp();
             BenchHooks.Event("lyrics-sample", ("s", sample));
@@ -396,7 +397,8 @@ public sealed partial class WebHostWindow
         {
             var parameters = JsonSerializer.Serialize(new { expression, awaitPromise = true, returnByValue = true });
             var raw = await BenchWithTimeout(core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", parameters).AsTask(), 20);
-            var root = JsonDocument.Parse(raw).RootElement;
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
             if (root.TryGetProperty("exceptionDetails", out var ex)) return "exception: " + ex.GetProperty("text").GetString();
             return root.GetProperty("result").TryGetProperty("value", out var value) ? value.Clone() : "no-value";
         }

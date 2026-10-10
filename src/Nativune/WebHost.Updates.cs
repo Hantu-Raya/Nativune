@@ -896,6 +896,14 @@ public sealed partial class WebHostWindow
     {
         if (_releaseUpdatePromptOpen || _closing || _disposed) return;
         _releaseUpdatePromptOpen = true;
+        Window? dialog = null;
+        var promptEnded = false;
+        void EndPrompt()
+        {
+            if (promptEnded) return;
+            promptEnded = true;
+            EndReleaseUpdatePrompt();
+        }
         try
         {
             var update = new ReleaseUpdateResult(ReleaseUpdateStatus.Available, version,
@@ -931,13 +939,17 @@ public sealed partial class WebHostWindow
             panel.Children.Add(heading);
             panel.Children.Add(scroller);
             panel.Children.Add(close);
-            var dialog = CreateDialogWindow($"What's new in {version}", panel, 560, 460);
+            dialog = CreateDialogWindow($"What's new in {version}", panel, 560, 460);
+            dialog.Closed += (_, _) => EndPrompt();
             close.Click += (_, _) => dialog.Close();
             dialog.Activate();
             close.Focus(FocusState.Programmatic);
         }
-        catch (OperationCanceledException) { }
-        catch (Exception) { }
-        finally { EndReleaseUpdatePrompt(); }
+        catch (Exception)
+        {
+            try { dialog?.Close(); }
+            catch (Exception) { }
+            EndPrompt();
+        }
     }
 }
