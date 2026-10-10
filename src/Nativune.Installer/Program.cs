@@ -233,9 +233,7 @@ internal static class Program
         var reopenRequested = false;
         if (options.Silent)
         {
-            _ = reporter.Confirm(preparation.Confirmation);
             outcome = Task.Run(() => engine.Execute(preparation, reporter, CancellationToken.None)).GetAwaiter().GetResult();
-            reporter.Result(outcome);
         }
         else
         {
@@ -1038,24 +1036,14 @@ internal sealed class InstallerEngine
             {
                 File.Delete(resultPath);
             }
-            foreach (var stalePath in Directory.EnumerateFiles(
-                updatesDirectory,
-                ".Nativune-Setup.exe.*.tmp",
-                SearchOption.TopDirectoryOnly))
+            foreach (var pattern in new[] { ".Nativune-Setup.exe.*.tmp", ".last-update.*.tmp" })
             {
-                if (!InstallRoot.IsReparsePoint(stalePath))
+                foreach (var stalePath in Directory.EnumerateFiles(updatesDirectory, pattern, SearchOption.TopDirectoryOnly))
                 {
-                    File.Delete(stalePath);
-                }
-            }
-            foreach (var stalePath in Directory.EnumerateFiles(
-                updatesDirectory,
-                ".last-update.*.tmp",
-                SearchOption.TopDirectoryOnly))
-            {
-                if (!InstallRoot.IsReparsePoint(stalePath))
-                {
-                    File.Delete(stalePath);
+                    if (!InstallRoot.IsReparsePoint(stalePath))
+                    {
+                        File.Delete(stalePath);
+                    }
                 }
             }
             if (!Directory.EnumerateFileSystemEntries(updatesDirectory).Any())
@@ -1312,7 +1300,7 @@ internal static class Launcher
     internal static void Start(string root)
     {
         var executable = Path.Combine(root, Program.AppExecutable.Replace('/', Path.DirectorySeparatorChar));
-        PathSafety.EnsureRegularFile(executable);
+        InstallRoot.EnsureRegularFile(executable);
         Process? process;
         try
         {
