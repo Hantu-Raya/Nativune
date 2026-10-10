@@ -219,7 +219,7 @@ public sealed partial class WebHostWindow
         _lyricsBenchPending = true;
         try
         {
-            var raw = await BenchWithTimeout(_browserHost.Core.ExecuteScriptAsync(LyricsBenchSampleScript).AsTask(), 3);
+            var raw = await _browserHost.Core.ExecuteScriptAsync(LyricsBenchSampleScript).AsTask().WaitAsync(TimeSpan.FromSeconds(3));
             using var document = JsonDocument.Parse(raw);
             var sample = document.RootElement.Clone();
             _lyricsBenchLastSample = sample;
@@ -329,7 +329,7 @@ public sealed partial class WebHostWindow
                 {
                     try
                     {
-                        var state = await BenchWithTimeout(core.ExecuteScriptAsync("document.readyState").AsTask(), 3);
+                        var state = await core.ExecuteScriptAsync("document.readyState").AsTask().WaitAsync(TimeSpan.FromSeconds(3));
                         if (state == "\"complete\"")
                         {
                             BenchHooks.Event("lyrics-options-loaded", ("ok", true), ("host", LyricsBenchHost(source)),
@@ -396,7 +396,7 @@ public sealed partial class WebHostWindow
         try
         {
             var parameters = JsonSerializer.Serialize(new { expression, awaitPromise = true, returnByValue = true });
-            var raw = await BenchWithTimeout(core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", parameters).AsTask(), 20);
+            var raw = await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", parameters).AsTask().WaitAsync(TimeSpan.FromSeconds(20));
             using var document = JsonDocument.Parse(raw);
             var root = document.RootElement;
             if (root.TryGetProperty("exceptionDetails", out var ex)) return "exception: " + ex.GetProperty("text").GetString();

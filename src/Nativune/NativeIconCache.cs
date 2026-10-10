@@ -218,23 +218,8 @@ internal sealed class NativeIconCache : IDisposable
         }
     }
 
-    private static int SelectRasterSize(double desired)
-    {
-        var selected = RasterSizes[0];
-        var distance = Math.Abs(selected - desired);
-        for (var index = 1; index < RasterSizes.Length; index++)
-        {
-            var candidate = RasterSizes[index];
-            var candidateDistance = Math.Abs(candidate - desired);
-            if (candidateDistance < distance || candidateDistance == distance && candidate > selected)
-            {
-                selected = candidate;
-                distance = candidateDistance;
-            }
-        }
-
-        return selected;
-    }
+    private static int SelectRasterSize(double desired) =>
+        RasterSizes.MinBy(size => (Math.Abs(size - desired), -size));
 
     // XAML has no DPI argument at creation time; use an existing 2x source so
     // 150–200% displays do not upscale a 1x raster. Native HICON selection

@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-
 namespace Nativune;
 
 internal sealed class SleepDeadline : IDisposable
@@ -41,7 +39,7 @@ internal sealed class SleepDeadline : IDisposable
         get
         {
             lock (_gate)
-                return _armed ? TimeSpan.FromMilliseconds(Remaining(GetTickCount64(), _deadlineTick)) : null;
+                return _armed ? TimeSpan.FromMilliseconds(Remaining(unchecked((ulong)Environment.TickCount64), _deadlineTick)) : null;
         }
     }
 
@@ -51,10 +49,10 @@ internal sealed class SleepDeadline : IDisposable
             throw new ArgumentOutOfRangeException(nameof(duration), "Duration must be between one second and four hours.");
 
         var milliseconds = (ulong)Math.Ceiling(duration.TotalMilliseconds);
-        var now = GetTickCount64();
+        var now = unchecked((ulong)Environment.TickCount64);
         lock (_gate)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, typeof(SleepDeadline));
             _generation++;
             _armed = true;
             _pendingExpiry = null;
@@ -104,7 +102,7 @@ internal sealed class SleepDeadline : IDisposable
             if (_disposed || !_armed)
                 return;
 
-            var remaining = Remaining(GetTickCount64(), _deadlineTick);
+            var remaining = Remaining(unchecked((ulong)Environment.TickCount64), _deadlineTick);
             if (remaining != 0)
             {
                 // Timer callbacks can arrive early. Keep the one-shot timer and only
@@ -155,15 +153,6 @@ internal sealed class SleepDeadline : IDisposable
         // keeps this conversion safe if the constants change later.
         var due = Math.Min(milliseconds, (ulong)int.MaxValue);
         return TimeSpan.FromMilliseconds(Math.Max(1UL, due));
-    }
-
-    [DllImport("kernel32.dll")]
-    private static extern ulong GetTickCount64();
-
-    private void ThrowIfDisposed()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(SleepDeadline));
     }
 
     private readonly record struct ExpiryRequest(SleepDeadline Owner, ulong Generation);

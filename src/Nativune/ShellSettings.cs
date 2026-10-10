@@ -180,14 +180,7 @@ internal sealed record ShellSettings(int X, int Y, int Width, int Height, int Dp
         var buffer = new byte[MaxBytes + 1];
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
             4096, FileOptions.SequentialScan);
-        var length = 0;
-        while (length < buffer.Length)
-        {
-            var count = stream.Read(buffer, length, buffer.Length - length);
-            if (count == 0)
-                break;
-            length += count;
-        }
+        var length = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
 
         if (length > MaxBytes)
             return null;

@@ -4,7 +4,6 @@
     if (globalThis.top !== globalThis || location.origin !== 'https://music.youtube.com') return;
     const installedDocument = document;
     const centres = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-    const sources = new WeakMap();
     // 'encrypted' does not bubble, but a capture listener on the document sees it for every media element,
     // including events that fire before the site's asynchronous setMediaKeys completes.
     const encryptedElements = new WeakSet();
@@ -128,8 +127,7 @@
             preamp = ctx.createGain(); preamp.gain.value = 1;
             filters.forEach((filter, index) => filter.connect(filters[index + 1] || preamp));
             preamp.connect(ctx.destination);
-            source = sources.get(candidate);
-            if (!source) { source = ctx.createMediaElementSource(candidate); sources.set(candidate, source); }
+            source = ctx.createMediaElementSource(candidate);
             element = candidate;
             source.connect(filters[0]);
             element.addEventListener('encrypted', () => { encrypted = true; void reconcile(); });
