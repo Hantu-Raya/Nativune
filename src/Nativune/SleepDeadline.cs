@@ -52,7 +52,7 @@ internal sealed class SleepDeadline : IDisposable
         var now = unchecked((ulong)Environment.TickCount64);
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, nameof(SleepDeadline));
+            ObjectDisposedException.ThrowIf(_disposed, typeof(SleepDeadline));
             _generation++;
             _armed = true;
             _pendingExpiry = null;

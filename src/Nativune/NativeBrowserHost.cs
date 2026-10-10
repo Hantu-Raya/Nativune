@@ -159,7 +159,7 @@ internal sealed class NativeBrowserHost : IDisposable
 
     internal void SetVisible(bool visible)
     {
-        ObjectDisposedException.ThrowIf(_disposed, nameof(NativeBrowserHost));
+        ObjectDisposedException.ThrowIf(_disposed, typeof(NativeBrowserHost));
         if (visible)
         {
             _containerVisible = true;
@@ -178,7 +178,7 @@ internal sealed class NativeBrowserHost : IDisposable
 
     internal void PulseControllerVisible(bool on)
     {
-        ObjectDisposedException.ThrowIf(_disposed, nameof(NativeBrowserHost));
+        ObjectDisposedException.ThrowIf(_disposed, typeof(NativeBrowserHost));
         _controllerPulseVisible = on;
         _controller.IsVisible = on || _containerVisible;
     }
@@ -189,7 +189,7 @@ internal sealed class NativeBrowserHost : IDisposable
 
     internal void MoveFocus(CoreWebView2MoveFocusReason reason)
     {
-        ObjectDisposedException.ThrowIf(_disposed, nameof(NativeBrowserHost));
+        ObjectDisposedException.ThrowIf(_disposed, typeof(NativeBrowserHost));
         try { _controller.MoveFocus(reason); }
         catch (ArgumentException) { }
         catch (COMException) { }
@@ -197,7 +197,7 @@ internal sealed class NativeBrowserHost : IDisposable
 
     internal void NotifyParentWindowPositionChanged()
     {
-        ObjectDisposedException.ThrowIf(_disposed, nameof(NativeBrowserHost));
+        ObjectDisposedException.ThrowIf(_disposed, typeof(NativeBrowserHost));
         _controller.NotifyParentWindowPositionChanged();
     }
 
