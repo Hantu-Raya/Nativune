@@ -175,8 +175,6 @@ internal static class ObsLookStore
         Volatile.Write(ref s_faultKind, (int)kind + 1);
     }
 
-    internal static void ClearFault() => Volatile.Write(ref s_faultKind, 0);
-
     private static HookFault? TakeFault()
     {
         var kind = Interlocked.Exchange(ref s_faultKind, 0);

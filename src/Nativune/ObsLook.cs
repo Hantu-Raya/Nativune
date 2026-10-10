@@ -209,9 +209,6 @@ internal sealed record ObsLookOptions(
     internal static ObsLookOptions Preset(bool hidePaused) =>
         Defaults(ObsLookTheme.Pill) with { Paused = hidePaused ? ObsLookPaused.Hide : ObsLookPaused.Dim };
 
-    /// <summary>Capability table (§4.1 "Applies to"): does <paramref name="option"/> apply to this theme?</summary>
-    internal bool Applies(ObsLookOption option) => Applies(Theme, option);
-
     internal static bool Applies(ObsLookTheme theme, ObsLookOption option) => option switch
     {
         ObsLookOption.Background or ObsLookOption.BackgroundOpacity => theme is not (ObsLookTheme.Pill or ObsLookTheme.Simple),
@@ -301,12 +298,6 @@ internal sealed record ObsLookState(
         foreach (var look in Looks)
             if (look.Id == id) return look;
         return null;
-    }
-
-    internal bool TryGet(string id, [NotNullWhen(true)] out ObsLook? look)
-    {
-        look = Find(id);
-        return look is not null;
     }
 
     internal bool IsRetired(string id)
@@ -916,9 +907,6 @@ internal static class ObsLookIds
 
     /// <summary>Eight lower-case hex digits: the per-server-instance <c>epoch</c> of the look event.</summary>
     internal static string NewEpoch() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4));
-
-    /// <summary>An <c>[a-z0-9]{8}</c> preview nonce (no collision check: a nonce lives in its own namespace).</summary>
-    internal static string NewNonce() => Draw();
 
 #if NATIVUNE_DISCORD_TEST_HOOKS
     /// <summary>

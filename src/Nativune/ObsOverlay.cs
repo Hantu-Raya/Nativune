@@ -135,7 +135,6 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
     private bool _stopping = true;
     private int _openStreams;
     private int _realStreams;
-    private int _sampleStreams;
     private int _statusSources;
 
     private HttpListener? _listener;
@@ -156,19 +155,8 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
     internal bool IsRunning { get; private set; }
     internal int OpenStreams => Volatile.Read(ref _openStreams);
     internal int RealStreams => Volatile.Read(ref _realStreams);
-    internal int SampleStreams => Volatile.Read(ref _sampleStreams);
     // Real streams that are not the designer's preview: what Settings reports as "Connected to N sources".
     internal int StatusSourceCount => Volatile.Read(ref _statusSources);
-    internal IReadOnlyDictionary<string, int> StreamsByLook
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return CountsLocked(bump: false).ByLook;
-            }
-        }
-    }
     // Raised on a server thread, in version order, after every stream/preview/looks change.
     internal event Action<ObsOverlayStreamCounts>? StreamsChanged;
 
@@ -1190,7 +1178,6 @@ internal sealed partial class ObsOverlayServer : IAsyncDisposable
         {
             Volatile.Write(ref _openStreams, total);
             Volatile.Write(ref _realStreams, real);
-            Volatile.Write(ref _sampleStreams, sample);
             Volatile.Write(ref _statusSources, status);
             _countsVersion++;
         }
