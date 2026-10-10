@@ -196,7 +196,7 @@ public sealed partial class OverlayDesignerWindow : Window
             {
                 if (_host is { } host)
                 {
-                    var json = await host.Core.ExecuteScriptAsync("window.__state && window.__state.accent");
+                    var json = await host.Core.ExecuteScriptAsync("document.documentElement.style.getPropertyValue('--accent').trim()");
                     var sampled = System.Text.Json.JsonSerializer.Deserialize<string>(json);
                     if (!_closed && key == _draftKey && rev == _draftRev && ObsLookValidation.NormalizeColour(sampled) is { } colour)
                     {
