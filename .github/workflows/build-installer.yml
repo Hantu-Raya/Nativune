@@ -114,18 +114,15 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dotnet.ps1 restore src/Nativune.Installer/Nativune.Installer.csproj --runtime win-x64 --disable-parallel
           if ($LASTEXITCODE -ne 0) { throw 'Installer restore failed.' }
 
-      - name: Set up Node.js for account-free regressions
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Run account-free player regression checks
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          node scripts/check-player-controls.cjs
+          $nodeVersion = (Get-Content -LiteralPath release-inputs.json -Raw | ConvertFrom-Json).node.version
+          $node = Join-Path $env:GITHUB_WORKSPACE ".tools/node/$nodeVersion/node.exe"
+          & $node scripts/check-player-controls.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Player controls regression check failed.' }
-          node scripts/check-compact-player.cjs
+          & $node scripts/check-compact-player.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Compact player regression check failed.' }
           python scripts/check-pinvoke.py
           if ($LASTEXITCODE -ne 0) { throw 'P/Invoke entry point check failed.' }
